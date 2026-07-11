@@ -115,8 +115,23 @@ class TradingBot:
 
             time.sleep(0.05)
 
+    def _trend_direction(self, df) -> int:
+        """1h trend: +1 up, -1 down, 0 sideways."""
+        from strategies.base import compute_ema
+        if len(df) < 50:
+            return 0
+        close = df["close"]
+        ema20 = compute_ema(close, 20).iloc[-1]
+        ema50 = compute_ema(close, 50).iloc[-1]
+        price = close.iloc[-1]
+        if price > ema20 > ema50:
+            return 1
+        if price < ema20 < ema50:
+            return -1
+        return 0
+
     def _process_symbol(self, symbol: str, equity: float, open_positions: list[dict]) -> bool:
-        """Thu tat ca strategies, trade ngay khi co signal. Tra ve True neu da trade."""
+        """Can >= 2 strategies dong thuan, scale qty theo do manh. Tra True neu da trade."""
         df_scalp  = self.client.get_klines(symbol, config.TIMEFRAMES["scalp"],  config.CANDLE_LIMIT_SCALP)
         df_signal = self.client.get_klines(symbol, config.TIMEFRAMES["signal"], config.CANDLE_LIMIT_SIGNAL)
         df_trend  = self.client.get_klines(symbol, config.TIMEFRAMES["trend"],  config.CANDLE_LIMIT_TREND)
@@ -125,35 +140,57 @@ class TradingBot:
         if df_signal.empty or len(df_signal) < 50:
             return False
 
-        # Thu tat ca strategies, lay strategy co signal manh nhat
-        best_signal = None
-        best_strategy_name = ""
+        # ATR filter: bo qua symbol bien dong qua nho
+        from strategies.base import compute_atr
+        atr   = compute_atr(df_signal).iloc[-1]
+        price = df_signal["close"].iloc[-1]
+        if price > 0 and atr / price < config.MIN_ATR_PCT:
+            return False
+
+        # 1h macro trend — chi trade thuan chieu, sideways cho phep ca 2 chieu
+        macro_trend = self._trend_direction(df_trend)
+
+        # Thu tat ca strategies, dem dong thuan tung chieu
+        long_signals  = []
+        short_signals = []
 
         for strategy in ALL_STRATEGIES:
             try:
-                # Thu 15m truoc, fallback sang 5m
                 sig = strategy.generate_signal(df_signal, df_trend, df_macro)
                 if sig.direction == 0 and len(df_scalp) >= 50:
                     sig = strategy.generate_signal(df_scalp, df_signal, df_trend)
 
-                if sig.direction != 0 and sig.strength >= config.MIN_SIGNAL_STRENGTH:
-                    if best_signal is None or sig.strength > best_signal.strength:
-                        best_signal = sig
-                        best_strategy_name = strategy.name
+                if sig.direction == 0 or sig.strength < config.MIN_SIGNAL_STRENGTH:
+                    continue
+
+                if sig.direction == 1 and macro_trend >= 0:
+                    long_signals.append(sig)
+                elif sig.direction == -1 and macro_trend <= 0:
+                    short_signals.append(sig)
             except Exception:
                 continue
 
-        if best_signal is None:
+        # Can it nhat MIN_CONSENSUS strategies dong thuan
+        if len(long_signals) >= config.MIN_CONSENSUS:
+            signals = long_signals
+        elif len(short_signals) >= config.MIN_CONSENSUS:
+            signals = short_signals
+        else:
             return False
 
-        best_signal.symbol = symbol
+        # Signal manh nhat lam base, set consensus de risk_manager scale qty
+        best = max(signals, key=lambda s: s.strength)
+        best.consensus = len(signals)
+        best.symbol    = symbol
+        names = "+".join(s.strategy_name for s in signals)
+
         logger.info(
-            f"{symbol} [{best_strategy_name}] -> "
-            f"{'LONG' if best_signal.direction==1 else 'SHORT'} "
-            f"strength={best_signal.strength:.2f} | {best_signal.reason}"
+            f"{symbol} [{names}] consensus={len(signals)} -> "
+            f"{'LONG' if best.direction==1 else 'SHORT'} "
+            f"strength={best.strength:.2f} | {best.reason}"
         )
 
-        self.executor.execute_signal(symbol, best_signal, equity, open_positions)
+        self.executor.execute_signal(symbol, best, equity, open_positions)
         return True
 
 

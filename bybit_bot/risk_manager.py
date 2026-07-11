@@ -66,7 +66,13 @@ class RiskManager:
             logger.warning(f"{signal.symbol}: cannot get instrument info: {e}")
             return None
 
-        qty      = min_qty
+        # Scale qty theo consensus va strength: nhieu strategies dong thuan + signal manh -> vao nhieu hon
+        # scale = consensus x (strength / 0.6), cap tai QTY_SCALE_CAP
+        consensus    = getattr(signal, 'consensus', 1)
+        scale_factor = min(consensus * (signal.strength / config.MIN_SIGNAL_STRENGTH), config.QTY_SCALE_CAP)
+        scale_factor = max(1.0, scale_factor)
+
+        qty      = math.ceil(min_qty * scale_factor / qty_step) * qty_step
         notional = qty * signal.entry_price
 
         # Bybit minimum order value is 5 USDT — scale qty up if needed

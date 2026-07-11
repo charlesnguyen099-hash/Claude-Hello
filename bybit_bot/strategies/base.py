@@ -17,9 +17,10 @@ class Signal:
     strength: float         # 0.0 - 1.0
     strategy_name: str
     entry_price: float
-    atr: float              # Dùng để tính SL/TP động
+    atr: float              # Dùng để tính SL/TP dong
     symbol: str = ""
     reason: str = ""
+    consensus: int = 1      # So strategies dong thuan cung chieu
 
 
 def compute_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:

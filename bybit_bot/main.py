@@ -147,18 +147,20 @@ class TradingBot:
         if price > 0 and atr / price < config.MIN_ATR_PCT:
             return False
 
-        # RSI hien tai tren 15m — dung lam global filter chong trade vao dinh/day
+        # RSI va VWAP lam nen tang phan tich
         rsi_now = compute_rsi(df_signal["close"]).iloc[-1]
-
-        # VWAP hien tai — do xa cach VWAP
         from strategies.vwap_volume import compute_vwap
-        vwap_now   = compute_vwap(df_signal).iloc[-1]
-        vwap_dist  = (price - vwap_now) / vwap_now  # duong = tren VWAP, am = duoi VWAP
+        vwap_now  = compute_vwap(df_signal).iloc[-1]
+        vwap_dist = (price - vwap_now) / vwap_now
 
-        # 1h macro trend — chi trade thuan chieu, sideways cho phep ca 2 chieu
+        # Xac dinh mode: REVERSAL (tai dinh/day) hay MOMENTUM (giua xu huong)
+        is_reversal = rsi_now < 30 or rsi_now > 70   # RSI cuc doan -> co kha nang dao chieu cao
+        # Reversal: Long khi RSI < 30 (day), Short khi RSI > 70 (dinh)
+        reversal_dir = 1 if rsi_now < 30 else (-1 if rsi_now > 70 else 0)
+
+        # 1h macro trend
         macro_trend = self._trend_direction(df_trend)
 
-        # Thu tat ca strategies, dem dong thuan tung chieu
         long_signals  = []
         short_signals = []
 
@@ -172,19 +174,33 @@ class TradingBot:
                     continue
 
                 if sig.direction == 1 and macro_trend >= 0:
-                    # Khong Long khi RSI da overbought hoac gia qua xa VWAP phia tren
-                    if rsi_now > 65 or vwap_dist > 0.02:
-                        continue
                     long_signals.append(sig)
                 elif sig.direction == -1 and macro_trend <= 0:
-                    # Khong Short khi RSI da oversold hoac gia qua xa VWAP phia duoi
-                    if rsi_now < 35 or vwap_dist < -0.02:
-                        continue
                     short_signals.append(sig)
             except Exception:
                 continue
 
-        # Can it nhat MIN_CONSENSUS strategies dong thuan
+        # REVERSAL trade: RSI cuc doan + it nhat 1 strategy xac nhan dung chieu
+        if is_reversal and reversal_dir != 0:
+            reversal_signals = long_signals if reversal_dir == 1 else short_signals
+            if len(reversal_signals) >= 1:
+                # Reversal tai day/dinh — chi can 1 strategy xac nhan, danh dau la high priority
+                signals = reversal_signals
+                best = max(signals, key=lambda s: s.strength)
+                best.strength = min(0.95, best.strength + 0.15)  # boost strength vi reversal co loi nhuan cao
+                best.consensus = len(signals)
+                best.symbol    = symbol
+                names = "+".join(s.strategy_name for s in signals)
+                rsi_label = f"RSI={rsi_now:.0f}({'OVERSOLD' if reversal_dir==1 else 'OVERBOUGHT'})"
+                logger.info(
+                    f"{symbol} [REVERSAL {rsi_label}] [{names}] -> "
+                    f"{'LONG' if best.direction==1 else 'SHORT'} "
+                    f"strength={best.strength:.2f} | {best.reason}"
+                )
+                self.executor.execute_signal(symbol, best, equity, open_positions)
+                return True
+
+        # MOMENTUM trade: can >= MIN_CONSENSUS strategies dong thuan
         if len(long_signals) >= config.MIN_CONSENSUS:
             signals = long_signals
         elif len(short_signals) >= config.MIN_CONSENSUS:

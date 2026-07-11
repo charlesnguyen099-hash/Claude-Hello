@@ -34,7 +34,7 @@ class TradingBot:
         logger.info(f"Mode: {'TESTNET' if config.TESTNET else 'MAINNET (LIVE)'}")
         logger.info(f"Top N symbols: {config.TOP_N_SYMBOLS}")
         logger.info(f"Max positions: {config.MAX_OPEN_POSITIONS}")
-        logger.info(f"Risk per trade: {config.ACCOUNT_RISK_PCT*100:.1f}%")
+        logger.info(f"Risk per trade: {config.SL_MAX_LOSS_PCT*100:.1f}% capital per trade")
         logger.info("="*60)
 
         self.client    = BybitClient()

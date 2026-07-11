@@ -141,11 +141,19 @@ class TradingBot:
             return False
 
         # ATR filter: bo qua symbol bien dong qua nho
-        from strategies.base import compute_atr
+        from strategies.base import compute_atr, compute_rsi
         atr   = compute_atr(df_signal).iloc[-1]
         price = df_signal["close"].iloc[-1]
         if price > 0 and atr / price < config.MIN_ATR_PCT:
             return False
+
+        # RSI hien tai tren 15m — dung lam global filter chong trade vao dinh/day
+        rsi_now = compute_rsi(df_signal["close"]).iloc[-1]
+
+        # VWAP hien tai — do xa cach VWAP
+        from strategies.vwap_volume import compute_vwap
+        vwap_now   = compute_vwap(df_signal).iloc[-1]
+        vwap_dist  = (price - vwap_now) / vwap_now  # duong = tren VWAP, am = duoi VWAP
 
         # 1h macro trend — chi trade thuan chieu, sideways cho phep ca 2 chieu
         macro_trend = self._trend_direction(df_trend)
@@ -164,8 +172,14 @@ class TradingBot:
                     continue
 
                 if sig.direction == 1 and macro_trend >= 0:
+                    # Khong Long khi RSI da overbought hoac gia qua xa VWAP phia tren
+                    if rsi_now > 65 or vwap_dist > 0.02:
+                        continue
                     long_signals.append(sig)
                 elif sig.direction == -1 and macro_trend <= 0:
+                    # Khong Short khi RSI da oversold hoac gia qua xa VWAP phia duoi
+                    if rsi_now < 35 or vwap_dist < -0.02:
+                        continue
                     short_signals.append(sig)
             except Exception:
                 continue

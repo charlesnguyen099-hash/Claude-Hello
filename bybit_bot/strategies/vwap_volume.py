@@ -5,10 +5,13 @@ Strategy 5: VWAP + Volume Profile Breakout
 - VWAP hàng ngày tính từ nến 15m (không cần tick data)
 """
 
+import logging
 import pandas as pd
 import numpy as np
 from .base import BaseStrategy, Signal, compute_atr, compute_ema
 import config
+
+logger = logging.getLogger(__name__)
 
 
 def compute_vwap(df: pd.DataFrame) -> pd.Series:
@@ -46,19 +49,25 @@ class VWAPVolumeStrategy(BaseStrategy):
             close.iloc[-(i+2)] >= vwap.iloc[-(i+2)] and close.iloc[-(i+1)] < vwap.iloc[-(i+1)]
             for i in range(3)
         )
-        # Volume confirm: bất kỳ nến nào trong 3 nến vừa rồi có vol cao
-        vol_confirm = vol_ratio.iloc[-3:].max() > 1.5
+        # Volume confirm: bất kỳ nến nào trong 3 nến vừa rồi có vol cao (hạ từ 1.5 xuống 1.2)
         vol_peak    = vol_ratio.iloc[-3:].max()
+        vol_confirm = vol_peak > 1.2
 
         trend = self._trend_direction(df_trend)
 
+        logger.info(
+            f"VWAP check: cross_above={cross_above} cross_below={cross_below} "
+            f"vol_peak={vol_peak:.2f} vol_ok={vol_confirm} trend={trend} "
+            f"price={price:.4f} vwap={vwap.iloc[-1]:.4f}"
+        )
+
         if cross_above and vol_confirm and trend >= 0 and price > vwap.iloc[-1]:
-            strength = min(0.9, 0.5 + (vol_peak - 1.5) * 0.1)
+            strength = min(0.9, 0.5 + (vol_peak - 1.2) * 0.1)
             return Signal(1, strength, self.name, price, atr,
                           f"VWAP breakout up, vol×{vol_peak:.1f}")
 
         if cross_below and vol_confirm and trend <= 0 and price < vwap.iloc[-1]:
-            strength = min(0.9, 0.5 + (vol_peak - 1.5) * 0.1)
+            strength = min(0.9, 0.5 + (vol_peak - 1.2) * 0.1)
             return Signal(-1, strength, self.name, price, atr,
                           f"VWAP breakdown, vol×{vol_peak:.1f}")
 

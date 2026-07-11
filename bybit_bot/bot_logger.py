@@ -20,6 +20,7 @@ import config
 
 def setup_logging():
     """Cấu hình logging chuẩn cho toàn bộ bot."""
+    import sys
     fmt = logging.Formatter(
         "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
@@ -29,8 +30,10 @@ def setup_logging():
     root = logging.getLogger()
     root.setLevel(level)
 
-    # Console
-    ch = logging.StreamHandler()
+    # Console — force UTF-8 trên Windows
+    stream = open(sys.stdout.fileno(), mode='w', encoding='utf-8', buffering=1) \
+        if hasattr(sys.stdout, 'fileno') else sys.stdout
+    ch = logging.StreamHandler(stream)
     ch.setFormatter(fmt)
     root.addHandler(ch)
 

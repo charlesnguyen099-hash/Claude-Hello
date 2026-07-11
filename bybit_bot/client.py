@@ -29,7 +29,7 @@ def retry(attempts: int = 3, delay: float = 2.0):
                 except Exception as e:
                     if i == attempts - 1:
                         raise
-                    logger.warning(f"Retry {i+1}/{attempts} for {fn.__name__}: {e}")
+                    logger.warning(f"Retry {i+1}/{attempts} for {fn.__name__}: {str(e).encode('ascii','replace').decode()}")
                     time.sleep(delay * (2 ** i))
         return wrapper
     return decorator

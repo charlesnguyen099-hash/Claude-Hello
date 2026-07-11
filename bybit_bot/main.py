@@ -91,29 +91,27 @@ class TradingBot:
         if open_positions:
             self.executor.manage_open_positions(open_positions)
 
-        # ── 4. Quét từng symbol để tìm tín hiệu mới ─────────────────────────
+        # ── 4. Quét từng symbol — thấy signal là trade ngay, không chờ hết vòng
         signals_found = 0
-        no_strategy   = 0
-        no_signal     = 0
-
         for symbol in self.symbols:
+            # Cập nhật lại open_positions sau mỗi lệnh mới
+            try:
+                open_positions = self.client.get_positions()
+                equity         = self.client.get_wallet_balance()
+            except Exception:
+                pass
+
+            if len(open_positions) >= config.MAX_OPEN_POSITIONS:
+                logger.info(f"[SCAN STOP] Max positions reached, waiting next tick")
+                break
+
             try:
                 result = self._process_symbol(symbol, equity, open_positions)
                 if result == "signal":
                     signals_found += 1
-                elif result == "no_strategy":
-                    no_strategy += 1
-                elif result == "no_signal":
-                    no_signal += 1
             except Exception as e:
                 logger.debug(f"Error processing {symbol}: {e}")
-            time.sleep(0.1)  # Rate limit: ~10 symbols/giây
-
-        logger.info(
-            f"[SCAN DONE] signals={signals_found} | "
-            f"no_signal={no_signal} | no_strategy={no_strategy} | "
-            f"total={len(self.symbols)}"
-        )
+            time.sleep(0.05)
 
     def _process_symbol(self, symbol: str, equity: float, open_positions: list[dict]) -> str:
         """Phân tích 1 symbol và ra quyết định giao dịch."""

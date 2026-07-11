@@ -67,30 +67,19 @@ class RiskManager:
         leverage = self.client.get_max_leverage(signal.symbol) if config.USE_MAX_LEVERAGE \
                    else config.DEFAULT_LEVERAGE
 
-        # Von thuc moi lenh = 10% equity
-        capital      = equity * config.CAPITAL_PER_TRADE_PCT
-        notional_raw = capital * leverage
-        qty_raw      = notional_raw / signal.entry_price
-
-        qty = self._round_qty(qty_raw, signal.entry_price, signal.symbol)
-        if qty <= 0:
-            logger.debug(f"{signal.symbol}: qty=0")
+        # Qty = min order quantity cua Bybit voi max leverage
+        # Khong can tinh % von — cu dung muc toi thieu de trade duoc la vao
+        try:
+            info     = self.client.get_instrument_info(signal.symbol)
+            min_qty  = float(info["lotSizeFilter"]["minOrderQty"])
+            qty_step = float(info["lotSizeFilter"]["qtyStep"])
+        except Exception as e:
+            logger.warning(f"{signal.symbol}: cannot get instrument info: {e}")
             return None
 
+        qty          = min_qty
         notional     = qty * signal.entry_price
         capital_used = notional / leverage
-
-        # Kiem tra min order Bybit
-        min_notional = self.client.get_min_order_usdt(signal.symbol)
-        if notional < min_notional:
-            try:
-                info     = self.client.get_instrument_info(signal.symbol)
-                min_qty  = float(info["lotSizeFilter"]["minOrderQty"])
-                qty      = min_qty
-                notional     = qty * signal.entry_price
-                capital_used = notional / leverage
-            except Exception:
-                pass
 
         # Phi round-trip
         fee_usdt  = notional * config.ROUND_TRIP_FEE

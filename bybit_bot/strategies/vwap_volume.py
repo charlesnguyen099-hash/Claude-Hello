@@ -36,39 +36,27 @@ class VWAPVolumeStrategy(BaseStrategy):
         atr    = compute_atr(df, config.ATR_PERIOD).iloc[-1]
         price  = close.iloc[-1]
 
-        vol_ma  = df["volume"].rolling(20).mean()
+        vol_ma    = df["volume"].rolling(20).mean()
         vol_ratio = df["volume"] / vol_ma.replace(0, np.nan)
+        vol_peak  = vol_ratio.iloc[-3:].max()
+        vol_ok    = vol_peak > 1.2
 
-        # Breakout: cross VWAP trong 3 nến gần nhất + volume xác nhận
-        # Look back 3 bars so signal stays valid for a few candles after the cross
-        cross_above = any(
-            close.iloc[-(i+2)] <= vwap.iloc[-(i+2)] and close.iloc[-(i+1)] > vwap.iloc[-(i+1)]
-            for i in range(3)
-        )
-        cross_below = any(
-            close.iloc[-(i+2)] >= vwap.iloc[-(i+2)] and close.iloc[-(i+1)] < vwap.iloc[-(i+1)]
-            for i in range(3)
-        )
-        # Volume confirm: bất kỳ nến nào trong 3 nến vừa rồi có vol cao (hạ từ 1.5 xuống 1.2)
-        vol_peak    = vol_ratio.iloc[-3:].max()
-        vol_confirm = vol_peak > 1.2
+        vwap_now  = vwap.iloc[-1]
+        # Khoảng cách giá so với VWAP (%)
+        dist_pct  = (price - vwap_now) / vwap_now
 
         trend = self._trend_direction(df_trend)
 
-        logger.info(
-            f"VWAP check: cross_above={cross_above} cross_below={cross_below} "
-            f"vol_peak={vol_peak:.2f} vol_ok={vol_confirm} trend={trend} "
-            f"price={price:.4f} vwap={vwap.iloc[-1]:.4f}"
-        )
-
-        if cross_above and vol_confirm and trend >= 0 and price > vwap.iloc[-1]:
-            strength = min(0.9, 0.5 + (vol_peak - 1.2) * 0.1)
+        # Long: giá trên VWAP > 0.1% + volume xác nhận + trend không ngược
+        if dist_pct > 0.001 and vol_ok and trend >= 0:
+            strength = min(0.9, 0.5 + min(dist_pct, 0.05) * 5 + (vol_peak - 1.2) * 0.05)
             return Signal(1, strength, self.name, price, atr,
-                          f"VWAP breakout up, vol×{vol_peak:.1f}")
+                          f"Price {dist_pct*100:.2f}% above VWAP, vol×{vol_peak:.1f}")
 
-        if cross_below and vol_confirm and trend <= 0 and price < vwap.iloc[-1]:
-            strength = min(0.9, 0.5 + (vol_peak - 1.2) * 0.1)
+        # Short: giá dưới VWAP > 0.1% + volume xác nhận + trend không ngược
+        if dist_pct < -0.001 and vol_ok and trend <= 0:
+            strength = min(0.9, 0.5 + min(abs(dist_pct), 0.05) * 5 + (vol_peak - 1.2) * 0.05)
             return Signal(-1, strength, self.name, price, atr,
-                          f"VWAP breakdown, vol×{vol_peak:.1f}")
+                          f"Price {abs(dist_pct)*100:.2f}% below VWAP, vol×{vol_peak:.1f}")
 
         return null

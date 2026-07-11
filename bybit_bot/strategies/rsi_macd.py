@@ -30,27 +30,20 @@ class RSIMACDStrategy(BaseStrategy):
         price = close.iloc[-1]
 
         trend = self._trend_direction(df_trend)
+        rsi_now  = rsi.iloc[-1]
+        hist_now = hist.iloc[-1]
+        hist_prev = hist.iloc[-2]
 
-        # RSI exit oversold in last 4 bars + MACD histogram rising
-        for i in range(1, 5):
-            r_prev = rsi.iloc[-(i+1)]
-            r_curr = rsi.iloc[-i]
-            h_prev = hist.iloc[-(i+1)]
-            h_curr = hist.iloc[-i]
-            if r_prev < self.oversold and r_curr >= self.oversold and h_curr > h_prev and trend >= 0:
-                strength = min(0.9, 0.5 + (self.oversold - r_prev) / 100)
-                return Signal(1, strength, self.name, price, atr,
-                              f"RSI {r_prev:.0f}->{r_curr:.0f} exit oversold, MACD^")
+        # Long: RSI trong vùng momentum dương (35-60) + MACD histogram đang tăng + trend >= 0
+        if 35 <= rsi_now <= 60 and hist_now > hist_prev and hist_now > 0 and trend >= 0:
+            strength = min(0.85, 0.5 + (rsi_now - 35) / 100 + (hist_now - hist_prev) / (abs(hist_now) + 1e-9) * 0.1)
+            return Signal(1, strength, self.name, price, atr,
+                          f"RSI={rsi_now:.0f} MACD hist rising {hist_prev:.4f}->{hist_now:.4f}")
 
-        # RSI exit overbought in last 4 bars + MACD histogram falling
-        for i in range(1, 5):
-            r_prev = rsi.iloc[-(i+1)]
-            r_curr = rsi.iloc[-i]
-            h_prev = hist.iloc[-(i+1)]
-            h_curr = hist.iloc[-i]
-            if r_prev > self.overbought and r_curr <= self.overbought and h_curr < h_prev and trend <= 0:
-                strength = min(0.9, 0.5 + (r_prev - self.overbought) / 100)
-                return Signal(-1, strength, self.name, price, atr,
-                              f"RSI {r_prev:.0f}->{r_curr:.0f} exit overbought, MACD v")
+        # Short: RSI trong vùng momentum âm (40-65) + MACD histogram đang giảm + trend <= 0
+        if 40 <= rsi_now <= 65 and hist_now < hist_prev and hist_now < 0 and trend <= 0:
+            strength = min(0.85, 0.5 + (65 - rsi_now) / 100 + (hist_prev - hist_now) / (abs(hist_now) + 1e-9) * 0.1)
+            return Signal(-1, strength, self.name, price, atr,
+                          f"RSI={rsi_now:.0f} MACD hist falling {hist_prev:.4f}->{hist_now:.4f}")
 
         return null

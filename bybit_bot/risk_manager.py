@@ -66,17 +66,26 @@ class RiskManager:
             logger.warning(f"{signal.symbol}: cannot get instrument info: {e}")
             return None
 
-        # Scale qty theo so strategy dong thuan: 1 strategy = 1x, 6 strategies = 6x
+        # Consensus: so strategy dong thuan (1-6)
         consensus    = getattr(signal, 'consensus', 1)
         scale_factor = max(1, min(consensus, 6))
 
-        # Base qty = max(min_qty Bybit, qty du de dat notional >= 5 USDT)
-        # Sau do moi nhan consensus — tranh mat scale voi coin re
-        MIN_NOTIONAL = 5.0
-        min_qty_notional = math.ceil(MIN_NOTIONAL / signal.entry_price / qty_step) * qty_step
-        base_qty = max(min_qty, min_qty_notional)
+        # Tinh qty tu equity (dung toan bo margin cho phep)
+        # base_margin = equity x CAPITAL_PER_TRADE_PCT (vd 10%)
+        # notional = base_margin x leverage
+        # qty = notional / price
+        # Nhan them scale_factor theo consensus (1x-6x)
+        base_margin  = equity * config.CAPITAL_PER_TRADE_PCT
+        base_notional = base_margin * leverage
+        raw_qty      = base_notional / signal.entry_price * scale_factor
 
-        qty      = math.ceil(base_qty * scale_factor / qty_step) * qty_step
+        # Lam tron xuong theo qty_step, dam bao >= min_qty va notional >= 5 USDT
+        qty      = math.floor(raw_qty / qty_step) * qty_step
+        qty      = max(qty, min_qty)
+        MIN_NOTIONAL = 5.0
+        if qty * signal.entry_price < MIN_NOTIONAL:
+            qty = math.ceil(MIN_NOTIONAL / signal.entry_price / qty_step) * qty_step
+
         notional = qty * signal.entry_price
 
         capital_used = notional / leverage

@@ -92,14 +92,30 @@ class TradingBot:
             self.executor.manage_open_positions(open_positions)
 
         # ── 4. Quét từng symbol để tìm tín hiệu mới ─────────────────────────
+        signals_found = 0
+        no_strategy   = 0
+        no_signal     = 0
+
         for symbol in self.symbols:
             try:
-                self._process_symbol(symbol, equity, open_positions)
+                result = self._process_symbol(symbol, equity, open_positions)
+                if result == "signal":
+                    signals_found += 1
+                elif result == "no_strategy":
+                    no_strategy += 1
+                elif result == "no_signal":
+                    no_signal += 1
             except Exception as e:
                 logger.debug(f"Error processing {symbol}: {e}")
             time.sleep(0.1)  # Rate limit: ~10 symbols/giây
 
-    def _process_symbol(self, symbol: str, equity: float, open_positions: list[dict]):
+        logger.info(
+            f"[SCAN DONE] signals={signals_found} | "
+            f"no_signal={no_signal} | no_strategy={no_strategy} | "
+            f"total={len(self.symbols)}"
+        )
+
+    def _process_symbol(self, symbol: str, equity: float, open_positions: list[dict]) -> str:
         """Phân tích 1 symbol và ra quyết định giao dịch."""
         # Lấy nến từ Bybit API (không lưu local)
         df_signal = self.client.get_klines(symbol, config.TIMEFRAMES["signal"], config.CANDLE_LIMIT)
@@ -107,17 +123,17 @@ class TradingBot:
         df_macro  = self.client.get_klines(symbol, config.TIMEFRAMES["macro"],  50)
 
         if df_signal.empty or len(df_signal) < 50:
-            return
+            return "no_data"
 
         # Chọn strategy tốt nhất cho symbol này
-        strategy, _ = self.selector.select(symbol, df_signal, df_trend, df_macro)
+        strategy, result = self.selector.select(symbol, df_signal, df_trend, df_macro)
         if strategy is None:
-            return
+            return "no_strategy"
 
         # Sinh signal
         signal = strategy.generate_signal(df_signal, df_trend, df_macro)
         if signal.direction == 0:
-            return
+            return "no_signal"
 
         logger.info(
             f"{symbol} [{strategy.name}] → "
@@ -125,8 +141,14 @@ class TradingBot:
             f"strength={signal.strength:.2f} | {signal.reason}"
         )
 
+        # Kiểm tra equity đủ không (tối thiểu 5 USDT)
+        if equity < 5:
+            logger.warning(f"Equity quá thấp ({equity:.2f} USDT) — cần nạp thêm tiền để vào lệnh")
+            return "low_equity"
+
         # Thực thi lệnh
         self.executor.execute_signal(symbol, signal, equity, open_positions)
+        return "signal"
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────

@@ -1,0 +1,15 @@
+from .ema_crossover import EMACrossoverStrategy
+from .rsi_macd      import RSIMACDStrategy
+from .bollinger     import BollingerStrategy
+from .supertrend    import SupertrendStrategy
+from .vwap_volume   import VWAPVolumeStrategy
+from .ichimoku      import IchimokuStrategy
+
+ALL_STRATEGIES = [
+    EMACrossoverStrategy(),
+    RSIMACDStrategy(),
+    BollingerStrategy(),
+    SupertrendStrategy(),
+    VWAPVolumeStrategy(),
+    IchimokuStrategy(),
+]

@@ -96,9 +96,6 @@ class TradingBot:
         pos_symbols = {p["symbol"] for p in open_positions}
 
         for symbol in self.symbols:
-            if equity < 5:
-                logger.info("[SCAN STOP] Equity too low to open more positions")
-                break
 
             if symbol in pos_symbols:
                 continue
@@ -147,10 +144,6 @@ class TradingBot:
                 continue
 
         if best_signal is None:
-            return False
-
-        if equity < 5:
-            logger.warning(f"Equity too low ({equity:.2f} USDT)")
             return False
 
         best_signal.symbol = symbol

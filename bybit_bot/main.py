@@ -135,28 +135,58 @@ class TradingBot:
 
     def _rank_by_expectancy_bg(self, symbols: list[str]):
         """
-        Ranking chạy trong background thread — không block bot.
-        Khi xong thì cập nhật self.symbols.
+        Ranking + trading đồng thời:
+        - Vừa backtest từng symbol
+        - Nếu có strategy tốt thì kiểm tra signal và trade ngay
+        - Sau khi xong toàn bộ thì cập nhật thứ tự symbols cho vòng sau
         """
         scores: list[tuple[float, str]] = []
+
         for symbol in symbols:
             try:
-                df   = self.client.get_klines(symbol, config.TIMEFRAMES["signal"], 300)
-                df_t = self.client.get_klines(symbol, config.TIMEFRAMES["trend"],  100)
-                df_m = self.client.get_klines(symbol, config.TIMEFRAMES["macro"],  60)
+                df   = self.client.get_klines(symbol, config.TIMEFRAMES["signal"], config.CANDLE_LIMIT_SIGNAL)
+                df_t = self.client.get_klines(symbol, config.TIMEFRAMES["trend"],  config.CANDLE_LIMIT_TREND)
+                df_m = self.client.get_klines(symbol, config.TIMEFRAMES["macro"],  config.CANDLE_LIMIT_MACRO)
+
                 if df.empty or len(df) < 50:
                     scores.append((0.0, symbol))
                     continue
-                _, result = self.selector.select(symbol, df, df_t, df_m)
+
+                strategy, result = self.selector.select(symbol, df, df_t, df_m)
                 expectancy = result.expectancy if result else 0.0
                 scores.append((expectancy, symbol))
+
+                # Co strategy tot -> kiem tra signal va trade ngay
+                if strategy and result and result.expectancy > 0:
+                    try:
+                        equity         = self.client.get_wallet_balance()
+                        open_positions = self.client.get_positions()
+
+                        if len(open_positions) < config.MAX_OPEN_POSITIONS:
+                            df_scalp = self.client.get_klines(symbol, config.TIMEFRAMES["scalp"], config.CANDLE_LIMIT_SCALP)
+                            signal   = strategy.generate_signal(df, df_t, df_m)
+
+                            if signal.direction == 0 and len(df_scalp) >= 50:
+                                signal = strategy.generate_signal(df_scalp, df, df_t)
+
+                            if signal.direction != 0 and signal.strength >= config.MIN_SIGNAL_STRENGTH:
+                                signal.symbol = symbol
+                                logger.info(
+                                    f"{symbol} [{strategy.name}] -> "
+                                    f"{'LONG' if signal.direction==1 else 'SHORT'} "
+                                    f"strength={signal.strength:.2f} | {signal.reason}"
+                                )
+                                self.executor.execute_signal(symbol, signal, equity, open_positions)
+                    except Exception as e:
+                        logger.debug(f"Trade attempt failed {symbol}: {e}")
+
             except Exception:
                 scores.append((0.0, symbol))
             time.sleep(0.05)
 
+        # Cap nhat thu tu symbols theo expectancy cho vong scan tiep theo
         scores.sort(key=lambda x: x[0], reverse=True)
         ranked = [s for _, s in scores]
-
         with self._ranking_lock:
             self.symbols = ranked
 

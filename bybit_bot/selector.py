@@ -120,6 +120,7 @@ class StrategySelector:
         self.strategies = ALL_STRATEGIES
         # Cache: symbol → (best_strategy, counter)
         self._cache: dict[str, tuple[BaseStrategy, int]] = {}
+        self._lock = __import__('threading').Lock()
 
     def select(
         self,
@@ -132,15 +133,15 @@ class StrategySelector:
         Trả về strategy tốt nhất cho symbol tại thời điểm này.
         Dùng cache để không backtest lại mỗi vòng lặp.
         """
-        cache_entry = self._cache.get(symbol)
-        if cache_entry:
-            strategy, counter = cache_entry
-            counter -= 1
-            if counter > 0:
-                self._cache[symbol] = (strategy, counter)
-                return strategy, None
-            # Hết cache, chạy lại
-            del self._cache[symbol]
+        with self._lock:
+            cache_entry = self._cache.get(symbol)
+            if cache_entry:
+                strategy, counter = cache_entry
+                counter -= 1
+                if counter > 0:
+                    self._cache[symbol] = (strategy, counter)
+                    return strategy, None
+                del self._cache[symbol]
 
         results: list[BacktestResult] = []
         for strat in self.strategies:
@@ -163,7 +164,8 @@ class StrategySelector:
         best_result = max(valid, key=lambda r: r.expectancy)
         best_strategy = next(s for s in self.strategies if s.name == best_result.strategy_name)
 
-        self._cache[symbol] = (best_strategy, config.STRATEGY_RESCAN_BARS)
+        with self._lock:
+            self._cache[symbol] = (best_strategy, config.STRATEGY_RESCAN_BARS)
 
         logger.info(
             f"{symbol} -> best strategy: {best_result.strategy_name} | "

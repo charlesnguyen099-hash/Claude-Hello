@@ -161,6 +161,11 @@ class TradingBot:
                     try:
                         equity         = self.client.get_wallet_balance()
                         open_positions = self.client.get_positions()
+                        pos_symbols    = {p["symbol"] for p in open_positions}
+
+                        # Skip nếu đã có vị thế trên symbol này
+                        if symbol in pos_symbols:
+                            continue
 
                         if len(open_positions) < config.MAX_OPEN_POSITIONS:
                             df_scalp = self.client.get_klines(symbol, config.TIMEFRAMES["scalp"], config.CANDLE_LIMIT_SCALP)
@@ -177,6 +182,8 @@ class TradingBot:
                                     f"strength={signal.strength:.2f} | {signal.reason}"
                                 )
                                 self.executor.execute_signal(symbol, signal, equity, open_positions)
+                            else:
+                                logger.debug(f"[BG] {symbol} [{strategy.name}]: no signal after strategy found")
                     except Exception as e:
                         logger.debug(f"Trade attempt failed {symbol}: {e}")
 
@@ -195,6 +202,11 @@ class TradingBot:
 
     def _process_symbol(self, symbol: str, equity: float, open_positions: list[dict]) -> str:
         """Phân tích 1 symbol và ra quyết định giao dịch."""
+        # Skip ngay nếu đã có vị thế trên symbol này — không tốn API call
+        pos_symbols = {p["symbol"] for p in open_positions}
+        if symbol in pos_symbols:
+            return "has_position"
+
         # Lay nen tu Bybit API — toi da co the de khong bo lo signal nao
         df_scalp  = self.client.get_klines(symbol, config.TIMEFRAMES["scalp"],  config.CANDLE_LIMIT_SCALP)
         df_signal = self.client.get_klines(symbol, config.TIMEFRAMES["signal"], config.CANDLE_LIMIT_SIGNAL)
@@ -213,13 +225,14 @@ class TradingBot:
         signal = strategy.generate_signal(df_signal, df_trend, df_macro)
 
         if signal.direction == 0 and len(df_scalp) >= 50:
-            # Fallback sang 5m de bat scalp signal
             signal = strategy.generate_signal(df_scalp, df_signal, df_trend)
 
         if signal.direction == 0:
+            logger.debug(f"{symbol} [{strategy.name}]: no signal (direction=0)")
             return "no_signal"
 
         if signal.strength < config.MIN_SIGNAL_STRENGTH:
+            logger.debug(f"{symbol} [{strategy.name}]: signal too weak ({signal.strength:.2f} < {config.MIN_SIGNAL_STRENGTH})")
             return "no_signal"
 
         signal.symbol = symbol

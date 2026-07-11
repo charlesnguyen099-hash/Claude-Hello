@@ -77,8 +77,15 @@ class RiskManager:
             logger.warning(f"{signal.symbol}: cannot get instrument info: {e}")
             return None
 
-        qty          = min_qty
-        notional     = qty * signal.entry_price
+        qty      = min_qty
+        notional = qty * signal.entry_price
+
+        # Bybit minimum order value is 5 USDT — scale qty up if needed
+        MIN_NOTIONAL = 5.0
+        if notional < MIN_NOTIONAL:
+            qty      = math.ceil(MIN_NOTIONAL / signal.entry_price / qty_step) * qty_step
+            notional = qty * signal.entry_price
+
         capital_used = notional / leverage
 
         # Phi round-trip

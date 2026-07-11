@@ -101,7 +101,7 @@ class Executor:
             )
 
         except Exception as e:
-            logger.error(f"Failed to enter trade {symbol}: {e}")
+            logger.error(f"Failed to enter trade {symbol}: {str(e).encode('ascii', 'replace').decode()}")
 
     def manage_open_positions(self, open_positions: list[dict]):
         """Kiểm tra trailing stop + TP2 logic cho mỗi vị thế đang mở."""
@@ -148,4 +148,4 @@ class Executor:
             })
             logger.info(f"[CLOSE] {symbol} {side} qty={qty}")
         except Exception as e:
-            logger.error(f"Failed to close position {symbol}: {e}")
+            logger.error(f"Failed to close position {symbol}: {str(e).encode('ascii', 'replace').decode()}")

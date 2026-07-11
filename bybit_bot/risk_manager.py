@@ -70,14 +70,14 @@ class RiskManager:
         consensus    = getattr(signal, 'consensus', 1)
         scale_factor = max(1, min(consensus, 6))
 
-        qty      = math.ceil(min_qty * scale_factor / qty_step) * qty_step
-        notional = qty * signal.entry_price
-
-        # Bybit minimum order value is 5 USDT — scale qty up if needed
+        # Base qty = max(min_qty Bybit, qty du de dat notional >= 5 USDT)
+        # Sau do moi nhan consensus — tranh mat scale voi coin re
         MIN_NOTIONAL = 5.0
-        if notional < MIN_NOTIONAL:
-            qty      = math.ceil(MIN_NOTIONAL / signal.entry_price / qty_step) * qty_step
-            notional = qty * signal.entry_price
+        min_qty_notional = math.ceil(MIN_NOTIONAL / signal.entry_price / qty_step) * qty_step
+        base_qty = max(min_qty, min_qty_notional)
+
+        qty      = math.ceil(base_qty * scale_factor / qty_step) * qty_step
+        notional = qty * signal.entry_price
 
         capital_used = notional / leverage
 

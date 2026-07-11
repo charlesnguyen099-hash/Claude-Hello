@@ -13,6 +13,7 @@ import logging
 import sys
 import time
 import traceback
+import threading
 from datetime import datetime, timezone
 
 import config
@@ -46,6 +47,8 @@ class TradingBot:
 
         self.symbols: list[str] = []
         self.last_scan_ts: float = 0
+        self._ranking_thread: threading.Thread = None
+        self._ranking_lock = threading.Lock()
 
     # ── Main loop ────────────────────────────────────────────────────────────
 
@@ -64,18 +67,31 @@ class TradingBot:
     def _tick(self):
         now = time.time()
 
-        # ── 1. Cập nhật và rank symbols mỗi 1 giờ ───────────────────────────
+        # ── 1. Cập nhật symbols mỗi 1 giờ, ranking chạy nền ─────────────────
         if now - self.last_scan_ts >= config.SCAN_INTERVAL_SEC:
             logger.info("Scanning top symbols...")
             raw_symbols = self.scanner.scan()
             if not raw_symbols:
                 logger.warning("No symbols found, retrying next cycle")
                 return
-            # Re-rank theo Expectancy từ backtest — cặp tiềm năng nhất lên đầu
-            logger.info("Ranking symbols by trading expectancy...")
-            self.symbols = self._rank_by_expectancy(raw_symbols)
             self.last_scan_ts = now
-            logger.info(f"Ranked top 5: {self.symbols[:5]}")
+
+            # Lần đầu: dùng thứ tự scanner (volume/volatility) để trade ngay
+            if not self.symbols:
+                self.symbols = raw_symbols
+                logger.info(f"Initial symbols loaded: {len(self.symbols)}, top 5: {self.symbols[:5]}")
+
+            # Ranking chạy nền — không block bot trading
+            is_running = self._ranking_thread and self._ranking_thread.is_alive()
+            if not is_running:
+                t = threading.Thread(
+                    target=self._rank_by_expectancy_bg,
+                    args=(raw_symbols,),
+                    daemon=True,
+                )
+                self._ranking_thread = t
+                t.start()
+                logger.info("Expectancy ranking started in background...")
 
         # ── 2. Lấy trạng thái tài khoản ─────────────────────────────────────
         try:
@@ -117,17 +133,17 @@ class TradingBot:
                 logger.debug(f"Error processing {symbol}: {e}")
             time.sleep(0.05)
 
-    def _rank_by_expectancy(self, symbols: list[str]) -> list[str]:
+    def _rank_by_expectancy_bg(self, symbols: list[str]):
         """
-        Rank symbols theo Expectancy cao nhat — cặp tốt nhất lên đầu.
-        Lay nhanh 15m data, chay backtest nhe, sap xep.
+        Ranking chạy trong background thread — không block bot.
+        Khi xong thì cập nhật self.symbols.
         """
         scores: list[tuple[float, str]] = []
         for symbol in symbols:
             try:
-                df = self.client.get_klines(symbol, config.TIMEFRAMES["signal"], 300)
-                df_t = self.client.get_klines(symbol, config.TIMEFRAMES["trend"], 100)
-                df_m = self.client.get_klines(symbol, config.TIMEFRAMES["macro"], 60)
+                df   = self.client.get_klines(symbol, config.TIMEFRAMES["signal"], 300)
+                df_t = self.client.get_klines(symbol, config.TIMEFRAMES["trend"],  100)
+                df_m = self.client.get_klines(symbol, config.TIMEFRAMES["macro"],  60)
                 if df.empty or len(df) < 50:
                     scores.append((0.0, symbol))
                     continue
@@ -140,11 +156,12 @@ class TradingBot:
 
         scores.sort(key=lambda x: x[0], reverse=True)
         ranked = [s for _, s in scores]
-        logger.info(
-            f"Top 10 by expectancy: "
-            + " | ".join(f"{s}({e:.3f}%)" for e, s in scores[:10] if e > 0)
-        )
-        return ranked
+
+        with self._ranking_lock:
+            self.symbols = ranked
+
+        top = " | ".join(f"{s}({e:.3f}%)" for e, s in scores[:10] if e > 0)
+        logger.info(f"[RANK DONE] Top 10: {top}")
 
     def _process_symbol(self, symbol: str, equity: float, open_positions: list[dict]) -> str:
         """Phân tích 1 symbol và ra quyết định giao dịch."""

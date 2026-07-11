@@ -39,13 +39,13 @@ class RSIMACDStrategy(BaseStrategy):
                 and hist_curr > hist_prev and trend >= 0):
             strength = min(0.9, 0.5 + (self.oversold - rsi_prev) / 100)
             return Signal(1, strength, self.name, price, atr,
-                          f"RSI {rsi_prev:.0f}→{rsi_curr:.0f} exit oversold, MACD↑")
+                          f"RSI {rsi_prev:.0f}->{rsi_curr:.0f} exit oversold, MACD^")
 
         # RSI exit overbought + MACD turning negative
         if (rsi_prev > self.overbought and rsi_curr <= self.overbought
                 and hist_curr < hist_prev and trend <= 0):
             strength = min(0.9, 0.5 + (rsi_prev - self.overbought) / 100)
             return Signal(-1, strength, self.name, price, atr,
-                          f"RSI {rsi_prev:.0f}→{rsi_curr:.0f} exit overbought, MACD↓")
+                          f"RSI {rsi_prev:.0f}->{rsi_curr:.0f} exit overbought, MACD v")
 
         return null

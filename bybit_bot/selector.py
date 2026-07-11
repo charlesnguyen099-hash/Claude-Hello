@@ -166,7 +166,7 @@ class StrategySelector:
         self._cache[symbol] = (best_strategy, config.STRATEGY_RESCAN_BARS)
 
         logger.info(
-            f"{symbol} → best strategy: {best_result.strategy_name} | "
+            f"{symbol} -> best strategy: {best_result.strategy_name} | "
             f"WR={best_result.win_rate:.0%} | "
             f"E={best_result.expectancy:.3f}% | "
             f"PF={best_result.profit_factor:.2f} | "

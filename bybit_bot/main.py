@@ -147,7 +147,7 @@ class TradingBot:
         signal.symbol = symbol
 
         logger.info(
-            f"{symbol} [{strategy.name}] → "
+            f"{symbol} [{strategy.name}] -> "
             f"{'LONG' if signal.direction==1 else 'SHORT'} "
             f"strength={signal.strength:.2f} | {signal.reason}"
         )

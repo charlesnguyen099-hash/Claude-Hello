@@ -15,6 +15,9 @@ import config
 
 logger = logging.getLogger(__name__)
 
+# Cache instrument info để không gọi API lặp lại (reset mỗi lần khởi động)
+_instrument_cache: dict[str, dict] = {}
+
 
 def retry(attempts: int = 3, delay: float = 2.0):
     def decorator(fn):
@@ -180,5 +183,31 @@ class BybitClient:
 
     @retry()
     def get_instrument_info(self, symbol: str) -> dict:
+        if symbol in _instrument_cache:
+            return _instrument_cache[symbol]
         resp = self.session.get_instruments_info(category="linear", symbol=symbol)
-        return resp["result"]["list"][0]
+        info = resp["result"]["list"][0]
+        _instrument_cache[symbol] = info
+        return info
+
+    def get_max_leverage(self, symbol: str) -> int:
+        """Lấy leverage tối đa Bybit cho phép với symbol này."""
+        try:
+            info = self.get_instrument_info(symbol)
+            max_lev = int(float(info["leverageFilter"]["maxLeverage"]))
+            return min(max_lev, config.MAX_LEVERAGE)
+        except Exception as e:
+            logger.warning(f"Cannot get max leverage for {symbol}: {e}")
+            return config.DEFAULT_LEVERAGE
+
+    def get_min_order_usdt(self, symbol: str) -> float:
+        """Lấy giá trị lệnh tối thiểu (USDT) của symbol."""
+        try:
+            info = self.get_instrument_info(symbol)
+            min_qty   = float(info["lotSizeFilter"]["minOrderQty"])
+            # Lấy giá hiện tại để tính notional tối thiểu
+            tickers = self.session.get_tickers(category="linear", symbol=symbol)
+            price = float(tickers["result"]["list"][0]["lastPrice"])
+            return min_qty * price
+        except Exception:
+            return 1.0

@@ -64,34 +64,52 @@ class RiskManager:
 
         side = "Buy" if signal.direction == 1 else "Sell"
 
-        # ── Leverage tối ưu theo volatility ──────────────────────────────────
-        # Volatility = ATR / price (%) → leverage tỷ lệ nghịch
-        atr_pct   = signal.atr / signal.entry_price
-        leverage  = min(
-            config.MAX_LEVERAGE,
-            max(2, int(0.05 / atr_pct))  # target 5% move = 1× leverage unit
-        )
+        # ── Lấy leverage tối đa từ Bybit cho symbol này ───────────────────────
+        if config.USE_MAX_LEVERAGE:
+            leverage = self.client.get_max_leverage(signal.symbol)
+        else:
+            atr_pct  = signal.atr / signal.entry_price
+            leverage = min(config.MAX_LEVERAGE, max(2, int(0.05 / atr_pct)))
 
         # ── Position sizing theo Risk per trade ───────────────────────────────
-        # Risk amount = equity × 1%
-        # SL distance = 1.5 × ATR
-        risk_usdt  = equity * config.ACCOUNT_RISK_PCT
-        sl_dist    = config.SL_ATR_MULTIPLIER * signal.atr
-        # qty = risk_usdt / sl_dist (tính theo contract size)
-        qty_raw    = risk_usdt / sl_dist
-        # Nhân leverage để tính notional
-        notional   = qty_raw * signal.entry_price
+        # Risk amount = equity × ACCOUNT_RISK_PCT
+        # SL distance = SL_ATR_MULTIPLIER × ATR
+        # qty = risk_usdt / sl_dist
+        risk_usdt = equity * config.ACCOUNT_RISK_PCT
+        sl_dist   = config.SL_ATR_MULTIPLIER * signal.atr
+        qty_raw   = risk_usdt / sl_dist
 
         qty = self._round_qty(qty_raw, signal.entry_price, signal.symbol)
         if qty <= 0:
+            logger.debug(f"{signal.symbol}: qty=0 sau khi làm tròn (equity quá thấp?)")
             return None
 
+        notional = qty * signal.entry_price
+
+        # ── Kiểm tra notional >= min order của Bybit ──────────────────────────
+        min_notional = self.client.get_min_order_usdt(signal.symbol)
+        if notional < min_notional:
+            # Tự động tăng qty lên đủ min order
+            min_qty_info = self.client.get_instrument_info(signal.symbol)
+            min_qty      = float(min_qty_info["lotSizeFilter"]["minOrderQty"])
+            qty          = min_qty
+            notional     = qty * signal.entry_price
+            logger.debug(
+                f"{signal.symbol}: notional {notional:.2f} < min {min_notional:.2f} USDT "
+                f"→ dùng min qty={qty}"
+            )
+
         # ── SL / TP prices ────────────────────────────────────────────────────
-        d      = signal.direction
-        sl     = signal.entry_price - d * config.SL_ATR_MULTIPLIER  * signal.atr
-        tp1    = signal.entry_price + d * config.TP1_ATR_MULTIPLIER * signal.atr
-        tp2    = signal.entry_price + d * config.TP2_ATR_MULTIPLIER * signal.atr
-        trail  = config.TRAILING_STOP_ATR * signal.atr
+        d     = signal.direction
+        sl    = signal.entry_price - d * config.SL_ATR_MULTIPLIER  * signal.atr
+        tp1   = signal.entry_price + d * config.TP1_ATR_MULTIPLIER * signal.atr
+        tp2   = signal.entry_price + d * config.TP2_ATR_MULTIPLIER * signal.atr
+        trail = config.TRAILING_STOP_ATR * signal.atr
+
+        logger.debug(
+            f"{signal.symbol}: leverage={leverage}x | qty={qty} | "
+            f"notional={notional:.2f} USDT | SL={sl:.4f} | TP1={tp1:.4f}"
+        )
 
         return TradeParams(
             symbol=signal.strategy_name,  # được ghi đè bởi executor
@@ -102,7 +120,7 @@ class RiskManager:
             tp1_price=round(tp1, 6),
             tp2_price=round(tp2, 6),
             trailing_stop=round(trail, 6),
-            notional_usdt=round(qty * signal.entry_price, 2),
+            notional_usdt=round(notional, 2),
         )
 
     def _round_qty(self, qty: float, price: float, symbol: str) -> float:

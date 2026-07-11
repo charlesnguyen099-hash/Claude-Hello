@@ -18,6 +18,7 @@ class Signal:
     strategy_name: str
     entry_price: float
     atr: float              # Dùng để tính SL/TP động
+    symbol: str = ""
     reason: str = ""
 
 

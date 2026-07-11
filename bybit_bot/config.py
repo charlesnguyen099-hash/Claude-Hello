@@ -10,8 +10,8 @@ API_SECRET = os.getenv("BYBIT_API_SECRET", "YOUR_API_SECRET_HERE")
 TESTNET    = os.getenv("BYBIT_TESTNET", "false").lower() == "true"
 
 # ─── Market Scanner ───────────────────────────────────────────────────────────
-TOP_N_SYMBOLS        = 50          # Top 50 cặp giao dịch
-MIN_VOLUME_USDT_24H  = 50_000_000  # Lọc cặp có volume 24h >= 50M USDT
+TOP_N_SYMBOLS        = 200         # Top 200 cặp giao dịch
+MIN_VOLUME_USDT_24H  = 5_000_000   # Lọc cặp có volume 24h >= 5M USDT (hạ ngưỡng cho top 200)
 SCAN_INTERVAL_SEC    = 3600        # Quét lại top symbols mỗi 1 giờ
 
 # ─── Multi-Timeframe Analysis ─────────────────────────────────────────────────
@@ -31,11 +31,12 @@ MIN_WIN_RATE           = 0.45  # Win rate tối thiểu để chọn strategy
 STRATEGY_RESCAN_BARS   = 20    # Chạy lại selector sau N nến
 
 # ─── Risk Management ──────────────────────────────────────────────────────────
-ACCOUNT_RISK_PCT       = 0.01   # Rủi ro tối đa mỗi lệnh: 1% vốn
-MAX_LEVERAGE           = 10     # Đòn bẩy tối đa
-DEFAULT_LEVERAGE       = 5      # Đòn bẩy mặc định
-MAX_OPEN_POSITIONS     = 5      # Tối đa 5 vị thế đồng thời
-MAX_POSITIONS_PER_SIDE = 3      # Tối đa 3 long hoặc 3 short
+ACCOUNT_RISK_PCT       = 0.02   # Rủi ro tối đa mỗi lệnh: 2% vốn
+USE_MAX_LEVERAGE       = True   # Tự động dùng leverage tối đa của từng cặp trên Bybit
+MAX_LEVERAGE           = 100    # Cap trên (Bybit cho phép tối đa 100x một số cặp)
+DEFAULT_LEVERAGE       = 20     # Dùng khi không lấy được max leverage từ API
+MAX_OPEN_POSITIONS     = 10     # Tối đa 10 vị thế đồng thời
+MAX_POSITIONS_PER_SIDE = 5      # Tối đa 5 long hoặc 5 short
 
 # Stop Loss / Take Profit theo ATR
 ATR_PERIOD         = 14

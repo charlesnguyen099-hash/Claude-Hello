@@ -135,6 +135,8 @@ class TradingBot:
         if signal.direction == 0:
             return "no_signal"
 
+        signal.symbol = symbol
+
         logger.info(
             f"{symbol} [{strategy.name}] → "
             f"{'LONG' if signal.direction==1 else 'SHORT'} "

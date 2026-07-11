@@ -117,7 +117,8 @@ class TradingBot:
 
     def _process_symbol(self, symbol: str, equity: float, open_positions: list[dict]) -> str:
         """Phân tích 1 symbol và ra quyết định giao dịch."""
-        # Lay nen tu Bybit API — lay toi da co the de phan tich du data
+        # Lay nen tu Bybit API — toi da co the de khong bo lo signal nao
+        df_scalp  = self.client.get_klines(symbol, config.TIMEFRAMES["scalp"],  config.CANDLE_LIMIT_SCALP)
         df_signal = self.client.get_klines(symbol, config.TIMEFRAMES["signal"], config.CANDLE_LIMIT_SIGNAL)
         df_trend  = self.client.get_klines(symbol, config.TIMEFRAMES["trend"],  config.CANDLE_LIMIT_TREND)
         df_macro  = self.client.get_klines(symbol, config.TIMEFRAMES["macro"],  config.CANDLE_LIMIT_MACRO)
@@ -125,17 +126,21 @@ class TradingBot:
         if df_signal.empty or len(df_signal) < 50:
             return "no_data"
 
-        # Chọn strategy tốt nhất cho symbol này
+        # Chon strategy tot nhat cho symbol nay
         strategy, result = self.selector.select(symbol, df_signal, df_trend, df_macro)
         if strategy is None:
             return "no_strategy"
 
-        # Sinh signal — thu tat ca strategies de khong bo sot bat ky signal nao
+        # Thu signal tren 15m truoc, neu khong co thi thu 5m
         signal = strategy.generate_signal(df_signal, df_trend, df_macro)
+
+        if signal.direction == 0 and len(df_scalp) >= 50:
+            # Fallback sang 5m de bat scalp signal
+            signal = strategy.generate_signal(df_scalp, df_signal, df_trend)
+
         if signal.direction == 0:
             return "no_signal"
 
-        # Ha nguong strength de bat ca signal yeu
         if signal.strength < config.MIN_SIGNAL_STRENGTH:
             return "no_signal"
 

@@ -1,9 +1,9 @@
 """
 Risk Manager
-- SL co dinh: dat o muc mat toi da SL_MAX_LOSS_PCT (30%) capital bo vao lenh
-- TP dong: tinh theo Risk:Reward ratio (1.5x va 3x SL distance) sau phi
-- Von moi lenh: CAPITAL_PER_TRADE_PCT (10%) equity, khong all-in
-- Phi giao dich 0.11% round-trip tich hop vao SL/TP
+- SL co dinh: khoang cach gia de mat dung 30% capital bo vao lenh
+- TP thuc te theo ATR thi truong — co the < SL, khong ep R:R
+- Phi 0.11% tich hop vao ca SL lan TP
+- Von moi lenh = 10% equity, khong all-in
 """
 
 import logging
@@ -31,9 +31,9 @@ class TradeParams:
     notional_usdt: float
     fee_usdt: float
     capital_usdt: float
-    sl_pct: float        # SL distance % so voi entry
-    tp1_pct: float       # TP1 distance %
-    tp2_pct: float       # TP2 distance %
+    sl_pct: float
+    tp1_pct: float
+    tp2_pct: float
 
 
 class RiskManager:
@@ -47,7 +47,6 @@ class RiskManager:
         open_positions: list[dict],
     ) -> Optional[TradeParams]:
 
-        # Kiem tra gioi han vi the
         if len(open_positions) >= config.MAX_OPEN_POSITIONS:
             return None
 
@@ -59,23 +58,19 @@ class RiskManager:
         if signal.direction == -1 and n_short >= config.MAX_POSITIONS_PER_SIDE:
             return None
 
-        if signal.entry_price <= 0:
+        if signal.entry_price <= 0 or signal.atr <= 0:
             return None
 
         side = "Buy" if signal.direction == 1 else "Sell"
 
-        # Lay leverage toi da cua cap nay tren Bybit
-        if config.USE_MAX_LEVERAGE:
-            leverage = self.client.get_max_leverage(signal.symbol)
-        else:
-            leverage = config.DEFAULT_LEVERAGE
+        # Lay leverage toi da cua cap nay
+        leverage = self.client.get_max_leverage(signal.symbol) if config.USE_MAX_LEVERAGE \
+                   else config.DEFAULT_LEVERAGE
 
-        # Von thuc bo vao lenh = 10% equity
-        capital = equity * config.CAPITAL_PER_TRADE_PCT
-
-        # Notional = capital x leverage
-        notional_target = capital * leverage
-        qty_raw         = notional_target / signal.entry_price
+        # Von thuc moi lenh = 10% equity
+        capital      = equity * config.CAPITAL_PER_TRADE_PCT
+        notional_raw = capital * leverage
+        qty_raw      = notional_raw / signal.entry_price
 
         qty = self._round_qty(qty_raw, signal.entry_price, signal.symbol)
         if qty <= 0:
@@ -89,33 +84,31 @@ class RiskManager:
         min_notional = self.client.get_min_order_usdt(signal.symbol)
         if notional < min_notional:
             try:
-                info    = self.client.get_instrument_info(signal.symbol)
-                min_qty = float(info["lotSizeFilter"]["minOrderQty"])
-                qty     = min_qty
+                info     = self.client.get_instrument_info(signal.symbol)
+                min_qty  = float(info["lotSizeFilter"]["minOrderQty"])
+                qty      = min_qty
                 notional     = qty * signal.entry_price
                 capital_used = notional / leverage
             except Exception:
                 pass
 
-        # Phi round-trip tinh theo don vi gia
+        # Phi round-trip
         fee_usdt  = notional * config.ROUND_TRIP_FEE
         fee_price = signal.entry_price * config.ROUND_TRIP_FEE
 
-        # SL co dinh: mat toi da SL_MAX_LOSS_PCT (30%) capital bo vao lenh
-        # loss_usdt = capital x 30%
-        # sl_dist   = loss_usdt / qty
-        max_loss_usdt = capital_used * config.SL_MAX_LOSS_PCT
-        sl_dist       = max_loss_usdt / qty if qty > 0 else signal.atr * 1.5
+        # SL co dinh: tinh khoang cach gia de mat dung 30% capital_used
+        # loss = qty x sl_dist => sl_dist = (capital_used x 30%) / qty
+        sl_dist = (capital_used * config.SL_MAX_LOSS_PCT) / qty
+        # SL phai lon hon phi toi thieu (khong the dat SL sat phi)
+        sl_dist = max(sl_dist, fee_price * 3)
 
-        # Dam bao SL khong qua gian (toi thieu = phi)
-        sl_dist = max(sl_dist, fee_price * 2)
+        # TP thuc te theo ATR thi truong — co the nho hon SL
+        # ATR phan anh bien dong thuc te, TP dat o noi gia co the toi
+        tp1_dist = config.TP1_ATR_MULT * signal.atr   # 1.0x ATR
+        tp2_dist = config.TP2_ATR_MULT * signal.atr   # 2.0x ATR
+        trail    = config.TRAILING_STOP_ATR * signal.atr
 
-        # TP tinh theo Risk:Reward (TP = SL x RR ratio) + phi
-        # TP1 = 1.5x SL distance, TP2 = 3.0x SL distance
-        tp1_dist = sl_dist * config.TP1_RR
-        tp2_dist = sl_dist * config.TP2_RR
-        trail    = sl_dist * 0.5  # trailing stop = 50% SL distance
-
+        # Cong phi vao SL va TP (net sau phi)
         d   = signal.direction
         sl  = signal.entry_price - d * (sl_dist  + fee_price)
         tp1 = signal.entry_price + d * (tp1_dist + fee_price)
@@ -125,14 +118,16 @@ class RiskManager:
         tp1_pct = tp1_dist / signal.entry_price * 100
         tp2_pct = tp2_dist / signal.entry_price * 100
 
+        # Log ro rang de biet RR thuc te
+        rr1 = tp1_pct / sl_pct if sl_pct > 0 else 0
+        rr2 = tp2_pct / sl_pct if sl_pct > 0 else 0
         logger.info(
             f"{signal.symbol}: {side} lev={leverage}x | "
             f"qty={qty} | notional={notional:.2f}$ | "
             f"capital={capital_used:.2f}$ ({capital_used/equity*100:.1f}% eq) | "
             f"fee={fee_usdt:.4f}$ | "
-            f"SL={sl:.5f}(-{sl_pct:.2f}%) | "
-            f"TP1={tp1:.5f}(+{tp1_pct:.2f}%) | "
-            f"TP2={tp2:.5f}(+{tp2_pct:.2f}%)"
+            f"SL=-{sl_pct:.2f}% | TP1=+{tp1_pct:.2f}% (RR={rr1:.2f}) | "
+            f"TP2=+{tp2_pct:.2f}% (RR={rr2:.2f})"
         )
 
         return TradeParams(

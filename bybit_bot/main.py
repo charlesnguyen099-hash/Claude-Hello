@@ -64,14 +64,18 @@ class TradingBot:
     def _tick(self):
         now = time.time()
 
-        # ── 1. Cập nhật danh sách symbol mỗi 1 giờ ──────────────────────────
+        # ── 1. Cập nhật và rank symbols mỗi 1 giờ ───────────────────────────
         if now - self.last_scan_ts >= config.SCAN_INTERVAL_SEC:
             logger.info("Scanning top symbols...")
-            self.symbols = self.scanner.scan()
-            self.last_scan_ts = now
-            if not self.symbols:
+            raw_symbols = self.scanner.scan()
+            if not raw_symbols:
                 logger.warning("No symbols found, retrying next cycle")
                 return
+            # Re-rank theo Expectancy từ backtest — cặp tiềm năng nhất lên đầu
+            logger.info("Ranking symbols by trading expectancy...")
+            self.symbols = self._rank_by_expectancy(raw_symbols)
+            self.last_scan_ts = now
+            logger.info(f"Ranked top 5: {self.symbols[:5]}")
 
         # ── 2. Lấy trạng thái tài khoản ─────────────────────────────────────
         try:
@@ -112,6 +116,35 @@ class TradingBot:
             except Exception as e:
                 logger.debug(f"Error processing {symbol}: {e}")
             time.sleep(0.05)
+
+    def _rank_by_expectancy(self, symbols: list[str]) -> list[str]:
+        """
+        Rank symbols theo Expectancy cao nhat — cặp tốt nhất lên đầu.
+        Lay nhanh 15m data, chay backtest nhe, sap xep.
+        """
+        scores: list[tuple[float, str]] = []
+        for symbol in symbols:
+            try:
+                df = self.client.get_klines(symbol, config.TIMEFRAMES["signal"], 300)
+                df_t = self.client.get_klines(symbol, config.TIMEFRAMES["trend"], 100)
+                df_m = self.client.get_klines(symbol, config.TIMEFRAMES["macro"], 60)
+                if df.empty or len(df) < 50:
+                    scores.append((0.0, symbol))
+                    continue
+                _, result = self.selector.select(symbol, df, df_t, df_m)
+                expectancy = result.expectancy if result else 0.0
+                scores.append((expectancy, symbol))
+            except Exception:
+                scores.append((0.0, symbol))
+            time.sleep(0.05)
+
+        scores.sort(key=lambda x: x[0], reverse=True)
+        ranked = [s for _, s in scores]
+        logger.info(
+            f"Top 10 by expectancy: "
+            + " | ".join(f"{s}({e:.3f}%)" for e, s in scores[:10] if e > 0)
+        )
+        return ranked
 
     def _process_symbol(self, symbol: str, equity: float, open_positions: list[dict]) -> str:
         """Phân tích 1 symbol và ra quyết định giao dịch."""

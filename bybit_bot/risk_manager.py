@@ -87,20 +87,20 @@ class RiskManager:
         # SL phai lon hon phi toi thieu (khong the dat SL sat phi)
         sl_dist = max(sl_dist, fee_price * 3)
 
-        # TP toi da: 50% profit tren capital_used sau khi tru phi
-        # profit = qty x tp_dist  =>  tp_dist = (capital_used x 50% - fee_usdt) / qty
-        max_tp_dist = max((capital_used * 0.50 - fee_usdt) / qty, fee_price * 2)
+        # TP toi da: gross profit = phi + 50% capital
+        # => net profit sau phi = 50% capital
+        # tp_dist = (fee_usdt + capital_used * 0.50) / qty
+        max_tp_dist = (fee_usdt + capital_used * 0.50) / qty
 
-        # TP theo ATR thi truong, cap o muc toi da 50%
+        # TP theo ATR thi truong, cap o muc toi da
         tp1_dist = min(config.TP1_ATR_MULT * signal.atr, max_tp_dist)
         tp2_dist = min(config.TP2_ATR_MULT * signal.atr, max_tp_dist)
         trail    = config.TRAILING_STOP_ATR * signal.atr
 
-        # Cong phi vao SL va TP (net sau phi)
         d   = signal.direction
-        sl  = signal.entry_price - d * (sl_dist  + fee_price)
-        tp1 = signal.entry_price + d * (tp1_dist - fee_price)
-        tp2 = signal.entry_price + d * (tp2_dist - fee_price)
+        sl  = signal.entry_price - d * (sl_dist + fee_price)
+        tp1 = signal.entry_price + d * tp1_dist
+        tp2 = signal.entry_price + d * tp2_dist
 
         sl_pct  = sl_dist  / signal.entry_price * 100
         tp1_pct = tp1_dist / signal.entry_price * 100

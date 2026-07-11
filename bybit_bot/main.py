@@ -96,8 +96,8 @@ class TradingBot:
         pos_symbols = {p["symbol"] for p in open_positions}
 
         for symbol in self.symbols:
-            if len(open_positions) >= config.MAX_OPEN_POSITIONS:
-                logger.info("[SCAN STOP] Max positions reached")
+            if equity < 5:
+                logger.info("[SCAN STOP] Equity too low to open more positions")
                 break
 
             if symbol in pos_symbols:

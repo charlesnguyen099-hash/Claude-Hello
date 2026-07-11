@@ -47,17 +47,6 @@ class RiskManager:
         open_positions: list[dict],
     ) -> Optional[TradeParams]:
 
-        if len(open_positions) >= config.MAX_OPEN_POSITIONS:
-            return None
-
-        sides   = [p["side"] for p in open_positions]
-        n_long  = sides.count("Buy")
-        n_short = sides.count("Sell")
-        if signal.direction == 1  and n_long  >= config.MAX_POSITIONS_PER_SIDE:
-            return None
-        if signal.direction == -1 and n_short >= config.MAX_POSITIONS_PER_SIDE:
-            return None
-
         if signal.entry_price <= 0 or signal.atr <= 0:
             return None
 

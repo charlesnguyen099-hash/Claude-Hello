@@ -4,68 +4,75 @@ Bybit Futures Auto Trading Bot - Configuration
 
 import os
 
-# ─── API Credentials ──────────────────────────────────────────────────────────
+# --- API Credentials ----------------------------------------------------------
 API_KEY    = os.getenv("BYBIT_API_KEY", "YOUR_API_KEY_HERE")
 API_SECRET = os.getenv("BYBIT_API_SECRET", "YOUR_API_SECRET_HERE")
 TESTNET    = os.getenv("BYBIT_TESTNET", "false").lower() == "true"
 
-# ─── Market Scanner ───────────────────────────────────────────────────────────
-TOP_N_SYMBOLS        = 200         # Top 200 cặp giao dịch
-MIN_VOLUME_USDT_24H  = 5_000_000   # Lọc cặp có volume 24h >= 5M USDT (hạ ngưỡng cho top 200)
-SCAN_INTERVAL_SEC    = 3600        # Quét lại top symbols mỗi 1 giờ
+# --- Market Scanner -----------------------------------------------------------
+TOP_N_SYMBOLS        = 200         # Top 200 cap giao dich
+MIN_VOLUME_USDT_24H  = 1_000_000   # Volume 24h >= 1M USDT (mo rong de bat them tin hieu)
+SCAN_INTERVAL_SEC    = 3600        # Quet lai top symbols moi 1 gio
 
-# ─── Multi-Timeframe Analysis ─────────────────────────────────────────────────
-# 15m: tín hiệu entry chính — đủ nhanh bắt trend sớm, đủ ít nhiễu
-# 1h : xác nhận xu hướng
-# 4h : xu hướng lớn
+# --- Multi-Timeframe Analysis -------------------------------------------------
+# Bybit API tra ve toi da 1000 nen moi lan goi — lay du de phan tich xa nhat co the
+# 15m x 1000 = 10.4 ngay du lieu signal
+# 1h  x 500  = 20 ngay xu huong
+# 4h  x 300  = 50 ngay xu huong lon
 TIMEFRAMES = {
-    "signal":  "15",   # phút
-    "trend":   "60",
-    "macro":   "240",
+    "signal": "15",    # 15m: entry chinh
+    "trend":  "60",    # 1h:  xu huong
+    "macro":  "240",   # 4h:  xu huong lon
 }
-CANDLE_LIMIT = 200  # Số nến lấy về từ Bybit API (không lưu local)
+CANDLE_LIMIT_SIGNAL = 1000   # Toi da Bybit ho tro, ~10 ngay du lieu 15m
+CANDLE_LIMIT_TREND  = 500    # ~20 ngay du lieu 1h
+CANDLE_LIMIT_MACRO  = 300    # ~50 ngay du lieu 4h
 
-# ─── Strategy Selector ────────────────────────────────────────────────────────
-STRATEGY_EVAL_CANDLES  = 100   # Số nến dùng để backtest chọn strategy
-MIN_WIN_RATE           = 0.45  # Win rate tối thiểu để chọn strategy
-STRATEGY_RESCAN_BARS   = 20    # Chạy lại selector sau N nến
+# --- Strategy Selector --------------------------------------------------------
+STRATEGY_EVAL_CANDLES  = 200   # Dung 200 nen gan nhat de backtest chon strategy
+MIN_WIN_RATE           = 0.40  # Ha nguong de khong bo lo signal nho
+STRATEGY_RESCAN_BARS   = 30    # Chay lai selector sau 30 nen
 
-# ─── Phí giao dịch Bybit (tính vào cost) ────────────────────────────────────
-TAKER_FEE = 0.00055   # 0.055% mỗi lần vào/ra (market order)
-MAKER_FEE = 0.00020   # 0.020% (limit order — không dùng hiện tại)
-# Tổng phí 1 vòng lệnh (vào + ra) = 2 × TAKER_FEE = 0.11%
-ROUND_TRIP_FEE = TAKER_FEE * 2  # 0.00110 = 0.11%
+# --- Phi giao dich Bybit ------------------------------------------------------
+TAKER_FEE      = 0.00055        # 0.055% moi lan vao/ra (market order)
+MAKER_FEE      = 0.00020        # 0.020% (limit order)
+ROUND_TRIP_FEE = TAKER_FEE * 2  # 0.11% tong phi ca 2 chieu
 
-# ─── Risk Management ──────────────────────────────────────────────────────────
-ACCOUNT_RISK_PCT       = 0.30   # Chấp nhận thua tối đa 30% vốn mỗi lệnh (dùng margin)
-CAPITAL_PER_TRADE_PCT  = 0.10   # Dùng tối đa 10% vốn thực cho mỗi lệnh (không all-in)
-                                 # → với 10 lệnh tối đa = 100% vốn phân bổ đều
-USE_MAX_LEVERAGE       = True   # Tự động dùng leverage tối đa của từng cặp trên Bybit
-MAX_LEVERAGE           = 100    # Cap trên (Bybit cho phép tối đa 100x một số cặp)
-DEFAULT_LEVERAGE       = 20     # Dùng khi không lấy được max leverage từ API
-MAX_OPEN_POSITIONS     = 10     # Tối đa 10 vị thế đồng thời
-MAX_POSITIONS_PER_SIDE = 5      # Tối đa 5 long hoặc 5 short
+# --- Risk Management ----------------------------------------------------------
+# SL co dinh: toi da mat 30% von moi lenh
+SL_MAX_LOSS_PCT       = 0.30    # SL dat o muc mat toi da 30% capital bo vao lenh
 
-# Stop Loss / Take Profit theo ATR + phí
-# SL/TP tính SAU KHI đã cộng phí vào — để lệnh thực sự có lãi/lỗ đúng như mong muốn
+# Von moi lenh: chia deu, khong all-in
+CAPITAL_PER_TRADE_PCT = 0.10    # 10% von thuc moi lenh (10 lenh = 100% von)
+
+USE_MAX_LEVERAGE       = True   # Tu dong lay leverage toi da cua tung cap tren Bybit
+MAX_LEVERAGE           = 100    # Cap tren leverage
+DEFAULT_LEVERAGE       = 20     # Dung khi khong lay duoc tu API
+MAX_OPEN_POSITIONS     = 10     # Toi da 10 vi the dong thoi
+MAX_POSITIONS_PER_SIDE = 5      # Toi da 5 long hoac 5 short
+
+# ATR de tinh TP dong (SL khong dung ATR nua — dung 30% von thay the)
 ATR_PERIOD         = 14
-SL_ATR_MULTIPLIER  = 1.5   # SL = 1.5 × ATR + phí (tính net)
-TP1_ATR_MULTIPLIER = 2.0   # TP1 = 2.0 × ATR + phí
-TP2_ATR_MULTIPLIER = 3.5   # TP2 = 3.5 × ATR + phí
-TRAILING_STOP_ATR  = 1.0   # Trailing stop = 1.0 × ATR
+TP1_RR             = 1.5    # TP1 = Risk:Reward 1.5 (TP1 = 1.5 x sl_dist)
+TP2_RR             = 3.0    # TP2 = Risk:Reward 3.0
+TRAILING_STOP_ATR  = 1.0    # Trailing stop = 1.0 x ATR
 
-# ─── Execution ────────────────────────────────────────────────────────────────
-ORDER_TYPE          = "Market"   # Market order để đảm bảo khớp lệnh
-LOOP_INTERVAL_SEC   = 60         # Vòng lặp chính mỗi 60 giây
-RETRY_ATTEMPTS      = 3
-RETRY_DELAY_SEC     = 2
+# --- Signal sensitivity -------------------------------------------------------
+# Ha nguong de khong bo qua bat ky signal nao
+MIN_SIGNAL_STRENGTH = 0.40   # Chap nhan signal yeu hon (mac dinh 0.6, giam xuong 0.4)
 
-# ─── Logging ──────────────────────────────────────────────────────────────────
+# --- Execution ----------------------------------------------------------------
+ORDER_TYPE        = "Market"
+LOOP_INTERVAL_SEC = 60
+RETRY_ATTEMPTS    = 3
+RETRY_DELAY_SEC   = 2
+
+# --- Logging ------------------------------------------------------------------
 LOG_FILE        = "trading_bot.log"
-LOG_TRADES_FILE = "trades.json"   # Lưu lịch sử giao dịch nhẹ (JSON append)
+LOG_TRADES_FILE = "trades.json"
 LOG_LEVEL       = "INFO"
 
-# ─── Telegram Notifications (tuỳ chọn) ───────────────────────────────────────
+# --- Telegram Notifications (tuy chon) ----------------------------------------
 TELEGRAM_TOKEN   = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 ENABLE_TELEGRAM  = bool(TELEGRAM_TOKEN and TELEGRAM_CHAT_ID)

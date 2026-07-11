@@ -88,6 +88,8 @@ class Executor:
                 "strength":  signal.strength,
                 "reason":    signal.reason,
                 "notional":  params.notional_usdt,
+                "capital":   params.capital_usdt,
+                "fee":       params.fee_usdt,
                 "order_id":  order.get("orderId", ""),
             })
 

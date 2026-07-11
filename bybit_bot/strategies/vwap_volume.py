@@ -36,23 +36,30 @@ class VWAPVolumeStrategy(BaseStrategy):
         vol_ma  = df["volume"].rolling(20).mean()
         vol_ratio = df["volume"] / vol_ma.replace(0, np.nan)
 
-        # Breakout: giá vượt VWAP với volume gấp 1.5x trung bình
-        cross_above = (close.iloc[-2] <= vwap.iloc[-2]) and (close.iloc[-1] > vwap.iloc[-1])
-        cross_below = (close.iloc[-2] >= vwap.iloc[-2]) and (close.iloc[-1] < vwap.iloc[-1])
-        vol_confirm = vol_ratio.iloc[-1] > 1.5
+        # Breakout: cross VWAP trong 3 nến gần nhất + volume xác nhận
+        # Look back 3 bars so signal stays valid for a few candles after the cross
+        cross_above = any(
+            close.iloc[-(i+2)] <= vwap.iloc[-(i+2)] and close.iloc[-(i+1)] > vwap.iloc[-(i+1)]
+            for i in range(3)
+        )
+        cross_below = any(
+            close.iloc[-(i+2)] >= vwap.iloc[-(i+2)] and close.iloc[-(i+1)] < vwap.iloc[-(i+1)]
+            for i in range(3)
+        )
+        # Volume confirm: bất kỳ nến nào trong 3 nến vừa rồi có vol cao
+        vol_confirm = vol_ratio.iloc[-3:].max() > 1.5
+        vol_peak    = vol_ratio.iloc[-3:].max()
 
-        # Momentum filter: giá cũng trên EMA 20
-        ema20 = compute_ema(close, 20)
         trend = self._trend_direction(df_trend)
 
-        if cross_above and vol_confirm and trend >= 0:
-            strength = min(0.9, 0.5 + (vol_ratio.iloc[-1] - 1.5) * 0.1)
+        if cross_above and vol_confirm and trend >= 0 and price > vwap.iloc[-1]:
+            strength = min(0.9, 0.5 + (vol_peak - 1.5) * 0.1)
             return Signal(1, strength, self.name, price, atr,
-                          f"VWAP breakout up, vol×{vol_ratio.iloc[-1]:.1f}")
+                          f"VWAP breakout up, vol×{vol_peak:.1f}")
 
-        if cross_below and vol_confirm and trend <= 0:
-            strength = min(0.9, 0.5 + (vol_ratio.iloc[-1] - 1.5) * 0.1)
+        if cross_below and vol_confirm and trend <= 0 and price < vwap.iloc[-1]:
+            strength = min(0.9, 0.5 + (vol_peak - 1.5) * 0.1)
             return Signal(-1, strength, self.name, price, atr,
-                          f"VWAP breakdown, vol×{vol_ratio.iloc[-1]:.1f}")
+                          f"VWAP breakdown, vol×{vol_peak:.1f}")
 
         return null

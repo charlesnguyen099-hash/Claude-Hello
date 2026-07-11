@@ -29,23 +29,28 @@ class RSIMACDStrategy(BaseStrategy):
         atr   = compute_atr(df, config.ATR_PERIOD).iloc[-1]
         price = close.iloc[-1]
 
-        rsi_prev, rsi_curr = rsi.iloc[-2], rsi.iloc[-1]
-        hist_prev, hist_curr = hist.iloc[-2], hist.iloc[-1]
-
         trend = self._trend_direction(df_trend)
 
-        # RSI exit oversold + MACD turning positive
-        if (rsi_prev < self.oversold and rsi_curr >= self.oversold
-                and hist_curr > hist_prev and trend >= 0):
-            strength = min(0.9, 0.5 + (self.oversold - rsi_prev) / 100)
-            return Signal(1, strength, self.name, price, atr,
-                          f"RSI {rsi_prev:.0f}->{rsi_curr:.0f} exit oversold, MACD^")
+        # RSI exit oversold in last 4 bars + MACD histogram rising
+        for i in range(1, 5):
+            r_prev = rsi.iloc[-(i+1)]
+            r_curr = rsi.iloc[-i]
+            h_prev = hist.iloc[-(i+1)]
+            h_curr = hist.iloc[-i]
+            if r_prev < self.oversold and r_curr >= self.oversold and h_curr > h_prev and trend >= 0:
+                strength = min(0.9, 0.5 + (self.oversold - r_prev) / 100)
+                return Signal(1, strength, self.name, price, atr,
+                              f"RSI {r_prev:.0f}->{r_curr:.0f} exit oversold, MACD^")
 
-        # RSI exit overbought + MACD turning negative
-        if (rsi_prev > self.overbought and rsi_curr <= self.overbought
-                and hist_curr < hist_prev and trend <= 0):
-            strength = min(0.9, 0.5 + (rsi_prev - self.overbought) / 100)
-            return Signal(-1, strength, self.name, price, atr,
-                          f"RSI {rsi_prev:.0f}->{rsi_curr:.0f} exit overbought, MACD v")
+        # RSI exit overbought in last 4 bars + MACD histogram falling
+        for i in range(1, 5):
+            r_prev = rsi.iloc[-(i+1)]
+            r_curr = rsi.iloc[-i]
+            h_prev = hist.iloc[-(i+1)]
+            h_curr = hist.iloc[-i]
+            if r_prev > self.overbought and r_curr <= self.overbought and h_curr < h_prev and trend <= 0:
+                strength = min(0.9, 0.5 + (r_prev - self.overbought) / 100)
+                return Signal(-1, strength, self.name, price, atr,
+                              f"RSI {r_prev:.0f}->{r_curr:.0f} exit overbought, MACD v")
 
         return null

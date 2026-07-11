@@ -29,9 +29,15 @@ class EMACrossoverStrategy(BaseStrategy):
         ema_t = compute_ema(close, self.trend)
         atr   = compute_atr(df, config.ATR_PERIOD).iloc[-1]
 
-        # Crossover detection
-        cross_up   = (ema_f.iloc[-2] <= ema_s.iloc[-2]) and (ema_f.iloc[-1] > ema_s.iloc[-1])
-        cross_down = (ema_f.iloc[-2] >= ema_s.iloc[-2]) and (ema_f.iloc[-1] < ema_s.iloc[-1])
+        # Crossover in last 3 bars — so signal stays valid for a few candles
+        cross_up   = any(
+            ema_f.iloc[-(i+2)] <= ema_s.iloc[-(i+2)] and ema_f.iloc[-(i+1)] > ema_s.iloc[-(i+1)]
+            for i in range(3)
+        )
+        cross_down = any(
+            ema_f.iloc[-(i+2)] >= ema_s.iloc[-(i+2)] and ema_f.iloc[-(i+1)] < ema_s.iloc[-(i+1)]
+            for i in range(3)
+        )
 
         price    = close.iloc[-1]
         trend_ok = price > ema_t.iloc[-1]

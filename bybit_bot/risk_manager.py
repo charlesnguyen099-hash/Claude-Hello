@@ -90,7 +90,7 @@ class RiskManager:
         # TP toi da: gross profit = phi + 50% capital
         # => net profit sau phi = 50% capital
         # tp_dist = (fee_usdt + capital_used * 0.50) / qty
-        max_tp_dist = (fee_usdt + capital_used * 0.50) / qty
+        max_tp_dist = (fee_usdt + capital_used * 0.20) / qty
 
         # TP theo ATR thi truong, cap o muc toi da
         tp1_dist = min(config.TP1_ATR_MULT * signal.atr, max_tp_dist)

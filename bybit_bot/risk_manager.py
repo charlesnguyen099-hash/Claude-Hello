@@ -86,15 +86,16 @@ class RiskManager:
         fee_usdt  = notional * config.ROUND_TRIP_FEE
         fee_price = signal.entry_price * config.ROUND_TRIP_FEE
 
-        # SL: mat toi da SL_MAX_LOSS_PCT (50%) cua capital_used
-        sl_dist = (capital_used * config.SL_MAX_LOSS_PCT) / qty
-        sl_dist = max(sl_dist, fee_price * 3)
-
-        # TP tran: fee + 25% capital (ATR-based TP neu nho hon tran)
-        max_tp_dist = (fee_usdt + capital_used * 0.25) / qty
-        tp1_dist = min(config.TP1_ATR_MULT * signal.atr, max_tp_dist)
-        tp2_dist = min(config.TP2_ATR_MULT * signal.atr, max_tp_dist)
+        # SL/TP dua tren ATR — dam bao RR >= 1 sau phi
+        # SL = SL_ATR_MULT x ATR + phi (de bu phi van con RR >= 1)
+        sl_dist  = config.SL_ATR_MULT  * signal.atr + fee_price
+        tp1_dist = config.TP1_ATR_MULT * signal.atr - fee_price   # TP1 >= SL net
+        tp2_dist = config.TP2_ATR_MULT * signal.atr - fee_price   # TP2 = 2x SL net
         trail    = config.TRAILING_STOP_ATR * signal.atr
+
+        # Dam bao TP1 >= SL (neu ATR nho, min TP1 = sl_dist)
+        tp1_dist = max(tp1_dist, sl_dist)
+        tp2_dist = max(tp2_dist, sl_dist * 1.5)
 
         d   = signal.direction
         sl  = signal.entry_price - d * (sl_dist + fee_price)

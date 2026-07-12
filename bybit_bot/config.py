@@ -41,11 +41,7 @@ MAKER_FEE      = 0.00020
 ROUND_TRIP_FEE = TAKER_FEE * 2   # 0.11% tong phi ca 2 chieu
 
 # --- Risk Management ----------------------------------------------------------
-# SL co dinh: mat toi da 30% capital bo vao lenh (tinh theo gia)
-# TP thuc te theo thi truong (ATR), co the < SL — khong ep R:R
-SL_MAX_LOSS_PCT       = 0.50    # SL = khoang cach gia de mat dung 50% capital
-
-CAPITAL_PER_TRADE_PCT = 0.10    # 10% von thuc moi lenh, khong all-in
+CAPITAL_PER_TRADE_PCT = 0.10    # khong dung, giu lai de khong loi import cu
 
 USE_MAX_LEVERAGE       = True
 MAX_LEVERAGE           = 100
@@ -53,10 +49,12 @@ DEFAULT_LEVERAGE       = 20
 MAX_OPEN_POSITIONS     = 9999
 MAX_POSITIONS_PER_SIDE = 9999
 
-# ATR de tinh TP thuc te theo thi truong
+# SL/TP theo ATR — dam bao RR >= 1 sau phi
+# SL = 1.5x ATR, TP1 = 1.5x ATR (RR~1), TP2 = 3x ATR (RR~2)
 ATR_PERIOD        = 14
-TP1_ATR_MULT      = 1.0    # TP1 = 1.0x ATR (target gan, thuc te)
-TP2_ATR_MULT      = 2.0    # TP2 = 2.0x ATR (target xa hon)
+SL_ATR_MULT       = 1.5    # SL  = 1.5x ATR
+TP1_ATR_MULT      = 1.5    # TP1 = 1.5x ATR → RR ~1 sau phi
+TP2_ATR_MULT      = 3.0    # TP2 = 3.0x ATR → RR ~2
 TRAILING_STOP_ATR = 0.5    # Trailing stop = 0.5x ATR
 
 # --- Signal sensitivity -------------------------------------------------------

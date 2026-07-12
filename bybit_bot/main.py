@@ -147,25 +147,26 @@ class TradingBot:
         if price > 0 and atr / price < config.MIN_ATR_PCT:
             return False
 
-        # RSI va VWAP lam nen tang phan tich
+        # RSI cho reversal detection
         rsi_now = compute_rsi(df_signal["close"]).iloc[-1]
-        from strategies.vwap_volume import compute_vwap
-        vwap_now  = compute_vwap(df_signal).iloc[-1]
-        vwap_dist = (price - vwap_now) / vwap_now
 
         # Momentum confirmation: 2 nen lien tiep gan nhat phai cung chieu voi signal
-        # Tranh bi danh lua boi 1 nen spike lon roi dao chieu ngay
+        # Spike filter: dung nen [-1] (nen vua dong) thay vi [-2] de bat dung spike
         opens  = df_signal["open"]
         closes = df_signal["close"]
-        c1_bull = closes.iloc[-1] > opens.iloc[-1]  # nen cuoi xanh
-        c2_bull = closes.iloc[-2] > opens.iloc[-2]  # nen truoc xanh
-        c1_bear = closes.iloc[-1] < opens.iloc[-1]  # nen cuoi do
-        c2_bear = closes.iloc[-2] < opens.iloc[-2]  # nen truoc do
-        short_term_up   = c1_bull and c2_bull  # 2 nen xanh lien tiep
-        short_term_down = c1_bear and c2_bear  # 2 nen do lien tiep
+        c1_bull = closes.iloc[-1] > opens.iloc[-1]
+        c2_bull = closes.iloc[-2] > opens.iloc[-2]
+        c1_bear = closes.iloc[-1] < opens.iloc[-1]
+        c2_bear = closes.iloc[-2] < opens.iloc[-2]
+        short_term_up   = c1_bull and c2_bull
+        short_term_down = c1_bear and c2_bear
 
-        # Xac dinh mode: REVERSAL (tai dinh/day) hay MOMENTUM (giua xu huong)
-        is_reversal = rsi_now < 30 or rsi_now > 70
+        # Spike: nen vua dong [-1] lon hon 2x ATR
+        last_candle_size = abs(closes.iloc[-1] - opens.iloc[-1])
+        is_spike = last_candle_size > atr * 2.0
+
+        # Xac dinh mode: REVERSAL hay MOMENTUM
+        is_reversal  = rsi_now < 30 or rsi_now > 70
         reversal_dir = 1 if rsi_now < 30 else (-1 if rsi_now > 70 else 0)
 
         # 1h macro trend
@@ -183,32 +184,36 @@ class TradingBot:
                 if sig.direction == 0 or sig.strength < config.MIN_SIGNAL_STRENGTH:
                     continue
 
-                # Nen spike: neu nen truoc (nen -2) lon hon 2x ATR thi la spike, bo qua
-                prev_candle_size = abs(closes.iloc[-2] - opens.iloc[-2])
-                is_spike = prev_candle_size > atr * 2.0
-                if is_spike and not is_reversal:
+                # Bo qua sau spike lon (ca reversal cung phai cho spike qua di)
+                if is_spike:
                     continue
 
-                # Long chi khi 2 nen lien tiep xanh (momentum xac nhan)
+                # Long chi khi 2 nen xanh lien tiep (momentum xac nhan)
                 if sig.direction == 1 and not short_term_up and not is_reversal:
                     continue
-                # Short chi khi 2 nen lien tiep do (momentum xac nhan)
+                # Short chi khi 2 nen do lien tiep (momentum xac nhan)
                 if sig.direction == -1 and not short_term_down and not is_reversal:
                     continue
 
-                if sig.direction == 1 and macro_trend >= 0:
-                    long_signals.append(sig)
-                elif sig.direction == -1 and macro_trend <= 0:
-                    short_signals.append(sig)
+                # Reversal bypass macro filter — bat day/dinh du macro nguoc
+                if is_reversal:
+                    if sig.direction == 1:
+                        long_signals.append(sig)
+                    elif sig.direction == -1:
+                        short_signals.append(sig)
+                else:
+                    if sig.direction == 1 and macro_trend >= 0:
+                        long_signals.append(sig)
+                    elif sig.direction == -1 and macro_trend <= 0:
+                        short_signals.append(sig)
             except Exception:
                 continue
 
-        # REVERSAL trade: RSI cuc doan + 2 nen xac nhan dao chieu thuc su
-        # RSI>70 trong uptrend manh khong phai reversal — phai co 2 nen nguoc chieu
+        # REVERSAL trade: RSI cuc doan + 2 nen xac nhan dao chieu + >= MIN_CONSENSUS
         if is_reversal and reversal_dir != 0:
             reversal_confirmed = (
-                (reversal_dir == 1  and short_term_up)   or   # RSI<30: phai co 2 nen xanh (boc day)
-                (reversal_dir == -1 and short_term_down)       # RSI>70: phai co 2 nen do  (quay dau giam)
+                (reversal_dir == 1  and short_term_up)   or
+                (reversal_dir == -1 and short_term_down)
             )
             reversal_signals = long_signals if reversal_dir == 1 else short_signals
             if len(reversal_signals) >= config.MIN_CONSENSUS and reversal_confirmed:

@@ -86,18 +86,12 @@ class RiskManager:
         fee_usdt  = notional * config.ROUND_TRIP_FEE
         fee_price = signal.entry_price * config.ROUND_TRIP_FEE
 
-        # SL co dinh: tinh khoang cach gia de mat dung 30% capital_used
-        # loss = qty x sl_dist => sl_dist = (capital_used x 30%) / qty
+        # SL: mat toi da SL_MAX_LOSS_PCT (50%) cua capital_used
         sl_dist = (capital_used * config.SL_MAX_LOSS_PCT) / qty
-        # SL phai lon hon phi toi thieu (khong the dat SL sat phi)
         sl_dist = max(sl_dist, fee_price * 3)
 
-        # TP toi da: gross profit = phi + 50% capital
-        # => net profit sau phi = 50% capital
-        # tp_dist = (fee_usdt + capital_used * 0.50) / qty
+        # TP tran: fee + 25% capital (ATR-based TP neu nho hon tran)
         max_tp_dist = (fee_usdt + capital_used * 0.25) / qty
-
-        # TP theo ATR thi truong, cap o muc toi da
         tp1_dist = min(config.TP1_ATR_MULT * signal.atr, max_tp_dist)
         tp2_dist = min(config.TP2_ATR_MULT * signal.atr, max_tp_dist)
         trail    = config.TRAILING_STOP_ATR * signal.atr
@@ -111,12 +105,8 @@ class RiskManager:
         tp1_pct = tp1_dist / signal.entry_price * 100
         tp2_pct = tp2_dist / signal.entry_price * 100
 
-        # Filter RR < 1: khong vao lenh neu TP1 nho hon SL
         rr1 = tp1_pct / sl_pct if sl_pct > 0 else 0
         rr2 = tp2_pct / sl_pct if sl_pct > 0 else 0
-        if rr1 < 1.0:
-            logger.info(f"{signal.symbol}: skip — RR={rr1:.2f} < 1.0 (TP too small vs SL)")
-            return None
 
         logger.info(
             f"{signal.symbol}: {side} lev={leverage}x | consensus={consensus}({scale_factor}x) | "

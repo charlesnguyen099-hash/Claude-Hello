@@ -153,13 +153,16 @@ class TradingBot:
         vwap_now  = compute_vwap(df_signal).iloc[-1]
         vwap_dist = (price - vwap_now) / vwap_now
 
-        # Momentum confirmation: gia dang di huong nao trong 5 nen gan nhat
-        # Uptrend ngan han: close trung binh 3 nen cuoi > close trung binh 3 nen truoc do
+        # Momentum confirmation: 2 nen lien tiep gan nhat phai cung chieu voi signal
+        # Tranh bi danh lua boi 1 nen spike lon roi dao chieu ngay
+        opens  = df_signal["open"]
         closes = df_signal["close"]
-        avg_recent = closes.iloc[-3:].mean()
-        avg_before = closes.iloc[-6:-3].mean()
-        short_term_up   = avg_recent > avg_before  # gia dang tang
-        short_term_down = avg_recent < avg_before  # gia dang giam
+        c1_bull = closes.iloc[-1] > opens.iloc[-1]  # nen cuoi xanh
+        c2_bull = closes.iloc[-2] > opens.iloc[-2]  # nen truoc xanh
+        c1_bear = closes.iloc[-1] < opens.iloc[-1]  # nen cuoi do
+        c2_bear = closes.iloc[-2] < opens.iloc[-2]  # nen truoc do
+        short_term_up   = c1_bull and c2_bull  # 2 nen xanh lien tiep
+        short_term_down = c1_bear and c2_bear  # 2 nen do lien tiep
 
         # Xac dinh mode: REVERSAL (tai dinh/day) hay MOMENTUM (giua xu huong)
         is_reversal = rsi_now < 30 or rsi_now > 70
@@ -180,10 +183,16 @@ class TradingBot:
                 if sig.direction == 0 or sig.strength < config.MIN_SIGNAL_STRENGTH:
                     continue
 
-                # Long chi khi gia dang uptrend ngan han (momentum xac nhan)
+                # Nen spike: neu nen truoc (nen -2) lon hon 2x ATR thi la spike, bo qua
+                prev_candle_size = abs(closes.iloc[-2] - opens.iloc[-2])
+                is_spike = prev_candle_size > atr * 2.0
+                if is_spike and not is_reversal:
+                    continue
+
+                # Long chi khi 2 nen lien tiep xanh (momentum xac nhan)
                 if sig.direction == 1 and not short_term_up and not is_reversal:
                     continue
-                # Short chi khi gia dang downtrend ngan han (momentum xac nhan)
+                # Short chi khi 2 nen lien tiep do (momentum xac nhan)
                 if sig.direction == -1 and not short_term_down and not is_reversal:
                     continue
 

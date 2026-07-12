@@ -182,11 +182,13 @@ class TradingBot:
                 if sig.direction == 0 or sig.strength < config.MIN_SIGNAL_STRENGTH:
                     continue
 
-                # Bo qua Long neu gia da tang > 8% tu day (ду dinh)
-                if sig.direction == 1 and rise_from_low > MAX_MOVE_PCT and not is_reversal:
+                # Bo qua Long neu gia da tang > 8% tu day HOAC dang gan dinh 24h (< 3% duoi dinh)
+                near_top = drop_from_high < 0.03
+                if sig.direction == 1 and (rise_from_low > MAX_MOVE_PCT or near_top) and not is_reversal:
                     continue
-                # Bo qua Short neu gia da giam > 8% tu dinh (bat day sai)
-                if sig.direction == -1 and drop_from_high > MAX_MOVE_PCT and not is_reversal:
+                # Bo qua Short neu gia da giam > 8% tu dinh HOAC dang gan day 24h (< 3% tren day)
+                near_bottom = rise_from_low < 0.03
+                if sig.direction == -1 and (drop_from_high > MAX_MOVE_PCT or near_bottom) and not is_reversal:
                     continue
 
                 if sig.direction == 1 and macro_trend >= 0:

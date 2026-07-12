@@ -203,14 +203,18 @@ class TradingBot:
             except Exception:
                 continue
 
-        # REVERSAL trade: RSI cuc doan + it nhat 1 strategy xac nhan dung chieu
+        # REVERSAL trade: RSI cuc doan + 2 nen xac nhan dao chieu thuc su
+        # RSI>70 trong uptrend manh khong phai reversal — phai co 2 nen nguoc chieu
         if is_reversal and reversal_dir != 0:
+            reversal_confirmed = (
+                (reversal_dir == 1  and short_term_up)   or   # RSI<30: phai co 2 nen xanh (boc day)
+                (reversal_dir == -1 and short_term_down)       # RSI>70: phai co 2 nen do  (quay dau giam)
+            )
             reversal_signals = long_signals if reversal_dir == 1 else short_signals
-            if len(reversal_signals) >= 1:
-                # Reversal tai day/dinh — chi can 1 strategy xac nhan, danh dau la high priority
+            if len(reversal_signals) >= 1 and reversal_confirmed:
                 signals = reversal_signals
                 best = max(signals, key=lambda s: s.strength)
-                best.strength = min(0.95, best.strength + 0.15)  # boost strength vi reversal co loi nhuan cao
+                best.strength = min(0.95, best.strength + 0.15)
                 best.consensus = len(signals)
                 best.symbol    = symbol
                 names = "+".join(s.strategy_name for s in signals)

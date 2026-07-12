@@ -111,9 +111,13 @@ class RiskManager:
         tp1_pct = tp1_dist / signal.entry_price * 100
         tp2_pct = tp2_dist / signal.entry_price * 100
 
-        # Log ro rang de biet RR thuc te
+        # Filter RR < 1: khong vao lenh neu TP1 nho hon SL
         rr1 = tp1_pct / sl_pct if sl_pct > 0 else 0
         rr2 = tp2_pct / sl_pct if sl_pct > 0 else 0
+        if rr1 < 1.0:
+            logger.info(f"{signal.symbol}: skip — RR={rr1:.2f} < 1.0 (TP too small vs SL)")
+            return None
+
         logger.info(
             f"{signal.symbol}: {side} lev={leverage}x | consensus={consensus}({scale_factor}x) | "
             f"qty={qty} | notional={notional:.2f}$ | capital={capital_used:.2f}$ | "

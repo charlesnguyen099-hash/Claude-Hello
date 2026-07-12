@@ -75,18 +75,8 @@ class MarketScanner:
 
         df = pd.DataFrame([s.__dict__ for s in symbols])
 
-        # Chuẩn hoá rank 0-1 (rank cao = tốt hơn)
-        df["vol_rank"]    = df["volume_usdt_24h"].rank(pct=True)
-        df["chg_rank"]    = df["price_change_pct"].rank(pct=True)
-        df["spread_rank"] = (1 - df["bid_ask_spread_pct"].rank(pct=True))  # spread nhỏ = tốt
-
-        df["score"] = (
-            df["vol_rank"]    * 0.50 +
-            df["chg_rank"]    * 0.40 +
-            df["spread_rank"] * 0.10
-        )
-
-        top = df.nlargest(config.TOP_N_SYMBOLS, "score")
+        # Sort theo volume 24h giam dan — dung thu tu Bybit (volume cao nhat truoc)
+        top = df.nlargest(config.TOP_N_SYMBOLS, "volume_usdt_24h")
         result = top["symbol"].tolist()
 
         logger.info(

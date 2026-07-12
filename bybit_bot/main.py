@@ -153,15 +153,13 @@ class TradingBot:
         vwap_now  = compute_vwap(df_signal).iloc[-1]
         vwap_dist = (price - vwap_now) / vwap_now
 
-        # Filter gia da di chuyen qua xa tu dinh/day 24h (96 nen x 15m)
-        # Neu gia da giam > 8% tu dinh 24h -> khong Short (co the dang o day roi)
-        # Neu gia da tang > 8% tu day 24h  -> khong Long  (co the dang o dinh roi)
-        candles_4h    = df_signal.iloc[-16:]  # 16 x 15m = 4h
-        high_24h      = candles_4h["high"].max()
-        low_24h       = candles_4h["low"].min()
-        drop_from_high = (high_24h - price) / high_24h if high_24h > 0 else 0
-        rise_from_low  = (price - low_24h)  / low_24h  if low_24h  > 0 else 0
-        MAX_MOVE_PCT   = 0.08  # 8% — qua xa roi, tranh vao muon
+        # Momentum confirmation: gia dang di huong nao trong 5 nen gan nhat
+        # Uptrend ngan han: close trung binh 3 nen cuoi > close trung binh 3 nen truoc do
+        closes = df_signal["close"]
+        avg_recent = closes.iloc[-3:].mean()
+        avg_before = closes.iloc[-6:-3].mean()
+        short_term_up   = avg_recent > avg_before  # gia dang tang
+        short_term_down = avg_recent < avg_before  # gia dang giam
 
         # Xac dinh mode: REVERSAL (tai dinh/day) hay MOMENTUM (giua xu huong)
         is_reversal = rsi_now < 30 or rsi_now > 70
@@ -182,13 +180,11 @@ class TradingBot:
                 if sig.direction == 0 or sig.strength < config.MIN_SIGNAL_STRENGTH:
                     continue
 
-                # Bo qua Long neu gia da tang > 8% tu day HOAC dang gan dinh 24h (< 3% duoi dinh)
-                near_top = drop_from_high < 0.03
-                if sig.direction == 1 and (rise_from_low > MAX_MOVE_PCT or near_top) and not is_reversal:
+                # Long chi khi gia dang uptrend ngan han (momentum xac nhan)
+                if sig.direction == 1 and not short_term_up and not is_reversal:
                     continue
-                # Bo qua Short neu gia da giam > 8% tu dinh HOAC dang gan day 24h (< 3% tren day)
-                near_bottom = rise_from_low < 0.03
-                if sig.direction == -1 and (drop_from_high > MAX_MOVE_PCT or near_bottom) and not is_reversal:
+                # Short chi khi gia dang downtrend ngan han (momentum xac nhan)
+                if sig.direction == -1 and not short_term_down and not is_reversal:
                     continue
 
                 if sig.direction == 1 and macro_trend >= 0:

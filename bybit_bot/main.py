@@ -132,6 +132,7 @@ class TradingBot:
 
     def _process_symbol(self, symbol: str, equity: float, open_positions: list[dict]) -> bool:
         """Can >= 2 strategies dong thuan, scale qty theo do manh. Tra True neu da trade."""
+        df_micro  = self.client.get_klines(symbol, config.TIMEFRAMES["micro"],  config.CANDLE_LIMIT_MICRO)
         df_scalp  = self.client.get_klines(symbol, config.TIMEFRAMES["scalp"],  config.CANDLE_LIMIT_SCALP)
         df_signal = self.client.get_klines(symbol, config.TIMEFRAMES["signal"], config.CANDLE_LIMIT_SIGNAL)
         df_trend  = self.client.get_klines(symbol, config.TIMEFRAMES["trend"],  config.CANDLE_LIMIT_TREND)
@@ -150,8 +151,7 @@ class TradingBot:
         # RSI cho reversal detection
         rsi_now = compute_rsi(df_signal["close"]).iloc[-1]
 
-        # Momentum confirmation: 2 nen lien tiep gan nhat phai cung chieu voi signal
-        # Spike filter: dung nen [-1] (nen vua dong) thay vi [-2] de bat dung spike
+        # Momentum confirmation (15m): 2 nen lien tiep gan nhat phai cung chieu voi signal
         opens  = df_signal["open"]
         closes = df_signal["close"]
         c1_bull = closes.iloc[-1] > opens.iloc[-1]
@@ -164,6 +164,14 @@ class TradingBot:
         # Spike: nen vua dong [-1] lon hon 2x ATR
         last_candle_size = abs(closes.iloc[-1] - opens.iloc[-1])
         is_spike = last_candle_size > atr * 2.0
+
+        # 1m micro-trend: 3 nen 1m gan nhat phai cung chieu (tranh entry khi gia dang pullback)
+        micro_up = micro_down = False
+        if not df_micro.empty and len(df_micro) >= 4:
+            mo = df_micro["open"]
+            mc = df_micro["close"]
+            micro_up   = (mc.iloc[-1] > mo.iloc[-1]) and (mc.iloc[-2] > mo.iloc[-2]) and (mc.iloc[-3] > mo.iloc[-3])
+            micro_down = (mc.iloc[-1] < mo.iloc[-1]) and (mc.iloc[-2] < mo.iloc[-2]) and (mc.iloc[-3] < mo.iloc[-3])
 
         # Xac dinh mode: REVERSAL hay MOMENTUM
         is_reversal  = rsi_now < 30 or rsi_now > 70
@@ -209,11 +217,11 @@ class TradingBot:
             except Exception:
                 continue
 
-        # REVERSAL trade: RSI cuc doan + 2 nen xac nhan dao chieu + >= MIN_CONSENSUS
+        # REVERSAL trade: RSI cuc doan + 2 nen 15m + 3 nen 1m xac nhan dao chieu + >= MIN_CONSENSUS
         if is_reversal and reversal_dir != 0:
             reversal_confirmed = (
-                (reversal_dir == 1  and short_term_up)   or
-                (reversal_dir == -1 and short_term_down)
+                (reversal_dir == 1  and short_term_up   and micro_up)   or
+                (reversal_dir == -1 and short_term_down and micro_down)
             )
             reversal_signals = long_signals if reversal_dir == 1 else short_signals
             if len(reversal_signals) >= config.MIN_CONSENSUS and reversal_confirmed:
@@ -240,8 +248,16 @@ class TradingBot:
         else:
             return False
 
-        # Signal manh nhat lam base, set consensus de risk_manager scale qty
         best = max(signals, key=lambda s: s.strength)
+
+        # 1m micro-trend phai cung chieu voi signal — tranh entry khi gia dang di nguoc
+        if best.direction == 1 and not micro_up:
+            logger.debug(f"{symbol}: LONG signal but 1m micro trend not up — skip")
+            return False
+        if best.direction == -1 and not micro_down:
+            logger.debug(f"{symbol}: SHORT signal but 1m micro trend not down — skip")
+            return False
+
         best.consensus = len(signals)
         best.symbol    = symbol
         names = "+".join(s.strategy_name for s in signals)

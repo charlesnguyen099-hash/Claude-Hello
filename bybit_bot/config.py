@@ -20,11 +20,13 @@ SCAN_INTERVAL_SEC    = 3600
 # 1h  x 500  = 20 ngay — xu huong
 # 4h  x 300  = 50 ngay — xu huong lon
 TIMEFRAMES = {
+    "micro":  "1",     # 1m: xac nhan entry (3 nen gan nhat)
     "scalp":  "5",     # 5m: scalp / signal ngan han
     "signal": "15",    # 15m: signal chinh
     "trend":  "60",    # 1h: xu huong
     "macro":  "240",   # 4h: xu huong lon
 }
+CANDLE_LIMIT_MICRO  = 10    # chi can 10 nen 1m gan nhat de xac nhan entry
 CANDLE_LIMIT_SCALP  = 1000
 CANDLE_LIMIT_SIGNAL = 1000
 CANDLE_LIMIT_TREND  = 500

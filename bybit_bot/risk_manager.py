@@ -66,26 +66,18 @@ class RiskManager:
             logger.warning(f"{signal.symbol}: cannot get instrument info: {e}")
             return None
 
-        # Consensus: so strategy dong thuan (1-6)
-        consensus    = getattr(signal, 'consensus', 1)
-        scale_factor = max(1, min(consensus, 6))
+        # Consensus scale: 3=1x, 4=1.5x, 5=2x, 6=2.5x
+        consensus = getattr(signal, 'consensus', 1)
+        CONSENSUS_SCALE = {3: 1.0, 4: 1.5, 5: 2.0, 6: 2.5}
+        scale_factor = CONSENSUS_SCALE.get(consensus, 1.0)
 
-        # Tinh qty tu equity (dung toan bo margin cho phep)
-        # base_margin = equity x CAPITAL_PER_TRADE_PCT (vd 10%)
-        # notional = base_margin x leverage
-        # qty = notional / price
-        # Nhan them scale_factor theo consensus (1x-6x)
-        base_margin  = equity * config.CAPITAL_PER_TRADE_PCT
-        base_notional = base_margin * leverage
-        raw_qty      = base_notional / signal.entry_price * scale_factor
-
-        # Lam tron xuong theo qty_step, dam bao >= min_qty va notional >= 5 USDT
-        qty      = math.floor(raw_qty / qty_step) * qty_step
-        qty      = max(qty, min_qty)
+        # Base qty = min_qty Bybit, dam bao notional >= 5 USDT truoc
         MIN_NOTIONAL = 5.0
-        if qty * signal.entry_price < MIN_NOTIONAL:
-            qty = math.ceil(MIN_NOTIONAL / signal.entry_price / qty_step) * qty_step
+        min_qty_notional = math.ceil(MIN_NOTIONAL / signal.entry_price / qty_step) * qty_step
+        base_qty = max(min_qty, min_qty_notional)
 
+        # Nhan scale consensus sau khi da dam bao base hop le
+        qty      = math.ceil(base_qty * scale_factor / qty_step) * qty_step
         notional = qty * signal.entry_price
 
         capital_used = notional / leverage
@@ -123,9 +115,8 @@ class RiskManager:
         rr1 = tp1_pct / sl_pct if sl_pct > 0 else 0
         rr2 = tp2_pct / sl_pct if sl_pct > 0 else 0
         logger.info(
-            f"{signal.symbol}: {side} lev={leverage}x | "
-            f"qty={qty} | notional={notional:.2f}$ | "
-            f"capital={capital_used:.2f}$ ({capital_used/equity*100:.1f}% eq) | "
+            f"{signal.symbol}: {side} lev={leverage}x | consensus={consensus}({scale_factor}x) | "
+            f"qty={qty} | notional={notional:.2f}$ | capital={capital_used:.2f}$ | "
             f"fee={fee_usdt:.4f}$ | "
             f"SL=-{sl_pct:.2f}% | TP1=+{tp1_pct:.2f}% (RR={rr1:.2f}) | "
             f"TP2=+{tp2_pct:.2f}% (RR={rr2:.2f})"

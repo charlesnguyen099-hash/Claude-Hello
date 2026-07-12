@@ -26,7 +26,7 @@ TIMEFRAMES = {
     "trend":  "60",    # 1h: xu huong
     "macro":  "240",   # 4h: xu huong lon
 }
-CANDLE_LIMIT_MICRO  = 10    # chi can 10 nen 1m gan nhat de xac nhan entry
+CANDLE_LIMIT_MICRO  = 200   # 200 nen 1m = ~3.3 gio — phan tich micro-trend day du
 CANDLE_LIMIT_SCALP  = 1000
 CANDLE_LIMIT_SIGNAL = 1000
 CANDLE_LIMIT_TREND  = 500

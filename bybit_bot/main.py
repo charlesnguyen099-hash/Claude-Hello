@@ -130,6 +130,94 @@ class TradingBot:
             return -1
         return 0
 
+    def _micro_trend(self, df) -> int:
+        """
+        Phan tich micro-trend tren 1m voi nhieu nen nhat co the.
+        Xet: EMA alignment, body-weighted momentum, volume momentum.
+        Tra +1 (up), -1 (down), 0 (khong ro rang / sideways).
+        Can it nhat 50 nen de phan tich.
+        """
+        from strategies.base import compute_ema
+        if df is None or df.empty or len(df) < 50:
+            return 0
+
+        close  = df["close"]
+        open_  = df["open"]
+        high   = df["high"]
+        low    = df["low"]
+        volume = df["volume"]
+        n      = len(df)
+
+        # 1. EMA stack: EMA9 > EMA21 > EMA50 = uptrend, nguoc lai = downtrend
+        ema9  = compute_ema(close, 9)
+        ema21 = compute_ema(close, 21)
+        ema50 = compute_ema(close, min(50, n - 1))
+        price = close.iloc[-1]
+        e9    = ema9.iloc[-1]
+        e21   = ema21.iloc[-1]
+        e50   = ema50.iloc[-1]
+
+        ema_bull = price > e9 > e21 > e50
+        ema_bear = price < e9 < e21 < e50
+        ema_score = 1 if ema_bull else (-1 if ema_bear else 0)
+
+        # 2. Body-weighted momentum: xet 20 nen gan nhat
+        #    Moi nen dong gop theo body size x direction (lon hon = quan trong hon)
+        recent = min(20, n)
+        bodies = (close.iloc[-recent:] - open_.iloc[-recent:])
+        body_momentum = bodies.sum()  # duong = bullish, am = bearish
+        # Chuan hoa theo ATR
+        atr_approx = (high.iloc[-recent:] - low.iloc[-recent:]).mean()
+        body_score = 0
+        if atr_approx > 0:
+            norm = body_momentum / (atr_approx * recent)
+            if norm > 0.15:
+                body_score = 1
+            elif norm < -0.15:
+                body_score = -1
+
+        # 3. Volume momentum: so sanh volume nen xanh vs nen do trong 30 nen gan nhat
+        recent_v = min(30, n)
+        bull_vol = volume.iloc[-recent_v:][close.iloc[-recent_v:] > open_.iloc[-recent_v:]].sum()
+        bear_vol = volume.iloc[-recent_v:][close.iloc[-recent_v:] < open_.iloc[-recent_v:]].sum()
+        total_vol = bull_vol + bear_vol
+        vol_score = 0
+        if total_vol > 0:
+            bull_ratio = bull_vol / total_vol
+            if bull_ratio > 0.60:
+                vol_score = 1
+            elif bull_ratio < 0.40:
+                vol_score = -1
+
+        # 4. Slope EMA9: huong chuyen dong EMA9 trong 5 nen gan nhat
+        slope_score = 0
+        if len(ema9) >= 6:
+            slope = (ema9.iloc[-1] - ema9.iloc[-6]) / (ema9.iloc[-6] + 1e-9)
+            if slope > 0.001:
+                slope_score = 1
+            elif slope < -0.001:
+                slope_score = -1
+
+        # 5. Higher highs / Lower lows: 10 nen gan nhat
+        hh_ll_score = 0
+        if n >= 10:
+            highs10 = high.iloc[-10:]
+            lows10  = low.iloc[-10:]
+            # Higher highs va higher lows = uptrend
+            if highs10.iloc[-1] > highs10.iloc[-5] and lows10.iloc[-1] > lows10.iloc[-5]:
+                hh_ll_score = 1
+            # Lower highs va lower lows = downtrend
+            elif highs10.iloc[-1] < highs10.iloc[-5] and lows10.iloc[-1] < lows10.iloc[-5]:
+                hh_ll_score = -1
+
+        # Tong hop: can >= 3/5 yeu to dong thuan
+        total = ema_score + body_score + vol_score + slope_score + hh_ll_score
+        if total >= 3:
+            return 1
+        if total <= -3:
+            return -1
+        return 0
+
     def _process_symbol(self, symbol: str, equity: float, open_positions: list[dict]) -> bool:
         """Can >= 2 strategies dong thuan, scale qty theo do manh. Tra True neu da trade."""
         df_micro  = self.client.get_klines(symbol, config.TIMEFRAMES["micro"],  config.CANDLE_LIMIT_MICRO)
@@ -165,13 +253,10 @@ class TradingBot:
         last_candle_size = abs(closes.iloc[-1] - opens.iloc[-1])
         is_spike = last_candle_size > atr * 2.0
 
-        # 1m micro-trend: 3 nen 1m gan nhat phai cung chieu (tranh entry khi gia dang pullback)
-        micro_up = micro_down = False
-        if not df_micro.empty and len(df_micro) >= 4:
-            mo = df_micro["open"]
-            mc = df_micro["close"]
-            micro_up   = (mc.iloc[-1] > mo.iloc[-1]) and (mc.iloc[-2] > mo.iloc[-2]) and (mc.iloc[-3] > mo.iloc[-3])
-            micro_down = (mc.iloc[-1] < mo.iloc[-1]) and (mc.iloc[-2] < mo.iloc[-2]) and (mc.iloc[-3] < mo.iloc[-3])
+        # 1m micro-trend: phan tich toan dien 200 nen 1m (EMA, body momentum, volume, slope, HH/LL)
+        micro = self._micro_trend(df_micro)
+        micro_up   = (micro == 1)
+        micro_down = (micro == -1)
 
         # Xac dinh mode: REVERSAL hay MOMENTUM
         is_reversal  = rsi_now < 30 or rsi_now > 70

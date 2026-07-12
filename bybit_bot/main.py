@@ -253,10 +253,13 @@ class TradingBot:
         last_candle_size = abs(closes.iloc[-1] - opens.iloc[-1])
         is_spike = last_candle_size > atr * 2.0
 
-        # 1m micro-trend: phan tich toan dien 200 nen 1m (EMA, body momentum, volume, slope, HH/LL)
+        # 1m micro-trend: phan tich toan dien 1000 nen 1m (EMA, body momentum, volume, slope, HH/LL)
         micro = self._micro_trend(df_micro)
         micro_up   = (micro == 1)
         micro_down = (micro == -1)
+
+        # 5m hard trend filter (tinh truoc, ap dung sau khi collect signals)
+        scalp_trend = self._micro_trend(df_scalp)
 
         # Xac dinh mode: REVERSAL hay MOMENTUM
         is_reversal  = rsi_now < 30 or rsi_now > 70
@@ -301,6 +304,17 @@ class TradingBot:
                         short_signals.append(sig)
             except Exception:
                 continue
+
+        # 5m hard trend filter: ap dung sau khi collect du signals
+        # scalp_trend=1 (5m uptrend) -> chi Long, cam Short
+        # scalp_trend=-1 (5m downtrend) -> chi Short, cam Long
+        # scalp_trend=0 (sideways) -> cho phep ca hai chieu
+        if scalp_trend == 1:
+            short_signals = []
+            logger.debug(f"{symbol}: 5m uptrend — short signals blocked")
+        elif scalp_trend == -1:
+            long_signals = []
+            logger.debug(f"{symbol}: 5m downtrend — long signals blocked")
 
         # REVERSAL trade: RSI cuc doan + 2 nen 15m + 3 nen 1m xac nhan dao chieu + >= MIN_CONSENSUS
         if is_reversal and reversal_dir != 0:

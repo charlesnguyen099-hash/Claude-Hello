@@ -50,8 +50,8 @@ CAPITAL_PER_TRADE_PCT = 0.10    # 10% von thuc moi lenh, khong all-in
 USE_MAX_LEVERAGE       = True
 MAX_LEVERAGE           = 100
 DEFAULT_LEVERAGE       = 20
-MAX_OPEN_POSITIONS     = 10
-MAX_POSITIONS_PER_SIDE = 5
+MAX_OPEN_POSITIONS     = 9999
+MAX_POSITIONS_PER_SIDE = 9999
 
 # ATR de tinh TP thuc te theo thi truong
 ATR_PERIOD        = 14

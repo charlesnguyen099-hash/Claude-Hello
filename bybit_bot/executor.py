@@ -24,40 +24,8 @@ class Executor:
         self.risk_mgr  = risk_mgr
         self.logger    = bot_logger
 
+        # Theo dõi TP1 đã hit chưa: {symbol: bool}
         self._tp1_hit: dict[str, bool] = {}
-
-        # Cooldown: {symbol: timestamp} — khong re-enter trong SYMBOL_COOLDOWN_SEC
-        self._last_close_ts: dict[str, float] = {}
-
-        # Daily loss tracking
-        self._day_start_equity: Optional[float] = None
-        self._day_str: str = ""
-        self._daily_halt: bool = False
-
-    def _check_daily_loss(self, equity: float) -> bool:
-        """Tra ve True neu bot bi halt vi thua qua nhieu trong ngay."""
-        from datetime import datetime, timezone
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-
-        if self._day_str != today:
-            # Ngay moi: reset
-            self._day_str          = today
-            self._day_start_equity = equity
-            self._daily_halt       = False
-
-        if self._daily_halt:
-            return True
-
-        if self._day_start_equity and self._day_start_equity > 0:
-            loss_pct = (self._day_start_equity - equity) / self._day_start_equity
-            if loss_pct >= config.DAILY_LOSS_LIMIT_PCT:
-                self._daily_halt = True
-                logger.warning(
-                    f"DAILY LOSS LIMIT HIT: -{loss_pct*100:.1f}% "
-                    f"(start={self._day_start_equity:.2f}, now={equity:.2f}) — halt trading today"
-                )
-                return True
-        return False
 
     def execute_signal(
         self,
@@ -68,17 +36,6 @@ class Executor:
     ):
         """Xử lý signal mới — vào lệnh nếu đủ điều kiện."""
         if signal.direction == 0:
-            return
-
-        # Daily loss halt
-        if self._check_daily_loss(equity):
-            return
-
-        # Cooldown: bo qua neu symbol vua duoc dong trong SYMBOL_COOLDOWN_SEC giay
-        last_close = self._last_close_ts.get(symbol, 0)
-        if time.time() - last_close < config.SYMBOL_COOLDOWN_SEC:
-            remaining = int(config.SYMBOL_COOLDOWN_SEC - (time.time() - last_close))
-            logger.debug(f"{symbol}: cooldown {remaining}s remaining — skip")
             return
 
         # Kiểm tra nếu đã có vị thế cùng chiều cho symbol này
@@ -182,7 +139,6 @@ class Executor:
         qty    = float(position["size"])
         try:
             self.client.close_position(symbol, side, qty)
-            self._last_close_ts[symbol] = time.time()  # bat dau cooldown
             self.logger.log_trade({
                 "event":  "close",
                 "symbol": symbol,
@@ -190,6 +146,6 @@ class Executor:
                 "qty":    qty,
                 "reason": "signal_reversal_or_emergency",
             })
-            logger.info(f"[CLOSE] {symbol} {side} qty={qty} — cooldown {config.SYMBOL_COOLDOWN_SEC}s")
+            logger.info(f"[CLOSE] {symbol} {side} qty={qty}")
         except Exception as e:
             logger.error(f"Failed to close position {symbol}: {str(e).encode('ascii', 'replace').decode()}")

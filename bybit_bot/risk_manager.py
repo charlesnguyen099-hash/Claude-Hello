@@ -147,10 +147,9 @@ class RiskManager:
             return round(qty, 3) if qty > 0 else 0.0
 
     def should_close_position(self, position: dict, current_price: float) -> bool:
-        # So voi initialMargin (von thuc bo vao), khong phai notional
-        initial_margin = float(position.get("positionIM", 0)) or float(position.get("initialMargin", 0))
-        unrealised     = float(position.get("unrealisedPnl", 0))
-        if initial_margin > 0 and unrealised / initial_margin < -0.80:
-            # Lỗ > 80% margin thực → đóng khẩn
+        unrealised_pnl_pct = float(position.get("unrealisedPnl", 0)) / (
+            float(position.get("positionValue", 1)) or 1
+        )
+        if unrealised_pnl_pct < -0.30:
             return True
         return False

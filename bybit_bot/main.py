@@ -156,9 +156,9 @@ class TradingBot:
         # Filter gia da di chuyen qua xa tu dinh/day 24h (96 nen x 15m)
         # Neu gia da giam > 8% tu dinh 24h -> khong Short (co the dang o day roi)
         # Neu gia da tang > 8% tu day 24h  -> khong Long  (co the dang o dinh roi)
-        candles_24h   = df_signal.iloc[-96:]
-        high_24h      = candles_24h["high"].max()
-        low_24h       = candles_24h["low"].min()
+        candles_4h    = df_signal.iloc[-16:]  # 16 x 15m = 4h
+        high_24h      = candles_4h["high"].max()
+        low_24h       = candles_4h["low"].min()
         drop_from_high = (high_24h - price) / high_24h if high_24h > 0 else 0
         rise_from_low  = (price - low_24h)  / low_24h  if low_24h  > 0 else 0
         MAX_MOVE_PCT   = 0.08  # 8% — qua xa roi, tranh vao muon

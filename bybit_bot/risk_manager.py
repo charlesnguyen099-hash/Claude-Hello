@@ -66,9 +66,9 @@ class RiskManager:
             logger.warning(f"{signal.symbol}: cannot get instrument info: {e}")
             return None
 
-        # Consensus scale: 3=1x, 4=1.5x, 5=2x, 6=2.5x
+        # Consensus scale: 2=1x, 3=1.3x, 4=1.6x, 5=2x, 6=2.5x
         consensus = getattr(signal, 'consensus', 1)
-        CONSENSUS_SCALE = {3: 1.0, 4: 1.5, 5: 2.0, 6: 2.5}
+        CONSENSUS_SCALE = {2: 1.0, 3: 1.3, 4: 1.6, 5: 2.0, 6: 2.5}
         scale_factor = CONSENSUS_SCALE.get(consensus, 1.0)
 
         # Base qty = min_qty Bybit, dam bao notional >= 5 USDT truoc

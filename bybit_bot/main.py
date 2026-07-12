@@ -153,9 +153,18 @@ class TradingBot:
         vwap_now  = compute_vwap(df_signal).iloc[-1]
         vwap_dist = (price - vwap_now) / vwap_now
 
+        # Filter gia da di chuyen qua xa tu dinh/day 24h (96 nen x 15m)
+        # Neu gia da giam > 8% tu dinh 24h -> khong Short (co the dang o day roi)
+        # Neu gia da tang > 8% tu day 24h  -> khong Long  (co the dang o dinh roi)
+        candles_24h   = df_signal.iloc[-96:]
+        high_24h      = candles_24h["high"].max()
+        low_24h       = candles_24h["low"].min()
+        drop_from_high = (high_24h - price) / high_24h if high_24h > 0 else 0
+        rise_from_low  = (price - low_24h)  / low_24h  if low_24h  > 0 else 0
+        MAX_MOVE_PCT   = 0.08  # 8% — qua xa roi, tranh vao muon
+
         # Xac dinh mode: REVERSAL (tai dinh/day) hay MOMENTUM (giua xu huong)
-        is_reversal = rsi_now < 30 or rsi_now > 70   # RSI cuc doan -> co kha nang dao chieu cao
-        # Reversal: Long khi RSI < 30 (day), Short khi RSI > 70 (dinh)
+        is_reversal = rsi_now < 30 or rsi_now > 70
         reversal_dir = 1 if rsi_now < 30 else (-1 if rsi_now > 70 else 0)
 
         # 1h macro trend
@@ -171,6 +180,13 @@ class TradingBot:
                     sig = strategy.generate_signal(df_scalp, df_signal, df_trend)
 
                 if sig.direction == 0 or sig.strength < config.MIN_SIGNAL_STRENGTH:
+                    continue
+
+                # Bo qua Long neu gia da tang > 8% tu day (ду dinh)
+                if sig.direction == 1 and rise_from_low > MAX_MOVE_PCT and not is_reversal:
+                    continue
+                # Bo qua Short neu gia da giam > 8% tu dinh (bat day sai)
+                if sig.direction == -1 and drop_from_high > MAX_MOVE_PCT and not is_reversal:
                     continue
 
                 if sig.direction == 1 and macro_trend >= 0:

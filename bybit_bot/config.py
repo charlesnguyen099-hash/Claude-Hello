@@ -43,7 +43,7 @@ ROUND_TRIP_FEE = TAKER_FEE * 2   # 0.11% tong phi ca 2 chieu
 # --- Risk Management ----------------------------------------------------------
 # SL co dinh: mat toi da 30% capital bo vao lenh (tinh theo gia)
 # TP thuc te theo thi truong (ATR), co the < SL — khong ep R:R
-SL_MAX_LOSS_PCT       = 0.30    # SL = khoang cach gia de mat dung 30% capital
+SL_MAX_LOSS_PCT       = 0.50    # SL = khoang cach gia de mat dung 50% capital
 
 CAPITAL_PER_TRADE_PCT = 0.10    # 10% von thuc moi lenh, khong all-in
 

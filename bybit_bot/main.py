@@ -211,7 +211,7 @@ class TradingBot:
                 (reversal_dir == -1 and short_term_down)       # RSI>70: phai co 2 nen do  (quay dau giam)
             )
             reversal_signals = long_signals if reversal_dir == 1 else short_signals
-            if len(reversal_signals) >= 1 and reversal_confirmed:
+            if len(reversal_signals) >= config.MIN_CONSENSUS and reversal_confirmed:
                 signals = reversal_signals
                 best = max(signals, key=lambda s: s.strength)
                 best.strength = min(0.95, best.strength + 0.15)

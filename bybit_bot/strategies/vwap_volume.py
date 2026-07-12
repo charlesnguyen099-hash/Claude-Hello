@@ -47,15 +47,15 @@ class VWAPVolumeStrategy(BaseStrategy):
 
         trend = self._trend_direction(df_trend)
 
-        # Long: giá trên VWAP > 0.1% + volume xác nhận + trend không ngược
-        if dist_pct > 0.001 and vol_ok and trend >= 0:
-            strength = min(0.9, 0.5 + min(dist_pct, 0.05) * 5 + (vol_peak - 1.2) * 0.05)
+        # Long: giá vừa breakout VWAP (0.1% - 3%) — tránh đu đỉnh khi đã pump xa
+        if 0.001 < dist_pct < 0.03 and vol_ok and trend >= 0:
+            strength = min(0.9, 0.5 + min(dist_pct, 0.03) * 5 + (vol_peak - 1.2) * 0.05)
             return Signal(1, strength, self.name, price, atr,
                           f"Price {dist_pct*100:.2f}% above VWAP, vol×{vol_peak:.1f}")
 
-        # Short: giá dưới VWAP > 0.1% + volume xác nhận + trend không ngược
-        if dist_pct < -0.001 and vol_ok and trend <= 0:
-            strength = min(0.9, 0.5 + min(abs(dist_pct), 0.05) * 5 + (vol_peak - 1.2) * 0.05)
+        # Short: giá vừa breakdown VWAP (-0.1% đến -3%) — tránh bắt đáy khi đã dump xa
+        if -0.03 < dist_pct < -0.001 and vol_ok and trend <= 0:
+            strength = min(0.9, 0.5 + min(abs(dist_pct), 0.03) * 5 + (vol_peak - 1.2) * 0.05)
             return Signal(-1, strength, self.name, price, atr,
                           f"Price {abs(dist_pct)*100:.2f}% below VWAP, vol×{vol_peak:.1f}")
 

@@ -43,14 +43,20 @@ class EMACrossoverStrategy(BaseStrategy):
         vol_curr  = df["volume"].iloc[-3:].mean()  # trung bình 3 nến gần nhất
         vol_ok    = vol_curr > vol_avg * 1.1
 
-        # Long: EMA9 > EMA21 > EMA50 (bullish stack) + volume + trend không ngược
-        if ema_f_now > ema_s_now > ema_t_now and gap_pct > 0.001 and vol_ok and macro_d >= 0:
-            strength = min(0.85, 0.55 + gap_pct * 10)
-            return Signal(1, strength, self.name, price, atr, f"EMA bullish stack gap={gap_pct*100:.2f}%")
+        # Kiem tra EMA cross moi hinh thanh (trong 3 nen gan nhat)
+        ema_f_prev3 = ema_f.iloc[-4:-1]
+        ema_s_prev3 = ema_s.iloc[-4:-1]
+        recently_crossed_up   = any(ema_f_prev3.values[i] <= ema_s_prev3.values[i] for i in range(3))
+        recently_crossed_down = any(ema_f_prev3.values[i] >= ema_s_prev3.values[i] for i in range(3))
 
-        # Short: EMA9 < EMA21 < EMA50 (bearish stack) + volume + trend không ngược
-        if ema_f_now < ema_s_now < ema_t_now and abs(gap_pct) > 0.001 and vol_ok and macro_d <= 0:
+        # Long: EMA9 > EMA21 > EMA50 + cross moi xay ra trong 3 nen + volume + trend
+        if ema_f_now > ema_s_now > ema_t_now and gap_pct > 0.001 and recently_crossed_up and vol_ok and macro_d >= 0:
+            strength = min(0.85, 0.55 + gap_pct * 10)
+            return Signal(1, strength, self.name, price, atr, f"EMA bullish cross gap={gap_pct*100:.2f}%")
+
+        # Short: EMA9 < EMA21 < EMA50 + cross moi xay ra trong 3 nen + volume + trend
+        if ema_f_now < ema_s_now < ema_t_now and abs(gap_pct) > 0.001 and recently_crossed_down and vol_ok and macro_d <= 0:
             strength = min(0.85, 0.55 + abs(gap_pct) * 10)
-            return Signal(-1, strength, self.name, price, atr, f"EMA bearish stack gap={abs(gap_pct)*100:.2f}%")
+            return Signal(-1, strength, self.name, price, atr, f"EMA bearish cross gap={abs(gap_pct)*100:.2f}%")
 
         return null

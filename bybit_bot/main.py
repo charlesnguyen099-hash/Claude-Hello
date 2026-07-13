@@ -294,8 +294,8 @@ class TradingBot:
                 )
                 # 1m micro-trend cung phai xac nhan
                 micro_ok = (bo_sig.direction == 1 and micro_up) or (bo_sig.direction == -1 and micro_down)
-                post_spike_ok = not (bo_sig.direction == -1 and spike_was_dump) and \
-                                not (bo_sig.direction == 1  and spike_was_pump)
+                post_spike_ok = not (bo_sig.direction == -1 and spike_was_dump and scalp_trend != -1) and \
+                                not (bo_sig.direction == 1  and spike_was_pump and scalp_trend != 1)
                 if bo_ok and micro_ok and not is_spike and post_spike_ok:
                     bo_sig.symbol    = symbol
                     bo_sig.consensus = 1
@@ -330,10 +330,12 @@ class TradingBot:
                 if is_spike:
                     continue
 
-                # Post-spike block: khong short sau dump manh, khong long sau pump manh
-                if sig.direction == -1 and spike_was_dump:
+                # Post-spike block: chi ap dung khi 5m CHUA xac nhan trend cung chieu
+                # Neu 5m da xac nhan downtrend (scalp_trend==-1) thi dump la phan cua trend -> cho phep short
+                # Neu 5m da xac nhan uptrend  (scalp_trend== 1) thi pump la phan cua trend -> cho phep long
+                if sig.direction == -1 and spike_was_dump and scalp_trend != -1:
                     continue
-                if sig.direction == 1 and spike_was_pump:
+                if sig.direction == 1 and spike_was_pump and scalp_trend != 1:
                     continue
 
                 # Long chi khi 2 nen xanh lien tiep (momentum xac nhan)

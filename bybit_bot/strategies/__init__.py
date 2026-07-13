@@ -4,6 +4,7 @@ from .bollinger     import BollingerStrategy
 from .supertrend    import SupertrendStrategy
 from .vwap_volume   import VWAPVolumeStrategy
 from .ichimoku      import IchimokuStrategy
+from .breakout      import BreakoutStrategy
 
 ALL_STRATEGIES = [
     EMACrossoverStrategy(),
@@ -13,3 +14,5 @@ ALL_STRATEGIES = [
     VWAPVolumeStrategy(),
     IchimokuStrategy(),
 ]
+
+BREAKOUT_STRATEGY = BreakoutStrategy()

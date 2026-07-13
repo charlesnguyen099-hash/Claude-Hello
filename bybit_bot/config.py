@@ -65,7 +65,7 @@ MIN_SIGNAL_STRENGTH = 0.60   # Chi lay signal manh
 MIN_CONSENSUS       = 3      # Can it nhat 3 strategies dong thuan cung chieu
 MIN_ATR_PCT         = 0.003  # ATR phai >= 0.3% gia de bu phi
 QTY_SCALE_CAP           = 5    # Nhan toi da 5x min_qty
-NOTIONAL_EQUITY_MULT    = 2.0  # Notional (truoc margin) = equity x lan nay
+TRADE_SIZE_MULT         = 2    # Nhan min_qty x lan nay truoc khi tinh margin
 
 # --- Execution ----------------------------------------------------------------
 ORDER_TYPE           = "Market"

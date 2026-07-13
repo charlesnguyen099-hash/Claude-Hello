@@ -71,12 +71,13 @@ class RiskManager:
         CONSENSUS_SCALE = {2: 1.0, 3: 1.3, 4: 1.6, 5: 2.0, 6: 2.5}
         scale_factor = CONSENSUS_SCALE.get(consensus, 1.0)
 
-        # Notional = equity x NOTIONAL_EQUITY_MULT (tinh truoc margin)
-        # Margin = notional / leverage (tinh sau)
-        notional_target = equity * config.NOTIONAL_EQUITY_MULT * scale_factor
-        raw_qty = notional_target / signal.entry_price
-        qty = math.floor(raw_qty / qty_step) * qty_step
-        qty = max(qty, min_qty)  # dam bao >= min Bybit
+        # Base qty = min_qty x2, dam bao notional >= 5 USDT
+        MIN_NOTIONAL = 5.0
+        min_qty_notional = math.ceil(MIN_NOTIONAL / signal.entry_price / qty_step) * qty_step
+        base_qty = max(min_qty, min_qty_notional) * 2  # x2 truoc khi tinh margin
+
+        # Nhan scale consensus
+        qty      = math.ceil(base_qty * scale_factor / qty_step) * qty_step
         notional = qty * signal.entry_price
 
         capital_used = notional / leverage

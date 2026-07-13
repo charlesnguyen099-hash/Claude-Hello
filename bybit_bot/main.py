@@ -115,7 +115,8 @@ class TradingBot:
                 continue
 
             try:
-                traded = self._process_symbol(symbol, equity, open_positions)
+                is_top20 = symbol in top20
+                traded = self._process_symbol(symbol, equity, open_positions, is_top20)
                 if traded:
                     try:
                         open_positions = self.client.get_positions()
@@ -231,9 +232,9 @@ class TradingBot:
             return -1
         return 0
 
-    def _process_symbol(self, symbol: str, equity: float, open_positions: list[dict]) -> bool:
+    def _process_symbol(self, symbol: str, equity: float, open_positions: list[dict], is_top20: bool = False) -> bool:
         """Can >= 2 strategies dong thuan, scale qty theo do manh. Tra True neu da trade."""
-        df_micro  = self.client.get_klines(symbol, config.TIMEFRAMES["micro"],  config.CANDLE_LIMIT_MICRO)
+        df_micro  = self.client.get_klines(symbol, config.TIMEFRAMES["micro"],  config.CANDLE_LIMIT_MICRO) if is_top20 else None
         df_scalp  = self.client.get_klines(symbol, config.TIMEFRAMES["scalp"],  config.CANDLE_LIMIT_SCALP)
         df_signal = self.client.get_klines(symbol, config.TIMEFRAMES["signal"], config.CANDLE_LIMIT_SIGNAL)
         df_trend  = self.client.get_klines(symbol, config.TIMEFRAMES["trend"],  config.CANDLE_LIMIT_TREND)
@@ -269,22 +270,20 @@ class TradingBot:
         last_candle_size = abs(recent_bodies[-1])
         is_spike = last_candle_size > atr * 2.0
 
-        # Post-spike direction block: neu co nen dump manh trong 5 nen -> cam short
-        # neu co nen pump manh trong 5 nen -> cam long
-        spike_was_dump = any(b < -atr * 2.0 for b in recent_bodies)
-        spike_was_pump = any(b >  atr * 2.0 for b in recent_bodies)
+        # Post-spike direction block (chi top20)
+        spike_was_dump = is_top20 and any(b < -atr * 2.0 for b in recent_bodies)
+        spike_was_pump = is_top20 and any(b >  atr * 2.0 for b in recent_bodies)
 
-        # 1m micro-trend: phan tich toan dien 1000 nen 1m (EMA, body momentum, volume, slope, HH/LL)
-        micro = self._micro_trend(df_micro)
+        # 1m micro-trend (chi top20)
+        micro = self._micro_trend(df_micro) if is_top20 else 0
         micro_up   = (micro == 1)
         micro_down = (micro == -1)
 
-        # 5m hard trend filter (tinh truoc, ap dung sau khi collect signals)
-        scalp_trend = self._micro_trend(df_scalp)
+        # 5m hard trend filter (chi top20)
+        scalp_trend = self._micro_trend(df_scalp) if is_top20 else 0
 
-        # BREAKOUT: chi ap dung cho top 20 coin, rat than trong
-        is_top20 = symbol in self.symbols[:config.TOP_FOCUS_COUNT]
-        if is_top20 and not df_micro.empty and len(df_micro) >= 30:
+        # BREAKOUT: chi top20
+        if is_top20 and df_micro is not None and not df_micro.empty and len(df_micro) >= 30:
             bo_sig = BREAKOUT_STRATEGY.generate_signal(df_micro, df_scalp, df_signal)
             if bo_sig.direction != 0:
                 # 5m khong duoc nguoc chieu — cho phep sideways
@@ -319,6 +318,10 @@ class TradingBot:
 
         for strategy in ALL_STRATEGIES:
             try:
+                # SustainedTrendStrategy chi chay cho top20
+                if strategy.name == "sustained_trend" and not is_top20:
+                    continue
+
                 sig = strategy.generate_signal(df_signal, df_trend, df_macro)
                 if sig.direction == 0 and len(df_scalp) >= 50:
                     sig = strategy.generate_signal(df_scalp, df_signal, df_trend)
@@ -359,14 +362,11 @@ class TradingBot:
             except Exception:
                 continue
 
-        # 5m hard trend filter: ap dung sau khi collect du signals
-        # scalp_trend=1 (5m uptrend) -> chi Long, cam Short
-        # scalp_trend=-1 (5m downtrend) -> chi Short, cam Long
-        # scalp_trend=0 (sideways) -> cho phep ca hai chieu
-        if scalp_trend == 1:
+        # 5m hard trend filter (chi top20)
+        if is_top20 and scalp_trend == 1:
             short_signals = []
             logger.debug(f"{symbol}: 5m uptrend — short signals blocked")
-        elif scalp_trend == -1:
+        elif is_top20 and scalp_trend == -1:
             long_signals = []
             logger.debug(f"{symbol}: 5m downtrend — long signals blocked")
 
@@ -403,13 +403,14 @@ class TradingBot:
 
         best = max(signals, key=lambda s: s.strength)
 
-        # 1m micro-trend phai cung chieu voi signal — tranh entry khi gia dang di nguoc
-        if best.direction == 1 and not micro_up:
-            logger.debug(f"{symbol}: LONG signal but 1m micro trend not up — skip")
-            return False
-        if best.direction == -1 and not micro_down:
-            logger.debug(f"{symbol}: SHORT signal but 1m micro trend not down — skip")
-            return False
+        # 1m micro-trend filter (chi top20)
+        if is_top20:
+            if best.direction == 1 and not micro_up:
+                logger.debug(f"{symbol}: LONG signal but 1m micro trend not up — skip")
+                return False
+            if best.direction == -1 and not micro_down:
+                logger.debug(f"{symbol}: SHORT signal but 1m micro trend not down — skip")
+                return False
 
         best.consensus = len(signals)
         best.symbol    = symbol

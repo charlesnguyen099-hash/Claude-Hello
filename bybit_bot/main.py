@@ -279,8 +279,7 @@ class TradingBot:
         micro_up   = (micro == 1)
         micro_down = (micro == -1)
 
-        # 5m hard trend filter (chi top20)
-        scalp_trend = self._micro_trend(df_scalp) if is_top20 else 0
+        scalp_trend = self._micro_trend(df_scalp) if is_top20 else 0  # dung cho post-spike check
 
         # BREAKOUT: chi top20
         if is_top20 and df_micro is not None and not df_micro.empty and len(df_micro) >= 30:
@@ -362,12 +361,8 @@ class TradingBot:
             except Exception:
                 continue
 
-        # 5m hard trend filter (chi top20)
-        if is_top20 and scalp_trend == 1:
-            short_signals = []
-            logger.debug(f"{symbol}: 5m uptrend — short signals blocked")
-        elif is_top20 and scalp_trend == -1:
-            long_signals = []
+        if False:  # 5m hard filter da bo — 83h qua dai, miss nhieu lenh ngan han
+            pass
             logger.debug(f"{symbol}: 5m downtrend — long signals blocked")
 
         # REVERSAL trade: RSI cuc doan + 2 nen 15m + 3 nen 1m xac nhan dao chieu + >= MIN_CONSENSUS

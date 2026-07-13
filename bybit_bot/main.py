@@ -262,9 +262,17 @@ class TradingBot:
         short_term_up   = c1_bull and c2_bull
         short_term_down = c1_bear and c2_bear
 
-        # Spike: nen vua dong [-1] lon hon 2x ATR
-        last_candle_size = abs(closes.iloc[-1] - opens.iloc[-1])
+        # Spike filter: nen hien tai HOAC bat ky nen nao trong 5 nen gan nhat > 2x ATR
+        # Neu co spike dump -> khong short them; spike pump -> khong long them
+        spike_lookback = 5
+        recent_bodies  = closes.iloc[-spike_lookback:].values - opens.iloc[-spike_lookback:].values
+        last_candle_size = abs(recent_bodies[-1])
         is_spike = last_candle_size > atr * 2.0
+
+        # Post-spike direction block: neu co nen dump manh trong 5 nen -> cam short
+        # neu co nen pump manh trong 5 nen -> cam long
+        spike_was_dump = any(b < -atr * 2.0 for b in recent_bodies)
+        spike_was_pump = any(b >  atr * 2.0 for b in recent_bodies)
 
         # 1m micro-trend: phan tich toan dien 1000 nen 1m (EMA, body momentum, volume, slope, HH/LL)
         micro = self._micro_trend(df_micro)
@@ -286,7 +294,9 @@ class TradingBot:
                 )
                 # 1m micro-trend cung phai xac nhan
                 micro_ok = (bo_sig.direction == 1 and micro_up) or (bo_sig.direction == -1 and micro_down)
-                if bo_ok and micro_ok and not is_spike:
+                post_spike_ok = not (bo_sig.direction == -1 and spike_was_dump) and \
+                                not (bo_sig.direction == 1  and spike_was_pump)
+                if bo_ok and micro_ok and not is_spike and post_spike_ok:
                     bo_sig.symbol    = symbol
                     bo_sig.consensus = 1
                     logger.info(
@@ -316,8 +326,14 @@ class TradingBot:
                 if sig.direction == 0 or sig.strength < config.MIN_SIGNAL_STRENGTH:
                     continue
 
-                # Bo qua sau spike lon (ca reversal cung phai cho spike qua di)
+                # Bo qua neu nen hien tai la spike
                 if is_spike:
+                    continue
+
+                # Post-spike block: khong short sau dump manh, khong long sau pump manh
+                if sig.direction == -1 and spike_was_dump:
+                    continue
+                if sig.direction == 1 and spike_was_pump:
                     continue
 
                 # Long chi khi 2 nen xanh lien tiep (momentum xac nhan)

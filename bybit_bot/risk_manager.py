@@ -77,7 +77,7 @@ class RiskManager:
         base_qty = max(min_qty, min_qty_notional)
 
         # Nhan scale consensus sau khi da dam bao base hop le
-        qty      = math.ceil(base_qty * scale_factor / qty_step) * qty_step
+        qty      = math.ceil(base_qty * config.TRADE_SIZE_MULT * scale_factor / qty_step) * qty_step
         notional = qty * signal.entry_price
 
         capital_used = notional / leverage

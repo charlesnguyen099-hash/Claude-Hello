@@ -279,10 +279,10 @@ class TradingBot:
         if is_top20 and not df_micro.empty and len(df_micro) >= 30:
             bo_sig = BREAKOUT_STRATEGY.generate_signal(df_micro, df_scalp, df_signal)
             if bo_sig.direction != 0:
-                # 5m phai ro rang cung chieu — KHONG cho sideways (scalp_trend=0)
+                # 5m khong duoc nguoc chieu — cho phep sideways
                 bo_ok = (
-                    (bo_sig.direction == 1  and scalp_trend == 1) or
-                    (bo_sig.direction == -1 and scalp_trend == -1)
+                    (bo_sig.direction == 1  and scalp_trend >= 0) or
+                    (bo_sig.direction == -1 and scalp_trend <= 0)
                 )
                 # 1m micro-trend cung phai xac nhan
                 micro_ok = (bo_sig.direction == 1 and micro_up) or (bo_sig.direction == -1 and micro_down)

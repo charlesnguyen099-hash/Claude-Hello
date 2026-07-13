@@ -45,6 +45,7 @@ class TradingBot:
         self.symbols: list[str] = []
         self.last_scan_ts: float = 0
         self.last_full_scan_ts: float = 0  # lan cuoi check 180 con lai
+        self.volume_map: dict[str, float] = {}  # symbol -> 24h volume USDT
 
     # ── Main loop ────────────────────────────────────────────────────────────
 
@@ -69,6 +70,7 @@ class TradingBot:
             symbols = self.scanner.scan()
             if symbols:
                 self.symbols = symbols
+                self.volume_map = getattr(self.scanner, "volume_map", {})
                 self.last_scan_ts = now
                 logger.info(f"Symbols updated: {len(self.symbols)}, top 5: {self.symbols[:5]}")
             elif not self.symbols:
@@ -114,8 +116,17 @@ class TradingBot:
             if symbol in pos_symbols:
                 continue
 
+            # Volume filter cho non-top20: bo qua coin nho thanh khoan thap
+            is_top20 = symbol in top20
+            if not is_top20:
+                vol = self.volume_map.get(symbol, 0)
+                if vol < config.MIN_VOLUME_NON_TOP20:
+                    logger.debug(
+                        f"{symbol}: skip non-top20 (vol={vol/1e6:.1f}M < {config.MIN_VOLUME_NON_TOP20/1e6:.0f}M)"
+                    )
+                    continue
+
             try:
-                is_top20 = symbol in top20
                 traded = self._process_symbol(symbol, equity, open_positions, is_top20)
                 if traded:
                     try:

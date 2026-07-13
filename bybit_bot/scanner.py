@@ -78,6 +78,10 @@ class MarketScanner:
         # Sort theo volume 24h giam dan — dung thu tu Bybit (volume cao nhat truoc)
         top = df.nlargest(config.TOP_N_SYMBOLS, "volume_usdt_24h")
         result = top["symbol"].tolist()
+        # Luu volume map de main.py co the filter non-top20
+        self.volume_map: dict[str, float] = dict(
+            zip(top["symbol"], top["volume_usdt_24h"])
+        )
 
         logger.info(
             f"Scanner selected {len(result)} symbols. "

@@ -11,7 +11,8 @@ TESTNET    = os.getenv("BYBIT_TESTNET", "false").lower() == "true"
 
 # --- Market Scanner -----------------------------------------------------------
 TOP_N_SYMBOLS        = 200
-MIN_VOLUME_USDT_24H  = 1_000_000
+MIN_VOLUME_USDT_24H      = 1_000_000   # filter dau vao khi scan 200 coins
+MIN_VOLUME_NON_TOP20     = 5_000_000   # non-top-20: phai co volume >= 5M USDT/ngay
 SCAN_INTERVAL_SEC    = 3600
 
 # --- Multi-Timeframe Analysis -------------------------------------------------

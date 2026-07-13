@@ -44,6 +44,7 @@ class TradingBot:
 
         self.symbols: list[str] = []
         self.last_scan_ts: float = 0
+        self.last_full_scan_ts: float = 0  # lan cuoi check 180 con lai
 
     # ── Main loop ────────────────────────────────────────────────────────────
 
@@ -92,10 +93,23 @@ class TradingBot:
         if open_positions:
             self.executor.manage_open_positions(open_positions)
 
-        # Quet tung symbol theo thu tu Bybit — trade ngay khi co signal
         pos_symbols = {p["symbol"] for p in open_positions}
 
-        for symbol in self.symbols:
+        # Top 20: check moi tick (moi 15 giay) — bat breakout nhanh
+        top20   = self.symbols[:config.TOP_FOCUS_COUNT]
+        # Con lai: chi check moi FULL_SCAN_INTERVAL giay
+        do_full = (now - self.last_full_scan_ts) >= config.FULL_SCAN_INTERVAL
+        rest    = self.symbols[config.TOP_FOCUS_COUNT:] if do_full else []
+        if do_full:
+            self.last_full_scan_ts = now
+
+        scan_list = top20 + rest
+        if rest:
+            logger.info(f"[TICK] Full scan: top20 + {len(rest)} remaining symbols")
+        else:
+            logger.info(f"[TICK] Fast scan: top20 only")
+
+        for symbol in scan_list:
 
             if symbol in pos_symbols:
                 continue
@@ -103,7 +117,6 @@ class TradingBot:
             try:
                 traded = self._process_symbol(symbol, equity, open_positions)
                 if traded:
-                    # Cap nhat lai sau khi trade
                     try:
                         open_positions = self.client.get_positions()
                         equity         = self.client.get_wallet_balance()

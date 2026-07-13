@@ -66,8 +66,10 @@ MIN_ATR_PCT         = 0.003  # ATR phai >= 0.3% gia de bu phi
 QTY_SCALE_CAP       = 5      # Nhan toi da 5x min_qty
 
 # --- Execution ----------------------------------------------------------------
-ORDER_TYPE        = "Market"
-LOOP_INTERVAL_SEC = 60
+ORDER_TYPE           = "Market"
+LOOP_INTERVAL_SEC    = 15   # check top 20 moi 15 giay
+FULL_SCAN_INTERVAL   = 60   # check 180 con lai moi 60 giay
+TOP_FOCUS_COUNT      = 20   # so luong coin focus voi tan suat cao
 RETRY_ATTEMPTS    = 3
 RETRY_DELAY_SEC   = 2
 

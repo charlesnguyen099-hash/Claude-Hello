@@ -64,8 +64,8 @@ TRAILING_STOP_ATR = 0.5    # Trailing stop = 0.5x ATR
 MIN_SIGNAL_STRENGTH = 0.60   # Chi lay signal manh
 MIN_CONSENSUS       = 3      # Can it nhat 3 strategies dong thuan cung chieu
 MIN_ATR_PCT         = 0.003  # ATR phai >= 0.3% gia de bu phi
-QTY_SCALE_CAP       = 5      # Nhan toi da 5x min_qty
-TRADE_SIZE_MULT     = 2      # Nhan base qty x2 truoc khi scale consensus
+QTY_SCALE_CAP           = 5    # Nhan toi da 5x min_qty
+NOTIONAL_EQUITY_MULT    = 2.0  # Notional (truoc margin) = equity x lan nay
 
 # --- Execution ----------------------------------------------------------------
 ORDER_TYPE           = "Market"

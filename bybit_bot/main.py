@@ -255,10 +255,16 @@ class TradingBot:
             return False
 
         # ATR filter: bo qua symbol bien dong qua nho
-        from strategies.base import compute_atr, compute_rsi
+        from strategies.base import compute_atr, compute_rsi, compute_adx
         atr   = compute_atr(df_signal).iloc[-1]
         price = df_signal["close"].iloc[-1]
         if price > 0 and atr / price < config.MIN_ATR_PCT:
+            return False
+
+        # ADX filter: bo qua khi thi truong sideway (ADX < MIN_ADX)
+        adx = compute_adx(df_signal).iloc[-1]
+        if adx < config.MIN_ADX:
+            logger.debug(f"{symbol}: skip — ADX={adx:.1f} < {config.MIN_ADX} (sideway)")
             return False
 
         # RSI cho reversal detection

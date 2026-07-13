@@ -55,6 +55,19 @@ def compute_macd(series: pd.Series, fast=12, slow=26, signal=9):
     return macd_line, signal_line, histogram
 
 
+def compute_adx(df: pd.DataFrame, period: int = 14) -> pd.Series:
+    high  = df["high"]
+    low   = df["low"]
+    close = df["close"]
+    plus_dm  = (high.diff()).clip(lower=0).where(high.diff() > -low.diff(), 0)
+    minus_dm = (-low.diff()).clip(lower=0).where(-low.diff() > high.diff(), 0)
+    atr      = compute_atr(df, period)
+    plus_di  = 100 * plus_dm.ewm(span=period, adjust=False).mean()  / atr
+    minus_di = 100 * minus_dm.ewm(span=period, adjust=False).mean() / atr
+    dx       = (100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan))
+    return dx.ewm(span=period, adjust=False).mean()
+
+
 class BaseStrategy(ABC):
     name: str = "base"
 

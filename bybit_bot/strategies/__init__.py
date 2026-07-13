@@ -15,4 +15,4 @@ ALL_STRATEGIES = [
     IchimokuStrategy(),
 ]
 
-BREAKOUT_STRATEGY = BreakoutStrategy()
+BREAKOUT_STRATEGY = BreakoutStrategy(vol_mult=3.5, lookback=20)

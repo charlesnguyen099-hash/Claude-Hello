@@ -274,21 +274,23 @@ class TradingBot:
         # 5m hard trend filter (tinh truoc, ap dung sau khi collect signals)
         scalp_trend = self._micro_trend(df_scalp)
 
-        # BREAKOUT: pha vo vung tich luy voi volume spike — bypass consensus
-        # Chi ap dung tren 1m (df_micro) de bat breakout sом nhat co the
-        if not df_micro.empty and len(df_micro) >= 30:
+        # BREAKOUT: chi ap dung cho top 20 coin, rat than trong
+        is_top20 = symbol in self.symbols[:config.TOP_FOCUS_COUNT]
+        if is_top20 and not df_micro.empty and len(df_micro) >= 30:
             bo_sig = BREAKOUT_STRATEGY.generate_signal(df_micro, df_scalp, df_signal)
             if bo_sig.direction != 0:
-                # Breakout phai cung chieu voi 5m trend (hoac 5m sideways)
+                # 5m phai ro rang cung chieu — KHONG cho sideways (scalp_trend=0)
                 bo_ok = (
-                    (bo_sig.direction == 1  and scalp_trend >= 0) or
-                    (bo_sig.direction == -1 and scalp_trend <= 0)
+                    (bo_sig.direction == 1  and scalp_trend == 1) or
+                    (bo_sig.direction == -1 and scalp_trend == -1)
                 )
-                if bo_ok and not is_spike:
+                # 1m micro-trend cung phai xac nhan
+                micro_ok = (bo_sig.direction == 1 and micro_up) or (bo_sig.direction == -1 and micro_down)
+                if bo_ok and micro_ok and not is_spike:
                     bo_sig.symbol    = symbol
                     bo_sig.consensus = 1
                     logger.info(
-                        f"{symbol} [BREAKOUT] -> "
+                        f"{symbol} [BREAKOUT TOP20] -> "
                         f"{'LONG' if bo_sig.direction==1 else 'SHORT'} "
                         f"strength={bo_sig.strength:.2f} | {bo_sig.reason}"
                     )

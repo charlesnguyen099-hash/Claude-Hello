@@ -8,7 +8,7 @@ Trade Executor — thực thi lệnh và quản lý vị thế
 
 import logging
 import time
-from typing import Optional
+from typing import Callable, Optional
 
 from client import BybitClient
 from risk_manager import RiskManager, TradeParams
@@ -29,6 +29,8 @@ class Executor:
         self._breakeven_set: dict[str, bool] = {}
         # ATR luu lai khi vao lenh — dung de tinh trailing stop distance chinh xac
         self._atr: dict[str, float]       = {}
+        # Callback duoc goi khi dong lenh lo — (symbol: str) -> None
+        self.on_loss_callback: Optional[Callable[[str], None]] = None
 
     def execute_signal(
         self,
@@ -178,6 +180,7 @@ class Executor:
         symbol = position["symbol"]
         side   = position["side"]
         qty    = float(position["size"])
+        pnl    = float(position.get("unrealisedPnl", 0))
         try:
             self.client.close_position(symbol, side, qty)
             self.logger.log_trade({
@@ -187,6 +190,8 @@ class Executor:
                 "qty":    qty,
                 "reason": "signal_reversal_or_emergency",
             })
-            logger.info(f"[CLOSE] {symbol} {side} qty={qty}")
+            logger.info(f"[CLOSE] {symbol} {side} qty={qty} pnl={pnl:.4f}")
+            if pnl < 0 and self.on_loss_callback:
+                self.on_loss_callback(symbol)
         except Exception as e:
             logger.error(f"Failed to close position {symbol}: {str(e).encode('ascii', 'replace').decode()}")

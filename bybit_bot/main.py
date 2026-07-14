@@ -47,6 +47,15 @@ class TradingBot:
         self.last_full_scan_ts: float = 0  # lan cuoi check 180 con lai
         self.volume_map: dict[str, float] = {}  # symbol -> 24h volume USDT
 
+        # Post-loss tracking: symbol -> timestamp dong lenh lo
+        # Trong 5 phut sau lo, can consensus >= MIN_CONSENSUS+1 de vao lai
+        self._recent_loss_ts: dict[str, float] = {}
+        self.executor.on_loss_callback = self._on_symbol_loss
+
+    def _on_symbol_loss(self, symbol: str):
+        self._recent_loss_ts[symbol] = time.time()
+        logger.info(f"{symbol}: post-loss cooldown started (5 min higher consensus)")
+
     # ── Main loop ────────────────────────────────────────────────────────────
 
     def run(self):
@@ -541,6 +550,11 @@ class TradingBot:
             pass
             logger.debug(f"{symbol}: 5m downtrend — long signals blocked")
 
+        # Post-loss check: tinh truoc khi dung cho ca reversal va momentum
+        post_loss = (time.time() - self._recent_loss_ts.get(symbol, 0)) < 300
+        if post_loss:
+            logger.debug(f"{symbol}: post-loss 5min active → consensus+1 required")
+
         # REVERSAL trade: RSI cuc doan + 2 nen 15m + 1m micro xac nhan dao chieu + >= MIN_CONSENSUS
         if is_reversal and reversal_dir != 0:
             # Direction-aware spike: long sau pump spike va short sau dump spike deu nguy hiem
@@ -554,7 +568,8 @@ class TradingBot:
                     (reversal_dir == -1 and short_term_down)
                 ) and self._micro_entry_analysis(df_micro, reversal_dir, is_top20)
                 reversal_signals = long_signals if reversal_dir == 1 else short_signals
-                if len(reversal_signals) >= config.MIN_CONSENSUS and reversal_confirmed:
+                reversal_min = config.MIN_CONSENSUS + (1 if post_loss else 0)
+                if len(reversal_signals) >= reversal_min and reversal_confirmed:
                     signals = reversal_signals
                     best = max(signals, key=lambda s: s.strength)
                     best.strength = min(0.95, best.strength + 0.15)
@@ -572,8 +587,9 @@ class TradingBot:
 
         # MOMENTUM trade: can >= MIN_CONSENSUS strategies dong thuan
         # Neu 1h sideways (macro_trend==0): yeu cau them 1 consensus de tranh tin hieu gia
+        # Neu vua lo lenh tren symbol nay trong 5 phut truoc: yeu cau consensus+1 (post-loss filter)
         sideways_1h = (macro_trend == 0)
-        required_consensus = config.MIN_CONSENSUS + (1 if sideways_1h else 0)
+        required_consensus = config.MIN_CONSENSUS + (1 if sideways_1h else 0) + (1 if post_loss else 0)
 
         if len(long_signals) >= required_consensus:
             signals = long_signals

@@ -250,6 +250,100 @@ class TradingBot:
             return -1
         return 0
 
+    def _micro_entry_analysis(self, df_micro, direction: int, is_top20: bool) -> bool:
+        """
+        Phan tich toan bo 1m candles de xac dinh timing entry.
+        5 yeu to: EMA alignment, momentum 3 nen, volume, exhaustion, micro structure.
+        Top20 (300 nen): can score >= 3/5. Non-top20 (30 nen): can score >= 2/4.
+        Tra True = timing tot, False = nen cho.
+        """
+        from strategies.base import compute_ema, compute_atr
+        if df_micro is None or df_micro.empty:
+            return True
+        n = len(df_micro)
+        if n < 5:
+            return True
+
+        close  = df_micro["close"]
+        open_  = df_micro["open"]
+        high   = df_micro["high"]
+        low    = df_micro["low"]
+        volume = df_micro["volume"]
+
+        atr_1m = compute_atr(df_micro).iloc[-1]
+        if atr_1m == 0:
+            return True
+
+        price = close.iloc[-1]
+        score = 0
+
+        # Factor 1: EMA alignment — price / EMA9 / EMA21 phai xep hang dung chieu
+        if n >= 21:
+            ema9  = compute_ema(close, 9)
+            ema21 = compute_ema(close, 21)
+            e9, e21 = ema9.iloc[-1], ema21.iloc[-1]
+            if direction == 1 and price > e9 > e21:
+                score += 1
+            elif direction == -1 and price < e9 < e21:
+                score += 1
+            else:
+                score -= 1
+
+        # Factor 2: Momentum — 2/3 nen gan nhat phai cung chieu
+        bodies_3 = close.iloc[-3:].values - open_.iloc[-3:].values
+        bull3 = sum(1 for b in bodies_3 if b > 0)
+        bear3 = sum(1 for b in bodies_3 if b < 0)
+        if direction == 1 and bull3 >= 2:
+            score += 1
+        elif direction == -1 and bear3 >= 2:
+            score += 1
+        else:
+            score -= 1
+
+        # Factor 3: Volume binh thuong — khong phai spike va khong qua nho
+        if n >= 10:
+            vol_ma = volume.rolling(10).mean().iloc[-1]
+            if vol_ma > 0:
+                ratio = volume.iloc[-1] / vol_ma
+                if 0.5 <= ratio <= 4.0:   # volume hop le
+                    score += 1
+                elif ratio > 6.0:          # spike volume — co the dang o dinh/day
+                    score -= 1
+
+        # Factor 4: Khong exhausted — nen hien tai khong qua nho sau loat nen lon (pause signal)
+        if n >= 4:
+            prev_body_avg = abs(close.iloc[-4:-1].values - open_.iloc[-4:-1].values).mean()
+            curr_body     = abs(close.iloc[-1] - open_.iloc[-1])
+            if prev_body_avg > 0:
+                ratio_body = curr_body / prev_body_avg
+                if ratio_body > 0.3:   # nen hien tai co noi luc — khong pause
+                    score += 1
+                # ratio <= 0.3: doji / spinning top — khong block nhung khong cong diem
+
+        # Factor 5: Micro structure — HH+HL (long) hoac LH+LL (short) trong 5 nen gan nhat
+        if n >= 8:
+            h5 = high.iloc[-5:].values
+            l5 = low.iloc[-5:].values
+            if direction == 1:
+                if h5[-1] > h5[-3] and l5[-1] > l5[-3]:
+                    score += 1
+                elif h5[-1] < h5[-3] and l5[-1] < l5[-3]:
+                    score -= 1
+            else:
+                if h5[-1] < h5[-3] and l5[-1] < l5[-3]:
+                    score += 1
+                elif h5[-1] > h5[-3] and l5[-1] > l5[-3]:
+                    score -= 1
+
+        threshold = 3 if is_top20 else 2
+        ok = score >= threshold
+        if not ok:
+            logger.debug(
+                f"micro_entry_analysis: dir={direction} score={score} threshold={threshold} "
+                f"n={n} top20={is_top20} -> skip"
+            )
+        return ok
+
     def _process_symbol(self, symbol: str, equity: float, open_positions: list[dict], is_top20: bool = False) -> bool:
         """Can >= 2 strategies dong thuan, scale qty theo do manh. Tra True neu da trade."""
         micro_limit = config.CANDLE_LIMIT_MICRO if is_top20 else config.CANDLE_LIMIT_MICRO_SMALL
@@ -407,12 +501,12 @@ class TradingBot:
             pass
             logger.debug(f"{symbol}: 5m downtrend — long signals blocked")
 
-        # REVERSAL trade: RSI cuc doan + 2 nen 15m + 3 nen 1m xac nhan dao chieu + >= MIN_CONSENSUS
+        # REVERSAL trade: RSI cuc doan + 2 nen 15m + 1m micro xac nhan dao chieu + >= MIN_CONSENSUS
         if is_reversal and reversal_dir != 0:
             reversal_confirmed = (
-                (reversal_dir == 1  and short_term_up   and micro_up)   or
-                (reversal_dir == -1 and short_term_down and micro_down)
-            )
+                (reversal_dir == 1  and short_term_up)   or
+                (reversal_dir == -1 and short_term_down)
+            ) and self._micro_entry_analysis(df_micro, reversal_dir, is_top20)
             reversal_signals = long_signals if reversal_dir == 1 else short_signals
             if len(reversal_signals) >= config.MIN_CONSENSUS and reversal_confirmed:
                 signals = reversal_signals
@@ -444,14 +538,10 @@ class TradingBot:
 
         best = max(signals, key=lambda s: s.strength)
 
-        # 1m micro-trend filter (chi top20)
-        if is_top20:
-            if best.direction == 1 and not micro_up:
-                logger.debug(f"{symbol}: LONG signal but 1m micro trend not up — skip")
-                return False
-            if best.direction == -1 and not micro_down:
-                logger.debug(f"{symbol}: SHORT signal but 1m micro trend not down — skip")
-                return False
+        # 1m micro entry timing: apply cho TAT CA coin voi phan tich day du 5 yeu to
+        if not self._micro_entry_analysis(df_micro, best.direction, is_top20):
+            logger.debug(f"{symbol}: skip — 1m micro entry timing not confirmed (score too low)")
+            return False
 
         best.consensus = len(signals)
         best.symbol    = symbol

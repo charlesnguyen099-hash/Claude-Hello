@@ -312,7 +312,11 @@ class TradingBot:
                 micro_ok = (bo_sig.direction == 1 and micro_up) or (bo_sig.direction == -1 and micro_down)
                 post_spike_ok = not (bo_sig.direction == -1 and spike_was_dump and scalp_trend != -1) and \
                                 not (bo_sig.direction == 1  and spike_was_pump and scalp_trend != 1)
-                if bo_ok and micro_ok and not is_spike and post_spike_ok:
+                # Spike check tren 1m: neu nen 1m hien tai la spike (>2x ATR 1m) thi khong vao
+                micro_atr  = compute_atr(df_micro).iloc[-1]
+                micro_body = abs(df_micro["close"].iloc[-1] - df_micro["open"].iloc[-1])
+                micro_spike = micro_body > micro_atr * 2.0
+                if bo_ok and micro_ok and not is_spike and not micro_spike and post_spike_ok:
                     bo_sig.symbol    = symbol
                     bo_sig.consensus = 1
                     logger.info(

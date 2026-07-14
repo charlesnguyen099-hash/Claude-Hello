@@ -27,7 +27,8 @@ TIMEFRAMES = {
     "trend":  "60",    # 1h: xu huong
     "macro":  "240",   # 4h: xu huong lon
 }
-CANDLE_LIMIT_MICRO  = 1000  # 1000 nen 1m = ~16.7 gio — max Bybit, du data phan tich
+CANDLE_LIMIT_MICRO  = 300   # 300 nen 1m = ~5 gio — du EMA on dinh, nhe API hon
+TOP_PRIORITY        = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT"]  # bo yeu cau 2 nen 15m
 CANDLE_LIMIT_SCALP  = 1000
 CANDLE_LIMIT_SIGNAL = 1000
 CANDLE_LIMIT_TREND  = 500

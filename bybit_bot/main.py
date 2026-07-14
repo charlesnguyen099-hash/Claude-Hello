@@ -359,10 +359,12 @@ class TradingBot:
                     continue
 
                 # Long chi khi 2 nen xanh lien tiep (momentum xac nhan)
-                if sig.direction == 1 and not short_term_up and not is_reversal:
+                # TOP_PRIORITY (BTC/ETH/SOL/BNB/XRP): bo qua yeu cau nay, dung 1m micro trend thay the
+                is_priority = symbol in config.TOP_PRIORITY
+                if sig.direction == 1 and not short_term_up and not is_reversal and not is_priority:
                     continue
                 # Short chi khi 2 nen do lien tiep (momentum xac nhan)
-                if sig.direction == -1 and not short_term_down and not is_reversal:
+                if sig.direction == -1 and not short_term_down and not is_reversal and not is_priority:
                     continue
 
                 # Reversal bypass macro filter — bat day/dinh du macro nguoc

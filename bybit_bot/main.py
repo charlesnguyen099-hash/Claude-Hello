@@ -53,6 +53,9 @@ class TradingBot:
         self.executor.on_loss_callback = self._on_symbol_loss
         # Track positions de detect SL/TP hit boi exchange (khong qua executor)
         self._prev_pos_symbols: set[str] = set()
+        # BTC global trend: +1 uptrend, -1 downtrend, 0 sideways
+        # Dung lam bo loc huong thi truong toan cuc (cap nhat moi tick)
+        self.btc_trend: int = 0
 
     def _on_symbol_loss(self, symbol: str):
         self._recent_loss_ts[symbol] = time.time()
@@ -139,10 +142,19 @@ class TradingBot:
 
         scan_list = top20 + rest
         top10 = set(self.symbols[:10])
+
+        # Cap nhat BTC global trend moi tick (dung lam bo loc huong thi truong toan cuc)
+        try:
+            df_btc_1h = self.client.get_klines("BTCUSDT", config.TIMEFRAMES["trend"], 100)
+            if not df_btc_1h.empty and len(df_btc_1h) >= 50:
+                self.btc_trend = self._trend_direction(df_btc_1h)
+        except Exception:
+            pass  # giu nguyen gia tri cu neu loi
+
         if rest:
-            logger.info(f"[TICK] Full scan: top20 + {len(rest)} remaining symbols")
+            logger.info(f"[TICK] Full scan: top20 + {len(rest)} remaining | BTC_trend={'UP' if self.btc_trend==1 else 'DOWN' if self.btc_trend==-1 else 'SIDEWAYS'}")
         else:
-            logger.info(f"[TICK] Fast scan: top20 only")
+            logger.info(f"[TICK] Fast scan: top20 only | BTC_trend={'UP' if self.btc_trend==1 else 'DOWN' if self.btc_trend==-1 else 'SIDEWAYS'}")
 
         for symbol in scan_list:
 
@@ -545,7 +557,10 @@ class TradingBot:
                 # 1m micro spike direction-aware (dong bo voi momentum path)
                 micro_spike_ok = not (_micro_spike_pump and bo_sig.direction == 1) and \
                                  not (_micro_spike_dump and bo_sig.direction == -1)
-                if bo_ok and micro_ok and not is_spike and post_spike_ok and micro_spike_ok:
+                # BTC global trend filter cho BREAKOUT
+                bo_btc_ok = not (self.btc_trend == -1 and bo_sig.direction == 1 and symbol != "BTCUSDT") and \
+                            not (self.btc_trend ==  1 and bo_sig.direction == -1 and symbol != "BTCUSDT")
+                if bo_ok and micro_ok and not is_spike and post_spike_ok and micro_spike_ok and bo_btc_ok:
                     # BREAKOUT phai qua range check — tranh long o dinh / short o day
                     if not self._micro_entry_analysis(df_micro, bo_sig.direction, is_top20):
                         logger.debug(f"{symbol}: BREAKOUT skip — range/micro_entry block")
@@ -654,17 +669,43 @@ class TradingBot:
                     self.executor.execute_signal(symbol, best, equity, open_positions, is_priority=is_priority)
                     return True
 
+        # BTC GLOBAL TREND FILTER — tranh trade nguoc chieu thi truong macro
+        # BTCUSDT: hard block neu di nguoc xu huong 1h cua chinh no
+        # Altcoin: yeu cau them +1 consensus neu di nguoc BTC trend
+        # REVERSAL da xu ly o tren (bo qua btc filter vi dao chieu la muc dich)
+        btc_trend = self.btc_trend
+        if btc_trend != 0 and symbol == "BTCUSDT":
+            if btc_trend == 1 and long_signals and not short_signals:
+                pass  # BTC up + long → ok
+            elif btc_trend == -1 and short_signals and not long_signals:
+                pass  # BTC down + short → ok
+            elif btc_trend == 1:
+                # BTC uptrend: xoa het short signals cho BTC chinh no
+                short_signals = []
+                logger.debug(f"BTCUSDT: cleared SHORT signals — BTC 1h uptrend")
+            elif btc_trend == -1:
+                # BTC downtrend: xoa het long signals cho BTC chinh no
+                long_signals = []
+                logger.debug(f"BTCUSDT: cleared LONG signals — BTC 1h downtrend")
+
+        # Altcoin: btc_trend nguoc chieu → can them +1 consensus (soft block, khong xoa het)
+        btc_opposes_long  = (btc_trend == -1 and symbol != "BTCUSDT")  # BTC down → long altcoin rui ro hon
+        btc_opposes_short = (btc_trend ==  1 and symbol != "BTCUSDT")  # BTC up → short altcoin rui ro hon
+
         # MOMENTUM trade: can >= MIN_CONSENSUS strategies dong thuan
         # Neu 1h sideways (macro_trend==0): yeu cau them 1 consensus de tranh tin hieu gia
         # Neu vua lo lenh tren symbol nay trong 5 phut truoc: yeu cau consensus+1 (post-loss filter)
         sideways_1h = (macro_trend == 0)
         # Cap o MIN_CONSENSUS+1 de tranh yeu cau 5 consensus (qua hiem, bot ngung trade)
         extra = min(1, (1 if sideways_1h else 0) + (1 if post_loss else 0))
-        required_consensus = config.MIN_CONSENSUS + extra
+        # Direction-specific required consensus: them +1 neu di nguoc BTC trend
+        required_long  = config.MIN_CONSENSUS + extra + (1 if btc_opposes_long  else 0)
+        required_short = config.MIN_CONSENSUS + extra + (1 if btc_opposes_short else 0)
 
         # TOP10 PRIORITY: 2 trong 3 Tier-1 strategy (supertrend + vwap_volume) dong thuan -> trade
         # Tier-1: Supertrend, VWAP+Volume, Breakout (Breakout da xu ly rieng o tren)
         # post_loss KHONG ap dung cho Tier1 — tin hieu Tier1 du manh de vao lai ngay
+        # BTC filter VAN AP DUNG cho Tier1 — khong the bypass bo loc huong thi truong toan cuc
         TIER1 = {"supertrend", "vwap_volume"}
         tier1_long  = sum(1 for s in long_signals  if s.strategy_name in TIER1)
         tier1_short = sum(1 for s in short_signals if s.strategy_name in TIER1)
@@ -673,11 +714,17 @@ class TradingBot:
             logger.debug(f"{symbol}: TOP10 TIER1 conflict — both LONG and SHORT confirmed, skip")
             return False
         if is_priority and (tier1_long >= 2 or tier1_short >= 2):
-            signals = long_signals if tier1_long >= 2 else short_signals
-            logger.info(f"{symbol}: [TOP10 TIER1] 2/2 Tier-1 confirm {'LONG' if tier1_long>=2 else 'SHORT'} — bypass consensus")
-        elif len(long_signals) >= required_consensus:
+            # Tier1 bypass consensus, nhung van phai qua BTC filter
+            t1_dir = 1 if tier1_long >= 2 else -1
+            if (t1_dir == 1 and btc_opposes_long) or (t1_dir == -1 and btc_opposes_short):
+                logger.debug(f"{symbol}: TOP10 TIER1 bypass blocked by BTC trend filter (btc_trend={btc_trend}, dir={t1_dir})")
+                # Khong bypass — fall through den required_long/short check ben duoi
+            else:
+                signals = long_signals if tier1_long >= 2 else short_signals
+                logger.info(f"{symbol}: [TOP10 TIER1] 2/2 Tier-1 confirm {'LONG' if tier1_long>=2 else 'SHORT'} — bypass consensus")
+        elif len(long_signals) >= required_long:
             signals = long_signals
-        elif len(short_signals) >= required_consensus:
+        elif len(short_signals) >= required_short:
             signals = short_signals
         else:
             return False

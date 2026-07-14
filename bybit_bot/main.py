@@ -379,7 +379,7 @@ class TradingBot:
                 elif decel > 0.60:  # Momentum on dinh
                     score += 1
 
-        threshold = 3 if is_top20 else 2
+        threshold = 3  # tat ca coin: can >= 3/7 factors (non-top20 riskier, khong giam nhe hon)
         ok = score >= threshold
         if not ok:
             logger.debug(
@@ -438,12 +438,12 @@ class TradingBot:
         spike_was_dump = any(b < -atr * 2.0 for b in recent_bodies)
         spike_was_pump = any(b >  atr * 2.0 for b in recent_bodies)
 
-        # 1m micro-trend (chi top20)
-        micro = self._micro_trend(df_micro) if is_top20 else 0
+        # 1m micro-trend — chay cho tat ca coin (non-top20 gio du 120 nen)
+        micro = self._micro_trend(df_micro)
         micro_up   = (micro == 1)
         micro_down = (micro == -1)
 
-        scalp_trend = self._micro_trend(df_scalp) if is_top20 else 0  # dung cho post-spike check
+        scalp_trend = self._micro_trend(df_scalp) if is_top20 else 0  # 5m trend cho post-spike check
 
         # [CHONG LO] Spike check tren 1m — direction-aware
         # Pump spike -> block LONG (khong mua dinh), nhung cho phep SHORT (ban dinh la hop le)
@@ -608,6 +608,15 @@ class TradingBot:
             return False
         if _micro_spike_dump and best.direction == -1:
             logger.debug(f"{symbol}: skip — 1m dump spike, khong short")
+            return False
+
+        # 1m micro trend confirmation — tat ca coin (micro trend phai cung chieu hoac neutral)
+        # Tranh trade khi 1m dang nguoc chieu hoan toan voi signal
+        if best.direction == 1 and micro_down:
+            logger.debug(f"{symbol}: skip — 1m micro trend BEARISH vs LONG signal")
+            return False
+        if best.direction == -1 and micro_up:
+            logger.debug(f"{symbol}: skip — 1m micro trend BULLISH vs SHORT signal")
             return False
 
         # 1m micro entry timing: apply cho TAT CA coin voi phan tich day du 5 yeu to

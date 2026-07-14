@@ -150,12 +150,20 @@ class TradingBot:
         except Exception:
             pass
 
-        # Chi trade top10 priority + BILLUSDT — bo qua tat ca coin khac
+        # Priority list: top10 + BILLUSDT (11 coins)
         EXTRA_SYMBOLS = {"BILLUSDT"}
-        scan_list = list(dict.fromkeys(list(top10) + list(EXTRA_SYMBOLS)))  # dedup, giu thu tu
+        priority_set  = top10 | EXTRA_SYMBOLS
+
+        # Trending top20 (tinh trong scanner.scan() moi gio)
+        trending_set = set(getattr(self.scanner, "trending_symbols", []))
+
+        # Scan list: priority first, then trending-only coins (khong lap)
+        trending_only = [s for s in getattr(self.scanner, "trending_symbols", []) if s not in priority_set]
+        scan_list = list(dict.fromkeys(list(priority_set) + trending_only))
 
         logger.info(
-            f"[TICK] Focus scan: {len(scan_list)} symbols (top10 + BILL) | "
+            f"[TICK] Focus scan: {len(scan_list)} symbols "
+            f"(priority={len(priority_set)}, trending_only={len(trending_only)}) | "
             f"BTC={'UP' if self.btc_trend==1 else 'DOWN' if self.btc_trend==-1 else 'SIDE'}"
         )
 
@@ -166,8 +174,8 @@ class TradingBot:
 
             # Tat ca focus symbols deu duoc treat nhu top20 (300 nen 1m, du breakout)
             is_top20 = True
-            # top10 + BILLUSDT deu la priority — dung bo loc nhe nhat
-            is_priority = True
+            # Priority: top10 + BILLUSDT; trending-only coins dung bo loc day du hon
+            is_priority = symbol in priority_set
             try:
                 traded = self._process_symbol(symbol, equity, open_positions, is_top20, is_priority)
                 if traded:

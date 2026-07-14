@@ -374,11 +374,11 @@ class TradingBot:
             if rng > 0:
                 range_pos = (price - low_rng) / rng
                 if not is_reversal:
-                    if direction == 1 and range_pos > 0.75:
-                        logger.debug(f"micro_entry: HARD BLOCK long — 100c range_pos={range_pos:.2f} > 0.75")
+                    if direction == 1 and range_pos > 0.90:
+                        logger.debug(f"micro_entry: HARD BLOCK long — 100c range_pos={range_pos:.2f} > 0.90")
                         return False
-                    if direction == -1 and range_pos < 0.25:
-                        logger.debug(f"micro_entry: HARD BLOCK short — 100c range_pos={range_pos:.2f} < 0.25")
+                    if direction == -1 and range_pos < 0.10:
+                        logger.debug(f"micro_entry: HARD BLOCK short — 100c range_pos={range_pos:.2f} < 0.10")
                         return False
                 # Bonus cho entry o vung an toan
                 if direction == 1 and range_pos < 0.55:

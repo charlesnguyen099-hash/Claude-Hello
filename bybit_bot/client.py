@@ -169,6 +169,20 @@ class BybitClient:
         self.session.cancel_all_orders(category="linear", symbol=symbol)
 
     @retry()
+    def update_stop_loss(self, symbol: str, sl_price: float):
+        """Cap nhat SL cho vi the dang mo (dung de doi SL ve break-even)."""
+        try:
+            self.session.set_trading_stop(
+                category="linear",
+                symbol=symbol,
+                stopLoss=str(round(sl_price, 6)),
+                slTriggerBy="MarkPrice",
+                positionIdx=0,
+            )
+        except Exception as e:
+            logger.warning(f"Update SL failed for {symbol}: {e}")
+
+    @retry()
     def set_trading_stop(self, symbol: str, side: str, trailing_stop: float):
         """Đặt trailing stop cho vị thế."""
         try:

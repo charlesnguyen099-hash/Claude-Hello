@@ -26,6 +26,8 @@ class Executor:
 
         # Theo dõi TP1 đã hit chưa: {symbol: bool}
         self._tp1_hit: dict[str, bool] = {}
+        # Theo dõi break-even SL đã set chưa: {symbol: bool}
+        self._breakeven_set: dict[str, bool] = {}
 
     def execute_signal(
         self,
@@ -72,7 +74,8 @@ class Executor:
                 tp=params.tp1_price,
             )
 
-            self._tp1_hit[symbol] = False
+            self._tp1_hit[symbol]     = False
+            self._breakeven_set[symbol] = False
 
             self.logger.log_trade({
                 "event":     "open",
@@ -113,20 +116,33 @@ class Executor:
             side          = pos["side"]
             unrealised    = float(pos.get("unrealisedPnl", 0))
 
+            tp1_threshold = float(pos.get("takeProfit", 0))
+
+            # Break-even SL: khi gia di duoc >= 50% duong den TP1, doi SL ve entry
+            if not self._breakeven_set.get(symbol, False) and tp1_threshold > 0:
+                dist_to_tp1  = abs(tp1_threshold - entry)
+                dist_moved   = abs(mark_price - entry)
+                if dist_to_tp1 > 0 and dist_moved >= dist_to_tp1 * config.BREAKEVEN_TRIGGER:
+                    try:
+                        fee_buffer = entry * config.ROUND_TRIP_FEE  # bu phi de khong lo
+                        be_price   = entry + fee_buffer if side == "Buy" else entry - fee_buffer
+                        self.client.update_stop_loss(symbol, round(be_price, 6))
+                        self._breakeven_set[symbol] = True
+                        logger.info(f"{symbol}: Break-even SL set at {be_price:.4f} (moved {dist_moved:.4f}/{dist_to_tp1:.4f} toward TP1)")
+                    except Exception as e:
+                        logger.warning(f"{symbol}: Could not set break-even SL: {e}")
+
             # Kích hoạt trailing stop khi đạt TP1
-            if not self._tp1_hit.get(symbol, False):
-                tp1_threshold = float(pos.get("takeProfit", 0))
-                if tp1_threshold > 0:
-                    if (side == "Buy"  and mark_price >= tp1_threshold) or \
-                       (side == "Sell" and mark_price <= tp1_threshold):
-                        self._tp1_hit[symbol] = True
-                        # Đặt trailing stop để bảo vệ phần còn lại
-                        try:
-                            self.client.set_trading_stop(symbol, side, float(pos.get("trailingStop", 0)) or
-                                                          abs(mark_price - entry) * 0.5)
-                            logger.info(f"{symbol}: TP1 hit — trailing stop activated")
-                        except Exception as e:
-                            logger.warning(f"{symbol}: Could not set trailing stop: {e}")
+            if not self._tp1_hit.get(symbol, False) and tp1_threshold > 0:
+                if (side == "Buy"  and mark_price >= tp1_threshold) or \
+                   (side == "Sell" and mark_price <= tp1_threshold):
+                    self._tp1_hit[symbol] = True
+                    try:
+                        self.client.set_trading_stop(symbol, side, float(pos.get("trailingStop", 0)) or
+                                                      abs(mark_price - entry) * 0.5)
+                        logger.info(f"{symbol}: TP1 hit — trailing stop activated")
+                    except Exception as e:
+                        logger.warning(f"{symbol}: Could not set trailing stop: {e}")
 
             # Emergency close nếu vượt ngưỡng rủi ro
             if self.risk_mgr.should_close_position(pos, mark_price):

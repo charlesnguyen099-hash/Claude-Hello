@@ -502,12 +502,26 @@ class TradingBot:
             _micro_price  = df_micro["close"].iloc[-1]
             if _close_10_ago > 0:
                 _net_move = (_micro_price - _close_10_ago) / _close_10_ago
-                if _net_move < -0.025 and not _micro_spike_dump:   # net drop > 2.5% → dump flag
+                if _net_move < -0.020 and not _micro_spike_dump:   # net drop > 2.0% → dump flag
                     _micro_spike_dump = True
                     logger.debug(f"{symbol}: cumulative net dump {_net_move*100:.1f}% in 10 candles → dump flag")
-                elif _net_move > 0.025 and not _micro_spike_pump:  # net pump > 2.5% → pump flag
+                elif _net_move > 0.020 and not _micro_spike_pump:  # net pump > 2.0% → pump flag
                     _micro_spike_pump = True
                     logger.debug(f"{symbol}: cumulative net pump {_net_move*100:.1f}% in 10 candles → pump flag")
+
+            # Consecutive candles block: 5 nen lien tiep cung chieu = momentum extended
+            # Tranh long sau 5 nen xanh lien tiep (dang o dinh), short sau 5 nen do (dang o day)
+            if len(df_micro) >= 5:
+                _micro_c = df_micro["close"].iloc[-5:].values
+                _micro_o = df_micro["open"].iloc[-5:].values
+                _all_green = all(_micro_c[i] > _micro_o[i] for i in range(5))
+                _all_red   = all(_micro_c[i] < _micro_o[i] for i in range(5))
+                if _all_green and not _micro_spike_pump:
+                    _micro_spike_pump = True
+                    logger.debug(f"{symbol}: 5 consecutive green 1m candles → pump flag (extended run)")
+                if _all_red and not _micro_spike_dump:
+                    _micro_spike_dump = True
+                    logger.debug(f"{symbol}: 5 consecutive red 1m candles → dump flag (extended run)")
 
         # Post-loss filter — tinh som de ap dung cho ca BREAKOUT va momentum
         post_loss = (time.time() - self._recent_loss_ts.get(symbol, 0)) < 300

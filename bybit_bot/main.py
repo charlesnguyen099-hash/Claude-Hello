@@ -335,14 +335,16 @@ class TradingBot:
                 elif h5[-1] > h5[-3] and l5[-1] > l5[-3]:
                     score -= 1
 
-        # Factor 6: Range position — tranh long o sat dinh / short o sat day cua range 20 nen
+        # Factor 6: Range position — tranh long o sat dinh / short o sat day cua range 100 nen
+        # 100 nen 1m = ~100 phut, du de thay xu huong ngan/trung han
         # Neu price o top 20% range ma muon long: penalty -3 (gan nhu block)
-        if n >= 20:
-            high20 = high.iloc[-20:].max()
-            low20  = low.iloc[-20:].min()
-            rng = high20 - low20
+        _range_window = min(100, n)
+        if _range_window >= 20:
+            high_rng = high.iloc[-_range_window:].max()
+            low_rng  = low.iloc[-_range_window:].min()
+            rng = high_rng - low_rng
             if rng > 0:
-                range_pos = (price - low20) / rng
+                range_pos = (price - low_rng) / rng
                 if direction == 1:
                     if range_pos > 0.80:    # Long o sat dinh — rat nguy hiem
                         score -= 3

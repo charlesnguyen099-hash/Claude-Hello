@@ -335,6 +335,37 @@ class TradingBot:
                 elif h5[-1] > h5[-3] and l5[-1] > l5[-3]:
                     score -= 1
 
+        # Factor 6: Range position — tranh long o sat dinh / short o sat day cua range 20 nen
+        # Neu price o top 20% range ma muon long: penalty -3 (gan nhu block)
+        if n >= 20:
+            high20 = high.iloc[-20:].max()
+            low20  = low.iloc[-20:].min()
+            rng = high20 - low20
+            if rng > 0:
+                range_pos = (price - low20) / rng
+                if direction == 1:
+                    if range_pos > 0.80:    # Long o sat dinh — rat nguy hiem
+                        score -= 3
+                    elif range_pos < 0.55:  # Long o nua duoi hoac giua range — an toan
+                        score += 1
+                else:
+                    if range_pos < 0.20:    # Short o sat day — rat nguy hiem
+                        score -= 3
+                    elif range_pos > 0.45:  # Short o nua tren hoac giua range — an toan
+                        score += 1
+
+        # Factor 7: Momentum deceleration — nen gan day nho manh so voi nen truoc
+        # Tranh vao lenh khi momentum dang kiet suc (sap dao chieu)
+        if n >= 8:
+            recent_body = abs(close.iloc[-3:-1].values - open_.iloc[-3:-1].values).mean()
+            prev_body   = abs(close.iloc[-8:-3].values - open_.iloc[-8:-3].values).mean()
+            if prev_body > 0:
+                decel = recent_body / prev_body
+                if decel < 0.35:    # Momentum giam > 65% — dang dung lai / dao chieu
+                    score -= 1
+                elif decel > 0.60:  # Momentum on dinh
+                    score += 1
+
         threshold = 3 if is_top20 else 2
         ok = score >= threshold
         if not ok:

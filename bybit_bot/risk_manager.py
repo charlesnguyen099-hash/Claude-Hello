@@ -162,9 +162,13 @@ class RiskManager:
             return round(qty, 3) if qty > 0 else 0.0
 
     def should_close_position(self, position: dict, current_price: float) -> bool:
-        unrealised_pnl_pct = float(position.get("unrealisedPnl", 0)) / (
-            float(position.get("positionValue", 1)) or 1
-        )
+        # So sanh PnL voi margin (von bo vao lenh), khong phai notional
+        # positionValue = notional (qty x price), margin = notional / leverage
+        notional = float(position.get("positionValue", 1)) or 1
+        leverage = float(position.get("leverage", 1)) or 1
+        margin   = notional / leverage
+        unrealised_pnl = float(position.get("unrealisedPnl", 0))
+        unrealised_pnl_pct = unrealised_pnl / margin if margin > 0 else 0
         if unrealised_pnl_pct < -0.30:
             return True
         return False

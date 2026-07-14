@@ -132,10 +132,16 @@ class Executor:
                 continue
 
             dist_to_tp1 = abs(tp1_threshold - entry)
-            dist_moved  = abs(mark_price - entry)
+            # Tinh khoang cach co huong: chi tinh khi gia di DUNG chieu (profit direction)
+            # Tranh be/trailing fire khi gia di nguoc chieu (dang lo)
+            if side == "Buy":
+                dist_moved = mark_price - entry    # duong = gia tang = dung huong
+            else:
+                dist_moved = entry - mark_price    # duong = gia giam = dung huong
 
             # --- Muc 1: Break-even SL tai 50% duong den TP1 ---
-            if not self._breakeven_set.get(symbol, False) and dist_to_tp1 > 0:
+            # Chi kich hoat khi dist_moved > 0 (gia dang co loi nhuan)
+            if not self._breakeven_set.get(symbol, False) and dist_to_tp1 > 0 and dist_moved > 0:
                 if dist_moved >= dist_to_tp1 * config.BREAKEVEN_TRIGGER:
                     try:
                         fee_buffer = entry * config.ROUND_TRIP_FEE
@@ -153,7 +159,8 @@ class Executor:
             # --- Muc 2: Trailing stop tai TRAILING_TRIGGER% (75%) duong den TP1 ---
             # Kich hoat TRUOC khi san dong tai TP1 — neu dao chieu thi trailing stop bat duoc loi nhuan
             # Neu gia tiep tuc den TP1 thi san tu dong dong (trailing stop vo hieu)
-            if not self._tp1_hit.get(symbol, False) and dist_to_tp1 > 0:
+            # Chi kich hoat khi dist_moved > 0 (gia dang co loi nhuan)
+            if not self._tp1_hit.get(symbol, False) and dist_to_tp1 > 0 and dist_moved > 0:
                 if dist_moved >= dist_to_tp1 * config.TRAILING_TRIGGER:
                     self._tp1_hit[symbol] = True
                     try:

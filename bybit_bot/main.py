@@ -669,7 +669,7 @@ class TradingBot:
         tier1_long  = sum(1 for s in long_signals  if s.strategy_name in TIER1)
         tier1_short = sum(1 for s in short_signals if s.strategy_name in TIER1)
 
-        if is_priority and tier1_long >= 2 and tier1_short >= 2:
+        if is_priority and tier1_long >= 1 and tier1_short >= 1:
             logger.debug(f"{symbol}: TOP10 TIER1 conflict — both LONG and SHORT confirmed, skip")
             return False
         if is_priority and (tier1_long >= 2 or tier1_short >= 2):
@@ -716,7 +716,7 @@ class TradingBot:
                 try:
                     if strategy.name == "sustained_trend":
                         continue
-                    sig_1h = strategy.generate_signal(df_trend, df_macro, df_macro)
+                    sig_1h = strategy.generate_signal(df_trend, df_macro, df_macro)  # df=1h, df_trend=4h (macro), df_macro=4h
                     if sig_1h.direction == best.direction and sig_1h.strength >= config.MIN_SIGNAL_STRENGTH:
                         h1_confirms += 1
                     elif sig_1h.direction == -best.direction and sig_1h.strength >= config.MIN_SIGNAL_STRENGTH:

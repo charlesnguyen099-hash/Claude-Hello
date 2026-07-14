@@ -46,20 +46,30 @@ class BollingerStrategy(BaseStrategy):
         if bw.iloc[-1] < 0.01:
             return null
 
-        # Nến đảo chiều bullish (hammer / engulfing)
-        bullish_reversal = curr_close > prev_close and prev_low <= lower.iloc[-2]
-        bearish_reversal = curr_close < prev_close and prev_high >= upper.iloc[-2]
+        # Nen dao chieu bullish: nen hien tai HOAC nen truoc cham lower band
+        curr_low  = df["low"].iloc[-1]
+        bullish_reversal = curr_close > prev_close and (
+            prev_low <= lower.iloc[-2] or curr_low <= lower.iloc[-1]
+        )
+        bearish_reversal = curr_close < prev_close and (
+            prev_high >= upper.iloc[-2] or df["high"].iloc[-1] >= upper.iloc[-1]
+        )
+
+        # RSI: accept neu nen hien tai HOAC nen truoc o vung extreme
+        rsi_oversold   = rsi.iloc[-1] < 35 or rsi.iloc[-2] < 35
+        rsi_overbought = rsi.iloc[-1] > 65 or rsi.iloc[-2] > 65
 
         macro_d = self._trend_direction(df_macro)
 
-        if bullish_reversal and rsi.iloc[-1] < 35 and macro_d >= 0:
-            pct_below = (lower.iloc[-1] - price) / lower.iloc[-1]
-            strength  = min(0.85, 0.5 + abs(pct_below) * 10)
+        if bullish_reversal and rsi_oversold and macro_d >= 0:
+            # Do khoang cach gia vs lower band (khoang phuc hoi tu band)
+            band_dist = abs(price - lower.iloc[-1]) / (lower.iloc[-1] + 1e-9)
+            strength  = min(0.85, 0.5 + band_dist * 10)
             return Signal(1, strength, self.name, price, atr, "BB lower touch + RSI oversold reversal")
 
-        if bearish_reversal and rsi.iloc[-1] > 65 and macro_d <= 0:
-            pct_above = (price - upper.iloc[-1]) / upper.iloc[-1]
-            strength  = min(0.85, 0.5 + abs(pct_above) * 10)
+        if bearish_reversal and rsi_overbought and macro_d <= 0:
+            band_dist = abs(price - upper.iloc[-1]) / (upper.iloc[-1] + 1e-9)
+            strength  = min(0.85, 0.5 + band_dist * 10)
             return Signal(-1, strength, self.name, price, atr, "BB upper touch + RSI overbought reversal")
 
         return null

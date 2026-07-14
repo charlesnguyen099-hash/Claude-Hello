@@ -308,12 +308,14 @@ class TradingBot:
         scalp_trend = self._micro_trend(df_scalp) if is_top20 else 0  # dung cho post-spike check
 
         # [CHONG LO] Spike check tren 1m — apply TAT CA coin
-        # Neu nen 1m hien tai la spike (>2x ATR 1m) -> khong vao lenh, doi nen ke tiep
-        if not df_micro.empty:
-            _micro_atr  = compute_atr(df_micro).iloc[-1]
-            _micro_body = abs(df_micro["close"].iloc[-1] - df_micro["open"].iloc[-1])
-            if _micro_body > _micro_atr * 2.0:
-                logger.debug(f"{symbol}: skip — 1m spike (body={_micro_body:.4f} > 2x ATR={_micro_atr:.4f})")
+        # Check 5 nen 1m gan nhat (khong chi nen hien tai) — spike co the da dong truoc khi bot scan
+        if not df_micro.empty and len(df_micro) >= 5:
+            _micro_atr    = compute_atr(df_micro).iloc[-1]
+            _micro_bodies = (df_micro["close"].iloc[-5:].values - df_micro["open"].iloc[-5:].values)
+            _micro_spike_dump = any(b < -_micro_atr * 2.0 for b in _micro_bodies)
+            _micro_spike_pump = any(b >  _micro_atr * 2.0 for b in _micro_bodies)
+            if _micro_spike_dump or _micro_spike_pump:
+                logger.debug(f"{symbol}: skip — 1m spike in last 5 candles (dump={_micro_spike_dump} pump={_micro_spike_pump})")
                 return False
 
         # BREAKOUT: chi top20

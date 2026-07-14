@@ -688,24 +688,29 @@ class TradingBot:
                 long_signals = []
                 logger.debug(f"BTCUSDT: cleared LONG signals — BTC 1h downtrend")
 
-        # Altcoin: btc_trend nguoc chieu → can them +1 consensus (soft block, khong xoa het)
-        btc_opposes_long  = (btc_trend == -1 and symbol != "BTCUSDT")  # BTC down → long altcoin rui ro hon
-        btc_opposes_short = (btc_trend ==  1 and symbol != "BTCUSDT")  # BTC up → short altcoin rui ro hon
+        # Altcoin non-priority: btc_trend nguoc chieu → can them +1 consensus (soft block)
+        # Top10 priority: MIEN BTC penalty — coin lon co momentum rieng, khong ep them consensus
+        btc_opposes_long  = (btc_trend == -1 and symbol != "BTCUSDT" and not is_priority)
+        btc_opposes_short = (btc_trend ==  1 and symbol != "BTCUSDT" and not is_priority)
 
-        # MOMENTUM trade: can >= MIN_CONSENSUS strategies dong thuan
-        # Neu 1h sideways (macro_trend==0): yeu cau them 1 consensus de tranh tin hieu gia
-        # Neu vua lo lenh tren symbol nay trong 5 phut truoc: yeu cau consensus+1 (post-loss filter)
+        # MOMENTUM trade
         sideways_1h = (macro_trend == 0)
-        # Cap o MIN_CONSENSUS+1 de tranh yeu cau 5 consensus (qua hiem, bot ngung trade)
-        extra = min(1, (1 if sideways_1h else 0) + (1 if post_loss else 0))
-        # Direction-specific required consensus: them +1 neu di nguoc BTC trend
-        required_long  = config.MIN_CONSENSUS + extra + (1 if btc_opposes_long  else 0)
-        required_short = config.MIN_CONSENSUS + extra + (1 if btc_opposes_short else 0)
 
-        # TOP10 PRIORITY: 2 trong 3 Tier-1 strategy (supertrend + vwap_volume) dong thuan -> trade
-        # Tier-1: Supertrend, VWAP+Volume, Breakout (Breakout da xu ly rieng o tren)
+        if is_priority:
+            # Top10: chi can MIN_CONSENSUS, khong bi cong them vi sideways hay post_loss
+            # (post_loss + sideways penalty da duoc giam nhe cho coin lon co thanh khoan tot)
+            extra = 1 if post_loss else 0
+            required_long  = config.MIN_CONSENSUS + extra
+            required_short = config.MIN_CONSENSUS + extra
+        else:
+            # Non-priority: day du filter (sideways +1, post_loss +1, btc_opposes +1)
+            extra = min(1, (1 if sideways_1h else 0) + (1 if post_loss else 0))
+            required_long  = config.MIN_CONSENSUS + extra + (1 if btc_opposes_long  else 0)
+            required_short = config.MIN_CONSENSUS + extra + (1 if btc_opposes_short else 0)
+
+        # TOP10 PRIORITY: 2 trong 2 Tier-1 strategy (supertrend + vwap_volume) dong thuan -> trade
+        # Tier-1 bypass: KHONG bi chan boi BTC filter — top10 coin lon co momentum rieng
         # post_loss KHONG ap dung cho Tier1 — tin hieu Tier1 du manh de vao lai ngay
-        # BTC filter VAN AP DUNG cho Tier1 — khong the bypass bo loc huong thi truong toan cuc
         TIER1 = {"supertrend", "vwap_volume"}
         tier1_long  = sum(1 for s in long_signals  if s.strategy_name in TIER1)
         tier1_short = sum(1 for s in short_signals if s.strategy_name in TIER1)
@@ -714,14 +719,8 @@ class TradingBot:
             logger.debug(f"{symbol}: TOP10 TIER1 conflict — both LONG and SHORT confirmed, skip")
             return False
         if is_priority and (tier1_long >= 2 or tier1_short >= 2):
-            # Tier1 bypass consensus, nhung van phai qua BTC filter
-            t1_dir = 1 if tier1_long >= 2 else -1
-            if (t1_dir == 1 and btc_opposes_long) or (t1_dir == -1 and btc_opposes_short):
-                logger.debug(f"{symbol}: TOP10 TIER1 bypass blocked by BTC trend filter (btc_trend={btc_trend}, dir={t1_dir})")
-                # Khong bypass — fall through den required_long/short check ben duoi
-            else:
-                signals = long_signals if tier1_long >= 2 else short_signals
-                logger.info(f"{symbol}: [TOP10 TIER1] 2/2 Tier-1 confirm {'LONG' if tier1_long>=2 else 'SHORT'} — bypass consensus")
+            signals = long_signals if tier1_long >= 2 else short_signals
+            logger.info(f"{symbol}: [TOP10 TIER1] 2/2 Tier-1 confirm {'LONG' if tier1_long>=2 else 'SHORT'} — bypass consensus")
         elif len(long_signals) >= required_long:
             signals = long_signals
         elif len(short_signals) >= required_short:

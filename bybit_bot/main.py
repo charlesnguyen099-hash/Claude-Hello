@@ -361,11 +361,11 @@ class TradingBot:
                 elif h5[-1] > h5[-3] and l5[-1] > l5[-3]:
                     score -= 1
 
-        # Factor 6: Range position — tranh long o sat dinh / short o sat day cua range 100 nen
-        # 100 nen 1m = ~100 phut, du de thay xu huong ngan/trung han
-        # HARD BLOCK: price o top 25% range -> khong long; bottom 25% -> khong short
-        # Ngoai le: is_reversal=True (RSI cuc doan) — price o bottom sau drop dai → long hop le
-        # Du range 100 nen ngan, nhung RSI < 35 xac nhan oversold that su
+        # Factor 6: Dual range check — 100 nen (xu huong trung han) + 20 nen (local bounce/dip)
+        # HARD BLOCK 100-candle: tranh long o top 25% / short o bottom 25% cua 100 phut qua
+        # HARD BLOCK 20-candle:  tranh long o top 20% / short o bottom 20% cua 20 phut qua
+        #   (bat duoc "short o day local" khi 100-candle range cho thay midrange nhung thuc te dang bounce)
+        # Ngoai le: is_reversal=True (RSI cuc doan xac nhan) → skip range block
         _range_window = min(100, n)
         if _range_window >= 20:
             high_rng = high.iloc[-_range_window:].max()
@@ -375,16 +375,32 @@ class TradingBot:
                 range_pos = (price - low_rng) / rng
                 if not is_reversal:
                     if direction == 1 and range_pos > 0.75:
-                        logger.debug(f"micro_entry: HARD BLOCK long — range_pos={range_pos:.2f} > 0.75 (near top)")
+                        logger.debug(f"micro_entry: HARD BLOCK long — 100c range_pos={range_pos:.2f} > 0.75")
                         return False
                     if direction == -1 and range_pos < 0.25:
-                        logger.debug(f"micro_entry: HARD BLOCK short — range_pos={range_pos:.2f} < 0.25 (near bottom)")
+                        logger.debug(f"micro_entry: HARD BLOCK short — 100c range_pos={range_pos:.2f} < 0.25")
                         return False
                 # Bonus cho entry o vung an toan
                 if direction == 1 and range_pos < 0.55:
                     score += 1
                 elif direction == -1 and range_pos > 0.45:
                     score += 1
+
+        # 20-candle local range: check them de tranh short o day local / long o dinh local
+        # Bat cac truong hop 100-candle cho thay midrange nhung local dang o extreme
+        _local_window = min(20, n)
+        if _local_window >= 10 and not is_reversal:
+            local_high = high.iloc[-_local_window:].max()
+            local_low  = low.iloc[-_local_window:].min()
+            local_rng  = local_high - local_low
+            if local_rng > 0:
+                local_pos = (price - local_low) / local_rng
+                if direction == 1 and local_pos > 0.80:
+                    logger.debug(f"micro_entry: HARD BLOCK long — 20c local_pos={local_pos:.2f} > 0.80 (local top)")
+                    return False
+                if direction == -1 and local_pos < 0.20:
+                    logger.debug(f"micro_entry: HARD BLOCK short — 20c local_pos={local_pos:.2f} < 0.20 (local bottom)")
+                    return False
 
         # Factor 7: Momentum deceleration — nen gan day nho manh so voi nen truoc
         # Tranh vao lenh khi momentum dang kiet suc (sap dao chieu)

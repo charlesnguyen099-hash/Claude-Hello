@@ -496,20 +496,18 @@ class TradingBot:
             if _micro_spike_dump and _micro_spike_pump:
                 logger.debug(f"{symbol}: skip — 1m spike ca 2 chieu (thi truong loan)")
                 return False
-            # Cumulative move check: phat hien dump/pump trai qua nhieu nen nho
-            # (khong co single spike nhung tong the gia dong qua manh)
-            _micro_high10 = df_micro["high"].iloc[-10:].max()
-            _micro_low10  = df_micro["low"].iloc[-10:].min()
+            # Cumulative net move check: phat hien dump/pump trai qua nhieu nen nho
+            # Dung close[-10] vs close[-1] de tranh false positive khi gia dip roi recover
+            _close_10_ago = df_micro["close"].iloc[-10]
             _micro_price  = df_micro["close"].iloc[-1]
-            if _micro_high10 > 0:
-                _cum_drop = (_micro_high10 - _micro_price) / _micro_high10
-                _cum_pump = (_micro_price - _micro_low10)  / _micro_low10 if _micro_low10 > 0 else 0
-                if _cum_drop > 0.025 and not _micro_spike_dump:   # drop > 2.5% tich luy → coi nhu dump
+            if _close_10_ago > 0:
+                _net_move = (_micro_price - _close_10_ago) / _close_10_ago
+                if _net_move < -0.025 and not _micro_spike_dump:   # net drop > 2.5% → dump flag
                     _micro_spike_dump = True
-                    logger.debug(f"{symbol}: cumulative dump {_cum_drop*100:.1f}% in 10 candles → dump flag")
-                if _cum_pump > 0.025 and not _micro_spike_pump:   # pump > 2.5% tich luy → coi nhu pump
+                    logger.debug(f"{symbol}: cumulative net dump {_net_move*100:.1f}% in 10 candles → dump flag")
+                elif _net_move > 0.025 and not _micro_spike_pump:  # net pump > 2.5% → pump flag
                     _micro_spike_pump = True
-                    logger.debug(f"{symbol}: cumulative pump {_cum_pump*100:.1f}% in 10 candles → pump flag")
+                    logger.debug(f"{symbol}: cumulative net pump {_net_move*100:.1f}% in 10 candles → pump flag")
 
         # Post-loss filter — tinh som de ap dung cho ca BREAKOUT va momentum
         post_loss = (time.time() - self._recent_loss_ts.get(symbol, 0)) < 300
@@ -657,6 +655,9 @@ class TradingBot:
         tier1_long  = sum(1 for s in long_signals  if s.strategy_name in TIER1)
         tier1_short = sum(1 for s in short_signals if s.strategy_name in TIER1)
 
+        if is_priority and tier1_long >= 2 and tier1_short >= 2:
+            logger.debug(f"{symbol}: TOP10 TIER1 conflict — both LONG and SHORT confirmed, skip")
+            return False
         if is_priority and (tier1_long >= 2 or tier1_short >= 2):
             signals = long_signals if tier1_long >= 2 else short_signals
             logger.info(f"{symbol}: [TOP10 TIER1] 2/2 Tier-1 confirm {'LONG' if tier1_long>=2 else 'SHORT'} — bypass consensus")

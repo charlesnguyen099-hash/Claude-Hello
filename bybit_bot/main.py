@@ -464,7 +464,7 @@ class TradingBot:
 
         # Spike filter: nen hien tai HOAC bat ky nen nao trong 5 nen gan nhat > 2x ATR
         # Neu co spike dump -> khong short them; spike pump -> khong long them
-        spike_lookback = 5
+        spike_lookback = 10
         recent_bodies  = closes.iloc[-spike_lookback:].values - opens.iloc[-spike_lookback:].values
         last_candle_size = abs(recent_bodies[-1])
         is_spike = last_candle_size > atr * 2.0
@@ -486,9 +486,9 @@ class TradingBot:
         # Ca 2 cung xuat hien -> thi truong loan, skip tat ca
         _micro_spike_dump = False
         _micro_spike_pump = False
-        if not df_micro.empty and len(df_micro) >= 5:
+        if not df_micro.empty and len(df_micro) >= 10:
             _micro_atr    = compute_atr(df_micro).iloc[-1]
-            _micro_bodies = (df_micro["close"].iloc[-5:].values - df_micro["open"].iloc[-5:].values)
+            _micro_bodies = (df_micro["close"].iloc[-10:].values - df_micro["open"].iloc[-10:].values)
             _micro_spike_dump = any(b < -_micro_atr * 2.0 for b in _micro_bodies)
             _micro_spike_pump = any(b >  _micro_atr * 2.0 for b in _micro_bodies)
             if _micro_spike_dump and _micro_spike_pump:

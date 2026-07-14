@@ -280,9 +280,8 @@ class TradingBot:
     def _micro_entry_analysis(self, df_micro, direction: int, is_top20: bool, is_reversal: bool = False) -> bool:
         """
         Phan tich toan bo 1m candles de xac dinh timing entry.
-        5 yeu to: EMA alignment, momentum 3 nen, volume, exhaustion, micro structure.
-        Top20 (300 nen): can score >= 3/5. Non-top20 (30 nen): can score >= 2/4.
-        Tra True = timing tot, False = nen cho.
+        7 yeu to: EMA, momentum, volume, body size, micro structure, range, deceleration.
+        Tat ca coin: can score >= 3/7. Tra True = timing tot, False = nen cho.
         """
         from strategies.base import compute_ema, compute_atr
         if df_micro is None or df_micro.empty:
@@ -426,7 +425,7 @@ class TradingBot:
         return ok
 
     def _process_symbol(self, symbol: str, equity: float, open_positions: list[dict], is_top20: bool = False, is_priority: bool = False) -> bool:
-        """Can >= 2 strategies dong thuan, scale qty theo do manh. Tra True neu da trade."""
+        """Phan tich symbol, chay tat ca filter va strategy, tra True neu da trade."""
         micro_limit = config.CANDLE_LIMIT_MICRO if is_top20 else config.CANDLE_LIMIT_MICRO_SMALL
         df_micro  = self.client.get_klines(symbol, config.TIMEFRAMES["micro"], micro_limit)
         df_scalp  = self.client.get_klines(symbol, config.TIMEFRAMES["scalp"],  config.CANDLE_LIMIT_SCALP)
@@ -575,7 +574,7 @@ class TradingBot:
                     continue
 
                 # Long chi khi 2 nen xanh lien tiep (momentum xac nhan)
-                # TOP_PRIORITY (BTC/ETH/SOL/BNB/XRP): bo qua yeu cau nay, dung 1m micro trend thay the
+                # top10 priority: bo qua yeu cau nay, dung 1m micro trend thay the
                 if sig.direction == 1 and not short_term_up and not is_reversal and not is_priority:
                     continue
                 # Short chi khi 2 nen do lien tiep (momentum xac nhan)
@@ -598,11 +597,6 @@ class TradingBot:
                         short_signals.append(sig)
             except Exception:
                 continue
-
-        if False:  # 5m hard filter da bo — 83h qua dai, miss nhieu lenh ngan han
-            pass
-            logger.debug(f"{symbol}: 5m downtrend — long signals blocked")
-
 
         # REVERSAL trade: RSI cuc doan + 2 nen 15m + 1m micro xac nhan dao chieu + >= MIN_CONSENSUS
         if is_reversal and reversal_dir != 0:
@@ -644,11 +638,12 @@ class TradingBot:
 
         # TOP10 PRIORITY: 2 trong 3 Tier-1 strategy (supertrend + vwap_volume) dong thuan -> trade
         # Tier-1: Supertrend, VWAP+Volume, Breakout (Breakout da xu ly rieng o tren)
+        # post_loss van ap dung: sau lo can consensus binh thuong, khong duoc bypass
         TIER1 = {"supertrend", "vwap_volume"}
         tier1_long  = sum(1 for s in long_signals  if s.strategy_name in TIER1)
         tier1_short = sum(1 for s in short_signals if s.strategy_name in TIER1)
 
-        if is_priority and (tier1_long >= 2 or tier1_short >= 2):
+        if is_priority and not post_loss and (tier1_long >= 2 or tier1_short >= 2):
             signals = long_signals if tier1_long >= 2 else short_signals
             logger.info(f"{symbol}: [TOP10 TIER1] 2/2 Tier-1 confirm {'LONG' if tier1_long>=2 else 'SHORT'} — bypass consensus")
         elif len(long_signals) >= required_consensus:

@@ -442,11 +442,13 @@ class TradingBot:
         if price > 0 and atr / price < config.MIN_ATR_PCT:
             return False
 
-        # ADX filter: bo qua khi thi truong sideway (ADX < MIN_ADX)
+        # ADX filter: TOP_PRIORITY dung nguong thap hon (12 vs 15) — BTC/ETH trend smoother
         import math as _math
+        is_priority = symbol in config.TOP_PRIORITY
+        min_adx = 12 if is_priority else config.MIN_ADX
         adx = compute_adx(df_signal).iloc[-1]
-        if _math.isnan(adx) or adx < config.MIN_ADX:
-            logger.debug(f"{symbol}: skip — ADX={adx:.1f} < {config.MIN_ADX} (sideway)")
+        if _math.isnan(adx) or adx < min_adx:
+            logger.debug(f"{symbol}: skip — ADX={adx:.1f} < {min_adx} (sideway)")
             return False
 
         # RSI cho reversal detection
@@ -573,7 +575,6 @@ class TradingBot:
 
                 # Long chi khi 2 nen xanh lien tiep (momentum xac nhan)
                 # TOP_PRIORITY (BTC/ETH/SOL/BNB/XRP): bo qua yeu cau nay, dung 1m micro trend thay the
-                is_priority = symbol in config.TOP_PRIORITY
                 if sig.direction == 1 and not short_term_up and not is_reversal and not is_priority:
                     continue
                 # Short chi khi 2 nen do lien tiep (momentum xac nhan)
@@ -672,6 +673,29 @@ class TradingBot:
         if not self._micro_entry_analysis(df_micro, best.direction, is_top20):
             logger.debug(f"{symbol}: skip — 1m micro entry timing not confirmed (score too low)")
             return False
+
+        # TOP_PRIORITY: cross-check voi 1h frame — tranh trade khi 1h nguoc chieu hoan toan
+        if is_priority and len(df_trend) >= 50:
+            h1_confirms = 0
+            h1_opposes  = 0
+            for strategy in ALL_STRATEGIES:
+                try:
+                    if strategy.name == "sustained_trend":
+                        continue
+                    sig_1h = strategy.generate_signal(df_trend, df_macro, df_macro)
+                    if sig_1h.direction == best.direction and sig_1h.strength >= config.MIN_SIGNAL_STRENGTH:
+                        h1_confirms += 1
+                    elif sig_1h.direction == -best.direction and sig_1h.strength >= config.MIN_SIGNAL_STRENGTH:
+                        h1_opposes += 1
+                except Exception:
+                    continue
+            logger.info(
+                f"{symbol}: [1H CROSS-REF] {'LONG' if best.direction==1 else 'SHORT'} — "
+                f"confirm={h1_confirms} oppose={h1_opposes}"
+            )
+            if h1_confirms == 0 and h1_opposes > 0:
+                logger.debug(f"{symbol}: TOP_PRIORITY skip — 1h opposes signal, no 1h confirmation")
+                return False
 
         best.consensus = len(signals)
         best.symbol    = symbol

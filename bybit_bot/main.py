@@ -337,7 +337,8 @@ class TradingBot:
 
         # Factor 6: Range position — tranh long o sat dinh / short o sat day cua range 100 nen
         # 100 nen 1m = ~100 phut, du de thay xu huong ngan/trung han
-        # Neu price o top 20% range ma muon long: penalty -3 (gan nhu block)
+        # HARD BLOCK: price o top 20% range -> khong long; bottom 20% -> khong short
+        # Day la block tuyet doi, khong co so diem nao bu lai duoc
         _range_window = min(100, n)
         if _range_window >= 20:
             high_rng = high.iloc[-_range_window:].max()
@@ -345,16 +346,17 @@ class TradingBot:
             rng = high_rng - low_rng
             if rng > 0:
                 range_pos = (price - low_rng) / rng
-                if direction == 1:
-                    if range_pos > 0.80:    # Long o sat dinh — rat nguy hiem
-                        score -= 3
-                    elif range_pos < 0.55:  # Long o nua duoi hoac giua range — an toan
-                        score += 1
-                else:
-                    if range_pos < 0.20:    # Short o sat day — rat nguy hiem
-                        score -= 3
-                    elif range_pos > 0.45:  # Short o nua tren hoac giua range — an toan
-                        score += 1
+                if direction == 1 and range_pos > 0.80:
+                    logger.debug(f"micro_entry: HARD BLOCK long — range_pos={range_pos:.2f} > 0.80 (near top)")
+                    return False
+                if direction == -1 and range_pos < 0.20:
+                    logger.debug(f"micro_entry: HARD BLOCK short — range_pos={range_pos:.2f} < 0.20 (near bottom)")
+                    return False
+                # Bonus cho entry o vung an toan
+                if direction == 1 and range_pos < 0.55:
+                    score += 1
+                elif direction == -1 and range_pos > 0.45:
+                    score += 1
 
         # Factor 7: Momentum deceleration — nen gan day nho manh so voi nen truoc
         # Tranh vao lenh khi momentum dang kiet suc (sap dao chieu)

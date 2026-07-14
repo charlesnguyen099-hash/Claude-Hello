@@ -52,12 +52,12 @@ class BollingerStrategy(BaseStrategy):
 
         macro_d = self._trend_direction(df_macro)
 
-        if bullish_reversal and rsi.iloc[-1] < 38 and macro_d >= 0:
+        if bullish_reversal and rsi.iloc[-1] < 35 and macro_d >= 0:
             pct_below = (lower.iloc[-1] - price) / lower.iloc[-1]
             strength  = min(0.85, 0.5 + abs(pct_below) * 10)
             return Signal(1, strength, self.name, price, atr, "BB lower touch + RSI oversold reversal")
 
-        if bearish_reversal and rsi.iloc[-1] > 62 and macro_d <= 0:
+        if bearish_reversal and rsi.iloc[-1] > 65 and macro_d <= 0:
             pct_above = (price - upper.iloc[-1]) / upper.iloc[-1]
             strength  = min(0.85, 0.5 + abs(pct_above) * 10)
             return Signal(-1, strength, self.name, price, atr, "BB upper touch + RSI overbought reversal")

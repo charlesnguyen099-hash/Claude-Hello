@@ -45,11 +45,9 @@ class IchimokuStrategy(BaseStrategy):
         below_cloud = price < cloud_bottom
 
         # Chikou (lagging span) confirms — compare to price 26 bars ago
-        if len(df) > 52:
-            chikou_bullish = df["close"].iloc[-1] > df["close"].iloc[-26]
-            chikou_bearish = df["close"].iloc[-1] < df["close"].iloc[-26]
-        else:
-            chikou_bullish = chikou_bearish = True  # skip if not enough data
+        # len(df) >= 80 guaranteed by early return above, so this always runs
+        chikou_bullish = df["close"].iloc[-1] > df["close"].iloc[-26]
+        chikou_bearish = df["close"].iloc[-1] < df["close"].iloc[-26]
 
         if tk_cross_up and above_cloud and chikou_bullish:
             return Signal(1, 0.9, self.name, price, atr, "Ichimoku TK cross up above cloud")

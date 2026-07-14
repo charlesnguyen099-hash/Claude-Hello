@@ -214,6 +214,25 @@ class BybitClient:
             logger.warning(f"Cannot get max leverage for {symbol}: {e}")
             return config.DEFAULT_LEVERAGE
 
+    def get_closed_pnl(self, symbols: list[str]) -> dict[str, float]:
+        """Lay closed PnL cua cac symbol vua dong lenh (trong 5 phut gan nhat).
+        Tra ve {symbol: pnl} cho cac symbol co trong danh sach."""
+        result = {}
+        try:
+            resp = self.session.get_closed_pnl(
+                category="linear",
+                limit=50,
+            )
+            for item in resp["result"]["list"]:
+                sym = item.get("symbol", "")
+                if sym in symbols:
+                    pnl = float(item.get("closedPnl", 0))
+                    if sym not in result:  # lay lenh gan nhat
+                        result[sym] = pnl
+        except Exception as e:
+            logger.debug(f"get_closed_pnl error: {e}")
+        return result
+
     def get_min_order_usdt(self, symbol: str) -> float:
         """Lấy giá trị lệnh tối thiểu (USDT) của symbol."""
         try:

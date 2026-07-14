@@ -18,8 +18,8 @@ class Signal:
     strategy_name: str
     entry_price: float
     atr: float              # Dùng để tính SL/TP dong
+    reason: str = ""        # Mo ta ly do vao lenh (positional arg thu 6)
     symbol: str = ""
-    reason: str = ""
     consensus: int = 1      # So strategies dong thuan cung chieu
 
 

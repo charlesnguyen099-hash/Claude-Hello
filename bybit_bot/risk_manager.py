@@ -98,7 +98,7 @@ class RiskManager:
         tp2_dist = max(tp2_dist, sl_dist * 1.5)
 
         d   = signal.direction
-        sl  = signal.entry_price - d * (sl_dist + fee_price)
+        sl  = signal.entry_price - d * sl_dist  # fee da tinh trong sl_dist roi
         tp1 = signal.entry_price + d * tp1_dist
         tp2 = signal.entry_price + d * tp2_dist
 

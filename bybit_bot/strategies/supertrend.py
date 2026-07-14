@@ -35,7 +35,7 @@ def compute_supertrend(df: pd.DataFrame, period: int = 10, multiplier: float = 3
                 supertrend.iloc[i] = curr_up
                 direction.iloc[i]  = -1
             else:
-                supertrend.iloc[i] = min(curr_lo, prev_st) if curr_lo > prev_st else curr_lo
+                supertrend.iloc[i] = max(curr_lo, prev_st)
                 direction.iloc[i]  = 1
         else:  # was bearish
             if close > prev_st:

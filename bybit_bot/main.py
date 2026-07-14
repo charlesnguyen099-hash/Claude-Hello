@@ -51,6 +51,8 @@ class TradingBot:
         # Trong 5 phut sau lo, can consensus >= MIN_CONSENSUS+1 de vao lai
         self._recent_loss_ts: dict[str, float] = {}
         self.executor.on_loss_callback = self._on_symbol_loss
+        # Track positions de detect SL/TP hit boi exchange (khong qua executor)
+        self._prev_pos_symbols: set[str] = set()
 
     def _on_symbol_loss(self, symbol: str):
         self._recent_loss_ts[symbol] = time.time()
@@ -112,6 +114,20 @@ class TradingBot:
                 pass
 
         pos_symbols = {p["symbol"] for p in open_positions}
+
+        # Detect position dong boi exchange (SL/TP hit) — khong qua executor._close_position
+        # Neu symbol vua co position ma gio mat → check closed PnL → neu lo thi fire post-loss
+        closed_by_exchange = self._prev_pos_symbols - pos_symbols
+        if closed_by_exchange:
+            try:
+                closed_pnl = self.client.get_closed_pnl(list(closed_by_exchange))
+                for symbol, pnl in closed_pnl.items():
+                    if pnl < 0:
+                        self._on_symbol_loss(symbol)
+                        logger.info(f"{symbol}: SL/TP hit by exchange, pnl={pnl:.4f} → post-loss filter")
+            except Exception as e:
+                logger.debug(f"get_closed_pnl error: {e}")
+        self._prev_pos_symbols = pos_symbols
 
         # Top 20: check moi tick (moi 15 giay) — bat breakout nhanh
         top20   = self.symbols[:config.TOP_FOCUS_COUNT]
@@ -259,7 +275,7 @@ class TradingBot:
             return -1
         return 0
 
-    def _micro_entry_analysis(self, df_micro, direction: int, is_top20: bool) -> bool:
+    def _micro_entry_analysis(self, df_micro, direction: int, is_top20: bool, is_reversal: bool = False) -> bool:
         """
         Phan tich toan bo 1m candles de xac dinh timing entry.
         5 yeu to: EMA alignment, momentum 3 nen, volume, exhaustion, micro structure.
@@ -268,10 +284,10 @@ class TradingBot:
         """
         from strategies.base import compute_ema, compute_atr
         if df_micro is None or df_micro.empty:
-            return True
+            return False  # khong co data → khong trade
         n = len(df_micro)
         if n < 5:
-            return True
+            return False  # qua it data → khong trade
 
         close  = df_micro["close"]
         open_  = df_micro["open"]
@@ -281,7 +297,7 @@ class TradingBot:
 
         atr_1m = compute_atr(df_micro).iloc[-1]
         if atr_1m == 0:
-            return True
+            return False  # gia bat dong → khong trade
 
         price = close.iloc[-1]
         score = 0
@@ -325,9 +341,10 @@ class TradingBot:
             curr_body     = abs(close.iloc[-1] - open_.iloc[-1])
             if prev_body_avg > 0:
                 ratio_body = curr_body / prev_body_avg
-                if ratio_body > 0.3:   # nen hien tai co noi luc — khong pause
+                if ratio_body > 0.3:    # nen hien tai co noi luc
                     score += 1
-                # ratio <= 0.3: doji / spinning top — khong block nhung khong cong diem
+                elif ratio_body < 0.15: # doji / spinning top — exhaustion signal
+                    score -= 1
 
         # Factor 5: Micro structure — HH+HL (long) hoac LH+LL (short) trong 5 nen gan nhat
         if n >= 8:
@@ -347,7 +364,8 @@ class TradingBot:
         # Factor 6: Range position — tranh long o sat dinh / short o sat day cua range 100 nen
         # 100 nen 1m = ~100 phut, du de thay xu huong ngan/trung han
         # HARD BLOCK: price o top 25% range -> khong long; bottom 25% -> khong short
-        # Day la block tuyet doi, khong co so diem nao bu lai duoc
+        # Ngoai le: is_reversal=True (RSI cuc doan) — price o bottom sau drop dai → long hop le
+        # Du range 100 nen ngan, nhung RSI < 35 xac nhan oversold that su
         _range_window = min(100, n)
         if _range_window >= 20:
             high_rng = high.iloc[-_range_window:].max()
@@ -355,12 +373,13 @@ class TradingBot:
             rng = high_rng - low_rng
             if rng > 0:
                 range_pos = (price - low_rng) / rng
-                if direction == 1 and range_pos > 0.75:
-                    logger.debug(f"micro_entry: HARD BLOCK long — range_pos={range_pos:.2f} > 0.75 (near top)")
-                    return False
-                if direction == -1 and range_pos < 0.25:
-                    logger.debug(f"micro_entry: HARD BLOCK short — range_pos={range_pos:.2f} < 0.25 (near bottom)")
-                    return False
+                if not is_reversal:
+                    if direction == 1 and range_pos > 0.75:
+                        logger.debug(f"micro_entry: HARD BLOCK long — range_pos={range_pos:.2f} > 0.75 (near top)")
+                        return False
+                    if direction == -1 and range_pos < 0.25:
+                        logger.debug(f"micro_entry: HARD BLOCK short — range_pos={range_pos:.2f} < 0.25 (near bottom)")
+                        return False
                 # Bonus cho entry o vung an toan
                 if direction == 1 and range_pos < 0.55:
                     score += 1
@@ -506,8 +525,11 @@ class TradingBot:
                     continue
 
                 sig = strategy.generate_signal(df_signal, df_trend, df_macro)
-                if sig.direction == 0 and len(df_scalp) >= 50:
-                    sig = strategy.generate_signal(df_scalp, df_signal, df_trend)
+                # Scalp fallback: thu 5m neu 15m khong co signal
+                # Skip VWAP (window 96x15m=24h, tren 5m cho ra 8h — sai)
+                # Pass df_macro de giu 4h context khong bi mat
+                if sig.direction == 0 and len(df_scalp) >= 50 and strategy.name != "vwap_volume":
+                    sig = strategy.generate_signal(df_scalp, df_signal, df_macro)
 
                 if sig.direction == 0 or sig.strength < config.MIN_SIGNAL_STRENGTH:
                     continue
@@ -570,7 +592,7 @@ class TradingBot:
                 reversal_confirmed = (
                     (reversal_dir == 1  and short_term_up)   or
                     (reversal_dir == -1 and short_term_down)
-                ) and self._micro_entry_analysis(df_micro, reversal_dir, is_top20)
+                ) and self._micro_entry_analysis(df_micro, reversal_dir, is_top20, is_reversal=True)
                 reversal_signals = long_signals if reversal_dir == 1 else short_signals
                 reversal_min = config.MIN_CONSENSUS + (1 if post_loss else 0)
                 if len(reversal_signals) >= reversal_min and reversal_confirmed:
@@ -593,7 +615,9 @@ class TradingBot:
         # Neu 1h sideways (macro_trend==0): yeu cau them 1 consensus de tranh tin hieu gia
         # Neu vua lo lenh tren symbol nay trong 5 phut truoc: yeu cau consensus+1 (post-loss filter)
         sideways_1h = (macro_trend == 0)
-        required_consensus = config.MIN_CONSENSUS + (1 if sideways_1h else 0) + (1 if post_loss else 0)
+        # Cap o MIN_CONSENSUS+1 de tranh yeu cau 5 consensus (qua hiem, bot ngung trade)
+        extra = min(1, (1 if sideways_1h else 0) + (1 if post_loss else 0))
+        required_consensus = config.MIN_CONSENSUS + extra
 
         if len(long_signals) >= required_consensus:
             signals = long_signals

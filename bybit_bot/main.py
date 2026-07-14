@@ -434,15 +434,19 @@ class TradingBot:
 
         scalp_trend = self._micro_trend(df_scalp) if is_top20 else 0  # dung cho post-spike check
 
-        # [CHONG LO] Spike check tren 1m — apply TAT CA coin
-        # Check 5 nen 1m gan nhat (khong chi nen hien tai) — spike co the da dong truoc khi bot scan
+        # [CHONG LO] Spike check tren 1m — direction-aware
+        # Pump spike -> block LONG (khong mua dinh), nhung cho phep SHORT (ban dinh la hop le)
+        # Dump spike -> block SHORT (khong ban day), nhung cho phep LONG (mua day la hop le)
+        # Ca 2 cung xuat hien -> thi truong loan, skip tat ca
+        _micro_spike_dump = False
+        _micro_spike_pump = False
         if not df_micro.empty and len(df_micro) >= 5:
             _micro_atr    = compute_atr(df_micro).iloc[-1]
             _micro_bodies = (df_micro["close"].iloc[-5:].values - df_micro["open"].iloc[-5:].values)
             _micro_spike_dump = any(b < -_micro_atr * 2.0 for b in _micro_bodies)
             _micro_spike_pump = any(b >  _micro_atr * 2.0 for b in _micro_bodies)
-            if _micro_spike_dump or _micro_spike_pump:
-                logger.debug(f"{symbol}: skip — 1m spike in last 5 candles (dump={_micro_spike_dump} pump={_micro_spike_pump})")
+            if _micro_spike_dump and _micro_spike_pump:
+                logger.debug(f"{symbol}: skip — 1m spike ca 2 chieu (thi truong loan)")
                 return False
 
         # BREAKOUT: chi top20
@@ -470,8 +474,9 @@ class TradingBot:
                     return True
 
         # Xac dinh mode: REVERSAL hay MOMENTUM
-        is_reversal  = rsi_now < 30 or rsi_now > 70
-        reversal_dir = 1 if rsi_now < 30 else (-1 if rsi_now > 70 else 0)
+        # Nguong 35/65 dong bo voi sustained_trend va bollinger — bat duoc reversal som hon
+        is_reversal  = rsi_now < 35 or rsi_now > 65
+        reversal_dir = 1 if rsi_now < 35 else (-1 if rsi_now > 65 else 0)
 
         # 1h macro trend
         macro_trend = self._trend_direction(df_trend)
@@ -536,26 +541,32 @@ class TradingBot:
 
         # REVERSAL trade: RSI cuc doan + 2 nen 15m + 1m micro xac nhan dao chieu + >= MIN_CONSENSUS
         if is_reversal and reversal_dir != 0:
-            reversal_confirmed = (
-                (reversal_dir == 1  and short_term_up)   or
-                (reversal_dir == -1 and short_term_down)
-            ) and self._micro_entry_analysis(df_micro, reversal_dir, is_top20)
-            reversal_signals = long_signals if reversal_dir == 1 else short_signals
-            if len(reversal_signals) >= config.MIN_CONSENSUS and reversal_confirmed:
-                signals = reversal_signals
-                best = max(signals, key=lambda s: s.strength)
-                best.strength = min(0.95, best.strength + 0.15)
-                best.consensus = len(signals)
-                best.symbol    = symbol
-                names = "+".join(s.strategy_name for s in signals)
-                rsi_label = f"RSI={rsi_now:.0f}({'OVERSOLD' if reversal_dir==1 else 'OVERBOUGHT'})"
-                logger.info(
-                    f"{symbol} [REVERSAL {rsi_label}] [{names}] -> "
-                    f"{'LONG' if best.direction==1 else 'SHORT'} "
-                    f"strength={best.strength:.2f} | {best.reason}"
-                )
-                self.executor.execute_signal(symbol, best, equity, open_positions)
-                return True
+            # Direction-aware spike: long sau pump spike va short sau dump spike deu nguy hiem
+            reversal_spike_blocked = (
+                (reversal_dir == 1  and _micro_spike_pump) or
+                (reversal_dir == -1 and _micro_spike_dump)
+            )
+            if not reversal_spike_blocked:
+                reversal_confirmed = (
+                    (reversal_dir == 1  and short_term_up)   or
+                    (reversal_dir == -1 and short_term_down)
+                ) and self._micro_entry_analysis(df_micro, reversal_dir, is_top20)
+                reversal_signals = long_signals if reversal_dir == 1 else short_signals
+                if len(reversal_signals) >= config.MIN_CONSENSUS and reversal_confirmed:
+                    signals = reversal_signals
+                    best = max(signals, key=lambda s: s.strength)
+                    best.strength = min(0.95, best.strength + 0.15)
+                    best.consensus = len(signals)
+                    best.symbol    = symbol
+                    names = "+".join(s.strategy_name for s in signals)
+                    rsi_label = f"RSI={rsi_now:.0f}({'OVERSOLD' if reversal_dir==1 else 'OVERBOUGHT'})"
+                    logger.info(
+                        f"{symbol} [REVERSAL {rsi_label}] [{names}] -> "
+                        f"{'LONG' if best.direction==1 else 'SHORT'} "
+                        f"strength={best.strength:.2f} | {best.reason}"
+                    )
+                    self.executor.execute_signal(symbol, best, equity, open_positions)
+                    return True
 
         # MOMENTUM trade: can >= MIN_CONSENSUS strategies dong thuan
         # Neu 1h sideways (macro_trend==0): yeu cau them 1 consensus de tranh tin hieu gia
@@ -570,6 +581,16 @@ class TradingBot:
             return False
 
         best = max(signals, key=lambda s: s.strength)
+
+        # Direction-aware 1m spike filter:
+        # Pump spike -> block LONG (khong mua dinh), SHORT van duoc phep (ban dinh tot)
+        # Dump spike -> block SHORT (khong ban day), LONG van duoc phep (mua day tot)
+        if _micro_spike_pump and best.direction == 1:
+            logger.debug(f"{symbol}: skip — 1m pump spike, khong long")
+            return False
+        if _micro_spike_dump and best.direction == -1:
+            logger.debug(f"{symbol}: skip — 1m dump spike, khong short")
+            return False
 
         # 1m micro entry timing: apply cho TAT CA coin voi phan tich day du 5 yeu to
         if not self._micro_entry_analysis(df_micro, best.direction, is_top20):

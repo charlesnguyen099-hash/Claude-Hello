@@ -395,11 +395,11 @@ class TradingBot:
             local_rng  = local_high - local_low
             if local_rng > 0:
                 local_pos = (price - local_low) / local_rng
-                if direction == 1 and local_pos > 0.80:
-                    logger.debug(f"micro_entry: HARD BLOCK long — 20c local_pos={local_pos:.2f} > 0.80 (local top)")
+                if direction == 1 and local_pos > 0.90:
+                    logger.debug(f"micro_entry: HARD BLOCK long — 20c local_pos={local_pos:.2f} > 0.90 (local top)")
                     return False
-                if direction == -1 and local_pos < 0.20:
-                    logger.debug(f"micro_entry: HARD BLOCK short — 20c local_pos={local_pos:.2f} < 0.20 (local bottom)")
+                if direction == -1 and local_pos < 0.10:
+                    logger.debug(f"micro_entry: HARD BLOCK short — 20c local_pos={local_pos:.2f} < 0.10 (local bottom)")
                     return False
 
         # Factor 7: Momentum deceleration — nen gan day nho manh so voi nen truoc

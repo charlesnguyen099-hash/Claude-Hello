@@ -299,6 +299,17 @@ class TradingBot:
 
         scalp_trend = self._micro_trend(df_scalp) if is_top20 else 0  # dung cho post-spike check
 
+        # [CHONG LO] Spike check tren 1m cho top20 — apply truoc moi loai lenh
+        # Neu nen 1m hien tai la spike (>2x ATR 1m) -> khong vao lenh, doi nen ke tiep
+        micro_spike = False
+        if is_top20 and df_micro is not None and not df_micro.empty:
+            micro_atr  = compute_atr(df_micro).iloc[-1]
+            micro_body = abs(df_micro["close"].iloc[-1] - df_micro["open"].iloc[-1])
+            micro_spike = micro_body > micro_atr * 2.0
+            if micro_spike:
+                logger.debug(f"{symbol}: skip — 1m micro spike (body={micro_body:.4f} > 2x ATR={micro_atr:.4f})")
+                return False
+
         # BREAKOUT: chi top20
         if is_top20 and df_micro is not None and not df_micro.empty and len(df_micro) >= 30:
             bo_sig = BREAKOUT_STRATEGY.generate_signal(df_micro, df_scalp, df_signal)
@@ -312,11 +323,7 @@ class TradingBot:
                 micro_ok = (bo_sig.direction == 1 and micro_up) or (bo_sig.direction == -1 and micro_down)
                 post_spike_ok = not (bo_sig.direction == -1 and spike_was_dump and scalp_trend != -1) and \
                                 not (bo_sig.direction == 1  and spike_was_pump and scalp_trend != 1)
-                # Spike check tren 1m: neu nen 1m hien tai la spike (>2x ATR 1m) thi khong vao
-                micro_atr  = compute_atr(df_micro).iloc[-1]
-                micro_body = abs(df_micro["close"].iloc[-1] - df_micro["open"].iloc[-1])
-                micro_spike = micro_body > micro_atr * 2.0
-                if bo_ok and micro_ok and not is_spike and not micro_spike and post_spike_ok:
+                if bo_ok and micro_ok and not is_spike and post_spike_ok:
                     bo_sig.symbol    = symbol
                     bo_sig.consensus = 1
                     logger.info(

@@ -118,7 +118,7 @@ class RiskManager:
         )
 
         return TradeParams(
-            symbol=signal.strategy_name,
+            symbol=signal.symbol,
             side=side,
             qty=qty,
             leverage=leverage,

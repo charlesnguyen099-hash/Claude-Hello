@@ -46,8 +46,8 @@ class IchimokuStrategy(BaseStrategy):
 
         # Chikou (lagging span) confirms — compare to price 26 bars ago
         if len(df) > 52:
-            chikou_bullish = df["close"].iloc[-1] > df["close"].iloc[-27]
-            chikou_bearish = df["close"].iloc[-1] < df["close"].iloc[-27]
+            chikou_bullish = df["close"].iloc[-1] > df["close"].iloc[-26]
+            chikou_bearish = df["close"].iloc[-1] < df["close"].iloc[-26]
         else:
             chikou_bullish = chikou_bearish = True  # skip if not enough data
 

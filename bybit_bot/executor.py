@@ -1,7 +1,8 @@
 """
 Trade Executor — thực thi lệnh và quản lý vị thế
-- Đặt lệnh với SL + TP1 ngay khi vào
-- Theo dõi TP2 bằng trailing stop
+- Đặt lệnh với SL + TP1 (safety net trên sàn)
+- Trailing stop kích hoạt tại TRAILING_TRIGGER% đường đến TP1 — bảo vệ lợi nhuận nếu đảo chiều trước TP1
+- Break-even SL kích hoạt tại BREAKEVEN_TRIGGER% đường đến TP1
 - Tự động đóng lệnh khi signal đảo chiều
 """
 
@@ -24,10 +25,10 @@ class Executor:
         self.risk_mgr  = risk_mgr
         self.logger    = bot_logger
 
-        # Theo dõi TP1 đã hit chưa: {symbol: bool}
-        self._tp1_hit: dict[str, bool] = {}
-        # Theo dõi break-even SL đã set chưa: {symbol: bool}
+        self._tp1_hit: dict[str, bool]    = {}
         self._breakeven_set: dict[str, bool] = {}
+        # ATR luu lai khi vao lenh — dung de tinh trailing stop distance chinh xac
+        self._atr: dict[str, float]       = {}
 
     def execute_signal(
         self,
@@ -40,15 +41,13 @@ class Executor:
         if signal.direction == 0:
             return
 
-        # Kiểm tra nếu đã có vị thế cùng chiều cho symbol này
         existing = [p for p in open_positions if p["symbol"] == symbol]
         if existing:
             pos_side = existing[0]["side"]
             signal_side = "Buy" if signal.direction == 1 else "Sell"
             if pos_side == signal_side:
-                return  # Không pyramid cùng chiều
+                return
 
-            # Signal ngược chiều → đóng vị thế cũ
             logger.info(f"{symbol}: Signal reversal — closing {pos_side} before entering {signal_side}")
             self._close_position(existing[0])
             time.sleep(0.5)
@@ -62,10 +61,10 @@ class Executor:
 
     def _enter_trade(self, symbol: str, signal: Signal, params: TradeParams):
         try:
-            # Set leverage
             self.client.set_leverage(symbol, params.leverage)
 
-            # Vào lệnh với SL + TP1 (đóng 100% tại TP1, sau đó trailing)
+            # TP1 dat tren san lam safety net — neu gia cham TP1 san tu dong dong
+            # Trailing stop se kich hoat truoc TP1 (tai TRAILING_TRIGGER%) de bao ve lai nhuan neu dao chieu
             order = self.client.place_order(
                 symbol=symbol,
                 side=params.side,
@@ -74,8 +73,9 @@ class Executor:
                 tp=params.tp1_price,
             )
 
-            self._tp1_hit[symbol]     = False
+            self._tp1_hit[symbol]      = False
             self._breakeven_set[symbol] = False
+            self._atr[symbol]          = signal.atr  # luu ATR de trailing stop chinh xac
 
             self.logger.log_trade({
                 "event":     "open",
@@ -107,44 +107,69 @@ class Executor:
             logger.error(f"Failed to enter trade {symbol}: {str(e).encode('ascii', 'replace').decode()}")
 
     def manage_open_positions(self, open_positions: list[dict]):
-        """Kiểm tra trailing stop + TP2 logic cho mỗi vị thế đang mở."""
+        """
+        Quan ly vi the dang mo theo 3 muc:
+        1. BREAKEVEN_TRIGGER (50%): doi SL ve entry + phi
+        2. TRAILING_TRIGGER  (75%): kich hoat trailing stop — bao ve lai nhuan
+        3. TP1 (100%): san tu dong dong, hoac trailing stop dong truoc neu dao chieu
+        """
         for pos in open_positions:
-            symbol        = pos["symbol"]
-            size          = float(pos["size"])
-            entry         = float(pos["avgPrice"])
-            mark_price    = float(pos.get("markPrice", entry))
-            side          = pos["side"]
-            unrealised    = float(pos.get("unrealisedPnl", 0))
+            symbol     = pos["symbol"]
+            entry      = float(pos["avgPrice"])
+            mark_price = float(pos.get("markPrice", entry))
+            side       = pos["side"]
 
             tp1_threshold = float(pos.get("takeProfit", 0))
 
-            # Break-even SL: khi gia di duoc >= 50% duong den TP1, doi SL ve entry
-            if not self._breakeven_set.get(symbol, False) and tp1_threshold > 0:
-                dist_to_tp1  = abs(tp1_threshold - entry)
-                dist_moved   = abs(mark_price - entry)
-                if dist_to_tp1 > 0 and dist_moved >= dist_to_tp1 * config.BREAKEVEN_TRIGGER:
+            if tp1_threshold <= 0:
+                # Kiem tra emergency close ngay ca khi khong co TP
+                if self.risk_mgr.should_close_position(pos, mark_price):
+                    logger.warning(f"{symbol}: Emergency close — excessive loss")
+                    self._close_position(pos)
+                continue
+
+            dist_to_tp1 = abs(tp1_threshold - entry)
+            dist_moved  = abs(mark_price - entry)
+
+            # --- Muc 1: Break-even SL tai 50% duong den TP1 ---
+            if not self._breakeven_set.get(symbol, False) and dist_to_tp1 > 0:
+                if dist_moved >= dist_to_tp1 * config.BREAKEVEN_TRIGGER:
                     try:
-                        fee_buffer = entry * config.ROUND_TRIP_FEE  # bu phi de khong lo
+                        fee_buffer = entry * config.ROUND_TRIP_FEE
                         be_price   = entry + fee_buffer if side == "Buy" else entry - fee_buffer
                         self.client.update_stop_loss(symbol, round(be_price, 6))
                         self._breakeven_set[symbol] = True
-                        logger.info(f"{symbol}: Break-even SL set at {be_price:.4f} (moved {dist_moved:.4f}/{dist_to_tp1:.4f} toward TP1)")
+                        logger.info(
+                            f"{symbol}: Break-even SL -> {be_price:.4f} "
+                            f"(moved {dist_moved:.4f}/{dist_to_tp1:.4f} = "
+                            f"{dist_moved/dist_to_tp1*100:.0f}% toward TP1)"
+                        )
                     except Exception as e:
                         logger.warning(f"{symbol}: Could not set break-even SL: {e}")
 
-            # Kích hoạt trailing stop khi đạt TP1
-            if not self._tp1_hit.get(symbol, False) and tp1_threshold > 0:
-                if (side == "Buy"  and mark_price >= tp1_threshold) or \
-                   (side == "Sell" and mark_price <= tp1_threshold):
+            # --- Muc 2: Trailing stop tai TRAILING_TRIGGER% (75%) duong den TP1 ---
+            # Kich hoat TRUOC khi san dong tai TP1 — neu dao chieu thi trailing stop bat duoc loi nhuan
+            # Neu gia tiep tuc den TP1 thi san tu dong dong (trailing stop vo hieu)
+            if not self._tp1_hit.get(symbol, False) and dist_to_tp1 > 0:
+                if dist_moved >= dist_to_tp1 * config.TRAILING_TRIGGER:
                     self._tp1_hit[symbol] = True
                     try:
-                        self.client.set_trading_stop(symbol, side, float(pos.get("trailingStop", 0)) or
-                                                      abs(mark_price - entry) * 0.5)
-                        logger.info(f"{symbol}: TP1 hit — trailing stop activated")
+                        # Trailing distance = TRAILING_STOP_ATR x ATR luc vao lenh
+                        atr = self._atr.get(symbol, 0)
+                        if atr > 0:
+                            trailing = config.TRAILING_STOP_ATR * atr
+                        else:
+                            trailing = dist_to_tp1 * 0.3  # fallback: 30% TP1 distance
+                        self.client.set_trading_stop(symbol, side, round(trailing, 6))
+                        logger.info(
+                            f"{symbol}: Trailing stop activated at "
+                            f"{dist_moved/dist_to_tp1*100:.0f}% of TP1 | "
+                            f"trailing={trailing:.4f}"
+                        )
                     except Exception as e:
                         logger.warning(f"{symbol}: Could not set trailing stop: {e}")
 
-            # Emergency close nếu vượt ngưỡng rủi ro
+            # --- Emergency close ---
             if self.risk_mgr.should_close_position(pos, mark_price):
                 logger.warning(f"{symbol}: Emergency close — excessive loss")
                 self._close_position(pos)

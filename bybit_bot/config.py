@@ -62,6 +62,7 @@ TP1_ATR_MULT      = 1.5    # TP1 = 1.5x ATR → RR ~1 sau phi
 TP2_ATR_MULT      = 3.0    # TP2 = 3.0x ATR → RR ~2
 TRAILING_STOP_ATR = 0.5    # Trailing stop = 0.5x ATR
 BREAKEVEN_TRIGGER = 0.5    # Doi SL ve entry khi gia da di duoc 50% den TP1
+TRAILING_TRIGGER  = 0.75   # Kich hoat trailing stop khi gia di duoc 75% den TP1
 
 # --- Signal sensitivity -------------------------------------------------------
 MIN_SIGNAL_STRENGTH = 0.55   # Chi lay signal manh

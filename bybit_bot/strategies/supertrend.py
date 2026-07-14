@@ -5,9 +5,8 @@ Strategy 4: Supertrend
 - Kết hợp ADX để chỉ trade khi trend đủ mạnh (ADX > 25)
 """
 
-import numpy as np
 import pandas as pd
-from .base import BaseStrategy, Signal, compute_atr
+from .base import BaseStrategy, Signal, compute_atr, compute_adx
 import config
 
 
@@ -47,24 +46,6 @@ def compute_supertrend(df: pd.DataFrame, period: int = 10, multiplier: float = 3
                 direction.iloc[i]  = -1
 
     return supertrend, direction
-
-
-def compute_adx(df: pd.DataFrame, period: int = 14) -> pd.Series:
-    high, low, close = df["high"], df["low"], df["close"]
-    prev_high  = high.shift(1)
-    prev_low   = low.shift(1)
-    prev_close = close.shift(1)
-
-    tr = pd.concat([(high - low), (high - prev_close).abs(), (low - prev_close).abs()], axis=1).max(axis=1)
-    dm_plus  = ((high - prev_high).clip(lower=0)).where((high - prev_high) > (prev_low - low), 0)
-    dm_minus = ((prev_low - low).clip(lower=0)).where((prev_low - low) > (high - prev_high), 0)
-
-    atr14     = tr.ewm(span=period, adjust=False).mean()
-    di_plus   = 100 * dm_plus.ewm(span=period, adjust=False).mean()  / atr14
-    di_minus  = 100 * dm_minus.ewm(span=period, adjust=False).mean() / atr14
-    dx        = 100 * (di_plus - di_minus).abs() / (di_plus + di_minus).replace(0, np.nan)
-    adx       = dx.ewm(span=period, adjust=False).mean()
-    return adx
 
 
 class SupertrendStrategy(BaseStrategy):

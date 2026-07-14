@@ -94,6 +94,13 @@ class TradingBot:
         # Quan ly vi the dang mo
         if open_positions:
             self.executor.manage_open_positions(open_positions)
+            # Refresh lai sau khi manage — co the co lenh vua dong (SL/TP hit)
+            # De bot co the re-enter ngay trong cung tick nay
+            try:
+                open_positions = self.client.get_positions()
+                equity         = self.client.get_wallet_balance()
+            except Exception:
+                pass
 
         pos_symbols = {p["symbol"] for p in open_positions}
 

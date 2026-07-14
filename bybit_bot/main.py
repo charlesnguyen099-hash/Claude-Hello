@@ -138,6 +138,7 @@ class TradingBot:
             self.last_full_scan_ts = now
 
         scan_list = top20 + rest
+        top10 = set(self.symbols[:10])
         if rest:
             logger.info(f"[TICK] Full scan: top20 + {len(rest)} remaining symbols")
         else:
@@ -158,8 +159,9 @@ class TradingBot:
                     )
                     continue
 
+            is_priority = symbol in top10
             try:
-                traded = self._process_symbol(symbol, equity, open_positions, is_top20)
+                traded = self._process_symbol(symbol, equity, open_positions, is_top20, is_priority)
                 if traded:
                     try:
                         open_positions = self.client.get_positions()
@@ -423,7 +425,7 @@ class TradingBot:
             )
         return ok
 
-    def _process_symbol(self, symbol: str, equity: float, open_positions: list[dict], is_top20: bool = False) -> bool:
+    def _process_symbol(self, symbol: str, equity: float, open_positions: list[dict], is_top20: bool = False, is_priority: bool = False) -> bool:
         """Can >= 2 strategies dong thuan, scale qty theo do manh. Tra True neu da trade."""
         micro_limit = config.CANDLE_LIMIT_MICRO if is_top20 else config.CANDLE_LIMIT_MICRO_SMALL
         df_micro  = self.client.get_klines(symbol, config.TIMEFRAMES["micro"], micro_limit)
@@ -442,9 +444,8 @@ class TradingBot:
         if price > 0 and atr / price < config.MIN_ATR_PCT:
             return False
 
-        # ADX filter: TOP_PRIORITY dung nguong thap hon (12 vs 15) — BTC/ETH trend smoother
+        # ADX filter: top10 dung nguong thap hon (12 vs 15) — coin lon trend smoother
         import math as _math
-        is_priority = symbol in config.TOP_PRIORITY
         min_adx = 12 if is_priority else config.MIN_ADX
         adx = compute_adx(df_signal).iloc[-1]
         if _math.isnan(adx) or adx < min_adx:
@@ -641,7 +642,16 @@ class TradingBot:
         extra = min(1, (1 if sideways_1h else 0) + (1 if post_loss else 0))
         required_consensus = config.MIN_CONSENSUS + extra
 
-        if len(long_signals) >= required_consensus:
+        # TOP10 PRIORITY: 2 trong 3 Tier-1 strategy (supertrend + vwap_volume) dong thuan -> trade
+        # Tier-1: Supertrend, VWAP+Volume, Breakout (Breakout da xu ly rieng o tren)
+        TIER1 = {"supertrend", "vwap_volume"}
+        tier1_long  = sum(1 for s in long_signals  if s.strategy_name in TIER1)
+        tier1_short = sum(1 for s in short_signals if s.strategy_name in TIER1)
+
+        if is_priority and (tier1_long >= 2 or tier1_short >= 2):
+            signals = long_signals if tier1_long >= 2 else short_signals
+            logger.info(f"{symbol}: [TOP10 TIER1] 2/2 Tier-1 confirm {'LONG' if tier1_long>=2 else 'SHORT'} — bypass consensus")
+        elif len(long_signals) >= required_consensus:
             signals = long_signals
         elif len(short_signals) >= required_consensus:
             signals = short_signals

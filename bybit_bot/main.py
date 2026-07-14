@@ -140,38 +140,34 @@ class TradingBot:
         if do_full:
             self.last_full_scan_ts = now
 
-        scan_list = top20 + rest
         top10 = set(self.symbols[:10])
 
-        # Cap nhat BTC global trend moi tick (dung lam bo loc huong thi truong toan cuc)
+        # Cap nhat BTC global trend moi tick
         try:
             df_btc_1h = self.client.get_klines("BTCUSDT", config.TIMEFRAMES["trend"], 100)
             if not df_btc_1h.empty and len(df_btc_1h) >= 50:
                 self.btc_trend = self._trend_direction(df_btc_1h)
         except Exception:
-            pass  # giu nguyen gia tri cu neu loi
+            pass
 
-        if rest:
-            logger.info(f"[TICK] Full scan: top20 + {len(rest)} remaining | BTC_trend={'UP' if self.btc_trend==1 else 'DOWN' if self.btc_trend==-1 else 'SIDEWAYS'}")
-        else:
-            logger.info(f"[TICK] Fast scan: top20 only | BTC_trend={'UP' if self.btc_trend==1 else 'DOWN' if self.btc_trend==-1 else 'SIDEWAYS'}")
+        # Chi trade top10 priority + BILLUSDT — bo qua tat ca coin khac
+        EXTRA_SYMBOLS = {"BILLUSDT"}
+        scan_list = list(dict.fromkeys(list(top10) + list(EXTRA_SYMBOLS)))  # dedup, giu thu tu
+
+        logger.info(
+            f"[TICK] Focus scan: {len(scan_list)} symbols (top10 + BILL) | "
+            f"BTC={'UP' if self.btc_trend==1 else 'DOWN' if self.btc_trend==-1 else 'SIDE'}"
+        )
 
         for symbol in scan_list:
 
             if symbol in pos_symbols:
                 continue
 
-            # Volume filter cho non-top20: bo qua coin nho thanh khoan thap
-            is_top20 = symbol in top20
-            if not is_top20:
-                vol = self.volume_map.get(symbol, 0)
-                if vol < config.MIN_VOLUME_NON_TOP20:
-                    logger.debug(
-                        f"{symbol}: skip non-top20 (vol={vol/1e6:.1f}M < {config.MIN_VOLUME_NON_TOP20/1e6:.0f}M)"
-                    )
-                    continue
-
-            is_priority = symbol in top10
+            # Tat ca focus symbols deu duoc treat nhu top20 (300 nen 1m, du breakout)
+            is_top20 = True
+            # top10 + BILLUSDT deu la priority — dung bo loc nhe nhat
+            is_priority = True
             try:
                 traded = self._process_symbol(symbol, equity, open_positions, is_top20, is_priority)
                 if traded:

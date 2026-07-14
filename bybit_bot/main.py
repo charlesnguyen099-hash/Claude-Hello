@@ -638,12 +638,12 @@ class TradingBot:
 
         # TOP10 PRIORITY: 2 trong 3 Tier-1 strategy (supertrend + vwap_volume) dong thuan -> trade
         # Tier-1: Supertrend, VWAP+Volume, Breakout (Breakout da xu ly rieng o tren)
-        # post_loss van ap dung: sau lo can consensus binh thuong, khong duoc bypass
+        # post_loss KHONG ap dung cho Tier1 — tin hieu Tier1 du manh de vao lai ngay
         TIER1 = {"supertrend", "vwap_volume"}
         tier1_long  = sum(1 for s in long_signals  if s.strategy_name in TIER1)
         tier1_short = sum(1 for s in short_signals if s.strategy_name in TIER1)
 
-        if is_priority and not post_loss and (tier1_long >= 2 or tier1_short >= 2):
+        if is_priority and (tier1_long >= 2 or tier1_short >= 2):
             signals = long_signals if tier1_long >= 2 else short_signals
             logger.info(f"{symbol}: [TOP10 TIER1] 2/2 Tier-1 confirm {'LONG' if tier1_long>=2 else 'SHORT'} — bypass consensus")
         elif len(long_signals) >= required_consensus:

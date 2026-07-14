@@ -337,7 +337,7 @@ class TradingBot:
 
         # Factor 6: Range position — tranh long o sat dinh / short o sat day cua range 100 nen
         # 100 nen 1m = ~100 phut, du de thay xu huong ngan/trung han
-        # HARD BLOCK: price o top 20% range -> khong long; bottom 20% -> khong short
+        # HARD BLOCK: price o top 25% range -> khong long; bottom 25% -> khong short
         # Day la block tuyet doi, khong co so diem nao bu lai duoc
         _range_window = min(100, n)
         if _range_window >= 20:
@@ -346,11 +346,11 @@ class TradingBot:
             rng = high_rng - low_rng
             if rng > 0:
                 range_pos = (price - low_rng) / rng
-                if direction == 1 and range_pos > 0.80:
-                    logger.debug(f"micro_entry: HARD BLOCK long — range_pos={range_pos:.2f} > 0.80 (near top)")
+                if direction == 1 and range_pos > 0.75:
+                    logger.debug(f"micro_entry: HARD BLOCK long — range_pos={range_pos:.2f} > 0.75 (near top)")
                     return False
-                if direction == -1 and range_pos < 0.20:
-                    logger.debug(f"micro_entry: HARD BLOCK short — range_pos={range_pos:.2f} < 0.20 (near bottom)")
+                if direction == -1 and range_pos < 0.25:
+                    logger.debug(f"micro_entry: HARD BLOCK short — range_pos={range_pos:.2f} < 0.25 (near bottom)")
                     return False
                 # Bonus cho entry o vung an toan
                 if direction == 1 and range_pos < 0.55:

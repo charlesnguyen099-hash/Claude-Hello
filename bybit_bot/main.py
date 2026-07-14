@@ -711,12 +711,17 @@ class TradingBot:
         tier1_long  = sum(1 for s in long_signals  if s.strategy_name in TIER1)
         tier1_short = sum(1 for s in short_signals if s.strategy_name in TIER1)
 
-        if is_priority and tier1_long >= 1 and tier1_short >= 1:
-            logger.debug(f"{symbol}: TOP10 TIER1 conflict — both LONG and SHORT confirmed, skip")
-            return False
-        if is_priority and (tier1_long >= 2 or tier1_short >= 2):
-            signals = long_signals if tier1_long >= 2 else short_signals
-            logger.info(f"{symbol}: [TOP10 TIER1] 2/2 Tier-1 confirm {'LONG' if tier1_long>=2 else 'SHORT'} — bypass consensus")
+        # Tier1 bypass: chi khi ca 2 Tier1 cung chieu (2/2) va KHONG conflict
+        # Neu conflict (1 long + 1 short): KHONG skip toan bo — van cho consensus check chay
+        tier1_bypass_long  = is_priority and tier1_long >= 2 and tier1_short == 0
+        tier1_bypass_short = is_priority and tier1_short >= 2 and tier1_long == 0
+
+        if tier1_bypass_long:
+            signals = long_signals
+            logger.info(f"{symbol}: [TOP10 TIER1] 2/2 Tier-1 LONG — bypass consensus")
+        elif tier1_bypass_short:
+            signals = short_signals
+            logger.info(f"{symbol}: [TOP10 TIER1] 2/2 Tier-1 SHORT — bypass consensus")
         elif len(long_signals) >= required_long:
             signals = long_signals
         elif len(short_signals) >= required_short:

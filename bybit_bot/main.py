@@ -474,15 +474,19 @@ class TradingBot:
                 post_spike_ok = not (bo_sig.direction == -1 and spike_was_dump and scalp_trend != -1) and \
                                 not (bo_sig.direction == 1  and spike_was_pump and scalp_trend != 1)
                 if bo_ok and micro_ok and not is_spike and post_spike_ok:
-                    bo_sig.symbol    = symbol
-                    bo_sig.consensus = 1
-                    logger.info(
-                        f"{symbol} [BREAKOUT TOP20] -> "
-                        f"{'LONG' if bo_sig.direction==1 else 'SHORT'} "
-                        f"strength={bo_sig.strength:.2f} | {bo_sig.reason}"
-                    )
-                    self.executor.execute_signal(symbol, bo_sig, equity, open_positions)
-                    return True
+                    # BREAKOUT phai qua range check — tranh long o dinh / short o day
+                    if not self._micro_entry_analysis(df_micro, bo_sig.direction, is_top20):
+                        logger.debug(f"{symbol}: BREAKOUT skip — range/micro_entry block")
+                    else:
+                        bo_sig.symbol    = symbol
+                        bo_sig.consensus = 1
+                        logger.info(
+                            f"{symbol} [BREAKOUT TOP20] -> "
+                            f"{'LONG' if bo_sig.direction==1 else 'SHORT'} "
+                            f"strength={bo_sig.strength:.2f} | {bo_sig.reason}"
+                        )
+                        self.executor.execute_signal(symbol, bo_sig, equity, open_positions)
+                        return True
 
         # Xac dinh mode: REVERSAL hay MOMENTUM
         # Nguong 35/65 dong bo voi sustained_trend va bollinger — bat duoc reversal som hon

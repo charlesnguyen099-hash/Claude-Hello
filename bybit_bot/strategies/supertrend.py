@@ -42,7 +42,7 @@ def compute_supertrend(df: pd.DataFrame, period: int = 10, multiplier: float = 3
                 supertrend.iloc[i] = curr_lo
                 direction.iloc[i]  = 1
             else:
-                supertrend.iloc[i] = max(curr_up, prev_st) if curr_up < prev_st else curr_up
+                supertrend.iloc[i] = min(curr_up, prev_st)
                 direction.iloc[i]  = -1
 
     return supertrend, direction

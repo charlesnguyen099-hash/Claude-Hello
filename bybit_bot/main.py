@@ -495,8 +495,13 @@ class TradingBot:
                 logger.debug(f"{symbol}: skip — 1m spike ca 2 chieu (thi truong loan)")
                 return False
 
-        # BREAKOUT: chi top20
-        if is_top20 and df_micro is not None and not df_micro.empty and len(df_micro) >= 30:
+        # Post-loss filter — tinh som de ap dung cho ca BREAKOUT va momentum
+        post_loss = (time.time() - self._recent_loss_ts.get(symbol, 0)) < 300
+        if post_loss:
+            logger.debug(f"{symbol}: post-loss 5min active → consensus+1 / BREAKOUT blocked")
+
+        # BREAKOUT: chi top20, skip neu post_loss
+        if is_top20 and not post_loss and df_micro is not None and not df_micro.empty and len(df_micro) >= 30:
             bo_sig = BREAKOUT_STRATEGY.generate_signal(df_micro, df_scalp, df_signal)
             if bo_sig.direction != 0:
                 # 5m khong duoc nguoc chieu — cho phep sideways
@@ -506,9 +511,13 @@ class TradingBot:
                 )
                 # 1m micro-trend cung phai xac nhan
                 micro_ok = (bo_sig.direction == 1 and micro_up) or (bo_sig.direction == -1 and micro_down)
+                # 15m spike block
                 post_spike_ok = not (bo_sig.direction == -1 and spike_was_dump and scalp_trend != -1) and \
                                 not (bo_sig.direction == 1  and spike_was_pump and scalp_trend != 1)
-                if bo_ok and micro_ok and not is_spike and post_spike_ok:
+                # 1m micro spike direction-aware (dong bo voi momentum path)
+                micro_spike_ok = not (_micro_spike_pump and bo_sig.direction == 1) and \
+                                 not (_micro_spike_dump and bo_sig.direction == -1)
+                if bo_ok and micro_ok and not is_spike and post_spike_ok and micro_spike_ok:
                     # BREAKOUT phai qua range check — tranh long o dinh / short o day
                     if not self._micro_entry_analysis(df_micro, bo_sig.direction, is_top20):
                         logger.debug(f"{symbol}: BREAKOUT skip — range/micro_entry block")
@@ -592,10 +601,6 @@ class TradingBot:
             pass
             logger.debug(f"{symbol}: 5m downtrend — long signals blocked")
 
-        # Post-loss check: tinh truoc khi dung cho ca reversal va momentum
-        post_loss = (time.time() - self._recent_loss_ts.get(symbol, 0)) < 300
-        if post_loss:
-            logger.debug(f"{symbol}: post-loss 5min active → consensus+1 required")
 
         # REVERSAL trade: RSI cuc doan + 2 nen 15m + 1m micro xac nhan dao chieu + >= MIN_CONSENSUS
         if is_reversal and reversal_dir != 0:

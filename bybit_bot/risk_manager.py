@@ -94,17 +94,23 @@ class RiskManager:
         tp2_dist = config.TP2_ATR_MULT * signal.atr - fee_price   # TP2 = 2x SL net
         trail    = config.TRAILING_STOP_ATR * signal.atr
 
-        # Dam bao TP1 >= SL (neu ATR nho, min TP1 = sl_dist)
-        tp1_dist = max(tp1_dist, sl_dist)
-        tp2_dist = max(tp2_dist, sl_dist * 1.5)
+        # Dam bao TP1 >= SL (neu ATR nho, min TP1 = sl_dist) — chi ap dung cho priority
+        # Non-priority: bo qua buoc nay vi se bi hard cap o duoi, RR < 1 chap nhan duoc
+        if is_priority:
+            tp1_dist = max(tp1_dist, sl_dist)
+            tp2_dist = max(tp2_dist, sl_dist * 1.5)
 
-        # Cap TP1: chi ap dung cho non-priority — loi nhuan khong vuot 50% von + phi
+        # Cap TP1 HARD: chi ap dung cho non-priority — loi nhuan khong vuot 50% von + phi
+        # Khong co fallback sl_dist — neu sl_dist > max_tp1_dist thi TP nho hon SL (RR < 1, chap nhan)
         # top10 priority giu nguyen theo ATR thuc te (co the chay xa hon)
         if not is_priority:
             max_tp1_profit = 0.50 * (capital_used + fee_usdt)
             max_tp1_dist   = max_tp1_profit / qty if qty > 0 else tp1_dist
-            tp1_dist = max(min(tp1_dist, max_tp1_dist), sl_dist)
-            tp2_dist = max(min(tp2_dist, max_tp1_dist * 2), sl_dist * 1.5)
+            tp1_dist = min(tp1_dist, max_tp1_dist)
+            tp2_dist = min(tp2_dist, max_tp1_dist * 2)
+            # Ensure positive
+            tp1_dist = max(tp1_dist, signal.entry_price * 0.0001)
+            tp2_dist = max(tp2_dist, signal.entry_price * 0.0002)
 
         d   = signal.direction
         sl  = signal.entry_price - d * sl_dist  # fee da tinh trong sl_dist roi

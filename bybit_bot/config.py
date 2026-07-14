@@ -27,7 +27,8 @@ TIMEFRAMES = {
     "trend":  "60",    # 1h: xu huong
     "macro":  "240",   # 4h: xu huong lon
 }
-CANDLE_LIMIT_MICRO  = 300   # 300 nen 1m = ~5 gio — du EMA on dinh, nhe API hon
+CANDLE_LIMIT_MICRO       = 300   # top20: 300 nen 1m — du EMA on dinh
+CANDLE_LIMIT_MICRO_SMALL = 30    # non-top20: 30 nen 1m — chi dung cho spike check
 TOP_PRIORITY        = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT"]  # bo yeu cau 2 nen 15m
 CANDLE_LIMIT_SCALP  = 1000
 CANDLE_LIMIT_SIGNAL = 1000

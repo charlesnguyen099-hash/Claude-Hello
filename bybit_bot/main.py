@@ -245,7 +245,8 @@ class TradingBot:
 
     def _process_symbol(self, symbol: str, equity: float, open_positions: list[dict], is_top20: bool = False) -> bool:
         """Can >= 2 strategies dong thuan, scale qty theo do manh. Tra True neu da trade."""
-        df_micro  = self.client.get_klines(symbol, config.TIMEFRAMES["micro"],  config.CANDLE_LIMIT_MICRO) if is_top20 else None
+        micro_limit = config.CANDLE_LIMIT_MICRO if is_top20 else config.CANDLE_LIMIT_MICRO_SMALL
+        df_micro  = self.client.get_klines(symbol, config.TIMEFRAMES["micro"], micro_limit)
         df_scalp  = self.client.get_klines(symbol, config.TIMEFRAMES["scalp"],  config.CANDLE_LIMIT_SCALP)
         df_signal = self.client.get_klines(symbol, config.TIMEFRAMES["signal"], config.CANDLE_LIMIT_SIGNAL)
         df_trend  = self.client.get_klines(symbol, config.TIMEFRAMES["trend"],  config.CANDLE_LIMIT_TREND)
@@ -299,18 +300,13 @@ class TradingBot:
 
         scalp_trend = self._micro_trend(df_scalp) if is_top20 else 0  # dung cho post-spike check
 
-        # [CHONG LO] Spike check tren khung nho — apply TAT CA coin
-        # Top20: dung 1m (df_micro); non-top20: dung 5m (df_scalp, da fetch san)
-        # Neu nen hien tai la spike (>2x ATR) -> khong vao lenh, doi nen ke tiep
-        if is_top20 and df_micro is not None and not df_micro.empty:
-            _df_short = df_micro
-        else:
-            _df_short = df_scalp
-        if not _df_short.empty:
-            _short_atr  = compute_atr(_df_short).iloc[-1]
-            _short_body = abs(_df_short["close"].iloc[-1] - _df_short["open"].iloc[-1])
-            if _short_body > _short_atr * 2.0:
-                logger.debug(f"{symbol}: skip — short-tf spike (body={_short_body:.4f} > 2x ATR={_short_atr:.4f})")
+        # [CHONG LO] Spike check tren 1m — apply TAT CA coin
+        # Neu nen 1m hien tai la spike (>2x ATR 1m) -> khong vao lenh, doi nen ke tiep
+        if not df_micro.empty:
+            _micro_atr  = compute_atr(df_micro).iloc[-1]
+            _micro_body = abs(df_micro["close"].iloc[-1] - df_micro["open"].iloc[-1])
+            if _micro_body > _micro_atr * 2.0:
+                logger.debug(f"{symbol}: skip — 1m spike (body={_micro_body:.4f} > 2x ATR={_micro_atr:.4f})")
                 return False
 
         # BREAKOUT: chi top20

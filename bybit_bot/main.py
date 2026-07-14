@@ -299,15 +299,18 @@ class TradingBot:
 
         scalp_trend = self._micro_trend(df_scalp) if is_top20 else 0  # dung cho post-spike check
 
-        # [CHONG LO] Spike check tren 1m cho top20 — apply truoc moi loai lenh
-        # Neu nen 1m hien tai la spike (>2x ATR 1m) -> khong vao lenh, doi nen ke tiep
-        micro_spike = False
+        # [CHONG LO] Spike check tren khung nho — apply TAT CA coin
+        # Top20: dung 1m (df_micro); non-top20: dung 5m (df_scalp, da fetch san)
+        # Neu nen hien tai la spike (>2x ATR) -> khong vao lenh, doi nen ke tiep
         if is_top20 and df_micro is not None and not df_micro.empty:
-            micro_atr  = compute_atr(df_micro).iloc[-1]
-            micro_body = abs(df_micro["close"].iloc[-1] - df_micro["open"].iloc[-1])
-            micro_spike = micro_body > micro_atr * 2.0
-            if micro_spike:
-                logger.debug(f"{symbol}: skip — 1m micro spike (body={micro_body:.4f} > 2x ATR={micro_atr:.4f})")
+            _df_short = df_micro
+        else:
+            _df_short = df_scalp
+        if not _df_short.empty:
+            _short_atr  = compute_atr(_df_short).iloc[-1]
+            _short_body = abs(_df_short["close"].iloc[-1] - _df_short["open"].iloc[-1])
+            if _short_body > _short_atr * 2.0:
+                logger.debug(f"{symbol}: skip — short-tf spike (body={_short_body:.4f} > 2x ATR={_short_atr:.4f})")
                 return False
 
         # BREAKOUT: chi top20

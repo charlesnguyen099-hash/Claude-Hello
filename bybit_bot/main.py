@@ -262,8 +262,9 @@ class TradingBot:
             return False
 
         # ADX filter: bo qua khi thi truong sideway (ADX < MIN_ADX)
+        import math as _math
         adx = compute_adx(df_signal).iloc[-1]
-        if adx < config.MIN_ADX:
+        if _math.isnan(adx) or adx < config.MIN_ADX:
             logger.debug(f"{symbol}: skip — ADX={adx:.1f} < {config.MIN_ADX} (sideway)")
             return False
 
@@ -287,9 +288,9 @@ class TradingBot:
         last_candle_size = abs(recent_bodies[-1])
         is_spike = last_candle_size > atr * 2.0
 
-        # Post-spike direction block (chi top20)
-        spike_was_dump = is_top20 and any(b < -atr * 2.0 for b in recent_bodies)
-        spike_was_pump = is_top20 and any(b >  atr * 2.0 for b in recent_bodies)
+        # Post-spike direction block (tat ca coin)
+        spike_was_dump = any(b < -atr * 2.0 for b in recent_bodies)
+        spike_was_pump = any(b >  atr * 2.0 for b in recent_bodies)
 
         # 1m micro-trend (chi top20)
         micro = self._micro_trend(df_micro) if is_top20 else 0
@@ -371,6 +372,9 @@ class TradingBot:
                     elif sig.direction == -1:
                         short_signals.append(sig)
                 else:
+                    # macro_trend == 1: uptrend → long ok
+                    # macro_trend ==-1: downtrend → short ok
+                    # macro_trend == 0: sideways → cho phep nhung can consensus cao hon (xu ly sau)
                     if sig.direction == 1 and macro_trend >= 0:
                         long_signals.append(sig)
                     elif sig.direction == -1 and macro_trend <= 0:
@@ -406,9 +410,13 @@ class TradingBot:
                 return True
 
         # MOMENTUM trade: can >= MIN_CONSENSUS strategies dong thuan
-        if len(long_signals) >= config.MIN_CONSENSUS:
+        # Neu 1h sideways (macro_trend==0): yeu cau them 1 consensus de tranh tin hieu gia
+        sideways_1h = (macro_trend == 0)
+        required_consensus = config.MIN_CONSENSUS + (1 if sideways_1h else 0)
+
+        if len(long_signals) >= required_consensus:
             signals = long_signals
-        elif len(short_signals) >= config.MIN_CONSENSUS:
+        elif len(short_signals) >= required_consensus:
             signals = short_signals
         else:
             return False

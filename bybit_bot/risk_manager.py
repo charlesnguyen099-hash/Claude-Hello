@@ -45,6 +45,7 @@ class RiskManager:
         signal: Signal,
         equity: float,
         open_positions: list[dict],
+        is_priority: bool = False,
     ) -> Optional[TradeParams]:
 
         if signal.entry_price <= 0 or signal.atr <= 0:
@@ -97,12 +98,13 @@ class RiskManager:
         tp1_dist = max(tp1_dist, sl_dist)
         tp2_dist = max(tp2_dist, sl_dist * 1.5)
 
-        # Cap TP1: loi nhuan tai TP1 khong vuot qua 50% von + phi
-        # Tranh dat TP qua xa gay ra lenh treo khong bao gio hit
-        max_tp1_profit = 0.50 * (capital_used + fee_usdt)
-        max_tp1_dist   = max_tp1_profit / qty if qty > 0 else tp1_dist
-        tp1_dist = max(min(tp1_dist, max_tp1_dist), sl_dist)  # cap nhung khong duoi SL
-        tp2_dist = max(min(tp2_dist, max_tp1_dist * 2), sl_dist * 1.5)
+        # Cap TP1: chi ap dung cho non-priority — loi nhuan khong vuot 50% von + phi
+        # top10 priority giu nguyen theo ATR thuc te (co the chay xa hon)
+        if not is_priority:
+            max_tp1_profit = 0.50 * (capital_used + fee_usdt)
+            max_tp1_dist   = max_tp1_profit / qty if qty > 0 else tp1_dist
+            tp1_dist = max(min(tp1_dist, max_tp1_dist), sl_dist)
+            tp2_dist = max(min(tp2_dist, max_tp1_dist * 2), sl_dist * 1.5)
 
         d   = signal.direction
         sl  = signal.entry_price - d * sl_dist  # fee da tinh trong sl_dist roi

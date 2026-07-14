@@ -38,6 +38,7 @@ class Executor:
         signal: Signal,
         equity: float,
         open_positions: list[dict],
+        is_priority: bool = False,
     ):
         """Xử lý signal mới — vào lệnh nếu đủ điều kiện."""
         if signal.direction == 0:
@@ -54,7 +55,7 @@ class Executor:
             self._close_position(existing[0])
             time.sleep(0.5)
 
-        params = self.risk_mgr.compute_trade(signal, equity, open_positions)
+        params = self.risk_mgr.compute_trade(signal, equity, open_positions, is_priority=is_priority)
         if not params:
             return
 

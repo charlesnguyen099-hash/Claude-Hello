@@ -543,7 +543,7 @@ class TradingBot:
                             f"{'LONG' if bo_sig.direction==1 else 'SHORT'} "
                             f"strength={bo_sig.strength:.2f} | {bo_sig.reason}"
                         )
-                        self.executor.execute_signal(symbol, bo_sig, equity, open_positions)
+                        self.executor.execute_signal(symbol, bo_sig, equity, open_positions, is_priority=is_priority)
                         return True
 
         # Xac dinh mode: REVERSAL hay MOMENTUM
@@ -637,7 +637,7 @@ class TradingBot:
                         f"{'LONG' if best.direction==1 else 'SHORT'} "
                         f"strength={best.strength:.2f} | {best.reason}"
                     )
-                    self.executor.execute_signal(symbol, best, equity, open_positions)
+                    self.executor.execute_signal(symbol, best, equity, open_positions, is_priority=is_priority)
                     return True
 
         # MOMENTUM trade: can >= MIN_CONSENSUS strategies dong thuan
@@ -727,7 +727,7 @@ class TradingBot:
             f"strength={best.strength:.2f} | {best.reason}"
         )
 
-        self.executor.execute_signal(symbol, best, equity, open_positions)
+        self.executor.execute_signal(symbol, best, equity, open_positions, is_priority=is_priority)
         return True
 
 

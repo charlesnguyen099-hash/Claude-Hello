@@ -141,9 +141,8 @@ class TradingBot:
         except Exception:
             pass
 
-        # Priority list: top10 + BILLUSDT (11 coins)
-        EXTRA_SYMBOLS = {"BILLUSDT"}
-        priority_set  = top10 | EXTRA_SYMBOLS
+        # Priority list: top10 only
+        priority_set = top10
 
         # Scan list: priority first, then trending-only coins (khong lap)
         trending_only = [s for s in getattr(self.scanner, "trending_symbols", []) if s not in priority_set]

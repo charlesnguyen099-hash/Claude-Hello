@@ -75,7 +75,7 @@ class RiskManager:
         # Base qty = min_qty x2, dam bao notional >= 5 USDT
         MIN_NOTIONAL = 5.0
         min_qty_notional = math.ceil(MIN_NOTIONAL / signal.entry_price / qty_step) * qty_step
-        base_qty = max(min_qty, min_qty_notional) * 2  # x2 truoc khi tinh margin
+        base_qty = max(min_qty, min_qty_notional) * config.TRADE_SIZE_MULT
 
         # Nhan scale consensus
         qty      = math.ceil(base_qty * scale_factor / qty_step) * qty_step

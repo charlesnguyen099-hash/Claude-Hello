@@ -71,7 +71,7 @@ MIN_CONSENSUS          = 4   # Priority (top10+BILL): can it nhat 4/7 strategies
 MIN_CONSENSUS_TRENDING = 5   # Trending non-priority: can it nhat 5/7 strategies dong thuan
 MIN_ATR_PCT         = 0.003  # ATR phai >= 0.3% gia de bu phi
 QTY_SCALE_CAP           = 5    # Nhan toi da 5x min_qty
-TRADE_SIZE_MULT         = 2    # Nhan min_qty x lan nay truoc khi tinh margin
+TRADE_SIZE_MULT         = 6    # Nhan min_qty x lan nay truoc khi tinh margin (2 * 3x)
 
 # --- Execution ----------------------------------------------------------------
 ORDER_TYPE           = "Market"

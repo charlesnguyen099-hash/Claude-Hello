@@ -67,8 +67,7 @@ class Executor:
         try:
             self.client.set_leverage(symbol, params.leverage)
 
-            # TP1 dat tren san lam safety net — neu gia cham TP1 san tu dong dong
-            # Trailing stop se kich hoat truoc TP1 (tai TRAILING_TRIGGER%) de bao ve lai nhuan neu dao chieu
+            # TP1 dat tren san lam safety net — partial close se cap nhat len TP2 khi dat 75% TP1
             order = self.client.place_order(
                 symbol=symbol,
                 side=params.side,

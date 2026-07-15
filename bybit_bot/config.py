@@ -51,16 +51,8 @@ CAPITAL_PER_TRADE_PCT = 0.10    # khong dung, giu lai de khong loi import cu
 USE_MAX_LEVERAGE       = True
 MAX_LEVERAGE           = 100
 DEFAULT_LEVERAGE       = 20
-MAX_OPEN_POSITIONS     = 3     # toi da 3 vi the mo cung luc
-MAX_POSITIONS_PER_SIDE = 2     # toi da 2 long HOAC 2 short — tranh 4 short cung luc bi pump
-
-# Global direction cooldown: neu >= 2 lenh cung chieu thua trong 10 phut → block 15 phut
-GLOBAL_DIR_LOSS_WINDOW  = 600   # 10 min: cua so dem so lenh thua cung chieu
-GLOBAL_DIR_COOLDOWN_SEC = 900   # 15 min: block huong do sau khi hit threshold
-GLOBAL_DIR_LOSS_THRESH  = 2     # so lenh thua de kich hoat block
-
-# Rate limit mo lenh moi: toi da 1 lenh moi moi X giay (tranh 5 lenh trong 1 tick)
-MIN_TRADE_INTERVAL_SEC  = 120   # 2 phut giua 2 lenh bat ky
+MAX_OPEN_POSITIONS     = 9999
+MAX_POSITIONS_PER_SIDE = 9999
 
 # SL/TP theo ATR — dam bao RR >= 1 sau phi
 # SL = 1.5x ATR, TP1 = 1.5x ATR (RR~1), TP2 = 3x ATR (RR~2)
@@ -75,7 +67,8 @@ TRAILING_TRIGGER  = 0.75   # Kich hoat trailing stop khi gia di duoc 75% den TP1
 # --- Signal sensitivity -------------------------------------------------------
 MIN_SIGNAL_STRENGTH = 0.55   # Chi lay signal manh
 MIN_ADX             = 15     # ADX < 15 = sideway, khong trade
-MIN_CONSENSUS       = 3      # Can it nhat 3 strategies dong thuan cung chieu
+MIN_CONSENSUS          = 4   # Priority (top10+BILL): can it nhat 4/7 strategies dong thuan
+MIN_CONSENSUS_TRENDING = 5   # Trending non-priority: can it nhat 5/7 strategies dong thuan
 MIN_ATR_PCT         = 0.003  # ATR phai >= 0.3% gia de bu phi
 QTY_SCALE_CAP           = 5    # Nhan toi da 5x min_qty
 TRADE_SIZE_MULT         = 2    # Nhan min_qty x lan nay truoc khi tinh margin

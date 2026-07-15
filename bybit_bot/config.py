@@ -26,16 +26,11 @@ TIMEFRAMES = {
     "trend":  "60",    # 1h: xu huong
     "macro":  "240",   # 4h: xu huong lon
 }
-CANDLE_LIMIT_MICRO       = 300   # top20: 300 nen 1m — du EMA on dinh
+CANDLE_LIMIT_MICRO       = 300   # 300 nen 1m — du EMA on dinh
 CANDLE_LIMIT_SCALP  = 1000
 CANDLE_LIMIT_SIGNAL = 1000
 CANDLE_LIMIT_TREND  = 500
 CANDLE_LIMIT_MACRO  = 300
-
-# --- Strategy Selector --------------------------------------------------------
-STRATEGY_EVAL_CANDLES = 200
-MIN_WIN_RATE          = 0.40
-STRATEGY_RESCAN_BARS  = 30
 
 # --- Phi giao dich Bybit ------------------------------------------------------
 TAKER_FEE      = 0.00055
@@ -46,9 +41,6 @@ ROUND_TRIP_FEE = TAKER_FEE * 2   # 0.11% tong phi ca 2 chieu
 USE_MAX_LEVERAGE       = True
 MAX_LEVERAGE           = 100
 DEFAULT_LEVERAGE       = 20
-MAX_OPEN_POSITIONS     = 9999
-MAX_POSITIONS_PER_SIDE = 9999
-
 # SL/TP theo ATR — dam bao RR >= 1 sau phi
 # SL = 1.5x ATR, TP1 = 1.5x ATR (RR~1), TP2 = 3x ATR (RR~2)
 ATR_PERIOD        = 14
@@ -68,10 +60,7 @@ MIN_ATR_PCT         = 0.003  # ATR phai >= 0.3% gia de bu phi
 TRADE_SIZE_MULT         = 4    # Nhan min_qty x 4
 
 # --- Execution ----------------------------------------------------------------
-ORDER_TYPE           = "Market"
 LOOP_INTERVAL_SEC    = 15   # check moi 15 giay
-RETRY_ATTEMPTS    = 3
-RETRY_DELAY_SEC   = 2
 
 # --- Logging ------------------------------------------------------------------
 LOG_FILE        = "trading_bot.log"

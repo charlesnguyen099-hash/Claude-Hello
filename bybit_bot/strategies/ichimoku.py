@@ -17,9 +17,7 @@ def ichimoku(df: pd.DataFrame, t=9, k=26, s=52, d=26):
     kijun   = (high.rolling(k).max() + low.rolling(k).min()) / 2
     senkou_a = ((tenkan + kijun) / 2).shift(d)
     senkou_b = ((high.rolling(s).max() + low.rolling(s).min()) / 2).shift(d)
-    chikou  = df["close"].shift(-d)
-
-    return tenkan, kijun, senkou_a, senkou_b, chikou
+    return tenkan, kijun, senkou_a, senkou_b
 
 
 class IchimokuStrategy(BaseStrategy):
@@ -30,7 +28,7 @@ class IchimokuStrategy(BaseStrategy):
         if len(df) < 80:
             return null
 
-        tenkan, kijun, senkou_a, senkou_b, chikou = ichimoku(df)
+        tenkan, kijun, senkou_a, senkou_b = ichimoku(df)
         atr   = compute_atr(df, config.ATR_PERIOD).iloc[-1]
         price = df["close"].iloc[-1]
 
@@ -44,8 +42,7 @@ class IchimokuStrategy(BaseStrategy):
         above_cloud = price > cloud_top
         below_cloud = price < cloud_bottom
 
-        # Chikou (lagging span) confirms — compare to price 26 bars ago
-        # len(df) >= 80 guaranteed by early return above, so this always runs
+        # Chikou confirmation: current close vs price 26 bars ago
         chikou_bullish = df["close"].iloc[-1] > df["close"].iloc[-26]
         chikou_bearish = df["close"].iloc[-1] < df["close"].iloc[-26]
 

@@ -80,11 +80,6 @@ class BybitClient:
         df = df.sort_values("timestamp").reset_index(drop=True)
         return df
 
-    @retry()
-    def get_orderbook(self, symbol: str, limit: int = 25) -> dict:
-        resp = self.session.get_orderbook(category="linear", symbol=symbol, limit=limit)
-        return resp["result"]
-
     # ── Account ───────────────────────────────────────────────────────────────
 
     @retry()
@@ -102,14 +97,6 @@ class BybitClient:
         """Lấy tất cả vị thế đang mở."""
         resp = self.session.get_positions(category="linear", settleCoin="USDT")
         return [p for p in resp["result"]["list"] if float(p["size"]) > 0]
-
-    @retry()
-    def get_open_orders(self, symbol: Optional[str] = None) -> list[dict]:
-        params = {"category": "linear", "settleCoin": "USDT"}
-        if symbol:
-            params["symbol"] = symbol
-        resp = self.session.get_open_orders(**params)
-        return resp["result"]["list"]
 
     # ── Trading ───────────────────────────────────────────────────────────────
 
@@ -163,10 +150,6 @@ class BybitClient:
     def close_position(self, symbol: str, side: str, qty: float) -> dict:
         close_side = "Sell" if side == "Buy" else "Buy"
         return self.place_order(symbol, close_side, qty, reduce_only=True)
-
-    @retry()
-    def cancel_all_orders(self, symbol: str):
-        self.session.cancel_all_orders(category="linear", symbol=symbol)
 
     @retry()
     def update_stop_loss(self, symbol: str, sl_price: float):
@@ -233,14 +216,3 @@ class BybitClient:
             logger.debug(f"get_closed_pnl error: {e}")
         return result
 
-    def get_min_order_usdt(self, symbol: str) -> float:
-        """Lấy giá trị lệnh tối thiểu (USDT) của symbol."""
-        try:
-            info = self.get_instrument_info(symbol)
-            min_qty   = float(info["lotSizeFilter"]["minOrderQty"])
-            # Lấy giá hiện tại để tính notional tối thiểu
-            tickers = self.session.get_tickers(category="linear", symbol=symbol)
-            price = float(tickers["result"]["list"][0]["lastPrice"])
-            return min_qty * price
-        except Exception:
-            return 1.0

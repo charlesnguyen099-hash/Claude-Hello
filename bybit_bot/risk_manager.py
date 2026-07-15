@@ -27,7 +27,6 @@ class TradeParams:
     sl_price: float
     tp1_price: float
     tp2_price: float
-    trailing_stop: float
     notional_usdt: float
     fee_usdt: float
     capital_usdt: float
@@ -69,7 +68,7 @@ class RiskManager:
 
         # Consensus scale: 2=1x, 3=1.3x, 4=1.6x, 5=2x, 6=2.5x, 7=3x
         consensus = getattr(signal, 'consensus', 1)
-        CONSENSUS_SCALE = {2: 1.0, 3: 1.3, 4: 1.6, 5: 2.0, 6: 2.5, 7: 3.0}
+        CONSENSUS_SCALE = {1: 1.0, 2: 1.0, 3: 1.3, 4: 1.6, 5: 2.0, 6: 2.5, 7: 3.0}
         scale_factor = CONSENSUS_SCALE.get(consensus, 1.0)
 
         # Base qty = min_qty x2, dam bao notional >= 5 USDT
@@ -92,8 +91,6 @@ class RiskManager:
         sl_dist  = config.SL_ATR_MULT  * signal.atr + fee_price
         tp1_dist = config.TP1_ATR_MULT * signal.atr - fee_price   # TP1 >= SL net
         tp2_dist = config.TP2_ATR_MULT * signal.atr - fee_price   # TP2 = 2x SL net
-        trail    = config.TRAILING_STOP_ATR * signal.atr
-
         # Dam bao TP1 >= SL (neu ATR nho, min TP1 = sl_dist) — chi ap dung cho priority
         # Non-priority: bo qua buoc nay vi se bi hard cap o duoi, RR < 1 chap nhan duoc
         if is_priority:
@@ -140,7 +137,6 @@ class RiskManager:
             sl_price=round(sl, 6),
             tp1_price=round(tp1, 6),
             tp2_price=round(tp2, 6),
-            trailing_stop=round(trail, 6),
             notional_usdt=round(notional, 2),
             fee_usdt=round(fee_usdt, 6),
             capital_usdt=round(capital_used, 4),

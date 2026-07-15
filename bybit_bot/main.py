@@ -32,7 +32,7 @@ class TradingBot:
         logger.info("Bybit Auto Trading Bot starting...")
         logger.info(f"Mode: {'TESTNET' if config.TESTNET else 'MAINNET (LIVE)'}")
         logger.info(f"Top N symbols: {config.TOP_N_SYMBOLS}")
-        logger.info(f"Max positions: {config.MAX_OPEN_POSITIONS}")
+        logger.info(f"Max positions: unlimited")
         logger.info(f"Strategies: {[s.name for s in ALL_STRATEGIES]}")
         logger.info("="*60)
 
@@ -101,7 +101,7 @@ class TradingBot:
         logger.info(
             f"[TICK] {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')} | "
             f"Equity={equity:.2f} USDT | "
-            f"Open={len(open_positions)}/{config.MAX_OPEN_POSITIONS}"
+            f"Open={len(open_positions)}"
         )
 
         # Quan ly vi the dang mo
@@ -630,7 +630,9 @@ class TradingBot:
                 (reversal_dir == -1 and _micro_spike_dump)
             )
             if not reversal_spike_blocked:
-                reversal_confirmed = (
+                # Micro trend hard block: khong reversal khi 1m dang chay nguoc chieu manh
+                reversal_micro_ok = not (reversal_dir == 1 and micro_down) and not (reversal_dir == -1 and micro_up)
+                reversal_confirmed = reversal_micro_ok and (
                     (reversal_dir == 1  and short_term_up)   or
                     (reversal_dir == -1 and short_term_down)
                 ) and self._micro_entry_analysis(df_micro, reversal_dir, is_reversal=True)

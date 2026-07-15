@@ -30,7 +30,8 @@ class EMACrossoverStrategy(BaseStrategy):
         atr   = compute_atr(df, config.ATR_PERIOD).iloc[-1]
 
         price    = close.iloc[-1]
-        macro_d  = self._trend_direction(df_macro)
+        macro_d  = self._trend_direction(df_macro)   # 4h
+        trend_1h = self._trend_direction(df_trend)   # 1h
 
         # Trạng thái EMA hiện tại: fast > slow = bullish alignment
         ema_f_now = ema_f.iloc[-1]
@@ -49,13 +50,13 @@ class EMACrossoverStrategy(BaseStrategy):
         recently_crossed_up   = any(ema_f_prev3.values[i] <= ema_s_prev3.values[i] for i in range(3))
         recently_crossed_down = any(ema_f_prev3.values[i] >= ema_s_prev3.values[i] for i in range(3))
 
-        # Long: EMA9 > EMA21 > EMA50 + cross moi xay ra trong 3 nen + volume + trend
-        if ema_f_now > ema_s_now > ema_t_now and gap_pct > 0.001 and recently_crossed_up and vol_ok and macro_d >= 0:
+        # Long: EMA cross up + ca 1h va 4h khong oppose
+        if ema_f_now > ema_s_now > ema_t_now and gap_pct > 0.001 and recently_crossed_up and vol_ok and trend_1h >= 0 and macro_d >= 0:
             strength = min(0.85, 0.55 + gap_pct * 10)
             return Signal(1, strength, self.name, price, atr, f"EMA bullish cross gap={gap_pct*100:.2f}%")
 
-        # Short: EMA9 < EMA21 < EMA50 + cross moi xay ra trong 3 nen + volume + trend
-        if ema_f_now < ema_s_now < ema_t_now and abs(gap_pct) > 0.001 and recently_crossed_down and vol_ok and macro_d <= 0:
+        # Short: EMA cross down + ca 1h va 4h khong oppose
+        if ema_f_now < ema_s_now < ema_t_now and abs(gap_pct) > 0.001 and recently_crossed_down and vol_ok and trend_1h <= 0 and macro_d <= 0:
             strength = min(0.85, 0.55 + abs(gap_pct) * 10)
             return Signal(-1, strength, self.name, price, atr, f"EMA bearish cross gap={abs(gap_pct)*100:.2f}%")
 

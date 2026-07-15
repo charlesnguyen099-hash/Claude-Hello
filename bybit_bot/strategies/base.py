@@ -81,7 +81,7 @@ class BaseStrategy(ABC):
         ...
 
     def _trend_direction(self, df: pd.DataFrame) -> int:
-        """1h trend: +1 up, -1 down, 0 sideways."""
+        """+1 up, -1 down, 0 sideways. Pass df_trend for 1h or df_macro for 4h."""
         if len(df) < 50:
             return 0
         ema20 = compute_ema(df["close"], 20).iloc[-1]

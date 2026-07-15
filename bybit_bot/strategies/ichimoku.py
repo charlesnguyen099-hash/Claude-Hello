@@ -46,10 +46,13 @@ class IchimokuStrategy(BaseStrategy):
         chikou_bullish = df["close"].iloc[-1] > df["close"].iloc[-26]
         chikou_bearish = df["close"].iloc[-1] < df["close"].iloc[-26]
 
-        if tk_cross_up and above_cloud and chikou_bullish:
+        trend_1h = self._trend_direction(df_trend)   # 1h
+        macro_d  = self._trend_direction(df_macro)   # 4h
+
+        if tk_cross_up and above_cloud and chikou_bullish and trend_1h >= 0 and macro_d >= 0:
             return Signal(1, 0.9, self.name, price, atr, "Ichimoku TK cross up above cloud")
 
-        if tk_cross_down and below_cloud and chikou_bearish:
+        if tk_cross_down and below_cloud and chikou_bearish and trend_1h <= 0 and macro_d <= 0:
             return Signal(-1, 0.9, self.name, price, atr, "Ichimoku TK cross down below cloud")
 
         return null

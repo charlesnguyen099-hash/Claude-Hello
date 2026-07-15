@@ -46,7 +46,6 @@ class TradingBot:
 
         self.symbols: list[str] = []
         self.last_scan_ts: float = 0
-        self.volume_map: dict[str, float] = {}  # symbol -> 24h volume USDT
 
         # Post-loss tracking: symbol -> timestamp dong lenh lo
         # Trong 5 phut sau lo, can consensus >= MIN_CONSENSUS+1 de vao lai
@@ -103,7 +102,6 @@ class TradingBot:
             symbols = self.scanner.scan()
             if symbols:
                 self.symbols = symbols
-                self.volume_map = getattr(self.scanner, "volume_map", {})
                 self.last_scan_ts = now
                 logger.info(f"Symbols updated: {len(self.symbols)}, top 5: {self.symbols[:5]}")
             elif not self.symbols:
@@ -682,7 +680,13 @@ class TradingBot:
                 # 24h exhaustion block cho BREAKOUT
                 bo_24h_ok = not (_block_long_24h and bo_sig.direction == 1) and \
                             not (_block_short_24h and bo_sig.direction == -1)
-                if bo_ok and micro_ok and not is_spike and post_spike_ok and micro_spike_ok and bo_btc_ok and bo_h1_ok and bo_24h_ok:
+                # [FIX] macro_4h + macro_trend alignment — dong bo voi momentum path
+                # BREAKOUT truoc day khong check 1h/4h trend, co the trade nguoc trend chinh
+                bo_trend_ok = (
+                    (bo_sig.direction == 1  and macro_trend >= 0 and macro_4h >= 0) or
+                    (bo_sig.direction == -1 and macro_trend <= 0 and macro_4h <= 0)
+                )
+                if bo_ok and micro_ok and not is_spike and post_spike_ok and micro_spike_ok and bo_btc_ok and bo_h1_ok and bo_24h_ok and bo_trend_ok:
                     # BREAKOUT phai qua range check — tranh long o dinh / short o day
                     if not self._micro_entry_analysis(df_micro, bo_sig.direction):
                         logger.debug(f"{symbol}: BREAKOUT skip — range/micro_entry block")
@@ -859,11 +863,12 @@ class TradingBot:
             required_short = base + extra
         else:
             # Trending non-priority: can MIN_CONSENSUS_TRENDING=5/7
-            # + sideways +1, post_loss +1, btc_opposes +1 (cap total extra = 1)
+            # sideways +1, post_loss +1 — stack doc lap (cap tai 7 max)
+            # btc_opposes them +1 rieng
             base = config.MIN_CONSENSUS_TRENDING
-            extra = min(1, (1 if sideways_1h else 0) + (1 if post_loss else 0))
-            required_long  = base + extra + (1 if btc_opposes_long  else 0)
-            required_short = base + extra + (1 if btc_opposes_short else 0)
+            extra = (1 if sideways_1h else 0) + (1 if post_loss else 0)
+            required_long  = min(7, base + extra + (1 if btc_opposes_long  else 0))
+            required_short = min(7, base + extra + (1 if btc_opposes_short else 0))
 
         # TOP10 PRIORITY: 2 trong 2 Tier-1 strategy (supertrend + vwap_volume) dong thuan -> trade
         # Tier-1 bypass: KHONG bi chan boi BTC filter — top10 coin lon co momentum rieng
@@ -874,8 +879,12 @@ class TradingBot:
 
         # Tier1 bypass: chi khi ca 2 Tier1 cung chieu (2/2) va KHONG conflict
         # Neu conflict (1 long + 1 short): KHONG skip toan bo — van cho consensus check chay
-        tier1_bypass_long  = is_priority and tier1_long >= 2 and tier1_short == 0
-        tier1_bypass_short = is_priority and tier1_short >= 2 and tier1_long == 0
+        # [FIX] Tier1 bypass phai ton trong macro_4h alignment — tranh bypass trong reversal mode
+        # khi signals vao tu reversal branch (khong co macro check)
+        tier1_bypass_long  = (is_priority and tier1_long >= 2 and tier1_short == 0
+                              and macro_trend >= 0 and macro_4h >= 0)
+        tier1_bypass_short = (is_priority and tier1_short >= 2 and tier1_long == 0
+                              and macro_trend <= 0 and macro_4h <= 0)
 
         if tier1_bypass_long:
             signals = long_signals
@@ -969,7 +978,8 @@ class TradingBot:
                 try:
                     if strategy.name == "sustained_trend":
                         continue
-                    sig_1h = strategy.generate_signal(df_trend, df_macro, df_macro)  # df=1h, df_trend=4h (macro), df_macro=4h
+                    # df=1h candles, df_trend=1h (itself as trend ref), df_macro=4h
+                    sig_1h = strategy.generate_signal(df_trend, df_trend, df_macro)
                     if sig_1h.direction == best.direction and sig_1h.strength >= config.MIN_SIGNAL_STRENGTH:
                         h1_confirms += 1
                     elif sig_1h.direction == -best.direction and sig_1h.strength >= config.MIN_SIGNAL_STRENGTH:

@@ -29,7 +29,8 @@ class RSIMACDStrategy(BaseStrategy):
         atr   = compute_atr(df, config.ATR_PERIOD).iloc[-1]
         price = close.iloc[-1]
 
-        trend = self._trend_direction(df_trend)
+        trend_1h = self._trend_direction(df_trend)   # 1h
+        macro_d  = self._trend_direction(df_macro)   # 4h
         rsi_now  = rsi.iloc[-1]
         hist_now = hist.iloc[-1]
         hist_prev = hist.iloc[-2]
@@ -39,13 +40,13 @@ class RSIMACDStrategy(BaseStrategy):
         macd_accel_up   = hist_now > hist_prev > hist_prev2  # tăng 2 nến liên tiếp
         macd_accel_down = hist_now < hist_prev < hist_prev2  # giảm 2 nến liên tiếp
 
-        if 35 <= rsi_now <= 55 and macd_accel_up and hist_now > 0 and trend >= 0:
+        if 35 <= rsi_now <= 55 and macd_accel_up and hist_now > 0 and trend_1h >= 0 and macro_d >= 0:
             strength = min(0.85, 0.5 + (rsi_now - 35) / 100 + (hist_now - hist_prev) / (abs(hist_now) + 1e-9) * 0.1)
             return Signal(1, strength, self.name, price, atr,
                           f"RSI={rsi_now:.0f} MACD accel up {hist_prev2:.4f}->{hist_prev:.4f}->{hist_now:.4f}")
 
         # Short: RSI vùng 45-65 (tránh oversold) + MACD histogram giảm liên tiếp 2 nến
-        if 45 <= rsi_now <= 65 and macd_accel_down and hist_now < 0 and trend <= 0:
+        if 45 <= rsi_now <= 65 and macd_accel_down and hist_now < 0 and trend_1h <= 0 and macro_d <= 0:
             strength = min(0.85, 0.5 + (65 - rsi_now) / 100 + (hist_prev - hist_now) / (abs(hist_now) + 1e-9) * 0.1)
             return Signal(-1, strength, self.name, price, atr,
                           f"RSI={rsi_now:.0f} MACD accel down {hist_prev2:.4f}->{hist_prev:.4f}->{hist_now:.4f}")

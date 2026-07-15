@@ -1,7 +1,7 @@
 """
 Trade Executor — thực thi lệnh và quản lý vị thế
 - Đặt lệnh với SL + TP1 (safety net trên sàn)
-- Level 1 (BREAKEVEN_TRIGGER=30%): chuyển SL về break-even sớm
+- Level 1 (BREAKEVEN_TRIGGER=15%): chuyển SL về break-even sớm
 - Level 2 (PARTIAL_CLOSE_TRIGGER=75%): đóng 50% vị thế, cập nhật TP lên TP2, xác nhận SL break-even
 - Level 3: 50% còn lại chạy đến TP2 với zero downside risk
 - Tự động đóng lệnh khi signal đảo chiều
@@ -114,7 +114,7 @@ class Executor:
     def manage_open_positions(self, open_positions: list[dict]):
         """
         Quan ly vi the dang mo theo 3 muc:
-        1. BREAKEVEN_TRIGGER (30%): doi SL ve entry + phi som
+        1. BREAKEVEN_TRIGGER (15%): doi SL ve entry + phi som
         2. PARTIAL_CLOSE_TRIGGER (75%): dong 50% reduce-only, cap nhat TP len TP2, xac nhan breakeven SL
         3. 50% con lai chay den TP2 voi zero downside risk (SL = breakeven)
         """

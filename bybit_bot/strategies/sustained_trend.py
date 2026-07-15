@@ -42,13 +42,16 @@ class SustainedTrendStrategy(BaseStrategy):
         e9_slope  = (ema9.iloc[-1]  - ema9.iloc[-self.slope_bars])  / (abs(ema9.iloc[-self.slope_bars])  + 1e-9)
         e21_slope = (ema21.iloc[-1] - ema21.iloc[-self.slope_bars]) / (abs(ema21.iloc[-self.slope_bars]) + 1e-9)
 
+        trend_1h = self._trend_direction(df_trend)   # 1h
+        macro_d  = self._trend_direction(df_macro)   # 4h
+
         # ── SUSTAINED DOWNTREND → SHORT ──────────────────────────────────────
         # EMA xep theo thu tu giam + ca 2 EMA dang doc xuong + RSI chua oversold
         ema_bear   = price < e9_now < e21_now < e28_now
         slope_down = e9_slope < -0.001 and e21_slope < -0.0005
         rsi_mid    = 35 < rsi < 65   # Chua oversold, con du cho xuong tiep
 
-        if ema_bear and slope_down and rsi_mid:
+        if ema_bear and slope_down and rsi_mid and trend_1h <= 0 and macro_d <= 0:
             strength = min(0.85, 0.60 + abs(e9_slope) * 20)
             return Signal(
                 direction=-1,
@@ -64,7 +67,7 @@ class SustainedTrendStrategy(BaseStrategy):
         slope_up   = e9_slope > 0.001 and e21_slope > 0.0005
         rsi_mid_up = 35 < rsi < 65
 
-        if ema_bull and slope_up and rsi_mid_up:
+        if ema_bull and slope_up and rsi_mid_up and trend_1h >= 0 and macro_d >= 0:
             strength = min(0.85, 0.60 + abs(e9_slope) * 20)
             return Signal(
                 direction=1,
@@ -89,7 +92,7 @@ class SustainedTrendStrategy(BaseStrategy):
             last_body > abs(prev_body) * 0.5 and  # than xanh >= 50% than do
             vol_now >= vol_prev * 0.8   # volume khong giam qua manh
         )
-        if reversal_long:
+        if reversal_long and trend_1h >= 0 and macro_d >= 0:
             strength = min(0.90, 0.70 + (self.rsi_oversold - rsi) / 50)
             return Signal(
                 direction=1,
@@ -108,7 +111,7 @@ class SustainedTrendStrategy(BaseStrategy):
             abs(last_body) > prev_body * 0.5 and
             vol_now >= vol_prev * 0.8
         )
-        if reversal_short:
+        if reversal_short and trend_1h <= 0 and macro_d <= 0:
             strength = min(0.90, 0.70 + (rsi - self.rsi_overbought) / 50)
             return Signal(
                 direction=-1,

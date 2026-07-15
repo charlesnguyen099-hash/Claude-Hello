@@ -59,15 +59,16 @@ class BollingerStrategy(BaseStrategy):
         rsi_oversold   = rsi.iloc[-1] < 35 or rsi.iloc[-2] < 35
         rsi_overbought = rsi.iloc[-1] > 65 or rsi.iloc[-2] > 65
 
-        macro_d = self._trend_direction(df_macro)
+        macro_d  = self._trend_direction(df_macro)   # 4h
+        trend_1h = self._trend_direction(df_trend)   # 1h
 
-        if bullish_reversal and rsi_oversold and macro_d >= 0:
+        if bullish_reversal and rsi_oversold and trend_1h >= 0 and macro_d >= 0:
             # Do khoang cach gia vs lower band (khoang phuc hoi tu band)
             band_dist = abs(price - lower.iloc[-1]) / (lower.iloc[-1] + 1e-9)
             strength  = min(0.85, 0.5 + band_dist * 10)
             return Signal(1, strength, self.name, price, atr, "BB lower touch + RSI oversold reversal")
 
-        if bearish_reversal and rsi_overbought and macro_d <= 0:
+        if bearish_reversal and rsi_overbought and trend_1h <= 0 and macro_d <= 0:
             band_dist = abs(price - upper.iloc[-1]) / (upper.iloc[-1] + 1e-9)
             strength  = min(0.85, 0.5 + band_dist * 10)
             return Signal(-1, strength, self.name, price, atr, "BB upper touch + RSI overbought reversal")

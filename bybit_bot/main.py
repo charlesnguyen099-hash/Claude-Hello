@@ -375,16 +375,16 @@ class TradingBot:
             if rng > 0:
                 range_pos = (price - low_rng) / rng
                 if not is_reversal:
-                    if direction == 1 and range_pos > 0.90:
-                        logger.debug(f"micro_entry: HARD BLOCK long — 100c range_pos={range_pos:.2f} > 0.90")
+                    if direction == 1 and range_pos > 0.80:
+                        logger.debug(f"micro_entry: HARD BLOCK long — 100c range_pos={range_pos:.2f} > 0.80")
                         return False
-                    if direction == -1 and range_pos < 0.10:
-                        logger.debug(f"micro_entry: HARD BLOCK short — 100c range_pos={range_pos:.2f} < 0.10")
+                    if direction == -1 and range_pos < 0.20:
+                        logger.debug(f"micro_entry: HARD BLOCK short — 100c range_pos={range_pos:.2f} < 0.20")
                         return False
                 # Bonus cho entry o vung an toan
-                if direction == 1 and range_pos < 0.55:
+                if direction == 1 and range_pos < 0.45:
                     score += 1
-                elif direction == -1 and range_pos > 0.45:
+                elif direction == -1 and range_pos > 0.55:
                     score += 1
 
         # 20-candle local range: check them de tranh short o day local / long o dinh local
@@ -396,11 +396,11 @@ class TradingBot:
             local_rng  = local_high - local_low
             if local_rng > 0:
                 local_pos = (price - local_low) / local_rng
-                if direction == 1 and local_pos > 0.90:
-                    logger.debug(f"micro_entry: HARD BLOCK long — 20c local_pos={local_pos:.2f} > 0.90 (local top)")
+                if direction == 1 and local_pos > 0.80:
+                    logger.debug(f"micro_entry: HARD BLOCK long — 20c local_pos={local_pos:.2f} > 0.80 (local top)")
                     return False
-                if direction == -1 and local_pos < 0.10:
-                    logger.debug(f"micro_entry: HARD BLOCK short — 20c local_pos={local_pos:.2f} < 0.10 (local bottom)")
+                if direction == -1 and local_pos < 0.20:
+                    logger.debug(f"micro_entry: HARD BLOCK short — 20c local_pos={local_pos:.2f} < 0.20 (local bottom)")
                     return False
 
         # Factor 7: Momentum deceleration — nen gan day nho manh so voi nen truoc
@@ -497,10 +497,10 @@ class TradingBot:
             _micro_price  = df_micro["close"].iloc[-1]
             if _close_10_ago > 0:
                 _net_move = (_micro_price - _close_10_ago) / _close_10_ago
-                if _net_move < -0.020 and not _micro_spike_dump:   # net drop > 2.0% → dump flag
+                if _net_move < -0.010 and not _micro_spike_dump:   # net drop > 1.0% → dump flag
                     _micro_spike_dump = True
                     logger.debug(f"{symbol}: cumulative net dump {_net_move*100:.1f}% in 10 candles → dump flag")
-                elif _net_move > 0.020 and not _micro_spike_pump:  # net pump > 2.0% → pump flag
+                elif _net_move > 0.010 and not _micro_spike_pump:  # net pump > 1.0% → pump flag
                     _micro_spike_pump = True
                     logger.debug(f"{symbol}: cumulative net pump {_net_move*100:.1f}% in 10 candles → pump flag")
 

@@ -47,7 +47,7 @@ ATR_PERIOD        = 14
 SL_ATR_MULT       = 1.5    # SL  = 1.5x ATR
 TP1_ATR_MULT      = 1.5    # TP1 = 1.5x ATR → RR ~1 sau phi
 TP2_ATR_MULT      = 3.0    # TP2 = 3.0x ATR → RR ~2
-BREAKEVEN_TRIGGER = 0.30   # Doi SL ve entry khi gia di duoc 30% den TP1 (bao ve som hon)
+BREAKEVEN_TRIGGER = 0.15   # Doi SL ve entry khi gia di duoc 15% den TP1 (set som hon, tranh miss spike)
 PARTIAL_CLOSE_TRIGGER = 0.75  # Dong 50% position tai 75% den TP1, de 50% con lai chay den TP2
 
 # --- Signal sensitivity -------------------------------------------------------

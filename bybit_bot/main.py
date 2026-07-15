@@ -74,7 +74,25 @@ class TradingBot:
             except Exception as e:
                 logger.error(f"Unhandled error: {e}\n{traceback.format_exc()}")
 
-            time.sleep(config.LOOP_INTERVAL_SEC)
+            # Khi co vi the mo: check position management moi 3s trong 15s window
+            # De khong miss breakeven/partial-close trong spike ngan (AKE pattern)
+            try:
+                positions_now = self.client.get_positions()
+                if positions_now:
+                    for _ in range(4):
+                        time.sleep(3)
+                        try:
+                            positions_now = self.client.get_positions()
+                            if positions_now:
+                                self.executor.manage_open_positions(positions_now)
+                        except Exception:
+                            pass
+                    # Remaining time in 15s window already elapsed (4×3=12s)
+                    time.sleep(3)
+                else:
+                    time.sleep(config.LOOP_INTERVAL_SEC)
+            except Exception:
+                time.sleep(config.LOOP_INTERVAL_SEC)
 
     def _tick(self):
         now = time.time()

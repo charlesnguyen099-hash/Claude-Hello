@@ -1,8 +1,9 @@
 """
 Trade Executor — thực thi lệnh và quản lý vị thế
 - Đặt lệnh với SL + TP1 (safety net trên sàn)
-- Trailing stop kích hoạt tại TRAILING_TRIGGER% đường đến TP1 — bảo vệ lợi nhuận nếu đảo chiều trước TP1
-- Break-even SL kích hoạt tại BREAKEVEN_TRIGGER% đường đến TP1
+- Level 1 (BREAKEVEN_TRIGGER=30%): chuyển SL về break-even sớm
+- Level 2 (PARTIAL_CLOSE_TRIGGER=75%): đóng 50% vị thế, cập nhật TP lên TP2, xác nhận SL break-even
+- Level 3: 50% còn lại chạy đến TP2 với zero downside risk
 - Tự động đóng lệnh khi signal đảo chiều
 """
 
@@ -25,10 +26,10 @@ class Executor:
         self.risk_mgr  = risk_mgr
         self.logger    = bot_logger
 
-        self._tp1_hit: dict[str, bool]    = {}
-        self._breakeven_set: dict[str, bool] = {}
-        # ATR luu lai khi vao lenh — dung de tinh trailing stop distance chinh xac
-        self._atr: dict[str, float]       = {}
+        self._partial_closed: dict[str, bool] = {}
+        self._breakeven_set: dict[str, bool]  = {}
+        self._atr: dict[str, float]           = {}
+        self._tp2_price: dict[str, float]     = {}
         # Callback duoc goi khi dong lenh lo — (symbol: str, side: str) -> None
         self.on_loss_callback: Optional[Callable[..., None]] = None
 
@@ -76,9 +77,10 @@ class Executor:
                 tp=params.tp1_price,
             )
 
-            self._tp1_hit[symbol]      = False
-            self._breakeven_set[symbol] = False
-            self._atr[symbol]          = signal.atr  # luu ATR de trailing stop chinh xac
+            self._partial_closed[symbol] = False
+            self._breakeven_set[symbol]  = False
+            self._atr[symbol]            = signal.atr
+            self._tp2_price[symbol]      = params.tp2_price
 
             self.logger.log_trade({
                 "event":     "open",
@@ -112,9 +114,9 @@ class Executor:
     def manage_open_positions(self, open_positions: list[dict]):
         """
         Quan ly vi the dang mo theo 3 muc:
-        1. BREAKEVEN_TRIGGER (50%): doi SL ve entry + phi
-        2. TRAILING_TRIGGER  (75%): kich hoat trailing stop — bao ve lai nhuan
-        3. TP1 (100%): san tu dong dong, hoac trailing stop dong truoc neu dao chieu
+        1. BREAKEVEN_TRIGGER (30%): doi SL ve entry + phi som
+        2. PARTIAL_CLOSE_TRIGGER (75%): dong 50% reduce-only, cap nhat TP len TP2, xac nhan breakeven SL
+        3. 50% con lai chay den TP2 voi zero downside risk (SL = breakeven)
         """
         for pos in open_positions:
             symbol     = pos["symbol"]
@@ -125,22 +127,18 @@ class Executor:
             tp1_threshold = float(pos.get("takeProfit", 0))
 
             if tp1_threshold <= 0:
-                # Kiem tra emergency close ngay ca khi khong co TP
                 if self.risk_mgr.should_close_position(pos, mark_price):
                     logger.warning(f"{symbol}: Emergency close — excessive loss")
                     self._close_position(pos)
                 continue
 
             dist_to_tp1 = abs(tp1_threshold - entry)
-            # Tinh khoang cach co huong: chi tinh khi gia di DUNG chieu (profit direction)
-            # Tranh be/trailing fire khi gia di nguoc chieu (dang lo)
             if side == "Buy":
-                dist_moved = mark_price - entry    # duong = gia tang = dung huong
+                dist_moved = mark_price - entry
             else:
-                dist_moved = entry - mark_price    # duong = gia giam = dung huong
+                dist_moved = entry - mark_price
 
-            # --- Muc 1: Break-even SL tai 50% duong den TP1 ---
-            # Chi kich hoat khi dist_moved > 0 (gia dang co loi nhuan)
+            # --- Muc 1: Break-even SL tai BREAKEVEN_TRIGGER% (30%) duong den TP1 ---
             if not self._breakeven_set.get(symbol, False) and dist_to_tp1 > 0 and dist_moved > 0:
                 if dist_moved >= dist_to_tp1 * config.BREAKEVEN_TRIGGER:
                     try:
@@ -156,28 +154,40 @@ class Executor:
                     except Exception as e:
                         logger.warning(f"{symbol}: Could not set break-even SL: {e}")
 
-            # --- Muc 2: Trailing stop tai TRAILING_TRIGGER% (75%) duong den TP1 ---
-            # Kich hoat TRUOC khi san dong tai TP1 — neu dao chieu thi trailing stop bat duoc loi nhuan
-            # Neu gia tiep tuc den TP1 thi san tu dong dong (trailing stop vo hieu)
-            # Chi kich hoat khi dist_moved > 0 (gia dang co loi nhuan)
-            if not self._tp1_hit.get(symbol, False) and dist_to_tp1 > 0 and dist_moved > 0:
-                if dist_moved >= dist_to_tp1 * config.TRAILING_TRIGGER:
-                    self._tp1_hit[symbol] = True
+            # --- Muc 2: Partial close tai PARTIAL_CLOSE_TRIGGER% (75%) duong den TP1 ---
+            # Dong 50% vi the, cap nhat TP tu TP1 sang TP2, xac nhan SL = breakeven
+            if not self._partial_closed.get(symbol, False) and dist_to_tp1 > 0 and dist_moved > 0:
+                if dist_moved >= dist_to_tp1 * config.PARTIAL_CLOSE_TRIGGER:
+                    self._partial_closed[symbol] = True
                     try:
-                        # Trailing distance = TRAILING_STOP_ATR x ATR luc vao lenh
-                        atr = self._atr.get(symbol, 0)
-                        if atr > 0:
-                            trailing = config.TRAILING_STOP_ATR * atr
-                        else:
-                            trailing = dist_to_tp1 * 0.3  # fallback: 30% TP1 distance
-                        self.client.set_trading_stop(symbol, side, round(trailing, 6))
-                        logger.info(
-                            f"{symbol}: Trailing stop activated at "
-                            f"{dist_moved/dist_to_tp1*100:.0f}% of TP1 | "
-                            f"trailing={trailing:.4f}"
-                        )
+                        # Cap nhat TP tren san tu TP1 sang TP2
+                        tp2 = self._tp2_price.get(symbol, 0.0)
+                        if tp2 > 0:
+                            self.client.update_take_profit(symbol, tp2)
+                            logger.info(f"{symbol}: TP updated TP1={tp1_threshold:.4f} -> TP2={tp2:.4f}")
+
+                        # Dong 50% vi the
+                        pos_qty = float(pos["size"])
+                        partial_qty = round(pos_qty * 0.5, 8)
+                        if partial_qty > 0:
+                            close_side = "Sell" if side == "Buy" else "Buy"
+                            self.client.place_order(symbol, close_side, partial_qty, reduce_only=True)
+                            logger.info(
+                                f"{symbol}: Partial close 50% ({partial_qty}) at "
+                                f"{dist_moved/dist_to_tp1*100:.0f}% of TP1 | "
+                                f"remaining 50% targets TP2={tp2:.4f}"
+                            )
+
+                        # Xac nhan breakeven SL neu chua set
+                        if not self._breakeven_set.get(symbol, False):
+                            fee_buffer = entry * config.ROUND_TRIP_FEE
+                            be_price   = entry + fee_buffer if side == "Buy" else entry - fee_buffer
+                            self.client.update_stop_loss(symbol, round(be_price, 6))
+                            self._breakeven_set[symbol] = True
+                            logger.info(f"{symbol}: Breakeven SL confirmed -> {be_price:.4f}")
+
                     except Exception as e:
-                        logger.warning(f"{symbol}: Could not set trailing stop: {e}")
+                        logger.warning(f"{symbol}: Could not execute partial close: {e}")
 
             # --- Emergency close ---
             if self.risk_mgr.should_close_position(pos, mark_price):

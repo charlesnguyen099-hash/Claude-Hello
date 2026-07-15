@@ -166,17 +166,18 @@ class BybitClient:
             logger.warning(f"Update SL failed for {symbol}: {e}")
 
     @retry()
-    def set_trading_stop(self, symbol: str, side: str, trailing_stop: float):
-        """Đặt trailing stop cho vị thế."""
+    def update_take_profit(self, symbol: str, tp_price: float):
+        """Cap nhat TP cho vi the dang mo (dung de chuyen tu TP1 sang TP2)."""
         try:
             self.session.set_trading_stop(
                 category="linear",
                 symbol=symbol,
-                trailingStop=str(round(trailing_stop, 6)),
+                takeProfit=str(round(tp_price, 6)),
+                tpTriggerBy="MarkPrice",
                 positionIdx=0,
             )
         except Exception as e:
-            logger.warning(f"Trailing stop failed for {symbol}: {e}")
+            logger.warning(f"Update TP failed for {symbol}: {e}")
 
     @retry()
     def get_instrument_info(self, symbol: str) -> dict:

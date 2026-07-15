@@ -591,6 +591,20 @@ class TradingBot:
                         _micro_spike_pump = True
                         logger.debug(f"{symbol}: 30c rise-from-low {_rise_from_low*100:.1f}% → pump flag (late long)")
 
+            # Range position in 30c: bottom 35% → dump flag (block short near low); top 35% → pump flag (block long near high)
+            if len(df_micro) >= 30 and _micro_price > 0:
+                _h30 = df_micro["high"].iloc[-30:].max()
+                _l30 = df_micro["low"].iloc[-30:].min()
+                _rng30 = _h30 - _l30
+                if _rng30 > 0:
+                    _pos30 = (_micro_price - _l30) / _rng30  # 0=at low, 1=at high
+                    if _pos30 < 0.35 and not _micro_spike_dump:
+                        _micro_spike_dump = True
+                        logger.debug(f"{symbol}: price in bottom {_pos30*100:.0f}% of 30c range → dump flag (near 30c low, block short)")
+                    elif _pos30 > 0.65 and not _micro_spike_pump:
+                        _micro_spike_pump = True
+                        logger.debug(f"{symbol}: price in top {(1-_pos30)*100:.0f}% of 30c range → pump flag (near 30c high, block long)")
+
             # Re-check sau extended filters: ca 2 flag co the duoc set boi cac check phia tren
             # (vi du: dump flag boi drop-from-high + pump flag boi rise-from-low trong ranging market)
             if _micro_spike_dump and _micro_spike_pump:

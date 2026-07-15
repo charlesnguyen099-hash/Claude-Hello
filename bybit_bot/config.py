@@ -69,7 +69,7 @@ MIN_ADX             = 15     # ADX < 15 = sideway, khong trade
 MIN_CONSENSUS          = 4   # Priority (top10+BILL): can it nhat 4/7 strategies dong thuan
 MIN_CONSENSUS_TRENDING = 5   # Trending non-priority: can it nhat 5/7 strategies dong thuan
 MIN_ATR_PCT         = 0.003  # ATR phai >= 0.3% gia de bu phi
-TRADE_SIZE_MULT         = 3    # Nhan min_qty x 3
+TRADE_SIZE_MULT         = 4    # Nhan min_qty x 4
 
 # --- Execution ----------------------------------------------------------------
 ORDER_TYPE           = "Market"

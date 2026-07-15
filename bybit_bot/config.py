@@ -12,7 +12,6 @@ TESTNET    = os.getenv("BYBIT_TESTNET", "false").lower() == "true"
 # --- Market Scanner -----------------------------------------------------------
 TOP_N_SYMBOLS        = 200
 MIN_VOLUME_USDT_24H      = 1_000_000   # filter dau vao khi scan 200 coins
-MIN_VOLUME_NON_TOP20     = 10_000_000   # non-top-20: phai co volume >= 5M USDT/ngay
 SCAN_INTERVAL_SEC    = 3600
 
 # --- Multi-Timeframe Analysis -------------------------------------------------
@@ -70,14 +69,11 @@ MIN_ADX             = 15     # ADX < 15 = sideway, khong trade
 MIN_CONSENSUS          = 4   # Priority (top10+BILL): can it nhat 4/7 strategies dong thuan
 MIN_CONSENSUS_TRENDING = 5   # Trending non-priority: can it nhat 5/7 strategies dong thuan
 MIN_ATR_PCT         = 0.003  # ATR phai >= 0.3% gia de bu phi
-QTY_SCALE_CAP           = 5    # Nhan toi da 5x min_qty
 TRADE_SIZE_MULT         = 3    # Nhan min_qty x 3
 
 # --- Execution ----------------------------------------------------------------
 ORDER_TYPE           = "Market"
-LOOP_INTERVAL_SEC    = 15   # check top 20 moi 15 giay
-FULL_SCAN_INTERVAL   = 60   # check 180 con lai moi 60 giay
-TOP_FOCUS_COUNT      = 20   # so luong coin focus voi tan suat cao
+LOOP_INTERVAL_SEC    = 15   # check moi 15 giay
 RETRY_ATTEMPTS    = 3
 RETRY_DELAY_SEC   = 2
 

@@ -67,9 +67,9 @@ class RiskManager:
             logger.warning(f"{signal.symbol}: cannot get instrument info: {e}")
             return None
 
-        # Consensus scale: 2=1x, 3=1.3x, 4=1.6x, 5=2x, 6=2.5x
+        # Consensus scale: 2=1x, 3=1.3x, 4=1.6x, 5=2x, 6=2.5x, 7=3x
         consensus = getattr(signal, 'consensus', 1)
-        CONSENSUS_SCALE = {2: 1.0, 3: 1.3, 4: 1.6, 5: 2.0, 6: 2.5}
+        CONSENSUS_SCALE = {2: 1.0, 3: 1.3, 4: 1.6, 5: 2.0, 6: 2.5, 7: 3.0}
         scale_factor = CONSENSUS_SCALE.get(consensus, 1.0)
 
         # Base qty = min_qty x2, dam bao notional >= 5 USDT
@@ -148,18 +148,6 @@ class RiskManager:
             tp1_pct=round(tp1_pct, 4),
             tp2_pct=round(tp2_pct, 4),
         )
-
-    def _round_qty(self, qty: float, price: float, symbol: str) -> float:
-        try:
-            info     = self.client.get_instrument_info(symbol)
-            lot_step = float(info["lotSizeFilter"]["qtyStep"])
-            min_qty  = float(info["lotSizeFilter"]["minOrderQty"])
-            qty      = math.floor(qty / lot_step) * lot_step
-            qty      = round(qty, 10)
-            return qty if qty >= min_qty else 0.0
-        except Exception as e:
-            logger.warning(f"Instrument info error {symbol}: {e}")
-            return round(qty, 3) if qty > 0 else 0.0
 
     def should_close_position(self, position: dict, current_price: float) -> bool:
         # So sanh PnL voi margin (von bo vao lenh), khong phai notional

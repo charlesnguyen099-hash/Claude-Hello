@@ -29,8 +29,8 @@ class Executor:
         self._breakeven_set: dict[str, bool] = {}
         # ATR luu lai khi vao lenh — dung de tinh trailing stop distance chinh xac
         self._atr: dict[str, float]       = {}
-        # Callback duoc goi khi dong lenh lo — (symbol: str) -> None
-        self.on_loss_callback: Optional[Callable[[str], None]] = None
+        # Callback duoc goi khi dong lenh lo — (symbol: str, side: str) -> None
+        self.on_loss_callback: Optional[Callable[..., None]] = None
 
     def execute_signal(
         self,
@@ -200,6 +200,6 @@ class Executor:
             })
             logger.info(f"[CLOSE] {symbol} {side} qty={qty} pnl={pnl:.4f}")
             if pnl < 0 and self.on_loss_callback:
-                self.on_loss_callback(symbol)
+                self.on_loss_callback(symbol, side)
         except Exception as e:
             logger.error(f"Failed to close position {symbol}: {str(e).encode('ascii', 'replace').decode()}")

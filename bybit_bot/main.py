@@ -44,7 +44,6 @@ class TradingBot:
 
         self.symbols: list[str] = []
         self.last_scan_ts: float = 0
-        self.last_full_scan_ts: float = 0  # lan cuoi check 180 con lai
         self.volume_map: dict[str, float] = {}  # symbol -> 24h volume USDT
 
         # Post-loss tracking: symbol -> timestamp dong lenh lo
@@ -132,14 +131,6 @@ class TradingBot:
                 logger.debug(f"get_closed_pnl error: {e}")
         self._prev_pos_symbols = pos_symbols
 
-        # Top 20: check moi tick (moi 15 giay) — bat breakout nhanh
-        top20   = self.symbols[:config.TOP_FOCUS_COUNT]
-        # Con lai: chi check moi FULL_SCAN_INTERVAL giay
-        do_full = (now - self.last_full_scan_ts) >= config.FULL_SCAN_INTERVAL
-        rest    = self.symbols[config.TOP_FOCUS_COUNT:] if do_full else []
-        if do_full:
-            self.last_full_scan_ts = now
-
         top10 = set(self.symbols[:10])
 
         # Cap nhat BTC global trend moi tick
@@ -153,9 +144,6 @@ class TradingBot:
         # Priority list: top10 + BILLUSDT (11 coins)
         EXTRA_SYMBOLS = {"BILLUSDT"}
         priority_set  = top10 | EXTRA_SYMBOLS
-
-        # Trending top20 (tinh trong scanner.scan() moi gio)
-        trending_set = set(getattr(self.scanner, "trending_symbols", []))
 
         # Scan list: priority first, then trending-only coins (khong lap)
         trending_only = [s for s in getattr(self.scanner, "trending_symbols", []) if s not in priority_set]

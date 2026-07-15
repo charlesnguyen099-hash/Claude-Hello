@@ -450,6 +450,24 @@ class TradingBot:
         # RSI cho reversal detection
         rsi_now = compute_rsi(df_signal["close"]).iloc[-1]
 
+        # 1h range position: block long o TOP 82% / short o BOTTOM 18% cua 20-candle 1h range
+        # LAB Long: vao o 85th pct → block; ADA Short: vao o 12th pct → block; DOGE Short: 15th pct → block
+        # Khong ap dung cho REVERSAL (reversal chinh xac la vao o cac cuc doan nay)
+        _h1_block_long  = False
+        _h1_block_short = False
+        if not df_trend.empty and len(df_trend) >= 20:
+            h1_high = df_trend["high"].iloc[-20:].max()
+            h1_low  = df_trend["low"].iloc[-20:].min()
+            h1_rng  = h1_high - h1_low
+            if h1_rng > 0:
+                h1_pos = (price - h1_low) / h1_rng
+                if h1_pos > 0.82:
+                    _h1_block_long = True
+                    logger.debug(f"{symbol}: 1h range_pos={h1_pos:.2f} > 0.82 → block LONG (1h top)")
+                elif h1_pos < 0.18:
+                    _h1_block_short = True
+                    logger.debug(f"{symbol}: 1h range_pos={h1_pos:.2f} < 0.18 → block SHORT (1h bottom)")
+
         # Momentum confirmation (15m): 2 nen lien tiep gan nhat phai cung chieu voi signal
         opens  = df_signal["open"]
         closes = df_signal["close"]
@@ -530,6 +548,20 @@ class TradingBot:
                     _micro_spike_dump = True
                     logger.debug(f"{symbol}: 5 consecutive red 1m candles → dump flag (extended run)")
 
+            # 30-candle extended check: bat dump/pump xay ra 15-30 phut truoc (ngoai window 15c)
+            # ADA/DOGE: dump tu 30 phut truoc, gia on dinh o day → 15c miss nhung 30c bat duoc
+            # WLD: dump trong 10 phut, 30c net drop > 1.2% → block short
+            if len(df_micro) >= 30 and not _micro_spike_dump and not _micro_spike_pump:
+                _close_30_ago = df_micro["close"].iloc[-30]
+                if _close_30_ago > 0:
+                    _net_move_30 = (_micro_price - _close_30_ago) / _close_30_ago
+                    if _net_move_30 < -0.012:
+                        _micro_spike_dump = True
+                        logger.debug(f"{symbol}: 30c net dump {_net_move_30*100:.1f}% → dump flag")
+                    elif _net_move_30 > 0.012:
+                        _micro_spike_pump = True
+                        logger.debug(f"{symbol}: 30c net pump {_net_move_30*100:.1f}% → pump flag")
+
         # Post-loss filter — tinh som de ap dung cho ca BREAKOUT va momentum
         post_loss = (time.time() - self._recent_loss_ts.get(symbol, 0)) < 300
         if post_loss:
@@ -559,7 +591,10 @@ class TradingBot:
                     not (self.btc_trend == -1 and bo_sig.direction == 1 and symbol != "BTCUSDT") and
                     not (self.btc_trend ==  1 and bo_sig.direction == -1 and symbol != "BTCUSDT")
                 )
-                if bo_ok and micro_ok and not is_spike and post_spike_ok and micro_spike_ok and bo_btc_ok:
+                # 1h range block cho BREAKOUT — EVAA type: pump spike len top 1h range
+                bo_h1_ok = not (_h1_block_long and bo_sig.direction == 1) and \
+                           not (_h1_block_short and bo_sig.direction == -1)
+                if bo_ok and micro_ok and not is_spike and post_spike_ok and micro_spike_ok and bo_btc_ok and bo_h1_ok:
                     # BREAKOUT phai qua range check — tranh long o dinh / short o day
                     if not self._micro_entry_analysis(df_micro, bo_sig.direction):
                         logger.debug(f"{symbol}: BREAKOUT skip — range/micro_entry block")
@@ -751,6 +786,15 @@ class TradingBot:
             return False
         if _micro_spike_dump and best.direction == -1:
             logger.debug(f"{symbol}: skip — 1m dump spike, khong short")
+            return False
+
+        # 1h range hard block (MOMENTUM path only — REVERSAL duoc phep o cuc doan)
+        # Block long o top 82% / short o bottom 18% cua 20-candle 1h range
+        if _h1_block_long and best.direction == 1:
+            logger.debug(f"{symbol}: skip — price at 1h range top (>82%), block MOMENTUM LONG")
+            return False
+        if _h1_block_short and best.direction == -1:
+            logger.debug(f"{symbol}: skip — price at 1h range bottom (<18%), block MOMENTUM SHORT")
             return False
 
         # 1m micro trend confirmation — tat ca coin (micro trend phai cung chieu hoac neutral)

@@ -52,7 +52,7 @@ PARTIAL_CLOSE_TRIGGER = 0.75  # Dong 50% position tai 75% den TP1, de 50% con la
 
 # --- Signal sensitivity -------------------------------------------------------
 MIN_SIGNAL_STRENGTH = 0.55   # Chi lay signal manh
-MIN_ADX             = 15     # ADX < 15 = sideway, khong trade
+MIN_ADX             = 20     # ADX < 20 = sideway/weak trend, khong trade
 MIN_CONSENSUS          = 4   # Priority (top10): can it nhat 4/7 strategies dong thuan
 MIN_CONSENSUS_TRENDING = 5   # Trending non-priority: can it nhat 5/7 strategies dong thuan
 MIN_ATR_PCT         = 0.003  # ATR phai >= 0.3% gia de bu phi

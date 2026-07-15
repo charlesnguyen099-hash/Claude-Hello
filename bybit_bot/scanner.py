@@ -61,6 +61,13 @@ class MarketScanner:
                 if vol < config.MIN_VOLUME_USDT_24H or price <= 0:
                     continue
 
+                # Loai coin da pump/dump qua manh trong 24h (move da xong, vao muon)
+                # AKE +324%, BILL -45% — cac truong hop nay xac suat reverse cao, khong nen trade theo trend
+                raw_change = float(t.get("price24hPcnt", 0)) * 100  # signed (+ = up, - = down)
+                if abs(raw_change) > 25:
+                    logger.debug(f"Scanner skip {sym}: 24h change={raw_change:.1f}% (>25%, move exhausted)")
+                    continue
+
                 symbols.append(SymbolInfo(
                     symbol=sym,
                     volume_usdt_24h=vol,

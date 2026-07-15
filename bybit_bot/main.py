@@ -456,12 +456,29 @@ class TradingBot:
         if price > 0 and atr / price < config.MIN_ATR_PCT:
             return False
 
-        # ADX filter: top10 dung nguong thap hon (12 vs 15) — coin lon trend smoother
-        min_adx = 12 if is_priority else config.MIN_ADX
+        # ADX filter: top10 dung nguong thap hon (15 vs 20) — coin lon trend smoother
+        min_adx = 15 if is_priority else config.MIN_ADX
         adx = compute_adx(df_signal).iloc[-1]
         if math.isnan(adx) or adx < min_adx:
             logger.debug(f"{symbol}: skip — ADX={adx:.1f} < {min_adx} (sideway)")
             return False
+
+        # 24h directional move filter: tranh chase sau khi coin da pump/dump > 20% trong 24h
+        # Coin up > 20%  → block LONG momentum (move da xong, late entry); SHORT reversal van ok
+        # Coin down > 20% → block SHORT momentum; LONG reversal van ok
+        # Tinh tu df_signal: close[-1] vs close 96 nen 15m truoc (~24h)
+        _block_long_24h  = False
+        _block_short_24h = False
+        if len(df_signal) >= 96:
+            _ref_24h = df_signal["close"].iloc[-96]
+            if _ref_24h > 0:
+                _change_24h = (df_signal["close"].iloc[-1] - _ref_24h) / _ref_24h * 100
+                if _change_24h > 20:
+                    _block_long_24h = True
+                    logger.debug(f"{symbol}: 24h change=+{_change_24h:.1f}% → block LONG (pump exhausted)")
+                elif _change_24h < -20:
+                    _block_short_24h = True
+                    logger.debug(f"{symbol}: 24h change={_change_24h:.1f}% → block SHORT (dump exhausted)")
 
         # RSI cho reversal detection
         rsi_now = compute_rsi(df_signal["close"]).iloc[-1]
@@ -662,7 +679,10 @@ class TradingBot:
                 # 1h range block cho BREAKOUT — EVAA type: pump spike len top 1h range
                 bo_h1_ok = not (_h1_block_long and bo_sig.direction == 1) and \
                            not (_h1_block_short and bo_sig.direction == -1)
-                if bo_ok and micro_ok and not is_spike and post_spike_ok and micro_spike_ok and bo_btc_ok and bo_h1_ok:
+                # 24h exhaustion block cho BREAKOUT
+                bo_24h_ok = not (_block_long_24h and bo_sig.direction == 1) and \
+                            not (_block_short_24h and bo_sig.direction == -1)
+                if bo_ok and micro_ok and not is_spike and post_spike_ok and micro_spike_ok and bo_btc_ok and bo_h1_ok and bo_24h_ok:
                     # BREAKOUT phai qua range check — tranh long o dinh / short o day
                     if not self._micro_entry_analysis(df_micro, bo_sig.direction):
                         logger.debug(f"{symbol}: BREAKOUT skip — range/micro_entry block")
@@ -711,6 +731,12 @@ class TradingBot:
                 if sig.direction == -1 and spike_was_dump and scalp_trend != -1:
                     continue
                 if sig.direction == 1 and spike_was_pump and scalp_trend != 1:
+                    continue
+
+                # 24h exhaustion: block momentum trade cung chieu move da xay ra (reversal van ok)
+                if sig.direction == 1 and _block_long_24h and not is_reversal:
+                    continue
+                if sig.direction == -1 and _block_short_24h and not is_reversal:
                     continue
 
                 # Long chi khi 2 nen xanh lien tiep (momentum xac nhan)

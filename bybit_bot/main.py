@@ -614,8 +614,9 @@ class TradingBot:
         is_reversal  = rsi_now < 35 or rsi_now > 65
         reversal_dir = 1 if rsi_now < 35 else (-1 if rsi_now > 65 else 0)
 
-        # 1h macro trend
+        # 1h macro trend va 4h macro trend
         macro_trend = self._trend_direction(df_trend)
+        macro_4h    = self._trend_direction(df_macro)
 
         long_signals  = []
         short_signals = []
@@ -625,9 +626,9 @@ class TradingBot:
                 sig = strategy.generate_signal(df_signal, df_trend, df_macro)
                 # Scalp fallback: thu 5m neu 15m khong co signal
                 # Skip VWAP (window 96x15m=24h, tren 5m cho ra 8h — sai)
-                # Pass df_macro de giu 4h context khong bi mat
+                # Giu nguyen df_trend (1h) va df_macro (4h) — de khong lam hong trend filter trong strategy
                 if sig.direction == 0 and len(df_scalp) >= 50 and strategy.name != "vwap_volume":
-                    sig = strategy.generate_signal(df_scalp, df_signal, df_macro)
+                    sig = strategy.generate_signal(df_scalp, df_trend, df_macro)
 
                 if sig.direction == 0 or sig.strength < config.MIN_SIGNAL_STRENGTH:
                     continue
@@ -668,9 +669,6 @@ class TradingBot:
                         short_signals.append(sig)
             except Exception:
                 continue
-
-        # 4h macro trend (dung voi reversal deep-trend guard)
-        macro_4h = self._trend_direction(df_macro)
 
         # REVERSAL trade: RSI cuc doan + 2 nen 15m + 1m micro xac nhan dao chieu + >= MIN_CONSENSUS
         if is_reversal and reversal_dir != 0:

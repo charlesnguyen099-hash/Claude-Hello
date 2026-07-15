@@ -1,6 +1,6 @@
 """
 Breakout Strategy — bat volume spike + pha vo vung tich luy
-- Volume nen hien tai > 2.5x MA10 volume (spike thuc su)
+- Volume nen hien tai > 3.0x MA10 volume (spike thuc su, vol_mult=3.0)
 - Gia pha vo high/low cua 20 nen truoc (thoat khoi vung tich luy)
 - Bypass consensus — tin hieu ro rang 1 minh du
 """

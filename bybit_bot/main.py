@@ -363,8 +363,9 @@ class TradingBot:
 
         # Factor 6: Dual range check — 100 nen (xu huong trung han) + 20 nen (local bounce/dip)
         # HARD BLOCK 100-candle: tranh long o top 25% / short o bottom 25% cua 100 phut qua
-        # HARD BLOCK 20-candle:  tranh long o top 20% / short o bottom 20% cua 20 phut qua
+        # HARD BLOCK 20-candle:  tranh long o top 30% / short o bottom 30% cua 20 phut qua
         #   (bat duoc "short o day local" khi 100-candle range cho thay midrange nhung thuc te dang bounce)
+        #   SKHYNIX 21:24 = 25.7% → 20c block; SOL/ADA 22:15 = 0-6% → block
         # Ngoai le: is_reversal=True (RSI cuc doan xac nhan) → skip range block
         _range_window = min(100, n)
         if _range_window >= 20:
@@ -374,11 +375,11 @@ class TradingBot:
             if rng > 0:
                 range_pos = (price - low_rng) / rng
                 if not is_reversal:
-                    if direction == 1 and range_pos > 0.80:
-                        logger.debug(f"micro_entry: HARD BLOCK long — 100c range_pos={range_pos:.2f} > 0.80")
+                    if direction == 1 and range_pos > 0.75:
+                        logger.debug(f"micro_entry: HARD BLOCK long — 100c range_pos={range_pos:.2f} > 0.75")
                         return False
-                    if direction == -1 and range_pos < 0.20:
-                        logger.debug(f"micro_entry: HARD BLOCK short — 100c range_pos={range_pos:.2f} < 0.20")
+                    if direction == -1 and range_pos < 0.25:
+                        logger.debug(f"micro_entry: HARD BLOCK short — 100c range_pos={range_pos:.2f} < 0.25")
                         return False
                 # Bonus cho entry o vung an toan
                 if direction == 1 and range_pos < 0.45:
@@ -395,11 +396,11 @@ class TradingBot:
             local_rng  = local_high - local_low
             if local_rng > 0:
                 local_pos = (price - local_low) / local_rng
-                if direction == 1 and local_pos > 0.80:
-                    logger.debug(f"micro_entry: HARD BLOCK long — 20c local_pos={local_pos:.2f} > 0.80 (local top)")
+                if direction == 1 and local_pos > 0.70:
+                    logger.debug(f"micro_entry: HARD BLOCK long — 20c local_pos={local_pos:.2f} > 0.70 (local top)")
                     return False
-                if direction == -1 and local_pos < 0.20:
-                    logger.debug(f"micro_entry: HARD BLOCK short — 20c local_pos={local_pos:.2f} < 0.20 (local bottom)")
+                if direction == -1 and local_pos < 0.30:
+                    logger.debug(f"micro_entry: HARD BLOCK short — 20c local_pos={local_pos:.2f} < 0.30 (local bottom)")
                     return False
 
         # Factor 7: Momentum deceleration — nen gan day nho manh so voi nen truoc

@@ -501,8 +501,22 @@ class TradingBot:
         if not df_micro.empty and len(df_micro) >= 15:
             _micro_atr    = compute_atr(df_micro).iloc[-1]
             _micro_bodies = (df_micro["close"].iloc[-15:].values - df_micro["open"].iloc[-15:].values)
-            _micro_spike_dump = any(b < -_micro_atr * 2.0 for b in _micro_bodies)
-            _micro_spike_pump = any(b >  _micro_atr * 2.0 for b in _micro_bodies)
+            # Nguong 1.5x ATR (giam tu 2.0x): bat pump/dump vua duoi 2x ATR trong 15 nen
+            _micro_spike_dump = any(b < -_micro_atr * 1.5 for b in _micro_bodies)
+            _micro_spike_pump = any(b >  _micro_atr * 1.5 for b in _micro_bodies)
+            # Current forming candle: block neu body 1m hien tai >= 0.4% (mid-pump/dump entry)
+            # Bat cac truong hop vao lenh DANG GIUA pump — candle chua dong nen 2x ATR chua dat
+            # SOXL/NEAR/HYPE/SNDK: gia tang 0.7-1.8% trong candle dang hinh thanh → block LONG
+            _curr_open  = df_micro["open"].iloc[-1]
+            _curr_close = df_micro["close"].iloc[-1]
+            if _curr_open > 0:
+                _curr_body_pct = (_curr_close - _curr_open) / _curr_open
+                if _curr_body_pct > 0.004 and not _micro_spike_pump:   # +0.4% body → pump flag
+                    _micro_spike_pump = True
+                    logger.debug(f"{symbol}: forming 1m candle body +{_curr_body_pct*100:.2f}% → pump flag (mid-pump)")
+                elif _curr_body_pct < -0.004 and not _micro_spike_dump: # -0.4% body → dump flag
+                    _micro_spike_dump = True
+                    logger.debug(f"{symbol}: forming 1m candle body {_curr_body_pct*100:.2f}% → dump flag (mid-dump)")
             if _micro_spike_dump and _micro_spike_pump:
                 logger.debug(f"{symbol}: skip — 1m spike ca 2 chieu (thi truong loan)")
                 return False

@@ -9,6 +9,7 @@ Usage:
 """
 
 import logging
+import math
 import sys
 import time
 import traceback
@@ -21,6 +22,7 @@ from executor import Executor
 from risk_manager import RiskManager
 from scanner import MarketScanner
 from strategies import ALL_STRATEGIES, BREAKOUT_STRATEGY
+from strategies.base import compute_ema, compute_atr, compute_rsi, compute_adx
 
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -176,7 +178,6 @@ class TradingBot:
 
     def _trend_direction(self, df) -> int:
         """1h trend: +1 up, -1 down, 0 sideways."""
-        from strategies.base import compute_ema
         if len(df) < 50:
             return 0
         close = df["close"]
@@ -196,7 +197,6 @@ class TradingBot:
         Tra +1 (up), -1 (down), 0 (khong ro rang / sideways).
         Can it nhat 50 nen de phan tich.
         """
-        from strategies.base import compute_ema
         if df is None or df.empty or len(df) < 50:
             return 0
 
@@ -283,7 +283,6 @@ class TradingBot:
         7 yeu to: EMA, momentum, volume, body size, micro structure, range, deceleration.
         Tat ca coin: can score >= 3/7. Tra True = timing tot, False = nen cho.
         """
-        from strategies.base import compute_ema, compute_atr
         if df_micro is None or df_micro.empty:
             return False  # khong co data → khong trade
         n = len(df_micro)
@@ -433,17 +432,15 @@ class TradingBot:
             return False
 
         # ATR filter: bo qua symbol bien dong qua nho
-        from strategies.base import compute_atr, compute_rsi, compute_adx
         atr   = compute_atr(df_signal).iloc[-1]
         price = df_signal["close"].iloc[-1]
         if price > 0 and atr / price < config.MIN_ATR_PCT:
             return False
 
         # ADX filter: top10 dung nguong thap hon (12 vs 15) — coin lon trend smoother
-        import math as _math
         min_adx = 12 if is_priority else config.MIN_ADX
         adx = compute_adx(df_signal).iloc[-1]
-        if _math.isnan(adx) or adx < min_adx:
+        if math.isnan(adx) or adx < min_adx:
             logger.debug(f"{symbol}: skip — ADX={adx:.1f} < {min_adx} (sideway)")
             return False
 
@@ -579,6 +576,12 @@ class TradingBot:
                     if _rise_from_low > 0.005:  # gia da tang >= 0.5% tu day 30c
                         _micro_spike_pump = True
                         logger.debug(f"{symbol}: 30c rise-from-low {_rise_from_low*100:.1f}% → pump flag (late long)")
+
+            # Re-check sau extended filters: ca 2 flag co the duoc set boi cac check phia tren
+            # (vi du: dump flag boi drop-from-high + pump flag boi rise-from-low trong ranging market)
+            if _micro_spike_dump and _micro_spike_pump:
+                logger.debug(f"{symbol}: skip — dual spike flag after extended checks (ranging/choppy 1m)")
+                return False
 
         # Post-loss filter — tinh som de ap dung cho ca BREAKOUT va momentum
         post_loss = (time.time() - self._recent_loss_ts.get(symbol, 0)) < 300
@@ -843,10 +846,9 @@ class TradingBot:
         # 1m EMA alignment check (MOMENTUM path) — bat cac truong hop _micro_trend tra ve 0 (neutral)
         # do chi dat 2/5 factors thay vi 3/5, nhung EMA9 vs EMA21 dang nguoc chieu ro rang
         # EMA9 < EMA21: 1m bearish alignment → tranh long; EMA9 > EMA21: 1m bullish → tranh short
-        from strategies.base import compute_ema as _cema
         if len(df_micro) >= 21:
-            _e9  = _cema(df_micro["close"], 9).iloc[-1]
-            _e21 = _cema(df_micro["close"], 21).iloc[-1]
+            _e9  = compute_ema(df_micro["close"], 9).iloc[-1]
+            _e21 = compute_ema(df_micro["close"], 21).iloc[-1]
             if best.direction == 1 and _e9 < _e21:
                 logger.debug(f"{symbol}: skip — 1m EMA9({_e9:.4f}) < EMA21({_e21:.4f}), bearish micro, block LONG")
                 return False

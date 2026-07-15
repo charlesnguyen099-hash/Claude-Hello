@@ -27,8 +27,6 @@ TIMEFRAMES = {
     "macro":  "240",   # 4h: xu huong lon
 }
 CANDLE_LIMIT_MICRO       = 300   # top20: 300 nen 1m — du EMA on dinh
-CANDLE_LIMIT_MICRO_SMALL = 120   # non-top20: 120 nen 1m — du 100 nen range + spike check
-TOP_PRIORITY        = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT"]  # bo yeu cau 2 nen 15m
 CANDLE_LIMIT_SCALP  = 1000
 CANDLE_LIMIT_SIGNAL = 1000
 CANDLE_LIMIT_TREND  = 500
@@ -45,8 +43,6 @@ MAKER_FEE      = 0.00020
 ROUND_TRIP_FEE = TAKER_FEE * 2   # 0.11% tong phi ca 2 chieu
 
 # --- Risk Management ----------------------------------------------------------
-CAPITAL_PER_TRADE_PCT = 0.10    # khong dung, giu lai de khong loi import cu
-
 USE_MAX_LEVERAGE       = True
 MAX_LEVERAGE           = 100
 DEFAULT_LEVERAGE       = 20
@@ -66,7 +62,7 @@ TRAILING_TRIGGER  = 0.75   # Kich hoat trailing stop khi gia di duoc 75% den TP1
 # --- Signal sensitivity -------------------------------------------------------
 MIN_SIGNAL_STRENGTH = 0.55   # Chi lay signal manh
 MIN_ADX             = 15     # ADX < 15 = sideway, khong trade
-MIN_CONSENSUS          = 4   # Priority (top10+BILL): can it nhat 4/7 strategies dong thuan
+MIN_CONSENSUS          = 4   # Priority (top10): can it nhat 4/7 strategies dong thuan
 MIN_CONSENSUS_TRENDING = 5   # Trending non-priority: can it nhat 5/7 strategies dong thuan
 MIN_ATR_PCT         = 0.003  # ATR phai >= 0.3% gia de bu phi
 TRADE_SIZE_MULT         = 4    # Nhan min_qty x 4

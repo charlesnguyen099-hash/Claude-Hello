@@ -159,12 +159,9 @@ class TradingBot:
             if symbol in pos_symbols:
                 continue
 
-            # Tat ca focus symbols deu duoc treat nhu top20 (300 nen 1m, du breakout)
-            is_top20 = True
-            # Priority: top10 + BILLUSDT; trending-only coins dung bo loc day du hon
             is_priority = symbol in priority_set
             try:
-                traded = self._process_symbol(symbol, equity, open_positions, is_top20, is_priority)
+                traded = self._process_symbol(symbol, equity, open_positions, is_priority)
                 if traded:
                     try:
                         open_positions = self.client.get_positions()
@@ -280,7 +277,7 @@ class TradingBot:
             return -1
         return 0
 
-    def _micro_entry_analysis(self, df_micro, direction: int, is_top20: bool, is_reversal: bool = False) -> bool:
+    def _micro_entry_analysis(self, df_micro, direction: int, is_reversal: bool = False) -> bool:
         """
         Phan tich toan bo 1m candles de xac dinh timing entry.
         7 yeu to: EMA, momentum, volume, body size, micro structure, range, deceleration.
@@ -418,19 +415,15 @@ class TradingBot:
                 elif decel > 0.60:  # Momentum on dinh
                     score += 1
 
-        threshold = 3  # tat ca coin: can >= 3/7 factors (non-top20 riskier, khong giam nhe hon)
+        threshold = 3
         ok = score >= threshold
         if not ok:
-            logger.debug(
-                f"micro_entry_analysis: dir={direction} score={score} threshold={threshold} "
-                f"n={n} top20={is_top20} -> skip"
-            )
+            logger.debug(f"micro_entry_analysis: dir={direction} score={score}/{threshold} n={n} -> skip")
         return ok
 
-    def _process_symbol(self, symbol: str, equity: float, open_positions: list[dict], is_top20: bool = False, is_priority: bool = False) -> bool:
+    def _process_symbol(self, symbol: str, equity: float, open_positions: list[dict], is_priority: bool = False) -> bool:
         """Phan tich symbol, chay tat ca filter va strategy, tra True neu da trade."""
-        micro_limit = config.CANDLE_LIMIT_MICRO if is_top20 else config.CANDLE_LIMIT_MICRO_SMALL
-        df_micro  = self.client.get_klines(symbol, config.TIMEFRAMES["micro"], micro_limit)
+        df_micro  = self.client.get_klines(symbol, config.TIMEFRAMES["micro"], config.CANDLE_LIMIT_MICRO)
         df_scalp  = self.client.get_klines(symbol, config.TIMEFRAMES["scalp"],  config.CANDLE_LIMIT_SCALP)
         df_signal = self.client.get_klines(symbol, config.TIMEFRAMES["signal"], config.CANDLE_LIMIT_SIGNAL)
         df_trend  = self.client.get_klines(symbol, config.TIMEFRAMES["trend"],  config.CANDLE_LIMIT_TREND)
@@ -478,12 +471,11 @@ class TradingBot:
         spike_was_dump = any(b < -atr * 2.0 for b in recent_bodies)
         spike_was_pump = any(b >  atr * 2.0 for b in recent_bodies)
 
-        # 1m micro-trend — chay cho tat ca coin (non-top20 gio du 120 nen)
         micro = self._micro_trend(df_micro)
         micro_up   = (micro == 1)
         micro_down = (micro == -1)
 
-        scalp_trend = self._micro_trend(df_scalp) if is_top20 else 0  # 5m trend cho post-spike check
+        scalp_trend = self._micro_trend(df_scalp)  # 5m trend cho post-spike check
 
         # [CHONG LO] Spike check tren 1m — direction-aware
         # Pump spike -> block LONG (khong mua dinh), nhung cho phep SHORT (ban dinh la hop le)
@@ -532,7 +524,7 @@ class TradingBot:
             logger.debug(f"{symbol}: post-loss 5min active → consensus+1 / BREAKOUT blocked")
 
         # BREAKOUT: chi top20, skip neu post_loss
-        if is_top20 and not post_loss and df_micro is not None and not df_micro.empty and len(df_micro) >= 30:
+        if not post_loss and df_micro is not None and not df_micro.empty and len(df_micro) >= 30:
             bo_sig = BREAKOUT_STRATEGY.generate_signal(df_micro, df_scalp, df_signal)
             if bo_sig.direction != 0:
                 # 5m khong duoc nguoc chieu — cho phep sideways
@@ -549,11 +541,15 @@ class TradingBot:
                 micro_spike_ok = not (_micro_spike_pump and bo_sig.direction == 1) and \
                                  not (_micro_spike_dump and bo_sig.direction == -1)
                 # BTC global trend filter cho BREAKOUT
-                bo_btc_ok = not (self.btc_trend == -1 and bo_sig.direction == 1 and symbol != "BTCUSDT") and \
-                            not (self.btc_trend ==  1 and bo_sig.direction == -1 and symbol != "BTCUSDT")
+                # Priority coins (top10) duoc mien — dong bo voi momentum path
+                # Non-priority: hard block neu di nguoc BTC trend
+                bo_btc_ok = is_priority or (
+                    not (self.btc_trend == -1 and bo_sig.direction == 1 and symbol != "BTCUSDT") and
+                    not (self.btc_trend ==  1 and bo_sig.direction == -1 and symbol != "BTCUSDT")
+                )
                 if bo_ok and micro_ok and not is_spike and post_spike_ok and micro_spike_ok and bo_btc_ok:
                     # BREAKOUT phai qua range check — tranh long o dinh / short o day
-                    if not self._micro_entry_analysis(df_micro, bo_sig.direction, is_top20):
+                    if not self._micro_entry_analysis(df_micro, bo_sig.direction):
                         logger.debug(f"{symbol}: BREAKOUT skip — range/micro_entry block")
                     else:
                         bo_sig.symbol    = symbol
@@ -579,10 +575,6 @@ class TradingBot:
 
         for strategy in ALL_STRATEGIES:
             try:
-                # SustainedTrendStrategy chi chay cho top20
-                if strategy.name == "sustained_trend" and not is_top20:
-                    continue
-
                 sig = strategy.generate_signal(df_signal, df_trend, df_macro)
                 # Scalp fallback: thu 5m neu 15m khong co signal
                 # Skip VWAP (window 96x15m=24h, tren 5m cho ra 8h — sai)
@@ -641,7 +633,7 @@ class TradingBot:
                 reversal_confirmed = (
                     (reversal_dir == 1  and short_term_up)   or
                     (reversal_dir == -1 and short_term_down)
-                ) and self._micro_entry_analysis(df_micro, reversal_dir, is_top20, is_reversal=True)
+                ) and self._micro_entry_analysis(df_micro, reversal_dir, is_reversal=True)
                 reversal_signals = long_signals if reversal_dir == 1 else short_signals
                 reversal_base = config.MIN_CONSENSUS if is_priority else config.MIN_CONSENSUS_TRENDING
                 reversal_min  = reversal_base + (1 if post_loss else 0)
@@ -689,7 +681,7 @@ class TradingBot:
         sideways_1h = (macro_trend == 0)
 
         if is_priority:
-            # Priority (top10+BILL): can MIN_CONSENSUS=4/7, post_loss them +1
+            # Priority (top10): can MIN_CONSENSUS=4/7, post_loss them +1
             base = config.MIN_CONSENSUS
             extra = 1 if post_loss else 0
             required_long  = base + extra
@@ -749,7 +741,7 @@ class TradingBot:
             return False
 
         # 1m micro entry timing: apply cho TAT CA coin voi phan tich day du 5 yeu to
-        if not self._micro_entry_analysis(df_micro, best.direction, is_top20):
+        if not self._micro_entry_analysis(df_micro, best.direction):
             logger.debug(f"{symbol}: skip — 1m micro entry timing not confirmed (score too low)")
             return False
 

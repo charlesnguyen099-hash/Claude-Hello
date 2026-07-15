@@ -533,8 +533,8 @@ class TradingBot:
         if post_loss:
             logger.debug(f"{symbol}: post-loss 5min active → consensus+1 / BREAKOUT blocked")
 
-        # BREAKOUT: chi top20, skip neu post_loss
-        if not post_loss and df_micro is not None and not df_micro.empty and len(df_micro) >= 30:  # 30 > 15 so micro checks above already ran
+        # BREAKOUT: chay cho tat ca scan_list, skip neu post_loss
+        if not post_loss and df_micro is not None and not df_micro.empty and len(df_micro) >= 30:
             bo_sig = BREAKOUT_STRATEGY.generate_signal(df_micro, df_scalp, df_signal)
             if bo_sig.direction != 0:
                 # 5m khong duoc nguoc chieu — cho phep sideways
@@ -664,6 +664,14 @@ class TradingBot:
                     )
                     self.executor.execute_signal(symbol, best, equity, open_positions, is_priority=is_priority)
                     return True
+
+        # RSI EXTREME GUARD: neu RSI 15m oversold (< 35) thi xoa short signals o MOMENTUM path
+        # Reversal path da xu ly o tren; neu reversal khong du consensus thi KHONG duoc short them vao oversold
+        # Tuong tu: RSI > 65 xoa long signals (khong long vao overbought)
+        if rsi_now < 35:
+            short_signals = []
+        elif rsi_now > 65:
+            long_signals = []
 
         # BTC GLOBAL TREND FILTER — tranh trade nguoc chieu thi truong macro
         # BTCUSDT: hard block neu di nguoc xu huong 1h cua chinh no

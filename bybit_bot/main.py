@@ -483,26 +483,36 @@ class TradingBot:
         # Ca 2 cung xuat hien -> thi truong loan, skip tat ca
         _micro_spike_dump = False
         _micro_spike_pump = False
-        if not df_micro.empty and len(df_micro) >= 10:
+        if not df_micro.empty and len(df_micro) >= 15:
             _micro_atr    = compute_atr(df_micro).iloc[-1]
-            _micro_bodies = (df_micro["close"].iloc[-10:].values - df_micro["open"].iloc[-10:].values)
+            _micro_bodies = (df_micro["close"].iloc[-15:].values - df_micro["open"].iloc[-15:].values)
             _micro_spike_dump = any(b < -_micro_atr * 2.0 for b in _micro_bodies)
             _micro_spike_pump = any(b >  _micro_atr * 2.0 for b in _micro_bodies)
             if _micro_spike_dump and _micro_spike_pump:
                 logger.debug(f"{symbol}: skip — 1m spike ca 2 chieu (thi truong loan)")
                 return False
-            # Cumulative net move check: phat hien dump/pump trai qua nhieu nen nho
-            # Dung close[-10] vs close[-1] de tranh false positive khi gia dip roi recover
-            _close_10_ago = df_micro["close"].iloc[-10]
+            # Cumulative net move: 15-candle lookback, 0.8% threshold
+            # Bat ca dump bat dau tu 15 phut truoc (truoc chi bat 10 phut)
+            _close_15_ago = df_micro["close"].iloc[-15]
             _micro_price  = df_micro["close"].iloc[-1]
-            if _close_10_ago > 0:
-                _net_move = (_micro_price - _close_10_ago) / _close_10_ago
-                if _net_move < -0.010 and not _micro_spike_dump:   # net drop > 1.0% → dump flag
+            if _close_15_ago > 0:
+                _net_move = (_micro_price - _close_15_ago) / _close_15_ago
+                if _net_move < -0.008 and not _micro_spike_dump:   # net drop > 0.8% → dump flag
                     _micro_spike_dump = True
-                    logger.debug(f"{symbol}: cumulative net dump {_net_move*100:.1f}% in 10 candles → dump flag")
-                elif _net_move > 0.010 and not _micro_spike_pump:  # net pump > 1.0% → pump flag
+                    logger.debug(f"{symbol}: cumulative net dump {_net_move*100:.1f}% in 15 candles → dump flag")
+                elif _net_move > 0.008 and not _micro_spike_pump:  # net pump > 0.8% → pump flag
                     _micro_spike_pump = True
-                    logger.debug(f"{symbol}: cumulative net pump {_net_move*100:.1f}% in 10 candles → pump flag")
+                    logger.debug(f"{symbol}: cumulative net pump {_net_move*100:.1f}% in 15 candles → pump flag")
+
+            # RSI 1m: oversold → dump flag (don't short further); overbought → pump flag (don't long further)
+            if len(df_micro) >= 14:
+                _micro_rsi = compute_rsi(df_micro["close"]).iloc[-1]
+                if _micro_rsi < 30 and not _micro_spike_pump:
+                    _micro_spike_dump = True
+                    logger.debug(f"{symbol}: 1m RSI={_micro_rsi:.1f} oversold → dump flag (tranh short o day)")
+                elif _micro_rsi > 70 and not _micro_spike_dump:
+                    _micro_spike_pump = True
+                    logger.debug(f"{symbol}: 1m RSI={_micro_rsi:.1f} overbought → pump flag (tranh long o dinh)")
 
             # Consecutive candles block: 5 nen lien tiep cung chieu = momentum extended
             # Tranh long sau 5 nen xanh lien tiep (dang o dinh), short sau 5 nen do (dang o day)
@@ -524,7 +534,7 @@ class TradingBot:
             logger.debug(f"{symbol}: post-loss 5min active → consensus+1 / BREAKOUT blocked")
 
         # BREAKOUT: chi top20, skip neu post_loss
-        if not post_loss and df_micro is not None and not df_micro.empty and len(df_micro) >= 30:
+        if not post_loss and df_micro is not None and not df_micro.empty and len(df_micro) >= 30:  # 30 > 15 so micro checks above already ran
             bo_sig = BREAKOUT_STRATEGY.generate_signal(df_micro, df_scalp, df_signal)
             if bo_sig.direction != 0:
                 # 5m khong duoc nguoc chieu — cho phep sideways

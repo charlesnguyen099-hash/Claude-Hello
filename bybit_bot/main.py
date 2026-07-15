@@ -562,6 +562,24 @@ class TradingBot:
                         _micro_spike_pump = True
                         logger.debug(f"{symbol}: 30c net pump {_net_move_30*100:.1f}% → pump flag")
 
+            # Drop-from-high / Rise-from-low (30c): tranh short sau khi gia da roi >= 0.5% tu dinh
+            # va tranh long sau khi gia da tang >= 0.5% tu day — move da xong roi, vao late
+            # SOL: dump -0.57% tu 77.64 → 77.2 → net move < 0.8% nhung drop-from-high bat duoc
+            # Khong can check not _micro_spike_dump/pump — neu chua flag thi add them
+            if len(df_micro) >= 30:
+                _high_30c = df_micro["high"].iloc[-30:].max()
+                _low_30c  = df_micro["low"].iloc[-30:].min()
+                if _high_30c > 0 and not _micro_spike_dump:
+                    _drop_from_high = (_high_30c - _micro_price) / _high_30c
+                    if _drop_from_high > 0.005:  # gia da roi >= 0.5% tu dinh 30c
+                        _micro_spike_dump = True
+                        logger.debug(f"{symbol}: 30c drop-from-high {_drop_from_high*100:.1f}% → dump flag (late short)")
+                if _low_30c > 0 and not _micro_spike_pump:
+                    _rise_from_low = (_micro_price - _low_30c) / _low_30c
+                    if _rise_from_low > 0.005:  # gia da tang >= 0.5% tu day 30c
+                        _micro_spike_pump = True
+                        logger.debug(f"{symbol}: 30c rise-from-low {_rise_from_low*100:.1f}% → pump flag (late long)")
+
         # Post-loss filter — tinh som de ap dung cho ca BREAKOUT va momentum
         post_loss = (time.time() - self._recent_loss_ts.get(symbol, 0)) < 300
         if post_loss:

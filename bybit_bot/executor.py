@@ -8,6 +8,7 @@ Trade Executor — thực thi lệnh và quản lý vị thế
 """
 
 import logging
+import math
 import time
 from typing import Callable, Optional
 
@@ -165,9 +166,15 @@ class Executor:
                             self.client.update_take_profit(symbol, tp2)
                             logger.info(f"{symbol}: TP updated TP1={tp1_threshold:.4f} -> TP2={tp2:.4f}")
 
-                        # Dong 50% vi the
+                        # Dong 50% vi the — align voi qty_step cua instrument
                         pos_qty = float(pos["size"])
-                        partial_qty = round(pos_qty * 0.5, 8)
+                        try:
+                            info     = self.client.get_instrument_info(symbol)
+                            qty_step = float(info["lotSizeFilter"]["qtyStep"])
+                        except Exception:
+                            qty_step = 0.001  # fallback safe default
+                        partial_qty = math.floor(pos_qty * 0.5 / qty_step) * qty_step
+                        partial_qty = round(partial_qty, 8)
                         if partial_qty > 0:
                             close_side = "Sell" if side == "Buy" else "Buy"
                             self.client.place_order(symbol, close_side, partial_qty, reduce_only=True)

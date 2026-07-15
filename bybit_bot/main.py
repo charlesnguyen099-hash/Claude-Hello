@@ -51,15 +51,38 @@ class TradingBot:
         # Trong 5 phut sau lo, can consensus >= MIN_CONSENSUS+1 de vao lai
         self._recent_loss_ts: dict[str, float] = {}
         self.executor.on_loss_callback = self._on_symbol_loss
+
+        # Global direction cooldown: neu 2+ lenh cung chieu thua trong 10 phut → block 15 phut
+        # key: "Buy" or "Sell" → list timestamp cua cac lenh thua
+        self._dir_loss_ts: dict[str, list[float]] = {"Buy": [], "Sell": []}
+        self._dir_blocked_until: dict[str, float] = {"Buy": 0.0, "Sell": 0.0}
+
+        # Rate limit: timestamp cua lenh mo gan nhat (bat ky coin nao)
+        self._last_trade_ts: float = 0.0
         # Track positions de detect SL/TP hit boi exchange (khong qua executor)
         self._prev_pos_symbols: set[str] = set()
         # BTC global trend: +1 uptrend, -1 downtrend, 0 sideways
         # Dung lam bo loc huong thi truong toan cuc (cap nhat moi tick)
         self.btc_trend: int = 0
 
-    def _on_symbol_loss(self, symbol: str):
-        self._recent_loss_ts[symbol] = time.time()
+    def _on_symbol_loss(self, symbol: str, side: str = ""):
+        now = time.time()
+        self._recent_loss_ts[symbol] = now
         logger.info(f"{symbol}: post-loss cooldown started (5 min higher consensus)")
+
+        # Global direction loss tracking
+        if side in self._dir_loss_ts:
+            self._dir_loss_ts[side].append(now)
+            # Chi giu cac lenh thua trong cua so GLOBAL_DIR_LOSS_WINDOW
+            window = config.GLOBAL_DIR_LOSS_WINDOW
+            self._dir_loss_ts[side] = [t for t in self._dir_loss_ts[side] if now - t <= window]
+            count = len(self._dir_loss_ts[side])
+            if count >= config.GLOBAL_DIR_LOSS_THRESH:
+                self._dir_blocked_until[side] = now + config.GLOBAL_DIR_COOLDOWN_SEC
+                logger.warning(
+                    f"GLOBAL {side} BLOCK: {count} losses in {window//60}min → "
+                    f"block {config.GLOBAL_DIR_COOLDOWN_SEC//60}min toan bo coin"
+                )
 
     # ── Main loop ────────────────────────────────────────────────────────────
 
@@ -172,6 +195,17 @@ class TradingBot:
             if symbol in pos_symbols:
                 continue
 
+            # Hard cap tong vi the
+            if len(open_positions) >= config.MAX_OPEN_POSITIONS:
+                logger.debug(f"Max positions reached ({config.MAX_OPEN_POSITIONS}), skip {symbol}")
+                break
+
+            # Rate limit: khong mo lenh moi qua nhanh (tranh 5 lenh trong 1 tick)
+            if time.time() - self._last_trade_ts < config.MIN_TRADE_INTERVAL_SEC:
+                secs_left = config.MIN_TRADE_INTERVAL_SEC - (time.time() - self._last_trade_ts)
+                logger.debug(f"Trade rate limit: {secs_left:.0f}s until next entry allowed, skip {symbol}")
+                break  # break luon — moi tick chi can check rate limit 1 lan
+
             # Tat ca focus symbols deu duoc treat nhu top20 (300 nen 1m, du breakout)
             is_top20 = True
             # Priority: top10 + BILLUSDT; trending-only coins dung bo loc day du hon
@@ -179,6 +213,7 @@ class TradingBot:
             try:
                 traded = self._process_symbol(symbol, equity, open_positions, is_top20, is_priority)
                 if traded:
+                    self._last_trade_ts = time.time()
                     try:
                         open_positions = self.client.get_positions()
                         equity         = self.client.get_wallet_balance()
@@ -440,6 +475,17 @@ class TradingBot:
             )
         return ok
 
+    def _direction_allowed(self, side: str) -> bool:
+        """Kiem tra global direction cooldown va per-side position cap."""
+        now = time.time()
+        # Global direction block: neu 2+ lenh cung chieu thua trong 10 phut → block
+        if now < self._dir_blocked_until.get(side, 0):
+            remaining = self._dir_blocked_until[side] - now
+            logger.debug(f"GLOBAL {side} BLOCK active — {remaining:.0f}s remaining")
+            return False
+        # Per-side cap: toi da MAX_POSITIONS_PER_SIDE
+        return True
+
     def _process_symbol(self, symbol: str, equity: float, open_positions: list[dict], is_top20: bool = False, is_priority: bool = False) -> bool:
         """Phan tich symbol, chay tat ca filter va strategy, tra True neu da trade."""
         micro_limit = config.CANDLE_LIMIT_MICRO if is_top20 else config.CANDLE_LIMIT_MICRO_SMALL
@@ -571,6 +617,13 @@ class TradingBot:
                     else:
                         bo_sig.symbol    = symbol
                         bo_sig.consensus = 1
+                        bo_side = "Buy" if bo_sig.direction == 1 else "Sell"
+                        open_same_side = sum(1 for p in open_positions if p["side"] == bo_side)
+                        if open_same_side >= config.MAX_POSITIONS_PER_SIDE:
+                            logger.debug(f"{symbol}: BREAKOUT skip — per-side cap ({open_same_side}/{config.MAX_POSITIONS_PER_SIDE} {bo_side})")
+                            return False
+                        if not self._direction_allowed(bo_side):
+                            return False
                         logger.info(
                             f"{symbol} [BREAKOUT TOP20] -> "
                             f"{'LONG' if bo_sig.direction==1 else 'SHORT'} "
@@ -660,6 +713,13 @@ class TradingBot:
                 if len(reversal_signals) >= reversal_min and reversal_confirmed:
                     signals = reversal_signals
                     best = max(signals, key=lambda s: s.strength)
+                    rev_side = "Buy" if best.direction == 1 else "Sell"
+                    open_same_side = sum(1 for p in open_positions if p["side"] == rev_side)
+                    if open_same_side >= config.MAX_POSITIONS_PER_SIDE:
+                        logger.debug(f"{symbol}: REVERSAL skip — per-side cap ({open_same_side}/{config.MAX_POSITIONS_PER_SIDE} {rev_side})")
+                        return False
+                    if not self._direction_allowed(rev_side):
+                        return False
                     best.strength = min(0.95, best.strength + 0.15)
                     best.consensus = len(signals)
                     best.symbol    = symbol
@@ -785,6 +845,14 @@ class TradingBot:
             if h1_confirms == 0 and h1_opposes > 0:
                 logger.debug(f"{symbol}: TOP_PRIORITY skip — 1h opposes signal, no 1h confirmation")
                 return False
+
+        mom_side = "Buy" if best.direction == 1 else "Sell"
+        open_same_side = sum(1 for p in open_positions if p["side"] == mom_side)
+        if open_same_side >= config.MAX_POSITIONS_PER_SIDE:
+            logger.debug(f"{symbol}: MOMENTUM skip — per-side cap ({open_same_side}/{config.MAX_POSITIONS_PER_SIDE} {mom_side})")
+            return False
+        if not self._direction_allowed(mom_side):
+            return False
 
         best.consensus = len(signals)
         best.symbol    = symbol

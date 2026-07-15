@@ -929,6 +929,29 @@ class TradingBot:
                 logger.debug(f"{symbol}: skip — 1m EMA9({_e9:.4f}) > EMA21({_e21:.4f}), bullish micro, block SHORT")
                 return False
 
+        # EMA50 pullback filter (15m): chi enter khi gia GAN EMA50, khong chase khi da extended xa
+        # Uptrend LONG: price nen bounce tu EMA50 (support), khong phai cach EMA50 qua xa
+        # Downtrend SHORT: price nen tu EMA50 (resistance) xuong, khong phai da qua extended
+        # Muc 2.5x ATR_15m: cho phep price o tren/duoi EMA50 mot chut (momentum), nhung khong qua xa
+        if len(df_signal) >= 50:
+            _ema50_15m = compute_ema(df_signal["close"], 50).iloc[-1]
+            _atr_15m   = compute_atr(df_signal, config.ATR_PERIOD).iloc[-1]
+            _p15 = df_signal["close"].iloc[-1]
+            if _ema50_15m > 0 and _atr_15m > 0:
+                _ema50_dist = _p15 - _ema50_15m  # + = above, - = below
+                if best.direction == 1 and _ema50_dist > 2.5 * _atr_15m:
+                    logger.debug(
+                        f"{symbol}: skip LONG — price {_ema50_dist/_ema50_15m*100:.1f}% above 15m EMA50 "
+                        f"({_ema50_dist/(_atr_15m+1e-9):.1f}x ATR, too extended)"
+                    )
+                    return False
+                if best.direction == -1 and _ema50_dist < -2.5 * _atr_15m:
+                    logger.debug(
+                        f"{symbol}: skip SHORT — price {-_ema50_dist/_ema50_15m*100:.1f}% below 15m EMA50 "
+                        f"({-_ema50_dist/(_atr_15m+1e-9):.1f}x ATR, too extended)"
+                    )
+                    return False
+
         # 1m micro entry timing: apply cho TAT CA coin voi phan tich day du 5 yeu to
         if not self._micro_entry_analysis(df_micro, best.direction):
             logger.debug(f"{symbol}: skip — 1m micro entry timing not confirmed (score too low)")

@@ -669,6 +669,9 @@ class TradingBot:
             except Exception:
                 continue
 
+        # 4h macro trend (dung voi reversal deep-trend guard)
+        macro_4h = self._trend_direction(df_macro)
+
         # REVERSAL trade: RSI cuc doan + 2 nen 15m + 1m micro xac nhan dao chieu + >= MIN_CONSENSUS
         if is_reversal and reversal_dir != 0:
             # Direction-aware spike: long sau pump spike va short sau dump spike deu nguy hiem
@@ -685,7 +688,22 @@ class TradingBot:
                 ) and self._micro_entry_analysis(df_micro, reversal_dir, is_reversal=True)
                 reversal_signals = long_signals if reversal_dir == 1 else short_signals
                 reversal_base = config.MIN_CONSENSUS if is_priority else config.MIN_CONSENSUS_TRENDING
-                reversal_min  = reversal_base + (1 if post_loss else 0)
+                # Deep trend guard: neu ca 1h VA 4h deu oppose reversal direction
+                # (vi du: BILL -45% — 1h bearish + 4h bearish → can them +1 consensus)
+                # Tranh catch the falling knife khi trend lon duoc xac nhan tren nhieu TF
+                reversal_deep_opposed = (
+                    (reversal_dir == 1  and macro_trend == -1 and macro_4h == -1) or
+                    (reversal_dir == -1 and macro_trend ==  1 and macro_4h ==  1)
+                )
+                reversal_min = reversal_base + (1 if post_loss else 0) + (1 if reversal_deep_opposed else 0)
+                if reversal_deep_opposed:
+                    logger.debug(
+                        f"{symbol}: reversal deep-trend guard +1 consensus "
+                        f"(1h={'UP' if macro_trend==1 else 'DOWN'}, "
+                        f"4h={'UP' if macro_4h==1 else 'DOWN'}, "
+                        f"reversal={'LONG' if reversal_dir==1 else 'SHORT'}) "
+                        f"→ need {reversal_min}/{len(ALL_STRATEGIES)}"
+                    )
                 if len(reversal_signals) >= reversal_min and reversal_confirmed:
                     signals = reversal_signals
                     best = max(signals, key=lambda s: s.strength)

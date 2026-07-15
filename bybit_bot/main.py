@@ -754,12 +754,16 @@ class TradingBot:
                     elif sig.direction == -1:
                         short_signals.append(sig)
                 else:
-                    # macro_trend == 1: uptrend → long ok
-                    # macro_trend ==-1: downtrend → short ok
-                    # macro_trend == 0: sideways → cho phep nhung can consensus cao hon (xu ly sau)
-                    if sig.direction == 1 and macro_trend >= 0:
+                    # Ca 1h VA 4h phai khong oppose huong trade
+                    # macro_trend (1h) >= 0 va macro_4h (4h) >= 0 → long ok
+                    # macro_trend (1h) <= 0 va macro_4h (4h) <= 0 → short ok
+                    # Neu 4h bullish ma 1h neutral → khong short (4h la trend chinh)
+                    # Neu 4h bearish ma 1h neutral → khong long (4h la trend chinh)
+                    long_ok  = (macro_trend >= 0) and (macro_4h >= 0)
+                    short_ok = (macro_trend <= 0) and (macro_4h <= 0)
+                    if sig.direction == 1 and long_ok:
                         long_signals.append(sig)
-                    elif sig.direction == -1 and macro_trend <= 0:
+                    elif sig.direction == -1 and short_ok:
                         short_signals.append(sig)
             except Exception:
                 continue

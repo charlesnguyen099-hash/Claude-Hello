@@ -504,13 +504,15 @@ class TradingBot:
                     _micro_spike_pump = True
                     logger.debug(f"{symbol}: cumulative net pump {_net_move*100:.1f}% in 15 candles → pump flag")
 
-            # RSI 1m: oversold → dump flag (don't short further); overbought → pump flag (don't long further)
+            # RSI 1m: oversold (< 35) → dump flag (tranh short o day);
+            # overbought (> 65) → pump flag (tranh long o dinh)
+            # Nguong 35/65 dong bo voi nguong reversal detection cua 15m
             if len(df_micro) >= 14:
                 _micro_rsi = compute_rsi(df_micro["close"]).iloc[-1]
-                if _micro_rsi < 30 and not _micro_spike_pump:
+                if _micro_rsi < 35 and not _micro_spike_pump:
                     _micro_spike_dump = True
                     logger.debug(f"{symbol}: 1m RSI={_micro_rsi:.1f} oversold → dump flag (tranh short o day)")
-                elif _micro_rsi > 70 and not _micro_spike_dump:
+                elif _micro_rsi > 65 and not _micro_spike_dump:
                     _micro_spike_pump = True
                     logger.debug(f"{symbol}: 1m RSI={_micro_rsi:.1f} overbought → pump flag (tranh long o dinh)")
 
@@ -759,6 +761,20 @@ class TradingBot:
         if best.direction == -1 and micro_up:
             logger.debug(f"{symbol}: skip — 1m micro trend BULLISH vs SHORT signal")
             return False
+
+        # 1m EMA alignment check (MOMENTUM path) — bat cac truong hop _micro_trend tra ve 0 (neutral)
+        # do chi dat 2/5 factors thay vi 3/5, nhung EMA9 vs EMA21 dang nguoc chieu ro rang
+        # EMA9 < EMA21: 1m bearish alignment → tranh long; EMA9 > EMA21: 1m bullish → tranh short
+        from strategies.base import compute_ema as _cema
+        if len(df_micro) >= 21:
+            _e9  = _cema(df_micro["close"], 9).iloc[-1]
+            _e21 = _cema(df_micro["close"], 21).iloc[-1]
+            if best.direction == 1 and _e9 < _e21:
+                logger.debug(f"{symbol}: skip — 1m EMA9({_e9:.4f}) < EMA21({_e21:.4f}), bearish micro, block LONG")
+                return False
+            if best.direction == -1 and _e9 > _e21:
+                logger.debug(f"{symbol}: skip — 1m EMA9({_e9:.4f}) > EMA21({_e21:.4f}), bullish micro, block SHORT")
+                return False
 
         # 1m micro entry timing: apply cho TAT CA coin voi phan tich day du 5 yeu to
         if not self._micro_entry_analysis(df_micro, best.direction):

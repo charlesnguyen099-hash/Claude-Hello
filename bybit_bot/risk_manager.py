@@ -47,17 +47,11 @@ class RiskManager:
         is_priority: bool = False,
     ) -> Optional[TradeParams]:
 
-        if signal.entry_price <= 0 or signal.atr <= 0:
+        if signal.entry_price <= 0 or signal.atr <= 0 or equity <= 0:
             return None
 
         side = "Buy" if signal.direction == 1 else "Sell"
 
-        # Lay leverage toi da cua cap nay
-        leverage = self.client.get_max_leverage(signal.symbol) if config.USE_MAX_LEVERAGE \
-                   else config.DEFAULT_LEVERAGE
-
-        # Qty = min order quantity cua Bybit voi max leverage
-        # Khong can tinh % von — cu dung muc toi thieu de trade duoc la vao
         try:
             info     = self.client.get_instrument_info(signal.symbol)
             min_qty  = float(info["lotSizeFilter"]["minOrderQty"])
@@ -66,51 +60,60 @@ class RiskManager:
             logger.warning(f"{signal.symbol}: cannot get instrument info: {e}")
             return None
 
-        # Consensus scale: 2=1x, 3=1.3x, 4=1.6x, 5=2x, 6=2.5x, 7=3x
+        # Consensus scale: 1=0.5x, 2=0.7x, 3=1.0x, 4=1.3x, 5=1.6x, 6=2.0x, 7=2.5x
+        # Scale nho hon: tranh over-size khi consensus cao nhung thi truong khong ro
         consensus = getattr(signal, 'consensus', 1)
-        CONSENSUS_SCALE = {1: 1.0, 2: 1.0, 3: 1.3, 4: 1.6, 5: 2.0, 6: 2.5, 7: 3.0}
+        CONSENSUS_SCALE = {1: 0.5, 2: 0.7, 3: 1.0, 4: 1.3, 5: 1.6, 6: 2.0, 7: 2.5}
         scale_factor = CONSENSUS_SCALE.get(consensus, 1.0)
 
-        # Base qty = min_qty x2, dam bao notional >= 5 USDT
-        MIN_NOTIONAL = 5.0
-        min_qty_notional = math.ceil(MIN_NOTIONAL / signal.entry_price / qty_step) * qty_step
-        base_qty = max(min_qty, min_qty_notional) * config.TRADE_SIZE_MULT
-
-        # Nhan scale consensus
-        qty      = math.ceil(base_qty * scale_factor / qty_step) * qty_step
-        notional = qty * signal.entry_price
-
-        capital_used = notional / leverage
-
-        # Phi round-trip
-        fee_usdt  = notional * config.ROUND_TRIP_FEE
+        # Phi round-trip (tinh tren entry price de co trong sl/tp calc)
         fee_price = signal.entry_price * config.ROUND_TRIP_FEE
 
-        # SL/TP dua tren ATR — dam bao RR >= 1 sau phi
-        # SL = SL_ATR_MULT x ATR + phi (de bu phi van con RR >= 1)
+        # SL/TP dua tren ATR — RR >= 1.3 sau phi
         sl_dist  = config.SL_ATR_MULT  * signal.atr + fee_price
-        tp1_dist = config.TP1_ATR_MULT * signal.atr - fee_price   # TP1 >= SL net
-        tp2_dist = config.TP2_ATR_MULT * signal.atr - fee_price   # TP2 = 2x SL net
-        # Dam bao TP1 >= SL (neu ATR nho, min TP1 = sl_dist) — chi ap dung cho priority
-        # Non-priority: bo qua buoc nay vi se bi hard cap o duoi, RR < 1 chap nhan duoc
-        if is_priority:
-            tp1_dist = max(tp1_dist, sl_dist)
-            tp2_dist = max(tp2_dist, sl_dist * 1.5)
+        tp1_dist = config.TP1_ATR_MULT * signal.atr - fee_price   # 2.0x ATR - phi
+        tp2_dist = config.TP2_ATR_MULT * signal.atr - fee_price   # 4.0x ATR - phi
+        # Dam bao TP1 >= SL (RR >= 1)
+        tp1_dist = max(tp1_dist, sl_dist)
+        tp2_dist = max(tp2_dist, sl_dist * 2.0)
+        # Dam bao SL/TP duong
+        sl_dist  = max(sl_dist,  signal.entry_price * 0.002)
+        tp1_dist = max(tp1_dist, signal.entry_price * 0.003)
+        tp2_dist = max(tp2_dist, signal.entry_price * 0.006)
 
-        # Cap TP1 HARD: chi ap dung cho non-priority — loi nhuan khong vuot 50% von + phi
-        # Khong co fallback sl_dist — neu sl_dist > max_tp1_dist thi TP nho hon SL (RR < 1, chap nhan)
-        # top10 priority giu nguyen theo ATR thuc te (co the chay xa hon)
-        if not is_priority:
-            max_tp1_profit = 0.50 * (capital_used + fee_usdt)
-            max_tp1_dist   = max_tp1_profit / qty if qty > 0 else tp1_dist
-            tp1_dist = min(tp1_dist, max_tp1_dist)
-            tp2_dist = min(tp2_dist, max_tp1_dist * 2)
-            # Ensure positive
-            tp1_dist = max(tp1_dist, signal.entry_price * 0.0001)
-            tp2_dist = max(tp2_dist, signal.entry_price * 0.0002)
+        # RISK-BASED POSITION SIZING:
+        # Muc tieu: neu SL hit thi mat dung RISK_PER_TRADE_PCT% equity (x scale_factor)
+        # qty = risk_amount / sl_dist
+        risk_amount = equity * config.RISK_PER_TRADE_PCT * scale_factor
+        qty_by_risk = risk_amount / sl_dist
+
+        # Round xuong de khong over-risk
+        qty = math.floor(qty_by_risk / qty_step) * qty_step
+        # Phai >= min_qty cua exchange
+        qty = max(qty, min_qty)
+        # Dam bao notional >= $5 (Bybit minimum)
+        MIN_NOTIONAL = 5.0
+        if qty * signal.entry_price < MIN_NOTIONAL:
+            qty = math.ceil(MIN_NOTIONAL / signal.entry_price / qty_step) * qty_step
+
+        notional = qty * signal.entry_price
+
+        # Leverage: dung leverage de chi can margin = MAX_CAPITAL_PCT * equity
+        # Nhung cap tai MAX_LEVERAGE de tranh liquidation risk
+        max_capital = equity * config.MAX_CAPITAL_PCT
+        leverage = math.ceil(notional / max_capital)  # can bao nhieu leverage de margin <= 10% equity
+        leverage = min(leverage, config.MAX_LEVERAGE)  # cap tai 20x
+        leverage = max(leverage, 1)
+        # Neu leverage theo exchange thap hon → dung leverage exchange
+        exchange_max_lev = self.client.get_max_leverage(signal.symbol) if config.USE_MAX_LEVERAGE \
+                           else config.DEFAULT_LEVERAGE
+        leverage = min(leverage, exchange_max_lev)
+
+        capital_used = notional / leverage
+        fee_usdt     = notional * config.ROUND_TRIP_FEE
 
         d   = signal.direction
-        sl  = signal.entry_price - d * sl_dist  # fee da tinh trong sl_dist roi
+        sl  = signal.entry_price - d * sl_dist
         tp1 = signal.entry_price + d * tp1_dist
         tp2 = signal.entry_price + d * tp2_dist
 

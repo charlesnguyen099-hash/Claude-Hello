@@ -149,6 +149,13 @@ class TradingBot:
                 logger.debug(f"get_closed_pnl error: {e}")
         self._prev_pos_symbols = pos_symbols
 
+        # Hard cap: khong mo them lenh neu da dat MAX_OPEN_POSITIONS
+        if len(open_positions) >= config.MAX_OPEN_POSITIONS:
+            logger.info(
+                f"[TICK] Max positions ({config.MAX_OPEN_POSITIONS}) reached — skip new entries"
+            )
+            return
+
         top10 = set(self.symbols[:10])
 
         # Cap nhat BTC global trend moi tick (ca 1h va 4h)

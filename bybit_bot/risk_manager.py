@@ -69,10 +69,12 @@ class RiskManager:
         # Phi round-trip (tinh tren entry price de co trong sl/tp calc)
         fee_price = signal.entry_price * config.ROUND_TRIP_FEE
 
-        # SL/TP dua tren ATR — RR >= 1.3 sau phi
+        # SL/TP dua tren ATR
+        # TP1 = 1.5x ATR (ngang bang SL, exchange auto-close khi reach)
+        # Partial close 50% tai 75% × TP1 = 1.125x ATR, con lai targets TP2 = 3.0x ATR
         sl_dist  = config.SL_ATR_MULT  * signal.atr + fee_price
-        tp1_dist = config.TP1_ATR_MULT * signal.atr - fee_price   # 2.0x ATR - phi
-        tp2_dist = config.TP2_ATR_MULT * signal.atr - fee_price   # 4.0x ATR - phi
+        tp1_dist = config.TP1_ATR_MULT * signal.atr - fee_price   # 1.5x ATR - phi
+        tp2_dist = config.TP2_ATR_MULT * signal.atr - fee_price   # 3.0x ATR - phi
         # Dam bao TP1 >= SL (RR >= 1)
         tp1_dist = max(tp1_dist, sl_dist)
         tp2_dist = max(tp2_dist, sl_dist * 2.0)

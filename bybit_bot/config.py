@@ -49,8 +49,8 @@ MAX_OPEN_POSITIONS = 5      # Max positions mo cung luc — cap tong exposure
 # SL/TP theo ATR — RR >= 1.3 sau phi (truoc: 1.5/1.5 = 1:1, sau phi am)
 ATR_PERIOD        = 14
 SL_ATR_MULT       = 1.5    # SL  = 1.5x ATR
-TP1_ATR_MULT      = 2.0    # TP1 = 2.0x ATR → RR ~1.3 sau phi (tang tu 1.5x)
-TP2_ATR_MULT      = 4.0    # TP2 = 4.0x ATR → RR ~2.6 (tang tu 3.0x)
+TP1_ATR_MULT      = 1.5    # TP1 = 1.5x ATR — thuc te hon, exchange auto-close khi price reach
+TP2_ATR_MULT      = 3.0    # TP2 = 3.0x ATR — cho 50% con lai sau partial close
 BREAKEVEN_TRIGGER = 0.20   # Doi SL ve breakeven tai 20% den TP1 — du de tranh noise, set som de khong miss wick
 PARTIAL_CLOSE_TRIGGER = 0.75  # Dong 50% position tai 75% den TP1, de 50% con lai chay den TP2
 

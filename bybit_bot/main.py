@@ -618,10 +618,11 @@ class TradingBot:
             _m2h_rng  = _m2h_high - _m2h_low
             if _m2h_rng > 0:
                 _m2h_pos = (_range_price - _m2h_low) / _m2h_rng
-                # Largecap (BTC/ETH): nang threshold len 0.90/0.10 vi range 2h nho hon (0.5-1.5%)
-                # Block qua som o 80% khien BTC khong duoc vao LONG trong uptrend
-                _m2h_top_thresh = 0.90 if _is_largecap else 0.80
-                _m2h_bot_thresh = 0.10 if _is_largecap else 0.20
+                # 80%/20% uniform for all coins — live price ensures accuracy.
+                # Gradual-trend exception in 30c/60c/5m blocks handles "allow LONG in uptrend";
+                # this guard prevents chasing near 2h range extremes regardless of coin size.
+                _m2h_top_thresh = 0.80
+                _m2h_bot_thresh = 0.20
                 if _m2h_pos < _m2h_bot_thresh:
                     _m2h_block_short = True
                     logger.debug(f"{symbol}: 2h 1m range_pos={_m2h_pos:.2f} < {_m2h_bot_thresh} → block SHORT (2h bottom)")

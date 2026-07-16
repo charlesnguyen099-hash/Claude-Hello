@@ -917,25 +917,26 @@ class TradingBot:
 
             # 30c 1m range: check gia co phai da bounce/dump TRUOC KHI entry hay chua
             # SNDKUSDT pattern: RSI < 35 (chua recover) nhung price da bounce 89% tu day 30c (1513→1535)
-            # _s12_pos miss vi 1h range rong (high tu truoc dump), nen position trong "giua range"
-            # 30c 1m range nho hon → bat chinh xac muc do bounce tu day/dinh gan nhat
-            # Threshold 0.70: reversal LONG chi ok khi price < 70% of 30c range (chua bounce qua xa)
+            # AKEUSDT 19:24 pattern: dump 0.0009030 → bounce len 0.0009631 = 69.6% of 30c range
+            #   threshold 0.70 miss (69.6% < 70%) → vao LONG o gan dinh bounce → price dao chieu → SL hit
+            # Giam tu 0.70 → 0.65: them dem buffer de bat cac truong hop bounce 65-70%
+            # Tuong tu: giam SHORT threshold tu 0.30 → 0.35
             if not _rev_1h_blocked and not df_micro.empty and len(df_micro) >= 30:
                 _r30_hi = df_micro["high"].iloc[-30:].max()
                 _r30_lo = df_micro["low"].iloc[-30:].min()
                 _r30_rng = _r30_hi - _r30_lo
                 if _r30_rng > 0:
                     _r30_pos = (price - _r30_lo) / _r30_rng
-                    if reversal_dir == 1 and _r30_pos > 0.70:
+                    if reversal_dir == 1 and _r30_pos > 0.65:
                         _rev_1h_blocked = True
                         logger.debug(
-                            f"{symbol}: reversal LONG blocked — 30c 1m range_pos={_r30_pos:.2f} > 0.70 "
+                            f"{symbol}: reversal LONG blocked — 30c 1m range_pos={_r30_pos:.2f} > 0.65 "
                             f"(price already bounced, reversal stale)"
                         )
-                    elif reversal_dir == -1 and _r30_pos < 0.30:
+                    elif reversal_dir == -1 and _r30_pos < 0.35:
                         _rev_1h_blocked = True
                         logger.debug(
-                            f"{symbol}: reversal SHORT blocked — 30c 1m range_pos={_r30_pos:.2f} < 0.30 "
+                            f"{symbol}: reversal SHORT blocked — 30c 1m range_pos={_r30_pos:.2f} < 0.35 "
                             f"(price already dumped, reversal stale)"
                         )
 

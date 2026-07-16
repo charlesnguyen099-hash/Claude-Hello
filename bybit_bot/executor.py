@@ -103,10 +103,15 @@ class Executor:
         # Vi du: bot thay price 0.228 va quyet dinh SHORT, nhung khi dat lenh gia da dump xuong 0.216
         #        → vao SHORT tai day cua dump → SL hit ngay khi bounce
         live_price = self.client.get_current_price(symbol)
-        if live_price > 0 and signal.entry_price > 0:
+        # BUG FIX: neu live_price == 0 (API loi / timeout), KHONG the xac minh gia hien tai
+        # → SKIP trade, tranh truong hop pump/dump xay ra ma bot khong biet (bypass stale check)
+        # AKEUSDT 19:24 pattern: neu live_price=0, stale check bi skip, lenh dat tai gia cach xa
+        if live_price <= 0:
+            logger.warning(f"{symbol}: SKIP — khong lay duoc live price (get_current_price={live_price}), bo qua de tranh stale entry")
+            return
+        if signal.entry_price > 0:
             price_drift = abs(live_price - signal.entry_price) / signal.entry_price
-            # 0.3% drift: nho hon 0.5% de bat micro-move xay ra giua analysis va dat lenh
-            # USUSDT pattern: pump 3-4% xay ra TRONG KHI bot dang phan tich → stale khi execute
+            # 0.3% drift: bat micro-move xay ra giua analysis va dat lenh
             if price_drift > 0.003:
                 logger.warning(
                     f"{symbol}: STALE SIGNAL — live={live_price:.6f} vs entry={signal.entry_price:.6f} "

@@ -51,7 +51,7 @@ class SustainedTrendStrategy(BaseStrategy):
         slope_down = e9_slope < -0.001 and e21_slope < -0.0005
         rsi_mid    = 35 < rsi < 65   # Chua oversold, con du cho xuong tiep
 
-        if ema_bear and slope_down and rsi_mid and trend_1h <= 0 and macro_d <= 0:
+        if ema_bear and slope_down and rsi_mid and (trend_1h + macro_d) <= -1:
             strength = min(0.85, 0.60 + abs(e9_slope) * 20)
             return Signal(
                 direction=-1,
@@ -67,7 +67,7 @@ class SustainedTrendStrategy(BaseStrategy):
         slope_up   = e9_slope > 0.001 and e21_slope > 0.0005
         rsi_mid_up = 35 < rsi < 65
 
-        if ema_bull and slope_up and rsi_mid_up and trend_1h >= 0 and macro_d >= 0:
+        if ema_bull and slope_up and rsi_mid_up and (trend_1h + macro_d) >= 1:
             strength = min(0.85, 0.60 + abs(e9_slope) * 20)
             return Signal(
                 direction=1,

@@ -1,8 +1,8 @@
 """
 Breakout Strategy — bat volume spike + pha vo vung tich luy
-- Volume nen hien tai > 3.0x MA10 volume (spike thuc su, vol_mult=3.0)
-- Gia pha vo high/low cua 20 nen truoc (thoat khoi vung tich luy)
-- Bypass consensus — tin hieu ro rang 1 minh du
+- Volume nen hien tai > 3.0x MA10 volume (vol_mult=3.0, khoi tao trong __init__.py)
+- Gia pha vo high/low cua 20 nen truoc (lookback=20)
+- Yeu cau sum(1h+4h) >= 1 cho LONG / <= -1 cho SHORT (check trong main.py bo_trend_ok)
 """
 
 import pandas as pd

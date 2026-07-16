@@ -1,8 +1,8 @@
 """
-Strategy 3: Bollinger Bands + RSI Divergence
-- Giá chạm lower band + RSI < 35 + nến đảo chiều → Long
-- Giá chạm upper band + RSI > 65 + nến đảo chiều → Short
-- Dùng khi thị trường sideways (macro trend = 0)
+Strategy 3: Bollinger Bands + RSI Divergence (reversal)
+- Giá chạm lower band + RSI < 35 + nến đảo chiều → Long (reversal from oversold)
+- Giá chạm upper band + RSI > 65 + nến đảo chiều → Short (reversal from overbought)
+- 1h+4h không được oppose: LONG chỉ khi sum(1h,4h) >= 0; SHORT chỉ khi sum <= 0
 """
 
 import numpy as np

@@ -73,10 +73,10 @@ class SupertrendStrategy(BaseStrategy):
         trend_1h = self._trend_direction(df_trend)   # 1h
         macro_d  = self._trend_direction(df_macro)   # 4h
 
-        if flipped_bull and trend_strong and trend_1h >= 0 and macro_d >= 0:
+        if flipped_bull and trend_strong and (trend_1h + macro_d) >= 1:
             return Signal(1, 0.85, self.name, price, atr, f"Supertrend flip BULL, ADX={adx.iloc[-1]:.1f}")
 
-        if flipped_bear and trend_strong and trend_1h <= 0 and macro_d <= 0:
+        if flipped_bear and trend_strong and (trend_1h + macro_d) <= -1:
             return Signal(-1, 0.85, self.name, price, atr, f"Supertrend flip BEAR, ADX={adx.iloc[-1]:.1f}")
 
         return null

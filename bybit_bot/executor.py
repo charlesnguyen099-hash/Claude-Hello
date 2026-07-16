@@ -138,7 +138,7 @@ class Executor:
             else:
                 dist_moved = entry - mark_price
 
-            # --- Muc 1: Break-even SL tai BREAKEVEN_TRIGGER% (30%) duong den TP1 ---
+            # --- Muc 1: Break-even SL tai BREAKEVEN_TRIGGER% (15%) duong den TP1 ---
             if not self._breakeven_set.get(symbol, False) and dist_to_tp1 > 0 and dist_moved > 0:
                 if dist_moved >= dist_to_tp1 * config.BREAKEVEN_TRIGGER:
                     try:

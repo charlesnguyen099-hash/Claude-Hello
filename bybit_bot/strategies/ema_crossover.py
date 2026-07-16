@@ -50,13 +50,13 @@ class EMACrossoverStrategy(BaseStrategy):
         recently_crossed_up   = any(ema_f_prev3.values[i] <= ema_s_prev3.values[i] for i in range(3))
         recently_crossed_down = any(ema_f_prev3.values[i] >= ema_s_prev3.values[i] for i in range(3))
 
-        # Long: EMA cross up + ca 1h va 4h khong oppose
-        if ema_f_now > ema_s_now > ema_t_now and gap_pct > 0.001 and recently_crossed_up and vol_ok and trend_1h >= 0 and macro_d >= 0:
+        # Long: EMA cross up + it nhat 1 TF xac nhan uptrend (tranh double-sideways)
+        if ema_f_now > ema_s_now > ema_t_now and gap_pct > 0.001 and recently_crossed_up and vol_ok and (trend_1h + macro_d) >= 1:
             strength = min(0.85, 0.55 + gap_pct * 10)
             return Signal(1, strength, self.name, price, atr, f"EMA bullish cross gap={gap_pct*100:.2f}%")
 
-        # Short: EMA cross down + ca 1h va 4h khong oppose
-        if ema_f_now < ema_s_now < ema_t_now and abs(gap_pct) > 0.001 and recently_crossed_down and vol_ok and trend_1h <= 0 and macro_d <= 0:
+        # Short: EMA cross down + it nhat 1 TF xac nhan downtrend
+        if ema_f_now < ema_s_now < ema_t_now and abs(gap_pct) > 0.001 and recently_crossed_down and vol_ok and (trend_1h + macro_d) <= -1:
             strength = min(0.85, 0.55 + abs(gap_pct) * 10)
             return Signal(-1, strength, self.name, price, atr, f"EMA bearish cross gap={abs(gap_pct)*100:.2f}%")
 

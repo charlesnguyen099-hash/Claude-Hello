@@ -45,7 +45,7 @@ DEFAULT_LEVERAGE       = 10
 # RISK_PER_TRADE_PCT=0.01 → max 1% equity mat moi lenh → 100 lenh SL lien tiep het account
 RISK_PER_TRADE_PCT = 0.01   # Max 1% equity mat khi SL hit (base, scale voi consensus)
 MAX_CAPITAL_PCT    = 0.10   # Max 10% equity dung lam margin moi lenh
-MAX_OPEN_POSITIONS = 5      # Max positions mo cung luc — cap tong exposure
+MAX_OPEN_POSITIONS = 3      # Max 3/5 positions mo cung luc (top5 focus mode)
 # SL/TP theo ATR — RR >= 1.3 sau phi (truoc: 1.5/1.5 = 1:1, sau phi am)
 ATR_PERIOD        = 14
 SL_ATR_MULT       = 1.5    # SL  = 1.5x ATR
@@ -56,9 +56,9 @@ PARTIAL_CLOSE_TRIGGER = 0.75  # Dong 50% position tai 75% den TP1, de 50% con la
 
 # --- Signal sensitivity -------------------------------------------------------
 MIN_SIGNAL_STRENGTH = 0.60   # Tang tu 0.55 — chi lay signal chat luong cao
-MIN_ADX             = 25     # Tang tu 20 — ADX < 25 = trend yeu, khong trade
-MIN_CONSENSUS          = 4   # Priority (top10): can it nhat 4/7 strategies dong thuan
-MIN_CONSENSUS_TRENDING = 5   # Trending non-priority: can it nhat 5/7 strategies dong thuan
+MIN_ADX             = 22     # Top5 mode: 22 (largecap BTC/ETH ADX thuong 20-35 trong trend)
+MIN_CONSENSUS          = 5   # Top5 mode: can it nhat 5/7 strategies dong thuan (chat luong cao)
+MIN_CONSENSUS_TRENDING = 5   # Khong con dung (khong co trending list), giu cho tuong thich
 MIN_ATR_PCT         = 0.004  # Tang tu 0.003 — ATR >= 0.4% moi trade (bu phi + spread)
 TRADE_SIZE_MULT         = 1    # Khong dung nua — risk-based sizing thay the
 

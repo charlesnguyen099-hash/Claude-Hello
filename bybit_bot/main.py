@@ -237,18 +237,14 @@ class TradingBot:
             )
             return
 
-        top10 = set(self.symbols[:10])
-
-        # Priority list: top10 only
-        priority_set = top10
-
-        # Scan list: priority first, then trending-only coins (khong lap)
-        trending_only = [s for s in getattr(self.scanner, "trending_symbols", []) if s not in priority_set]
-        scan_list = list(dict.fromkeys(list(priority_set) + trending_only))
+        # Chi trade TOP 5 coins theo volume (chat luong cao nhat, thanh khoan tot nhat)
+        # Bo trending list hoan toan — tap trung 100% capacity vao 5 coin chinh
+        top5 = self.symbols[:5]
+        priority_set = set(top5)
+        scan_list = top5  # tat ca top5 deu la priority
 
         logger.info(
-            f"[TICK] Focus scan: {len(scan_list)} symbols "
-            f"(priority={len(priority_set)}, trending_only={len(trending_only)}) | "
+            f"[TICK] TOP5 scan: {scan_list} | "
             f"BTC_1h={'UP' if self.btc_trend==1 else 'DOWN' if self.btc_trend==-1 else 'SIDE'} "
             f"BTC_4h={'UP' if self.btc_trend_4h==1 else 'DOWN' if self.btc_trend_4h==-1 else 'SIDE'}"
         )
@@ -553,8 +549,8 @@ class TradingBot:
         if price > 0 and atr / price < _min_atr_pct:
             return False
 
-        # ADX filter: top10 dung nguong thap hon (18 vs 20) — coin lon trend smoother
-        min_adx = 18 if is_priority else config.MIN_ADX
+        # Top5 mode: tat ca deu la priority, dung config.MIN_ADX cho tat ca (22)
+        min_adx = config.MIN_ADX
         adx = compute_adx(df_signal).iloc[-1]
         if math.isnan(adx) or adx < min_adx:
             logger.debug(f"{symbol}: skip — ADX={adx:.1f} < {min_adx} (sideway)")

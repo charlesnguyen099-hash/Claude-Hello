@@ -494,12 +494,9 @@ class TradingBot:
             return False
 
         # ATR filter: bo qua symbol bien dong qua nho
-        # Priority (top10): nguong thap hon (0.002) vi BTC/ETH ATR% nho nhung gia tri tuyet doi lon
-        # BTC $118k: ATR 15m ~$400 = 0.34% < 0.4% threshold → bi skip neu dung chung nguong
         atr   = compute_atr(df_signal).iloc[-1]
         price = df_signal["close"].iloc[-1]
-        min_atr_pct = config.MIN_ATR_PCT * 0.5 if is_priority else config.MIN_ATR_PCT
-        if price > 0 and atr / price < min_atr_pct:
+        if price > 0 and atr / price < config.MIN_ATR_PCT:
             return False
 
         # ADX filter: top10 dung nguong thap hon (18 vs 20) — coin lon trend smoother

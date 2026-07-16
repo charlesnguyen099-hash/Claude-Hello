@@ -249,19 +249,27 @@ class TradingBot:
             f"BTC_4h={'UP' if self.btc_trend_4h==1 else 'DOWN' if self.btc_trend_4h==-1 else 'SIDE'}"
         )
 
+        # BTC/ETH direction map: de check correlation truoc khi mo lenh moi
+        # {symbol: "Long" | "Short"} cho cac position dang mo
+        _pos_side_map = {p["symbol"]: p.get("side", "") for p in open_positions}
+
         for symbol in scan_list:
 
             if symbol in pos_symbols:
                 continue
 
-            is_priority = symbol in priority_set
+            is_priority = True  # tat ca top5 deu la priority
             try:
-                traded = self._process_symbol(symbol, equity, open_positions, is_priority)
+                traded = self._process_symbol(
+                    symbol, equity, open_positions, is_priority,
+                    btc_eth_side_map=_pos_side_map
+                )
                 if traded:
                     try:
                         open_positions = self.client.get_positions()
                         equity         = self.client.get_wallet_balance()
                         pos_symbols    = {p["symbol"] for p in open_positions}
+                        _pos_side_map  = {p["symbol"]: p.get("side", "") for p in open_positions}
                     except Exception:
                         pass
             except Exception as e:
@@ -519,7 +527,7 @@ class TradingBot:
             logger.debug(f"micro_entry_analysis: dir={direction} score={score}/{threshold} n={n} -> skip")
         return ok
 
-    def _process_symbol(self, symbol: str, equity: float, open_positions: list[dict], is_priority: bool = False) -> bool:
+    def _process_symbol(self, symbol: str, equity: float, open_positions: list[dict], is_priority: bool = False, btc_eth_side_map: dict | None = None) -> bool:
         """Phan tich symbol, chay tat ca filter va strategy, tra True neu da trade."""
         # Init gradual trend flags truoc block 30c de tranh NameError neu df_micro < 30 candles
         _is_gradual_uptrend   = False
@@ -1234,10 +1242,10 @@ class TradingBot:
 
         if tier1_bypass_long:
             signals = long_signals
-            logger.info(f"{symbol}: [TOP10 TIER1] 2/2 Tier-1 LONG — bypass consensus")
+            logger.info(f"{symbol}: [TOP5 TIER1] 2/2 Tier-1 LONG — bypass consensus")
         elif tier1_bypass_short:
             signals = short_signals
-            logger.info(f"{symbol}: [TOP10 TIER1] 2/2 Tier-1 SHORT — bypass consensus")
+            logger.info(f"{symbol}: [TOP5 TIER1] 2/2 Tier-1 SHORT — bypass consensus")
         elif len(long_signals) >= required_long:
             signals = long_signals
         elif len(short_signals) >= required_short:
@@ -1246,6 +1254,21 @@ class TradingBot:
             return False
 
         best = max(signals, key=lambda s: s.strength)
+
+        # BTC/ETH CORRELATION BLOCK: block neu pair kia da co position CUNG CHIEU
+        # BTC va ETH correlated manh → ca 2 cung SHORT = double loss khi bounce
+        # Cho phep nguoc chieu (BTC long + ETH short = hedging, khac strategy)
+        if btc_eth_side_map and symbol in ("BTCUSDT", "ETHUSDT"):
+            pair = "ETHUSDT" if symbol == "BTCUSDT" else "BTCUSDT"
+            pair_side = btc_eth_side_map.get(pair, "")
+            # side tu Bybit: "Buy" = Long, "Sell" = Short
+            signal_side = "Buy" if best.direction == 1 else "Sell"
+            if pair_side == signal_side:
+                logger.info(
+                    f"{symbol}: skip — BTC/ETH correlation: {pair} already {pair_side}, "
+                    f"block {signal_side} to avoid double correlated exposure"
+                )
+                return False
 
         # Direction-aware 1m spike filter:
         # Pump spike -> block LONG (khong mua dinh), SHORT van duoc phep (ban dinh tot)

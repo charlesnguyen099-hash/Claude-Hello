@@ -509,13 +509,19 @@ class TradingBot:
         # 24h directional move filter: tranh chase sau khi coin da pump/dump > 20% trong 24h
         # Coin up > 20%  → block LONG momentum (move da xong, late entry); SHORT reversal van ok
         # Coin down > 20% → block SHORT momentum; LONG reversal van ok
+        # HARD SKIP: abs > 30% → skip TOAN BO (AKEUSDT +39%: ca SHORT reversal cung nguy hiem)
+        # Scanner da skip o >25% nhung self.symbols la cache cu (1h) → coin co the pump them
         # Tinh tu df_signal: close[-1] vs close 96 nen 15m truoc (~24h)
         _block_long_24h  = False
         _block_short_24h = False
+        _change_24h = 0.0
         if len(df_signal) >= 96:
             _ref_24h = df_signal["close"].iloc[-96]
             if _ref_24h > 0:
                 _change_24h = (df_signal["close"].iloc[-1] - _ref_24h) / _ref_24h * 100
+                if abs(_change_24h) > 30:
+                    logger.info(f"{symbol}: 24h change={_change_24h:.1f}% > 30% → HARD SKIP (extreme move)")
+                    return False
                 if _change_24h > 20:
                     _block_long_24h = True
                     logger.debug(f"{symbol}: 24h change=+{_change_24h:.1f}% → block LONG (pump exhausted)")

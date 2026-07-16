@@ -618,12 +618,16 @@ class TradingBot:
             _m2h_rng  = _m2h_high - _m2h_low
             if _m2h_rng > 0:
                 _m2h_pos = (_range_price - _m2h_low) / _m2h_rng
-                if _m2h_pos < 0.20:
+                # Largecap (BTC/ETH): nang threshold len 0.90/0.10 vi range 2h nho hon (0.5-1.5%)
+                # Block qua som o 80% khien BTC khong duoc vao LONG trong uptrend
+                _m2h_top_thresh = 0.90 if _is_largecap else 0.80
+                _m2h_bot_thresh = 0.10 if _is_largecap else 0.20
+                if _m2h_pos < _m2h_bot_thresh:
                     _m2h_block_short = True
-                    logger.debug(f"{symbol}: 2h 1m range_pos={_m2h_pos:.2f} < 0.20 → block SHORT (2h bottom)")
-                elif _m2h_pos > 0.80:
+                    logger.debug(f"{symbol}: 2h 1m range_pos={_m2h_pos:.2f} < {_m2h_bot_thresh} → block SHORT (2h bottom)")
+                elif _m2h_pos > _m2h_top_thresh:
                     _m2h_block_long = True
-                    logger.debug(f"{symbol}: 2h 1m range_pos={_m2h_pos:.2f} > 0.80 → block LONG (2h top)")
+                    logger.debug(f"{symbol}: 2h 1m range_pos={_m2h_pos:.2f} > {_m2h_top_thresh} → block LONG (2h top)")
 
         # Momentum confirmation (15m): 2 nen lien tiep gan nhat phai cung chieu voi signal
         opens  = df_signal["open"]
@@ -748,16 +752,33 @@ class TradingBot:
                 _low_30c  = df_micro["low"].iloc[-30:].min()
                 # Reuse live price tu _range_live_price (da fetch o tren); fallback ve _micro_price
                 _live_check_price = _range_live_price if _range_live_price > 0 else _micro_price
+
+                # Phan biet spike vs gradual trend dua tren ty le nen theo chieu:
+                # Spike: 1-3 nen khong lo, phan lon cac nen con lai flat
+                # Trend: >= 50% nen trong 30c la nen cung chieu → la trend that su, khong block
+                _30c_closes = df_micro["close"].iloc[-30:].values
+                _30c_opens  = df_micro["open"].iloc[-30:].values
+                _n_green_30 = sum(1 for i in range(30) if _30c_closes[i] > _30c_opens[i])
+                _n_red_30   = sum(1 for i in range(30) if _30c_closes[i] < _30c_opens[i])
+                _is_gradual_uptrend   = _n_green_30 >= 15  # >= 50% nen xanh = uptrend
+                _is_gradual_downtrend = _n_red_30   >= 15  # >= 50% nen do  = downtrend
+
                 if _high_30c > 0 and not _micro_spike_dump:
                     _drop_from_high = (_high_30c - _live_check_price) / _high_30c
-                    if _drop_from_high > 0.0060 * _sp:
+                    # Spike threshold: 0.60%; Trend exception: neu >= 50% nen do, nang threshold len 1.5%
+                    # Downtrend that su thi cho phep vao SHORT (khong flag dump neu la trend)
+                    _dump_threshold = 0.0150 * _sp if _is_gradual_downtrend else 0.0060 * _sp
+                    if _drop_from_high > _dump_threshold:
                         _micro_spike_dump = True
-                        logger.debug(f"{symbol}: 30c drop-from-high {_drop_from_high*100:.2f}% (live={_live_check_price:.4f}) → dump flag")
+                        logger.debug(f"{symbol}: 30c drop-from-high {_drop_from_high*100:.2f}% > {_dump_threshold*100:.2f}% (live={_live_check_price:.4f}) → dump flag")
                 if _low_30c > 0 and not _micro_spike_pump:
                     _rise_from_low = (_live_check_price - _low_30c) / _low_30c
-                    if _rise_from_low > 0.0060 * _sp:
+                    # Spike threshold: 0.60%; Trend exception: neu >= 50% nen xanh, nang threshold len 1.5%
+                    # Uptrend that su thi cho phep vao LONG (khong flag pump neu la trend)
+                    _pump_threshold = 0.0150 * _sp if _is_gradual_uptrend else 0.0060 * _sp
+                    if _rise_from_low > _pump_threshold:
                         _micro_spike_pump = True
-                        logger.debug(f"{symbol}: 30c rise-from-low {_rise_from_low*100:.2f}% → pump flag")
+                        logger.debug(f"{symbol}: 30c rise-from-low {_rise_from_low*100:.2f}% > {_pump_threshold*100:.2f}% → pump flag")
 
             # 30c range position block da DUOC XOA:
             # _pos30 < 0.35 → dump flag: SAI trong downtrend (price luon o bottom 35% → block het SHORT)

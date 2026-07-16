@@ -1,10 +1,11 @@
 """
 Trade Executor — thực thi lệnh và quản lý vị thế
 - Đặt lệnh với SL + TP1 (safety net trên sàn)
-- Level 1 (BREAKEVEN_TRIGGER=15%): chuyển SL về break-even sớm
+- Level 1 (BREAKEVEN_TRIGGER=20%): chuyển SL về break-even sớm
 - Level 2 (PARTIAL_CLOSE_TRIGGER=75%): đóng 50% vị thế, cập nhật TP lên TP2, xác nhận SL break-even
 - Level 3: 50% còn lại chạy đến TP2 với zero downside risk
-- Tự động đóng lệnh khi signal đảo chiều
+- Anti-whipsaw: khong force-close vi the < 30 phut vi signal dao chieu
+- Tự động đóng lệnh khi signal đảo chiều (sau 30 phut hoac PnL < -20%)
 """
 
 import logging
@@ -193,7 +194,7 @@ class Executor:
             else:
                 dist_moved = entry - best_price
 
-            # --- Muc 1: Break-even SL tai BREAKEVEN_TRIGGER% (15%) duong den TP1 ---
+            # --- Muc 1: Break-even SL tai BREAKEVEN_TRIGGER% (20%) duong den TP1 ---
             if not self._breakeven_set.get(symbol, False) and dist_to_tp1 > 0 and dist_moved > 0:
                 if dist_moved >= dist_to_tp1 * config.BREAKEVEN_TRIGGER:
                     try:
@@ -262,6 +263,12 @@ class Executor:
         pnl    = float(position.get("unrealisedPnl", 0))
         try:
             self.client.close_position(symbol, side, qty)
+            # Clear in-memory state cho symbol nay
+            self._partial_closed.pop(symbol, None)
+            self._breakeven_set.pop(symbol, None)
+            self._atr.pop(symbol, None)
+            self._tp2_price.pop(symbol, None)
+            self._open_time.pop(symbol, None)
             self.logger.log_trade({
                 "event":  "close",
                 "symbol": symbol,

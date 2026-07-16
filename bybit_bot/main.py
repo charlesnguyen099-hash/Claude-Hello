@@ -34,7 +34,7 @@ class TradingBot:
         logger.info("Bybit Auto Trading Bot starting...")
         logger.info(f"Mode: {'TESTNET' if config.TESTNET else 'MAINNET (LIVE)'}")
         logger.info(f"Top N symbols: {config.TOP_N_SYMBOLS}")
-        logger.info(f"Max positions: unlimited")
+        logger.info(f"Max positions: {config.MAX_OPEN_POSITIONS}")
         logger.info(f"Strategies: {[s.name for s in ALL_STRATEGIES]}")
         logger.info("="*60)
 

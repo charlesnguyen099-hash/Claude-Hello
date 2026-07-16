@@ -564,6 +564,7 @@ class TradingBot:
         # 120c = 2h 1m candles = du dai de bat dump xay ra truoc 30-60 phut
         _m2h_block_long  = False
         _m2h_block_short = False
+        _m2h_pos = 0.5  # default mid-range (used also in reversal extreme block below)
         if not df_micro.empty and len(df_micro) >= 120:
             _m2h_high = df_micro["high"].iloc[-120:].max()
             _m2h_low  = df_micro["low"].iloc[-120:].min()
@@ -932,6 +933,24 @@ class TradingBot:
                             f"{symbol}: reversal SHORT blocked — 30c 1m range_pos={_r30_pos:.2f} < 0.30 "
                             f"(price already dumped, reversal stale)"
                         )
+
+            # 2h extreme block cho REVERSAL: tranh reversal LONG o dinh 2h / SHORT o day 2h
+            # SKHYUSDT pattern: RSI < 35 nhung price da o top 85% of 2h range → bad long reversal
+            # MUUSDT pattern: RSI > 65 nhung price da o bottom 15% of 2h range → bad short reversal
+            # Nguong 85%/15% ketat hon momentum (80%/20%) vi reversal can price THUC SU o cuc doan chinh xac
+            if not _rev_1h_blocked:
+                if reversal_dir == 1 and _m2h_pos > 0.85:
+                    _rev_1h_blocked = True
+                    logger.debug(
+                        f"{symbol}: reversal LONG blocked — 2h range_pos={_m2h_pos:.2f} > 0.85 "
+                        f"(price at 2h top, dangerous reversal long)"
+                    )
+                elif reversal_dir == -1 and _m2h_pos < 0.15:
+                    _rev_1h_blocked = True
+                    logger.debug(
+                        f"{symbol}: reversal SHORT blocked — 2h range_pos={_m2h_pos:.2f} < 0.15 "
+                        f"(price at 2h bottom, dangerous reversal short)"
+                    )
 
             # Direction-aware spike: long sau pump spike va short sau dump spike deu nguy hiem
             reversal_spike_blocked = (

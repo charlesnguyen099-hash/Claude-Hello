@@ -105,10 +105,12 @@ class Executor:
         live_price = self.client.get_current_price(symbol)
         if live_price > 0 and signal.entry_price > 0:
             price_drift = abs(live_price - signal.entry_price) / signal.entry_price
-            if price_drift > 0.005:  # 0.5% drift = signal stale / gia da move truoc khi lenh duoc dat
+            # 0.3% drift: nho hon 0.5% de bat micro-move xay ra giua analysis va dat lenh
+            # USUSDT pattern: pump 3-4% xay ra TRONG KHI bot dang phan tich → stale khi execute
+            if price_drift > 0.003:
                 logger.warning(
                     f"{symbol}: STALE SIGNAL — live={live_price:.6f} vs entry={signal.entry_price:.6f} "
-                    f"drift={price_drift*100:.2f}% > 0.5% → skip"
+                    f"drift={price_drift*100:.2f}% > 0.3% → skip"
                 )
                 return
 

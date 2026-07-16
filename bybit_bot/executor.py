@@ -130,6 +130,24 @@ class Executor:
         try:
             self.client.set_leverage(symbol, params.leverage)
 
+            # Final price check ngay truoc place_order — bat slippage xay ra giua stale check va order routing
+            # Pattern: stale check dung get_current_price() co the tra ve gia cu (API cache / lag)
+            # Trong khi do gia that su dang dump/pump → market order fill tai gia xa → SL hit ngay
+            # SKHYNIXUSDT 19:36: stale check pass (API tra 1228), order fill at 1214.79 (1.1% slippage)
+            # Nguong 0.5%: rong hon stale check (0.3%) de chiu duoc spread binh thuong, nhung bat slippage that su
+            if signal.entry_price > 0:
+                pre_order_price = self.client.get_current_price(symbol)
+                if pre_order_price <= 0:
+                    logger.warning(f"{symbol}: ABORT order — khong lay duoc pre-order price")
+                    return
+                pre_drift = abs(pre_order_price - signal.entry_price) / signal.entry_price
+                if pre_drift > 0.005:
+                    logger.warning(
+                        f"{symbol}: ABORT order — pre-order drift {pre_drift*100:.2f}% > 0.5% "
+                        f"(expected={signal.entry_price:.6f}, now={pre_order_price:.6f})"
+                    )
+                    return
+
             # TP1 dat tren san lam safety net — partial close se cap nhat len TP2 khi dat 75% TP1
             order = self.client.place_order(
                 symbol=symbol,

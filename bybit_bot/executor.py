@@ -58,12 +58,16 @@ class Executor:
 
             # Anti-whipsaw: khong force-close neu position mo < MIN_HOLD_SECONDS
             # (tranh dong lenh chi 4-13 phut vi signal dao chieu ngau nhien tren 15m)
-            # Exception: dong ngay neu position dang lo > 20% margin (emergency exit)
+            # GRADUATED hold time:
+            #   < 600s  (10 min): tuyet doi giu, chi thoat khi lo > 20% (emergency)
+            #   600-1800s (10-30 min): cho phep dong neu lo > 8% margin (gia dang chay nguoc manh)
+            #   > 1800s (30 min): dong binh thuong khi co counter-signal
+            # Ly do: ETHUSDT 19:30 — SHORT da vao, 5m va 1m bounce manh, SL sap bi hit
+            #        Neu counter-signal den luc 15 phut va lo 8% → dong truoc khi SL hit tot hon
             # BUG FIX: KHONG dung _open_time (reset khi bot restart moi 60s).
             #          Dung createdTime tu Bybit position data — chinh xac kể cả sau restart.
             #          Fallback: neu exchange khong tra createdTime, dung _open_time.
             #          Neu ca 2 deu khong co → held = 0 → BAO VE position (khong dong)
-            MIN_HOLD_SECONDS = 1800  # 30 phut = 2 nen 15m
             pos_pnl_pct = 0.0
             try:
                 notional = float(existing[0].get("positionValue", 1)) or 1
@@ -85,10 +89,15 @@ class Executor:
                     held_seconds = time.time() - open_ts
                 # Else: held_seconds = 0 → bao ve position
 
-            if held_seconds < MIN_HOLD_SECONDS and pos_pnl_pct > -0.20:
+            # Graduated hold check
+            emergency_exit  = pos_pnl_pct <= -0.20          # lo > 20% margin — thoat ngay bat ke
+            mid_loss_exit   = pos_pnl_pct < -0.08 and held_seconds >= 600   # lo > 8% sau 10 phut
+            full_hold_ok    = held_seconds >= 1800           # qua 30 phut — thoat binh thuong
+
+            if not emergency_exit and not mid_loss_exit and not full_hold_ok:
                 logger.info(
-                    f"{symbol}: Signal reversal — SKIP (held={held_seconds:.0f}s "
-                    f"< {MIN_HOLD_SECONDS}s, PnL={pos_pnl_pct*100:.1f}%)"
+                    f"{symbol}: Signal reversal — SKIP (held={held_seconds:.0f}s, "
+                    f"PnL={pos_pnl_pct*100:.1f}% — chua du dieu kien thoat som)"
                 )
                 return
 

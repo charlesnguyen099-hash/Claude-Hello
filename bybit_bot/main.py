@@ -884,9 +884,14 @@ class TradingBot:
                     # sum = 0 (0+0 hoac 1+(-1) conflict): block het — khong trade MOMENTUM
                     long_ok  = (macro_trend + macro_4h) >= 1
                     short_ok = (macro_trend + macro_4h) <= -1
-                    if sig.direction == 1 and long_ok:
+                    # 5m alignment pre-filter: khong dem signal khi 5m dang nguoc chieu
+                    # Neu scalp_trend == 1 (5m bullish), khong dem vao SHORT signals
+                    # → consensus SHORT se khong du → bot khong short khi 5m bounce
+                    scalp_allows_short = scalp_trend != 1   # 5m khong bullish
+                    scalp_allows_long  = scalp_trend != -1  # 5m khong bearish
+                    if sig.direction == 1 and long_ok and scalp_allows_long:
                         long_signals.append(sig)
-                    elif sig.direction == -1 and short_ok:
+                    elif sig.direction == -1 and short_ok and scalp_allows_short:
                         short_signals.append(sig)
             except Exception:
                 continue
@@ -1176,6 +1181,27 @@ class TradingBot:
             if best.direction == -1 and _e9 > _e21:
                 logger.debug(f"{symbol}: skip — 1m EMA9({_e9:.4f}) > EMA21({_e21:.4f}), bullish micro, block SHORT")
                 return False
+
+        # 5m (scalp) trend alignment: hard block MOMENTUM khi 5m nguoc chieu signal
+        # ETHUSDT 19:30 pattern: 1h bearish → bot short, nhung 5m dang bounce (scalp_trend=1)
+        # → price pump tren 1m va 5m → SHORT SL hit chi sau 15-30 phut
+        # Fix: neu 5m xac nhan bullish (scalp_trend=1), KHONG short du 1h la bearish
+        #      neu 5m xac nhan bearish (scalp_trend=-1), KHONG long du 1h la bullish
+        # Ap dung cho MOMENTUM path only — REVERSAL va BREAKOUT da co logic rieng
+        # BREAKOUT da check scalp_trend <= 0 cho SHORT / >= 0 cho LONG
+        # REVERSAL: 5m bounce tai day oversold la binh thuong, khong block
+        if best.direction == -1 and scalp_trend == 1:
+            logger.debug(
+                f"{symbol}: skip SHORT — 5m trend BULLISH (scalp_trend=1) "
+                f"du 1h bearish — bo qua, cho 5m roll over"
+            )
+            return False
+        if best.direction == 1 and scalp_trend == -1:
+            logger.debug(
+                f"{symbol}: skip LONG — 5m trend BEARISH (scalp_trend=-1) "
+                f"du 1h bullish — bo qua, cho 5m recover"
+            )
+            return False
 
         # EMA50 pullback filter (15m): noi long len 4.0x ATR (tu 2.0x)
         # 2.0x ATR qua chat — trong trending market (ADX > 25), price co the gap EMA50 3-5x ATR

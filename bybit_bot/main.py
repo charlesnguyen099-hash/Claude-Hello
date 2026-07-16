@@ -607,35 +607,37 @@ class TradingBot:
                         _micro_spike_pump = True
                         logger.debug(f"{symbol}: 30c net pump {_net_move_30*100:.1f}% → pump flag")
 
-            # Drop-from-high / Rise-from-low (30c): tranh short sau khi gia da roi >= 0.5% tu dinh
-            # va tranh long sau khi gia da tang >= 0.5% tu day — move da xong roi, vao late
-            # SOL: dump -0.57% tu 77.64 → 77.2 → net move < 0.8% nhung drop-from-high bat duoc
-            # Khong can check not _micro_spike_dump/pump — neu chua flag thi add them
+            # Drop-from-high / Rise-from-low (30c): tranh short sau khi gia da roi >= 0.25% tu dinh
+            # va tranh long sau khi gia da tang >= 0.25% tu day — move da xong roi, vao late
+            # SKHY entry 172.18 vs high 172.42 = 0.14% drop → < 0.5% cu miss → ha xuong 0.25%
+            # NEAR entry 2.0788 vs high 2.0817 = 0.14% drop → tuong tu
+            # SNDK entry 1600.53 vs high 1607.74 = 0.45% drop → < 0.5% cu miss → bat duoc voi 0.25%
             if len(df_micro) >= 30:
                 _high_30c = df_micro["high"].iloc[-30:].max()
                 _low_30c  = df_micro["low"].iloc[-30:].min()
                 if _high_30c > 0 and not _micro_spike_dump:
                     _drop_from_high = (_high_30c - _micro_price) / _high_30c
-                    if _drop_from_high > 0.005:  # gia da roi >= 0.5% tu dinh 30c
+                    if _drop_from_high > 0.0025:  # gia da roi >= 0.25% tu dinh 30c
                         _micro_spike_dump = True
-                        logger.debug(f"{symbol}: 30c drop-from-high {_drop_from_high*100:.1f}% → dump flag (late short)")
+                        logger.debug(f"{symbol}: 30c drop-from-high {_drop_from_high*100:.2f}% → dump flag (late short)")
                 if _low_30c > 0 and not _micro_spike_pump:
                     _rise_from_low = (_micro_price - _low_30c) / _low_30c
-                    if _rise_from_low > 0.005:  # gia da tang >= 0.5% tu day 30c
+                    if _rise_from_low > 0.0025:  # gia da tang >= 0.25% tu day 30c
                         _micro_spike_pump = True
-                        logger.debug(f"{symbol}: 30c rise-from-low {_rise_from_low*100:.1f}% → pump flag (late long)")
+                        logger.debug(f"{symbol}: 30c rise-from-low {_rise_from_low*100:.2f}% → pump flag (late long)")
 
-            # Range position in 30c: bottom 35% → dump flag (block short near low); top 35% → pump flag (block long near high)
+            # Range position in 30c: bottom 30% → dump flag; top 30% → pump flag
+            # Nang len tu 35%/65% → 30%/70% de bat them truong hop price chua dat extreme nhung da gan dinh/day
             if len(df_micro) >= 30 and _micro_price > 0:
                 _h30 = df_micro["high"].iloc[-30:].max()
                 _l30 = df_micro["low"].iloc[-30:].min()
                 _rng30 = _h30 - _l30
                 if _rng30 > 0:
                     _pos30 = (_micro_price - _l30) / _rng30  # 0=at low, 1=at high
-                    if _pos30 < 0.35 and not _micro_spike_dump:
+                    if _pos30 < 0.30 and not _micro_spike_dump:
                         _micro_spike_dump = True
                         logger.debug(f"{symbol}: price in bottom {_pos30*100:.0f}% of 30c range → dump flag (near 30c low, block short)")
-                    elif _pos30 > 0.65 and not _micro_spike_pump:
+                    elif _pos30 > 0.70 and not _micro_spike_pump:
                         _micro_spike_pump = True
                         logger.debug(f"{symbol}: price in top {(1-_pos30)*100:.0f}% of 30c range → pump flag (near 30c high, block long)")
 
@@ -644,6 +646,10 @@ class TradingBot:
             if _micro_spike_dump and _micro_spike_pump:
                 logger.debug(f"{symbol}: skip — dual spike flag after extended checks (ranging/choppy 1m)")
                 return False
+
+        # 1h macro trend va 4h macro trend — can truoc BREAKOUT de tranh NameError
+        macro_trend = self._trend_direction(df_trend)
+        macro_4h    = self._trend_direction(df_macro)
 
         # Post-loss filter — tinh som de ap dung cho ca BREAKOUT va momentum
         post_loss = (time.time() - self._recent_loss_ts.get(symbol, 0)) < 300
@@ -705,10 +711,6 @@ class TradingBot:
         # Nguong 35/65 dong bo voi sustained_trend va bollinger — bat duoc reversal som hon
         is_reversal  = rsi_now < 35 or rsi_now > 65
         reversal_dir = 1 if rsi_now < 35 else (-1 if rsi_now > 65 else 0)
-
-        # 1h macro trend va 4h macro trend
-        macro_trend = self._trend_direction(df_trend)
-        macro_4h    = self._trend_direction(df_macro)
 
         long_signals  = []
         short_signals = []

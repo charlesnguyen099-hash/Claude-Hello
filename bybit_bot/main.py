@@ -496,12 +496,12 @@ class TradingBot:
             h1_rng  = h1_high - h1_low
             if h1_rng > 0:
                 h1_pos = (price - h1_low) / h1_rng
-                if h1_pos > 0.82:
+                if h1_pos > 0.78:
                     _h1_block_long = True
-                    logger.debug(f"{symbol}: 1h range_pos={h1_pos:.2f} > 0.82 → block LONG (1h top)")
-                elif h1_pos < 0.18:
+                    logger.debug(f"{symbol}: 1h range_pos={h1_pos:.2f} > 0.78 → block LONG (1h top)")
+                elif h1_pos < 0.22:
                     _h1_block_short = True
-                    logger.debug(f"{symbol}: 1h range_pos={h1_pos:.2f} < 0.18 → block SHORT (1h bottom)")
+                    logger.debug(f"{symbol}: 1h range_pos={h1_pos:.2f} < 0.22 → block SHORT (1h bottom)")
 
         # Momentum confirmation (15m): 2 nen lien tiep gan nhat phai cung chieu voi signal
         opens  = df_signal["open"]
@@ -651,6 +651,22 @@ class TradingBot:
                 logger.debug(f"{symbol}: skip — dual spike flag after extended checks (ranging/choppy 1m)")
                 return False
 
+        # Drop-from-high / Rise-from-low (60c): extend window de bat moves tu 30-60 phut truoc
+        # Nguong 0.30% (cao hon 30c 0.20%) de tranh false positive trong trending market
+        if not df_micro.empty and len(df_micro) >= 60:
+            _high_60c = df_micro["high"].iloc[-60:].max()
+            _low_60c  = df_micro["low"].iloc[-60:].min()
+            if _high_60c > 0 and not _micro_spike_dump:
+                _drop_60 = (_high_60c - _micro_price) / _high_60c
+                if _drop_60 > 0.0030:  # gia da roi >= 0.30% tu dinh 60c
+                    _micro_spike_dump = True
+                    logger.debug(f"{symbol}: 60c drop-from-high {_drop_60*100:.2f}% → dump flag (late short)")
+            if _low_60c > 0 and not _micro_spike_pump:
+                _rise_60 = (_micro_price - _low_60c) / _low_60c
+                if _rise_60 > 0.0030:  # gia da tang >= 0.30% tu day 60c
+                    _micro_spike_pump = True
+                    logger.debug(f"{symbol}: 60c rise-from-low {_rise_60*100:.2f}% → pump flag (late long)")
+
         # 5m / 1h extended pump-dump check (12 x 5m candles = 1 gio)
         # Bat pump/dump xay ra trong 1h qua ma 30c 1m miss (price rang gan dinh/day trong 30p)
         # Nguong 0.8% danh cho MOMENTUM — tranh long khi gia da tang > 0.8% tu day 1h
@@ -660,12 +676,12 @@ class TradingBot:
             _s12_high = df_scalp["high"].iloc[-12:].max()
             if _s12_low > 0 and not _micro_spike_pump:
                 _rise_1h = (_s_price - _s12_low) / _s12_low
-                if _rise_1h > 0.008:
+                if _rise_1h > 0.015:  # 1.5%: tranh false positive cho MOMENTUM LONG trong uptrend
                     _micro_spike_pump = True
                     logger.debug(f"{symbol}: 5m 1h rise-from-low {_rise_1h*100:.2f}% → pump flag (momentum)")
             if _s12_high > 0 and not _micro_spike_dump:
                 _drop_1h = (_s12_high - _s_price) / _s12_high
-                if _drop_1h > 0.008:
+                if _drop_1h > 0.015:  # 1.5%: tranh false positive cho MOMENTUM SHORT trong downtrend
                     _micro_spike_dump = True
                     logger.debug(f"{symbol}: 5m 1h drop-from-high {_drop_1h*100:.2f}% → dump flag (momentum)")
 
@@ -961,10 +977,10 @@ class TradingBot:
         # [FIX] Tier1 bypass phai ton trong macro_4h alignment — tranh bypass trong reversal mode
         # khi signals vao tu reversal branch (khong co macro check)
         tier1_bypass_long  = (is_priority and tier1_long >= 2 and tier1_short == 0
-                              and macro_trend >= 0 and macro_4h >= 0
+                              and (macro_trend + macro_4h) >= 1  # it nhat 1 timeframe xac nhan uptrend
                               and not btc_strongly_bear)
         tier1_bypass_short = (is_priority and tier1_short >= 2 and tier1_long == 0
-                              and macro_trend <= 0 and macro_4h <= 0
+                              and (macro_trend + macro_4h) <= -1  # it nhat 1 timeframe xac nhan downtrend
                               and not btc_strongly_bull)
 
         if tier1_bypass_long:
@@ -993,12 +1009,12 @@ class TradingBot:
             return False
 
         # 1h range hard block (MOMENTUM path only — REVERSAL duoc phep o cuc doan)
-        # Block long o top 82% / short o bottom 18% cua 20-candle 1h range
+        # Block long o top 78% / short o bottom 22% cua 20-candle 1h range
         if _h1_block_long and best.direction == 1:
-            logger.debug(f"{symbol}: skip — price at 1h range top (>82%), block MOMENTUM LONG")
+            logger.debug(f"{symbol}: skip — price at 1h range top (>78%), block MOMENTUM LONG")
             return False
         if _h1_block_short and best.direction == -1:
-            logger.debug(f"{symbol}: skip — price at 1h range bottom (<18%), block MOMENTUM SHORT")
+            logger.debug(f"{symbol}: skip — price at 1h range bottom (<22%), block MOMENTUM SHORT")
             return False
 
         # 1m micro trend confirmation — tat ca coin (micro trend phai cung chieu hoac neutral)
@@ -1033,13 +1049,13 @@ class TradingBot:
             _p15 = df_signal["close"].iloc[-1]
             if _ema50_15m > 0 and _atr_15m > 0:
                 _ema50_dist = _p15 - _ema50_15m  # + = above, - = below
-                if best.direction == 1 and _ema50_dist > 2.5 * _atr_15m:
+                if best.direction == 1 and _ema50_dist > 2.0 * _atr_15m:
                     logger.debug(
                         f"{symbol}: skip LONG — price {_ema50_dist/_ema50_15m*100:.1f}% above 15m EMA50 "
                         f"({_ema50_dist/(_atr_15m+1e-9):.1f}x ATR, too extended)"
                     )
                     return False
-                if best.direction == -1 and _ema50_dist < -2.5 * _atr_15m:
+                if best.direction == -1 and _ema50_dist < -2.0 * _atr_15m:
                     logger.debug(
                         f"{symbol}: skip SHORT — price {-_ema50_dist/_ema50_15m*100:.1f}% below 15m EMA50 "
                         f"({-_ema50_dist/(_atr_15m+1e-9):.1f}x ATR, too extended)"

@@ -314,13 +314,23 @@ class Executor:
                     elif side == "Sell" and exchange_sl <= entry:
                         self._breakeven_set[symbol] = True
                         logger.info(f"{symbol}: Inferred breakeven already set (SL={exchange_sl:.6f} <= entry={entry:.6f})")
-                # Infer partial close: neu TP tren san != _tp1_price → partial da xay ra, TP da doi sang TP2
+                # Restore _tp1_price: neu chua co (restart), lay tu exchange TP
+                # Logic: neu partial chua xay ra, exchange TP chinh la TP1
+                # (neu partial da xay ra, exchange TP la TP2 nhung ta khong biet — xem ben duoi)
                 exchange_tp = float(pos.get("takeProfit", 0))
-                stored_tp1  = self._tp1_price.get(symbol, 0.0)
-                if exchange_tp > 0 and stored_tp1 > 0 and abs(exchange_tp - stored_tp1) > stored_tp1 * 0.001:
+                if exchange_tp > 0 and symbol not in self._tp1_price:
+                    # Gia su day la TP1 (neu partial chua xay ra)
+                    self._tp1_price[symbol] = exchange_tp
+                    logger.info(f"{symbol}: Restored TP1={exchange_tp:.6f} from exchange after restart")
+                # Infer partial close: neu TP tren san != _tp1_price ban dau → partial da xay ra
+                # Chi co the detect duoc tren VONG LAP THU 2+ (khi _tp1_price da co gia tri khac exchange TP)
+                stored_tp1 = self._tp1_price.get(symbol, 0.0)
+                if (exchange_tp > 0 and stored_tp1 > 0
+                        and abs(exchange_tp - stored_tp1) > stored_tp1 * 0.001
+                        and not self._partial_closed.get(symbol, False)):
                     self._partial_closed[symbol] = True
                     logger.info(
-                        f"{symbol}: Inferred partial close already done (exchange TP={exchange_tp:.6f} != tp1={stored_tp1:.6f})"
+                        f"{symbol}: Inferred partial close already done (exchange TP={exchange_tp:.6f} != stored tp1={stored_tp1:.6f})"
                     )
                 # Lay tick_size neu chua co
                 if symbol not in self._tick_size:

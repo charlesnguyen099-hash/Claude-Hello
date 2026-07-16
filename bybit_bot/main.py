@@ -197,7 +197,7 @@ class TradingBot:
             time.sleep(0.05)
 
     def _trend_direction(self, df) -> int:
-        """1h trend: +1 up, -1 down, 0 sideways."""
+        """+1 up, -1 down, 0 sideways. Pass df_trend for 1h or df_macro for 4h."""
         if len(df) < 50:
             return 0
         close = df["close"]
@@ -926,9 +926,11 @@ class TradingBot:
         # [FIX] Tier1 bypass phai ton trong macro_4h alignment — tranh bypass trong reversal mode
         # khi signals vao tu reversal branch (khong co macro check)
         tier1_bypass_long  = (is_priority and tier1_long >= 2 and tier1_short == 0
-                              and macro_trend >= 0 and macro_4h >= 0)
+                              and macro_trend >= 0 and macro_4h >= 0
+                              and not btc_strongly_bear)
         tier1_bypass_short = (is_priority and tier1_short >= 2 and tier1_long == 0
-                              and macro_trend <= 0 and macro_4h <= 0)
+                              and macro_trend <= 0 and macro_4h <= 0
+                              and not btc_strongly_bull)
 
         if tier1_bypass_long:
             signals = long_signals

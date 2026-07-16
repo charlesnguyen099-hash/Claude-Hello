@@ -1,7 +1,7 @@
 """
 Risk Manager
-- SL co dinh: khoang cach gia de mat dung 30% capital bo vao lenh
-- TP thuc te theo ATR thi truong — co the < SL, khong ep R:R
+- SL dong: khoang cach = ATR * SL_MULTIPLIER (config), tinh tu entry
+- TP1 = entry +/- ATR * TP1_MULTIPLIER; TP2 = entry +/- ATR * TP2_MULTIPLIER
 - Phi 0.11% tich hop vao ca SL lan TP
 - Von moi lenh = 10% equity, khong all-in
 """

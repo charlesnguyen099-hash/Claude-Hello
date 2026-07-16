@@ -678,15 +678,17 @@ class TradingBot:
                 micro_spike_ok = not (_micro_spike_pump and bo_sig.direction == 1) and \
                                  not (_micro_spike_dump and bo_sig.direction == -1)
                 # BTC global trend filter cho BREAKOUT — dong bo voi momentum path
-                # Hard block khi BTC 1h+4h cung chieu nguoc signal (tat ca coin)
                 _bo_btc_1h = self.btc_trend
                 _bo_btc_4h = self.btc_trend_4h
+                _bo_coin_bear = (macro_trend == -1 and macro_4h == -1)
+                _bo_coin_bull = (macro_trend ==  1 and macro_4h ==  1)
                 if symbol == "BTCUSDT":
                     bo_btc_ok = not (_bo_btc_1h == 1  and bo_sig.direction == -1) and \
                                 not (_bo_btc_1h == -1 and bo_sig.direction == 1)
                 else:
-                    bo_btc_ok = not (_bo_btc_1h == 1  and _bo_btc_4h == 1  and bo_sig.direction == -1) and \
-                                not (_bo_btc_1h == -1 and _bo_btc_4h == -1 and bo_sig.direction == 1)
+                    # Hard block BREAKOUT nguoc BTC chi khi coin KHONG co xu huong doc lap
+                    bo_btc_ok = not (_bo_btc_1h == 1  and _bo_btc_4h == 1  and bo_sig.direction == -1 and not _bo_coin_bear) and \
+                                not (_bo_btc_1h == -1 and _bo_btc_4h == -1 and bo_sig.direction == 1  and not _bo_coin_bull)
                 # 1h range block cho BREAKOUT — EVAA type: pump spike len top 1h range
                 bo_h1_ok = not (_h1_block_long and bo_sig.direction == 1) and \
                            not (_h1_block_short and bo_sig.direction == -1)
@@ -855,42 +857,62 @@ class TradingBot:
                 long_signals = []
                 logger.debug("BTCUSDT: clear LONG — BTC 1h DOWN")
         else:
-            # Tat ca altcoin (ke ca priority top10):
-            # BTC 1h+4h BULLISH → hard block ALL shorts (non-reversal)
-            # BTC 1h+4h BEARISH → hard block ALL longs (non-reversal)
-            btc_hard_block_short = (btc_trend == 1 and btc_trend_4h == 1)
-            btc_hard_block_long  = (btc_trend == -1 and btc_trend_4h == -1)
+            # Altcoin: phan tich BTC alignment de quyet dinh hard/soft block
+            btc_strongly_bull = (btc_trend == 1  and btc_trend_4h == 1)
+            btc_strongly_bear = (btc_trend == -1 and btc_trend_4h == -1)
 
-            if btc_hard_block_short and not is_reversal:
+            # Coin co xu huong doc lap nguoc BTC (ca 1h VA 4h cua chinh coin do)
+            # Vi du: BTC bull nhung coin rieng dang bearish 1h+4h → co the cho phep short
+            # Yeu cau them consensus cao hon (xu ly o phan consensus ben duoi)
+            coin_independently_bear = (macro_trend == -1 and macro_4h == -1)
+            coin_independently_bull = (macro_trend ==  1 and macro_4h ==  1)
+
+            # Hard block: BTC strongly opposes AND coin khong co xu huong doc lap nguoc lai
+            # Neu coin co xu huong doc lap → cho phep nhung se cap cao consensus
+            if btc_strongly_bull and not is_reversal and not coin_independently_bear:
                 short_signals = []
-                logger.debug(f"{symbol}: BTC 1h+4h BULLISH → hard block all SHORT (market uptrend)")
-            if btc_hard_block_long and not is_reversal:
+                logger.debug(f"{symbol}: BTC 1h+4h BULLISH, coin not independently bearish → block SHORT")
+            if btc_strongly_bear and not is_reversal and not coin_independently_bull:
                 long_signals = []
-                logger.debug(f"{symbol}: BTC 1h+4h BEARISH → hard block all LONG (market downtrend)")
+                logger.debug(f"{symbol}: BTC 1h+4h BEARISH, coin not independently bullish → block LONG")
 
-        # Altcoin non-priority: soft penalty khi BTC 1 chieu nguoc (chua du 2/2 TF)
-        btc_opposes_long  = (btc_trend == -1 and symbol != "BTCUSDT" and not is_priority
-                             and btc_trend_4h != -1)  # chi soft khi 4h chua confirm bearish
-        btc_opposes_short = (btc_trend == 1  and symbol != "BTCUSDT" and not is_priority
-                             and btc_trend_4h != 1)   # chi soft khi 4h chua confirm bullish
+        # BTC alignment flags cho consensus adjustment
+        btc_strongly_bull = (btc_trend == 1  and btc_trend_4h == 1)   if symbol != "BTCUSDT" else False
+        btc_strongly_bear = (btc_trend == -1 and btc_trend_4h == -1)  if symbol != "BTCUSDT" else False
+        coin_independently_bear = (macro_trend == -1 and macro_4h == -1)
+        coin_independently_bull = (macro_trend ==  1 and macro_4h ==  1)
+
+        # Soft penalty cho non-priority khi BTC 1 TF nguoc (chua confirm 2/2)
+        btc_opposes_long  = (btc_trend == -1 and symbol != "BTCUSDT" and not is_priority and btc_trend_4h != -1)
+        btc_opposes_short = (btc_trend ==  1 and symbol != "BTCUSDT" and not is_priority and btc_trend_4h != 1)
 
         # MOMENTUM trade
         sideways_1h = (macro_trend == 0)
 
         if is_priority:
-            # Priority (top10): can MIN_CONSENSUS=4/7, post_loss them +1
+            # Priority (top10): base = MIN_CONSENSUS = 4
+            # BTC cung chieu (bonus) → giam 1 → 3 (bat nhieu co hoi hon)
+            # Coin diverge nguoc BTC → tang 2 → 6 (can xac nhan cao)
             base = config.MIN_CONSENSUS
             extra = 1 if post_loss else 0
-            required_long  = base + extra
-            required_short = base + extra
+            btc_long_bonus  = 1 if btc_strongly_bull else 0
+            btc_short_bonus = 1 if btc_strongly_bear else 0
+            diverge_long_penalty  = 2 if (btc_strongly_bear and coin_independently_bull)  else 0
+            diverge_short_penalty = 2 if (btc_strongly_bull and coin_independently_bear) else 0
+            required_long  = max(2, min(7, base + extra - btc_long_bonus  + diverge_long_penalty))
+            required_short = max(2, min(7, base + extra - btc_short_bonus + diverge_short_penalty))
         else:
-            # Trending non-priority: can MIN_CONSENSUS_TRENDING=5/7
-            # sideways +1, post_loss +1 — stack doc lap (cap tai 7 max)
-            # btc_opposes them +1 rieng
+            # Trending non-priority: base = MIN_CONSENSUS_TRENDING = 5
+            # BTC cung chieu → giam 1 → 4 (non-priority de vao hon khi trend ro)
+            # Coin diverge nguoc BTC → tang 2 → 7 (rat kho vao, can gan tat ca strategies)
             base = config.MIN_CONSENSUS_TRENDING
             extra = (1 if sideways_1h else 0) + (1 if post_loss else 0)
-            required_long  = min(7, base + extra + (1 if btc_opposes_long  else 0))
-            required_short = min(7, base + extra + (1 if btc_opposes_short else 0))
+            btc_long_bonus  = 1 if btc_strongly_bull else 0
+            btc_short_bonus = 1 if btc_strongly_bear else 0
+            diverge_long_penalty  = 2 if (btc_strongly_bear and coin_independently_bull)  else 0
+            diverge_short_penalty = 2 if (btc_strongly_bull and coin_independently_bear) else 0
+            required_long  = max(2, min(7, base + extra - btc_long_bonus  + diverge_long_penalty + (1 if btc_opposes_long  else 0)))
+            required_short = max(2, min(7, base + extra - btc_short_bonus + diverge_short_penalty + (1 if btc_opposes_short else 0)))
 
         # TOP10 PRIORITY: 2 trong 2 Tier-1 strategy (supertrend + vwap_volume) dong thuan -> trade
         # Tier-1 bypass: KHONG bi chan boi BTC filter — top10 coin lon co momentum rieng

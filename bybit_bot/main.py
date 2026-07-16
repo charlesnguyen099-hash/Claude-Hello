@@ -651,6 +651,24 @@ class TradingBot:
                 logger.debug(f"{symbol}: skip — dual spike flag after extended checks (ranging/choppy 1m)")
                 return False
 
+        # 5m / 1h extended pump-dump check (12 x 5m candles = 1 gio)
+        # Bat pump/dump xay ra trong 1h qua ma 30c 1m miss (price rang gan dinh/day trong 30p)
+        # Nguong 0.8% danh cho MOMENTUM — tranh long khi gia da tang > 0.8% tu day 1h
+        if not df_scalp.empty and len(df_scalp) >= 12:
+            _s_price  = df_scalp["close"].iloc[-1]
+            _s12_low  = df_scalp["low"].iloc[-12:].min()
+            _s12_high = df_scalp["high"].iloc[-12:].max()
+            if _s12_low > 0 and not _micro_spike_pump:
+                _rise_1h = (_s_price - _s12_low) / _s12_low
+                if _rise_1h > 0.008:
+                    _micro_spike_pump = True
+                    logger.debug(f"{symbol}: 5m 1h rise-from-low {_rise_1h*100:.2f}% → pump flag (momentum)")
+            if _s12_high > 0 and not _micro_spike_dump:
+                _drop_1h = (_s12_high - _s_price) / _s12_high
+                if _drop_1h > 0.008:
+                    _micro_spike_dump = True
+                    logger.debug(f"{symbol}: 5m 1h drop-from-high {_drop_1h*100:.2f}% → dump flag (momentum)")
+
         # 1h macro trend va 4h macro trend — can truoc BREAKOUT de tranh NameError
         macro_trend = self._trend_direction(df_trend)
         macro_4h    = self._trend_direction(df_macro)
@@ -785,10 +803,27 @@ class TradingBot:
 
         # REVERSAL trade: RSI cuc doan + 2 nen 15m + 1m micro xac nhan dao chieu + >= MIN_CONSENSUS
         if is_reversal and reversal_dir != 0:
+            # 5m 1h range position: reversal long chi hop le khi price van o BOTTOM 60% cua 1h range
+            # Tranh "catch dead cat bounce" khi price da phuc hoi nhieu tu day 1h
+            # Tuong tu: reversal short chi hop le khi price o TOP 60% cua 1h range
+            _rev_1h_blocked = False
+            if not df_scalp.empty and len(df_scalp) >= 12:
+                _s12_hi = df_scalp["high"].iloc[-12:].max()
+                _s12_lo = df_scalp["low"].iloc[-12:].min()
+                _s12_rng = _s12_hi - _s12_lo
+                if _s12_rng > 0:
+                    _s12_pos = (price - _s12_lo) / _s12_rng
+                    if reversal_dir == 1 and _s12_pos > 0.60:
+                        _rev_1h_blocked = True
+                        logger.debug(f"{symbol}: reversal LONG blocked — 1h range_pos={_s12_pos:.2f} > 0.60 (not near bottom)")
+                    elif reversal_dir == -1 and _s12_pos < 0.40:
+                        _rev_1h_blocked = True
+                        logger.debug(f"{symbol}: reversal SHORT blocked — 1h range_pos={_s12_pos:.2f} < 0.40 (not near top)")
+
             # Direction-aware spike: long sau pump spike va short sau dump spike deu nguy hiem
             reversal_spike_blocked = (
-                (reversal_dir == 1  and _micro_spike_pump) or
-                (reversal_dir == -1 and _micro_spike_dump)
+                (reversal_dir == 1  and (_micro_spike_pump or _rev_1h_blocked)) or
+                (reversal_dir == -1 and (_micro_spike_dump or _rev_1h_blocked))
             )
             if not reversal_spike_blocked:
                 # Micro trend hard block: khong reversal khi 1m dang chay nguoc chieu manh

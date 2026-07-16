@@ -31,6 +31,8 @@ class Executor:
         self._breakeven_set: dict[str, bool]  = {}
         self._atr: dict[str, float]           = {}
         self._tp2_price: dict[str, float]     = {}
+        # Thoi diem mo lenh — de check minimum holding time truoc khi reversal close
+        self._open_time: dict[str, float]     = {}
         # Callback duoc goi khi dong lenh lo — (symbol: str, side: str) -> None
         self.on_loss_callback: Optional[Callable[..., None]] = None
 
@@ -53,7 +55,31 @@ class Executor:
             if pos_side == signal_side:
                 return
 
-            logger.info(f"{symbol}: Signal reversal — closing {pos_side} before entering {signal_side}")
+            # Anti-whipsaw: khong force-close neu position mo < MIN_HOLD_SECONDS
+            # (tranh dong lenh chi 10-12 phut vi signal dao chieu ngau nhien tren 15m)
+            # Exception: dong ngay neu position dang lo > 20% margin (emergency exit)
+            MIN_HOLD_SECONDS = 1800  # 30 phut = 2 nen 15m
+            open_ts = self._open_time.get(symbol, 0)
+            held_seconds = time.time() - open_ts if open_ts > 0 else MIN_HOLD_SECONDS
+            pos_pnl_pct = 0.0
+            try:
+                notional = float(existing[0].get("positionValue", 1)) or 1
+                lev      = float(existing[0].get("leverage", 1)) or 1
+                margin   = notional / lev
+                pnl      = float(existing[0].get("unrealisedPnl", 0))
+                pos_pnl_pct = pnl / margin if margin > 0 else 0
+            except Exception:
+                pass
+
+            if held_seconds < MIN_HOLD_SECONDS and pos_pnl_pct > -0.20:
+                logger.info(
+                    f"{symbol}: Signal reversal — but position only held {held_seconds:.0f}s "
+                    f"(< {MIN_HOLD_SECONDS}s) and PnL={pos_pnl_pct*100:.1f}% → skip reversal close"
+                )
+                return
+
+            logger.info(f"{symbol}: Signal reversal — closing {pos_side} before entering {signal_side} "
+                        f"(held={held_seconds:.0f}s, PnL={pos_pnl_pct*100:.1f}%)")
             self._close_position(existing[0])
             time.sleep(0.5)
 
@@ -96,6 +122,7 @@ class Executor:
             self._breakeven_set[symbol]  = False
             self._atr[symbol]            = signal.atr
             self._tp2_price[symbol]      = params.tp2_price
+            self._open_time[symbol]      = time.time()
 
             self.logger.log_trade({
                 "event":     "open",

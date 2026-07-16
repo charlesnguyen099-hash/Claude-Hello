@@ -634,6 +634,7 @@ class TradingBot:
         # Ca 2 cung xuat hien -> thi truong loan, skip tat ca
         _micro_spike_dump = False
         _micro_spike_pump = False
+        _live_check_price = 0.0  # init truoc; se duoc set tu get_current_price trong block 30c
         # _micro_price: init truoc block de tranh NameError khi df_micro co < 15 candles
         _micro_price = df_micro["close"].iloc[-1] if not df_micro.empty else 0.0
         if not df_micro.empty and len(df_micro) >= 15:
@@ -715,16 +716,22 @@ class TradingBot:
             # Drop-from-high / Rise-from-low (30c): chi block khi da di >= 0.60% (spike that su)
             # 0.20% cu qua nho — trong downtrend bat ky 30c nao cung co drop > 0.20% → block het SHORT
             # 0.60% = dich chuyen that su, price da di xa khoi vung vao lenh tot
+            # BUGFIX: dung live mark price thay vi _micro_price (last closed candle) de bat forming-candle dump
+            # Truoc: neu dump xay ra trong forming candle (chua dong), _micro_price = gia truoc dump → miss
+            # Sau: _live_check_price = max(live_price, _micro_price) → bat ca hai truong hop
             if len(df_micro) >= 30:
                 _high_30c = df_micro["high"].iloc[-30:].max()
                 _low_30c  = df_micro["low"].iloc[-30:].min()
+                _live_mark = self.client.get_current_price(symbol)
+                # Dung live price neu valid; fallback ve _micro_price
+                _live_check_price = _live_mark if _live_mark > 0 else _micro_price
                 if _high_30c > 0 and not _micro_spike_dump:
-                    _drop_from_high = (_high_30c - _micro_price) / _high_30c
+                    _drop_from_high = (_high_30c - _live_check_price) / _high_30c
                     if _drop_from_high > 0.0060 * _sp:
                         _micro_spike_dump = True
-                        logger.debug(f"{symbol}: 30c drop-from-high {_drop_from_high*100:.2f}% → dump flag")
+                        logger.debug(f"{symbol}: 30c drop-from-high {_drop_from_high*100:.2f}% (live={_live_check_price:.4f}) → dump flag")
                 if _low_30c > 0 and not _micro_spike_pump:
-                    _rise_from_low = (_micro_price - _low_30c) / _low_30c
+                    _rise_from_low = (_live_check_price - _low_30c) / _low_30c
                     if _rise_from_low > 0.0060 * _sp:
                         _micro_spike_pump = True
                         logger.debug(f"{symbol}: 30c rise-from-low {_rise_from_low*100:.2f}% → pump flag")
@@ -746,13 +753,15 @@ class TradingBot:
         if not df_micro.empty and len(df_micro) >= 60:
             _high_60c = df_micro["high"].iloc[-60:].max()
             _low_60c  = df_micro["low"].iloc[-60:].min()
+            # Reuse _live_check_price (set trong block 30c); fallback ve _micro_price neu chua co
+            _lcp60 = _live_check_price if _live_check_price > 0 else _micro_price
             if _high_60c > 0 and not _micro_spike_dump:
-                _drop_60 = (_high_60c - _micro_price) / _high_60c
+                _drop_60 = (_high_60c - _lcp60) / _high_60c
                 if _drop_60 > 0.0100 * _sp:
                     _micro_spike_dump = True
                     logger.debug(f"{symbol}: 60c drop-from-high {_drop_60*100:.2f}% → dump flag")
             if _low_60c > 0 and not _micro_spike_pump:
-                _rise_60 = (_micro_price - _low_60c) / _low_60c
+                _rise_60 = (_lcp60 - _low_60c) / _low_60c
                 if _rise_60 > 0.0100 * _sp:
                     _micro_spike_pump = True
                     logger.debug(f"{symbol}: 60c rise-from-low {_rise_60*100:.2f}% → pump flag")
@@ -764,14 +773,16 @@ class TradingBot:
             _s_price  = df_scalp["close"].iloc[-1]
             _s12_low  = df_scalp["low"].iloc[-12:].min()
             _s12_high = df_scalp["high"].iloc[-12:].max()
+            # Dung live price cho check 5m/1h (reuse tu block 30c); fallback ve _s_price
+            _lcp_5m = _live_check_price if _live_check_price > 0 else _s_price
             if _s12_low > 0 and not _micro_spike_pump:
-                _rise_1h = (_s_price - _s12_low) / _s12_low
+                _rise_1h = (_lcp_5m - _s12_low) / _s12_low
                 # Largecap: 0.75% (BTC/ETH pump 1% trong 1h = significant); altcoin: 1.5%
                 if _rise_1h > 0.015 * _sp:
                     _micro_spike_pump = True
                     logger.debug(f"{symbol}: 5m 1h rise-from-low {_rise_1h*100:.2f}% → pump flag (momentum)")
             if _s12_high > 0 and not _micro_spike_dump:
-                _drop_1h = (_s12_high - _s_price) / _s12_high
+                _drop_1h = (_s12_high - _lcp_5m) / _s12_high
                 if _drop_1h > 0.015 * _sp:
                     _micro_spike_dump = True
                     logger.debug(f"{symbol}: 5m 1h drop-from-high {_drop_1h*100:.2f}% → dump flag (momentum)")

@@ -458,8 +458,8 @@ class TradingBot:
         if price > 0 and atr / price < config.MIN_ATR_PCT:
             return False
 
-        # ADX filter: top10 dung nguong thap hon (15 vs 20) — coin lon trend smoother
-        min_adx = 15 if is_priority else config.MIN_ADX
+        # ADX filter: top10 dung nguong thap hon (18 vs 20) — coin lon trend smoother
+        min_adx = 18 if is_priority else config.MIN_ADX
         adx = compute_adx(df_signal).iloc[-1]
         if math.isnan(adx) or adx < min_adx:
             logger.debug(f"{symbol}: skip — ADX={adx:.1f} < {min_adx} (sideway)")
@@ -730,10 +730,10 @@ class TradingBot:
                 bo_24h_ok = not (_block_long_24h and bo_sig.direction == 1) and \
                             not (_block_short_24h and bo_sig.direction == -1)
                 # [FIX] macro_4h + macro_trend alignment — dong bo voi momentum path
-                # BREAKOUT truoc day khong check 1h/4h trend, co the trade nguoc trend chinh
+                # Yeu cau it nhat 1 TF xac nhan trend — tranh breakout trong double-sideways
                 bo_trend_ok = (
-                    (bo_sig.direction == 1  and macro_trend >= 0 and macro_4h >= 0) or
-                    (bo_sig.direction == -1 and macro_trend <= 0 and macro_4h <= 0)
+                    (bo_sig.direction == 1  and (macro_trend + macro_4h) >= 1) or
+                    (bo_sig.direction == -1 and (macro_trend + macro_4h) <= -1)
                 )
                 if bo_ok and micro_ok and not is_spike and post_spike_ok and micro_spike_ok and bo_btc_ok and bo_h1_ok and bo_24h_ok and bo_trend_ok:
                     # BREAKOUT phai qua range check — tranh long o dinh / short o day
@@ -758,13 +758,17 @@ class TradingBot:
         long_signals  = []
         short_signals = []
 
+        n_15m_valid = 0  # so strategies co signal hop le tren 15m
         for strategy in ALL_STRATEGIES:
             try:
                 sig = strategy.generate_signal(df_signal, df_trend, df_macro)
-                # Scalp fallback: thu 5m neu 15m khong co signal
+                # Dem signal 15m hop le
+                if sig.direction != 0 and sig.strength >= config.MIN_SIGNAL_STRENGTH:
+                    n_15m_valid += 1
+                # Scalp fallback: chi thu 5m neu 15m chet VA thi truong da co it nhat 1 signal 15m hop le
+                # Tranh pure 5m-only consensus trong thi truong sideways chet 15m
                 # Skip VWAP (window 96x15m=24h, tren 5m cho ra 8h — sai)
-                # Giu nguyen df_trend (1h) va df_macro (4h) — de khong lam hong trend filter trong strategy
-                if sig.direction == 0 and len(df_scalp) >= 50 and strategy.name != "vwap_volume":
+                if sig.direction == 0 and n_15m_valid >= 1 and len(df_scalp) >= 50 and strategy.name != "vwap_volume":
                     sig = strategy.generate_signal(df_scalp, df_trend, df_macro)
 
                 if sig.direction == 0 or sig.strength < config.MIN_SIGNAL_STRENGTH:
@@ -803,13 +807,12 @@ class TradingBot:
                     elif sig.direction == -1:
                         short_signals.append(sig)
                 else:
-                    # Ca 1h VA 4h phai khong oppose huong trade
-                    # macro_trend (1h) >= 0 va macro_4h (4h) >= 0 → long ok
-                    # macro_trend (1h) <= 0 va macro_4h (4h) <= 0 → short ok
-                    # Neu 4h bullish ma 1h neutral → khong short (4h la trend chinh)
-                    # Neu 4h bearish ma 1h neutral → khong long (4h la trend chinh)
-                    long_ok  = (macro_trend >= 0) and (macro_4h >= 0)
-                    short_ok = (macro_trend <= 0) and (macro_4h <= 0)
+                    # Yeu cau it nhat 1 TF (1h hoac 4h) xac nhan trend — tranh trade trong double-sideways
+                    # sum >= 1: it nhat 1 trong 2 TF la uptrend → long ok
+                    # sum <= -1: it nhat 1 trong 2 TF la downtrend → short ok
+                    # sum = 0 (0+0 hoac 1+(-1) conflict): block het — khong trade MOMENTUM
+                    long_ok  = (macro_trend + macro_4h) >= 1
+                    short_ok = (macro_trend + macro_4h) <= -1
                     if sig.direction == 1 and long_ok:
                         long_signals.append(sig)
                     elif sig.direction == -1 and short_ok:
@@ -882,6 +885,16 @@ class TradingBot:
                     self.executor.execute_signal(symbol, best, equity, open_positions, is_priority=is_priority)
                     return True
 
+        # RE-APPLY MACRO FILTER sau reversal path (tranh signal leak)
+        # Khi is_reversal=True, signals duoc collect KHONG co macro filter (de bat counter-trend)
+        # Neu reversal khong du consensus → phai loc lai truoc khi MOMENTUM path chay
+        # Tranh truong hop: BTC bearish + reversal fail → MOMENTUM van long voi signals chua filter
+        _long_ok_macro  = (macro_trend + macro_4h) >= 1
+        _short_ok_macro = (macro_trend + macro_4h) <= -1
+        if is_reversal:
+            long_signals  = [s for s in long_signals  if _long_ok_macro]
+            short_signals = [s for s in short_signals if _short_ok_macro]
+
         # RSI EXTREME GUARD: neu RSI 15m oversold (< 35) thi xoa short signals o MOMENTUM path
         # Reversal path da xu ly o tren; neu reversal khong du consensus thi KHONG duoc short them vao oversold
         # Tuong tu: RSI > 65 xoa long signals (khong long vao overbought)
@@ -940,12 +953,15 @@ class TradingBot:
         # MOMENTUM trade
         sideways_1h = (macro_trend == 0)
 
+        both_sideways = (macro_trend == 0 and macro_4h == 0)  # ca 2 TF sideways = thi truong ranging
+
         if is_priority:
             # Priority (top10): base = MIN_CONSENSUS = 4
             # BTC cung chieu (bonus) → giam 1 → 3 (bat nhieu co hoi hon)
             # Coin diverge nguoc BTC → tang 2 → 6 (can xac nhan cao)
+            # both_sideways (+1): ca 1h VA 4h sideways → thi truong ranging, can them xac nhan
             base = config.MIN_CONSENSUS
-            extra = 1 if post_loss else 0
+            extra = (1 if post_loss else 0) + (1 if both_sideways else 0)
             btc_long_bonus  = 1 if btc_strongly_bull else 0
             btc_short_bonus = 1 if btc_strongly_bear else 0
             diverge_long_penalty  = 2 if (btc_strongly_bear and coin_independently_bull)  else 0

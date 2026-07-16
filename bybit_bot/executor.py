@@ -40,6 +40,7 @@ class Executor:
         self._partial_closed: dict[str, bool]  = {}
         self._breakeven_set: dict[str, bool]   = {}
         self._atr: dict[str, float]            = {}
+        self._tp1_price: dict[str, float]      = {}   # tp1 de detect partial close da xay ra sau restart
         self._tp2_price: dict[str, float]      = {}
         self._sl_price: dict[str, float]       = {}   # sl ban dau de re-arm neu mat
         self._open_time: dict[str, float]      = {}
@@ -214,6 +215,11 @@ class Executor:
             # Neu huy: gia da di xa khoi limit → dung mo lenh (tranh chase)
             time.sleep(0.4)
             status = self.client.get_order_status(symbol, order_id)
+            # "Unknown" = API lag, retry once after 0.5s before giving up
+            if status == "Unknown":
+                time.sleep(0.5)
+                status = self.client.get_order_status(symbol, order_id)
+                logger.debug(f"{symbol}: IOC status retry → {status}")
             if status not in ("Filled", "PartiallyFilled"):
                 logger.warning(
                     f"{symbol}: IOC Limit NOT filled (status={status}) — "
@@ -226,6 +232,7 @@ class Executor:
             self._breakeven_set[symbol]  = False
             self._sl_verified[symbol]    = False
             self._atr[symbol]            = signal.atr
+            self._tp1_price[symbol]      = tp1_rounded
             self._tp2_price[symbol]      = params.tp2_price
             self._sl_price[symbol]       = sl_rounded
             self._open_time[symbol]      = time.time()
@@ -249,7 +256,7 @@ class Executor:
                 "side":      params.side,
                 "qty":       params.qty,
                 "leverage":  params.leverage,
-                "entry":     signal.entry_price,
+                "entry":     limit_price,
                 "sl":        sl_rounded,
                 "tp1":       tp1_rounded,
                 "tp2":       params.tp2_price,
@@ -307,6 +314,14 @@ class Executor:
                     elif side == "Sell" and exchange_sl <= entry:
                         self._breakeven_set[symbol] = True
                         logger.info(f"{symbol}: Inferred breakeven already set (SL={exchange_sl:.6f} <= entry={entry:.6f})")
+                # Infer partial close: neu TP tren san != _tp1_price → partial da xay ra, TP da doi sang TP2
+                exchange_tp = float(pos.get("takeProfit", 0))
+                stored_tp1  = self._tp1_price.get(symbol, 0.0)
+                if exchange_tp > 0 and stored_tp1 > 0 and abs(exchange_tp - stored_tp1) > stored_tp1 * 0.001:
+                    self._partial_closed[symbol] = True
+                    logger.info(
+                        f"{symbol}: Inferred partial close already done (exchange TP={exchange_tp:.6f} != tp1={stored_tp1:.6f})"
+                    )
                 # Lay tick_size neu chua co
                 if symbol not in self._tick_size:
                     try:
@@ -445,6 +460,7 @@ class Executor:
         self._partial_closed.pop(symbol, None)
         self._breakeven_set.pop(symbol, None)
         self._atr.pop(symbol, None)
+        self._tp1_price.pop(symbol, None)
         self._tp2_price.pop(symbol, None)
         self._sl_price.pop(symbol, None)
         self._sl_verified.pop(symbol, None)

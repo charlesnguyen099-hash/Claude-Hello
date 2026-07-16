@@ -582,6 +582,12 @@ class TradingBot:
         # RSI cho reversal detection
         rsi_now = compute_rsi(df_signal["close"]).iloc[-1]
 
+        # Lay live mark price mot lan cho range position checks — tranh dung 15m close (stale up to 14m)
+        # Tai day la diem dau tien co du context de goi API (sau spike filter da pass)
+        # Reuse cho _live_check_price trong 30c block de tranh second API call
+        _range_live_price = self.client.get_current_price(symbol)
+        _range_price = _range_live_price if _range_live_price > 0 else price
+
         # 1h range position: block long o TOP 75% / short o BOTTOM 25% cua 20-candle 1h range
         # Khong ap dung cho REVERSAL (reversal chinh xac la vao o cac cuc doan nay)
         _h1_block_long  = False
@@ -591,7 +597,7 @@ class TradingBot:
             h1_low  = df_trend["low"].iloc[-20:].min()
             h1_rng  = h1_high - h1_low
             if h1_rng > 0:
-                h1_pos = (price - h1_low) / h1_rng
+                h1_pos = (_range_price - h1_low) / h1_rng
                 if h1_pos > 0.75:
                     _h1_block_long = True
                     logger.debug(f"{symbol}: 1h range_pos={h1_pos:.2f} > 0.75 → block LONG (1h top)")
@@ -611,7 +617,7 @@ class TradingBot:
             _m2h_low  = df_micro["low"].iloc[-120:].min()
             _m2h_rng  = _m2h_high - _m2h_low
             if _m2h_rng > 0:
-                _m2h_pos = (price - _m2h_low) / _m2h_rng
+                _m2h_pos = (_range_price - _m2h_low) / _m2h_rng
                 if _m2h_pos < 0.20:
                     _m2h_block_short = True
                     logger.debug(f"{symbol}: 2h 1m range_pos={_m2h_pos:.2f} < 0.20 → block SHORT (2h bottom)")
@@ -740,9 +746,8 @@ class TradingBot:
             if len(df_micro) >= 30:
                 _high_30c = df_micro["high"].iloc[-30:].max()
                 _low_30c  = df_micro["low"].iloc[-30:].min()
-                _live_mark = self.client.get_current_price(symbol)
-                # Dung live price neu valid; fallback ve _micro_price
-                _live_check_price = _live_mark if _live_mark > 0 else _micro_price
+                # Reuse live price tu _range_live_price (da fetch o tren); fallback ve _micro_price
+                _live_check_price = _range_live_price if _range_live_price > 0 else _micro_price
                 if _high_30c > 0 and not _micro_spike_dump:
                     _drop_from_high = (_high_30c - _live_check_price) / _high_30c
                     if _drop_from_high > 0.0060 * _sp:
@@ -964,7 +969,7 @@ class TradingBot:
                 _s12_lo = df_scalp["low"].iloc[-12:].min()
                 _s12_rng = _s12_hi - _s12_lo
                 if _s12_rng > 0:
-                    _s12_pos = (price - _s12_lo) / _s12_rng
+                    _s12_pos = (_range_price - _s12_lo) / _s12_rng
                     if reversal_dir == 1 and _s12_pos > 0.60:
                         _rev_1h_blocked = True
                         logger.debug(f"{symbol}: reversal LONG blocked — 1h range_pos={_s12_pos:.2f} > 0.60 (not near bottom)")
@@ -983,7 +988,7 @@ class TradingBot:
                 _r30_lo = df_micro["low"].iloc[-30:].min()
                 _r30_rng = _r30_hi - _r30_lo
                 if _r30_rng > 0:
-                    _r30_pos = (price - _r30_lo) / _r30_rng
+                    _r30_pos = (_range_price - _r30_lo) / _r30_rng
                     if reversal_dir == 1 and _r30_pos > 0.65:
                         _rev_1h_blocked = True
                         logger.debug(

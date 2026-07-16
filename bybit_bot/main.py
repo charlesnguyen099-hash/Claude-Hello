@@ -616,10 +616,10 @@ class TradingBot:
             _curr_close = df_micro["close"].iloc[-1]
             if _curr_open > 0:
                 _curr_body_pct = (_curr_close - _curr_open) / _curr_open
-                if _curr_body_pct > 0.004 and not _micro_spike_pump:   # +0.4% body → pump flag
+                if _curr_body_pct > 0.003 and not _micro_spike_pump:   # +0.3% body → pump flag (tu 0.4%)
                     _micro_spike_pump = True
                     logger.debug(f"{symbol}: forming 1m candle body +{_curr_body_pct*100:.2f}% → pump flag (mid-pump)")
-                elif _curr_body_pct < -0.004 and not _micro_spike_dump: # -0.4% body → dump flag
+                elif _curr_body_pct < -0.003 and not _micro_spike_dump: # -0.3% body → dump flag (tu 0.4%)
                     _micro_spike_dump = True
                     logger.debug(f"{symbol}: forming 1m candle body {_curr_body_pct*100:.2f}% → dump flag (mid-dump)")
             if _micro_spike_dump and _micro_spike_pump:

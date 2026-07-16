@@ -525,6 +525,10 @@ class TradingBot:
 
     def _process_symbol(self, symbol: str, equity: float, open_positions: list[dict], is_priority: bool = False) -> bool:
         """Phan tich symbol, chay tat ca filter va strategy, tra True neu da trade."""
+        # Init gradual trend flags truoc block 30c de tranh NameError neu df_micro < 30 candles
+        _is_gradual_uptrend   = False
+        _is_gradual_downtrend = False
+
         df_micro  = self.client.get_klines(symbol, config.TIMEFRAMES["micro"], config.CANDLE_LIMIT_MICRO)
         df_scalp  = self.client.get_klines(symbol, config.TIMEFRAMES["scalp"],  config.CANDLE_LIMIT_SCALP)
         df_signal = self.client.get_klines(symbol, config.TIMEFRAMES["signal"], config.CANDLE_LIMIT_SIGNAL)
@@ -1262,6 +1266,29 @@ class TradingBot:
         if _m2h_block_long and best.direction == 1:
             logger.debug(f"{symbol}: skip — price at 2h 1m range top (>80%), block MOMENTUM LONG")
             return False
+
+        # 30c 1m range position: block MOMENTUM khi gia o top/bottom 25% cua range 30 phut
+        # AKEUSDT pattern: pump tu 0.0009201 len 0.0009818 = 77% of 30c range → bad long entry
+        # Exception: gradual trend (>= 60% candles same direction) → cho phep trend-following
+        # La lap phong thu thu 3 (sau spike flag va 2h range block) — catch edge cases slip qua
+        if not df_micro.empty and len(df_micro) >= 30:
+            _r30m_high = df_micro["high"].iloc[-30:].max()
+            _r30m_low  = df_micro["low"].iloc[-30:].min()
+            _r30m_rng  = _r30m_high - _r30m_low
+            if _r30m_rng > 0:
+                _r30m_pos = (_range_price - _r30m_low) / _r30m_rng
+                if best.direction == 1 and _r30m_pos > 0.75 and not _is_gradual_uptrend:
+                    logger.debug(
+                        f"{symbol}: skip LONG — 30c range_pos={_r30m_pos:.2f} > 0.75 "
+                        f"(not gradual uptrend, bad entry timing)"
+                    )
+                    return False
+                if best.direction == -1 and _r30m_pos < 0.25 and not _is_gradual_downtrend:
+                    logger.debug(
+                        f"{symbol}: skip SHORT — 30c range_pos={_r30m_pos:.2f} < 0.25 "
+                        f"(not gradual downtrend, bad entry timing)"
+                    )
+                    return False
 
         # 1m micro trend confirmation — tat ca coin (micro trend phai cung chieu hoac neutral)
         # Tranh trade khi 1m dang nguoc chieu hoan toan voi signal

@@ -53,9 +53,9 @@ class TradingBot:
         self.executor.on_loss_callback = self._on_symbol_loss
         # Track positions de detect SL/TP hit boi exchange (khong qua executor)
         self._prev_pos_symbols: set[str] = set()
-        # BTC global trend: +1 uptrend, -1 downtrend, 0 sideways
-        # Dung lam bo loc huong thi truong toan cuc (cap nhat moi tick)
+        # BTC global trend: +1 uptrend, -1 downtrend, 0 sideways (cap nhat moi tick)
         self.btc_trend: int = 0
+        self.btc_trend_4h: int = 0
 
     def _on_symbol_loss(self, symbol: str, side: str = ""):
         self._recent_loss_ts[symbol] = time.time()
@@ -151,11 +151,14 @@ class TradingBot:
 
         top10 = set(self.symbols[:10])
 
-        # Cap nhat BTC global trend moi tick
+        # Cap nhat BTC global trend moi tick (ca 1h va 4h)
         try:
             df_btc_1h = self.client.get_klines("BTCUSDT", config.TIMEFRAMES["trend"], 100)
+            df_btc_4h = self.client.get_klines("BTCUSDT", config.TIMEFRAMES["macro"],  100)
             if not df_btc_1h.empty and len(df_btc_1h) >= 50:
                 self.btc_trend = self._trend_direction(df_btc_1h)
+            if not df_btc_4h.empty and len(df_btc_4h) >= 50:
+                self.btc_trend_4h = self._trend_direction(df_btc_4h)
         except Exception:
             pass
 
@@ -169,7 +172,8 @@ class TradingBot:
         logger.info(
             f"[TICK] Focus scan: {len(scan_list)} symbols "
             f"(priority={len(priority_set)}, trending_only={len(trending_only)}) | "
-            f"BTC={'UP' if self.btc_trend==1 else 'DOWN' if self.btc_trend==-1 else 'SIDE'}"
+            f"BTC_1h={'UP' if self.btc_trend==1 else 'DOWN' if self.btc_trend==-1 else 'SIDE'} "
+            f"BTC_4h={'UP' if self.btc_trend_4h==1 else 'DOWN' if self.btc_trend_4h==-1 else 'SIDE'}"
         )
 
         for symbol in scan_list:
@@ -673,13 +677,16 @@ class TradingBot:
                 # 1m micro spike direction-aware (dong bo voi momentum path)
                 micro_spike_ok = not (_micro_spike_pump and bo_sig.direction == 1) and \
                                  not (_micro_spike_dump and bo_sig.direction == -1)
-                # BTC global trend filter cho BREAKOUT
-                # Priority coins (top10) duoc mien — dong bo voi momentum path
-                # Non-priority: hard block neu di nguoc BTC trend
-                bo_btc_ok = is_priority or (
-                    not (self.btc_trend == -1 and bo_sig.direction == 1 and symbol != "BTCUSDT") and
-                    not (self.btc_trend ==  1 and bo_sig.direction == -1 and symbol != "BTCUSDT")
-                )
+                # BTC global trend filter cho BREAKOUT — dong bo voi momentum path
+                # Hard block khi BTC 1h+4h cung chieu nguoc signal (tat ca coin)
+                _bo_btc_1h = self.btc_trend
+                _bo_btc_4h = self.btc_trend_4h
+                if symbol == "BTCUSDT":
+                    bo_btc_ok = not (_bo_btc_1h == 1  and bo_sig.direction == -1) and \
+                                not (_bo_btc_1h == -1 and bo_sig.direction == 1)
+                else:
+                    bo_btc_ok = not (_bo_btc_1h == 1  and _bo_btc_4h == 1  and bo_sig.direction == -1) and \
+                                not (_bo_btc_1h == -1 and _bo_btc_4h == -1 and bo_sig.direction == 1)
                 # 1h range block cho BREAKOUT — EVAA type: pump spike len top 1h range
                 bo_h1_ok = not (_h1_block_long and bo_sig.direction == 1) and \
                            not (_h1_block_short and bo_sig.direction == -1)
@@ -830,29 +837,42 @@ class TradingBot:
         elif rsi_now > 65:
             long_signals = []
 
-        # BTC GLOBAL TREND FILTER — tranh trade nguoc chieu thi truong macro
-        # BTCUSDT: hard block neu di nguoc xu huong 1h cua chinh no
-        # Altcoin: yeu cau them +1 consensus neu di nguoc BTC trend
-        # REVERSAL da xu ly o tren (bo qua btc filter vi dao chieu la muc dich)
-        btc_trend = self.btc_trend
-        if btc_trend != 0 and symbol == "BTCUSDT":
-            if btc_trend == 1 and long_signals and not short_signals:
-                pass  # BTC up + long → ok
-            elif btc_trend == -1 and short_signals and not long_signals:
-                pass  # BTC down + short → ok
-            elif btc_trend == 1:
-                # BTC uptrend: xoa het short signals cho BTC chinh no
-                short_signals = []
-                logger.debug(f"BTCUSDT: cleared SHORT signals — BTC 1h uptrend")
-            elif btc_trend == -1:
-                # BTC downtrend: xoa het long signals cho BTC chinh no
-                long_signals = []
-                logger.debug(f"BTCUSDT: cleared LONG signals — BTC 1h downtrend")
+        # BTC GLOBAL TREND FILTER — HARD BLOCK khi ca 1h VA 4h BTC cung chieu
+        # Neu BTC 1h+4h BULLISH → xoa het SHORT signals (tat ca coin, ke ca priority SOL/ETH)
+        # Neu BTC 1h+4h BEARISH → xoa het LONG signals
+        # Ngoai le: REVERSAL signal (RSI cuc doan) — reversal co the di nguoc BTC
+        # Ngoai le: BTCUSDT chinh no — tu xu ly theo trend chinh no
+        # Day la nguyen nhan chinh khien bot short SOL/WLD/ZEC/ADA khi BTC dang pump
+        btc_trend    = self.btc_trend
+        btc_trend_4h = self.btc_trend_4h
 
-        # Altcoin non-priority: btc_trend nguoc chieu → can them +1 consensus (soft block)
-        # Top10 priority: MIEN BTC penalty — coin lon co momentum rieng, khong ep them consensus
-        btc_opposes_long  = (btc_trend == -1 and symbol != "BTCUSDT" and not is_priority)
-        btc_opposes_short = (btc_trend ==  1 and symbol != "BTCUSDT" and not is_priority)
+        if symbol == "BTCUSDT":
+            # BTC tu xu ly: hard block nguoc trend 1h chinh no
+            if btc_trend == 1:
+                short_signals = []
+                logger.debug("BTCUSDT: clear SHORT — BTC 1h UP")
+            elif btc_trend == -1:
+                long_signals = []
+                logger.debug("BTCUSDT: clear LONG — BTC 1h DOWN")
+        else:
+            # Tat ca altcoin (ke ca priority top10):
+            # BTC 1h+4h BULLISH → hard block ALL shorts (non-reversal)
+            # BTC 1h+4h BEARISH → hard block ALL longs (non-reversal)
+            btc_hard_block_short = (btc_trend == 1 and btc_trend_4h == 1)
+            btc_hard_block_long  = (btc_trend == -1 and btc_trend_4h == -1)
+
+            if btc_hard_block_short and not is_reversal:
+                short_signals = []
+                logger.debug(f"{symbol}: BTC 1h+4h BULLISH → hard block all SHORT (market uptrend)")
+            if btc_hard_block_long and not is_reversal:
+                long_signals = []
+                logger.debug(f"{symbol}: BTC 1h+4h BEARISH → hard block all LONG (market downtrend)")
+
+        # Altcoin non-priority: soft penalty khi BTC 1 chieu nguoc (chua du 2/2 TF)
+        btc_opposes_long  = (btc_trend == -1 and symbol != "BTCUSDT" and not is_priority
+                             and btc_trend_4h != -1)  # chi soft khi 4h chua confirm bearish
+        btc_opposes_short = (btc_trend == 1  and symbol != "BTCUSDT" and not is_priority
+                             and btc_trend_4h != 1)   # chi soft khi 4h chua confirm bullish
 
         # MOMENTUM trade
         sideways_1h = (macro_trend == 0)

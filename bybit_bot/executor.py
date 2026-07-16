@@ -44,6 +44,7 @@ class Executor:
         self._sl_price: dict[str, float]       = {}   # sl ban dau de re-arm neu mat
         self._open_time: dict[str, float]      = {}
         self._sl_verified: dict[str, bool]     = {}   # da verify SL sau fill chua
+        self._tick_size: dict[str, float]      = {}   # tick size de round be/tp2 dung exchange format
         # Callback duoc goi khi dong lenh lo — (symbol: str, side: str) -> None
         self.on_loss_callback: Optional[Callable[..., None]] = None
 
@@ -228,6 +229,7 @@ class Executor:
             self._tp2_price[symbol]      = params.tp2_price
             self._sl_price[symbol]       = sl_rounded
             self._open_time[symbol]      = time.time()
+            self._tick_size[symbol]      = tick_size  # dung de round be/tp2 dung exchange format
 
             # --- Verify SL active sau fill ---
             # Bybit doi khi khong attach SL/TP vao Limit order ngay lap tuc
@@ -279,11 +281,39 @@ class Executor:
 
         Defensive: kiem tra SL con active khong, re-arm neu mat.
         """
+        active_symbols = {pos["symbol"] for pos in open_positions}
+
         for pos in open_positions:
             symbol     = pos["symbol"]
             entry      = float(pos["avgPrice"])
             mark_price = float(pos.get("markPrice", entry))
             side       = pos["side"]
+
+            # --- State restoration after restart ---
+            # Neu bot restart, tat ca in-memory state bi reset. Phuc hoi tu du lieu exchange.
+            if symbol not in self._sl_price:
+                exchange_sl = float(pos.get("stopLoss", 0))
+                if exchange_sl > 0:
+                    self._sl_price[symbol] = exchange_sl
+                    logger.info(f"{symbol}: Restored SL={exchange_sl:.6f} from exchange after restart")
+                created_ms = int(pos.get("createdTime", 0))
+                if created_ms > 0 and symbol not in self._open_time:
+                    self._open_time[symbol] = created_ms / 1000
+                # Infer breakeven: neu SL da chuyen qua phia loi (LONG: SL > entry; SHORT: SL < entry)
+                if exchange_sl > 0:
+                    if side == "Buy"  and exchange_sl >= entry:
+                        self._breakeven_set[symbol] = True
+                        logger.info(f"{symbol}: Inferred breakeven already set (SL={exchange_sl:.6f} >= entry={entry:.6f})")
+                    elif side == "Sell" and exchange_sl <= entry:
+                        self._breakeven_set[symbol] = True
+                        logger.info(f"{symbol}: Inferred breakeven already set (SL={exchange_sl:.6f} <= entry={entry:.6f})")
+                # Lay tick_size neu chua co
+                if symbol not in self._tick_size:
+                    try:
+                        info = self.client.get_instrument_info(symbol)
+                        self._tick_size[symbol] = float(info["priceFilter"]["tickSize"])
+                    except Exception:
+                        self._tick_size[symbol] = 0.0
 
             # --- Periodic SL health check ---
             # Neu SL bi huy tren exchange (maintenance, loi API, v.v.), re-arm ngay
@@ -331,13 +361,14 @@ class Executor:
                 if dist_moved >= dist_to_tp1 * config.BREAKEVEN_TRIGGER:
                     try:
                         fee_buffer = entry * config.ROUND_TRIP_FEE
-                        be_price   = entry + fee_buffer if side == "Buy" else entry - fee_buffer
-                        self.client.update_stop_loss(symbol, round(be_price, 6))
+                        be_price_raw = entry + fee_buffer if side == "Buy" else entry - fee_buffer
+                        ts = self._tick_size.get(symbol, 0.0)
+                        be_price = self.client.round_to_tick(be_price_raw, ts) if ts > 0 else round(be_price_raw, 6)
+                        self.client.update_stop_loss(symbol, be_price)
                         self._breakeven_set[symbol] = True
-                        # Cap nhat saved_sl voi gia moi
-                        self._sl_price[symbol] = round(be_price, 6)
+                        self._sl_price[symbol] = be_price
                         logger.info(
-                            f"{symbol}: Break-even SL -> {be_price:.4f} "
+                            f"{symbol}: Break-even SL -> {be_price:.6f} "
                             f"(moved {dist_moved:.4f}/{dist_to_tp1:.4f} = "
                             f"{dist_moved/dist_to_tp1*100:.0f}% toward TP1)"
                         )
@@ -350,11 +381,14 @@ class Executor:
             if not self._partial_closed.get(symbol, False) and dist_to_tp1 > 0 and dist_moved > 0:
                 if dist_moved >= dist_to_tp1 * config.PARTIAL_CLOSE_TRIGGER:
                     try:
-                        # Cap nhat TP tren san tu TP1 sang TP2
-                        tp2 = self._tp2_price.get(symbol, 0.0)
-                        if tp2 > 0:
+                        # Cap nhat TP tren san tu TP1 sang TP2 (tick-aligned)
+                        tp2_raw = self._tp2_price.get(symbol, 0.0)
+                        if tp2_raw > 0:
+                            ts2 = self._tick_size.get(symbol, 0.0)
+                            tp2 = self.client.round_to_tick(tp2_raw, ts2) if ts2 > 0 else round(tp2_raw, 6)
                             self.client.update_take_profit(symbol, tp2)
-                            logger.info(f"{symbol}: TP updated TP1={tp1_threshold:.4f} -> TP2={tp2:.4f}")
+                            self._tp2_price[symbol] = tp2  # update to tick-aligned value
+                            logger.info(f"{symbol}: TP updated TP1={tp1_threshold:.4f} -> TP2={tp2:.6f}")
 
                         # Dong 50% vi the — align voi qty_step cua instrument
                         pos_qty = float(pos["size"])
@@ -380,14 +414,16 @@ class Executor:
                             # qty qua nho de chia doi — danh dau da partial (toan bo chay den TP2)
                             self._partial_closed[symbol] = True
 
-                        # Xac nhan breakeven SL neu chua set
+                        # Xac nhan breakeven SL neu chua set (tick-aligned)
                         if not self._breakeven_set.get(symbol, False):
                             fee_buffer = entry * config.ROUND_TRIP_FEE
-                            be_price   = entry + fee_buffer if side == "Buy" else entry - fee_buffer
-                            self.client.update_stop_loss(symbol, round(be_price, 6))
+                            be_price_raw = entry + fee_buffer if side == "Buy" else entry - fee_buffer
+                            ts3 = self._tick_size.get(symbol, 0.0)
+                            be_price = self.client.round_to_tick(be_price_raw, ts3) if ts3 > 0 else round(be_price_raw, 6)
+                            self.client.update_stop_loss(symbol, be_price)
                             self._breakeven_set[symbol] = True
-                            self._sl_price[symbol] = round(be_price, 6)
-                            logger.info(f"{symbol}: Breakeven SL confirmed -> {be_price:.4f}")
+                            self._sl_price[symbol] = be_price
+                            logger.info(f"{symbol}: Breakeven SL confirmed -> {be_price:.6f}")
 
                     except Exception as e:
                         logger.warning(f"{symbol}: Could not execute partial close: {e}")
@@ -397,6 +433,24 @@ class Executor:
                 logger.warning(f"{symbol}: Emergency close — excessive loss")
                 self._close_position(pos)
 
+        # Xoa state cua cac symbol khong con trong active_symbols (dong giua cycle)
+        # Tranh state stale khi position dong dot xuat (partial fill, exchange error, v.v.)
+        tracked = set(self._sl_price.keys())
+        for stale_sym in tracked - active_symbols:
+            logger.debug(f"{stale_sym}: position no longer active — clearing stale executor state")
+            self.clear_position_state(stale_sym)
+
+    def clear_position_state(self, symbol: str):
+        """Xoa toan bo in-memory state cua symbol (goi khi position dong — bot hoac exchange)."""
+        self._partial_closed.pop(symbol, None)
+        self._breakeven_set.pop(symbol, None)
+        self._atr.pop(symbol, None)
+        self._tp2_price.pop(symbol, None)
+        self._sl_price.pop(symbol, None)
+        self._sl_verified.pop(symbol, None)
+        self._open_time.pop(symbol, None)
+        self._tick_size.pop(symbol, None)
+
     def _close_position(self, position: dict):
         symbol = position["symbol"]
         side   = position["side"]
@@ -404,14 +458,7 @@ class Executor:
         pnl    = float(position.get("unrealisedPnl", 0))
         try:
             self.client.close_position(symbol, side, qty)
-            # Clear in-memory state cho symbol nay
-            self._partial_closed.pop(symbol, None)
-            self._breakeven_set.pop(symbol, None)
-            self._atr.pop(symbol, None)
-            self._tp2_price.pop(symbol, None)
-            self._sl_price.pop(symbol, None)
-            self._sl_verified.pop(symbol, None)
-            self._open_time.pop(symbol, None)
+            self.clear_position_state(symbol)
             self.logger.log_trade({
                 "event":  "close",
                 "symbol": symbol,

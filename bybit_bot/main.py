@@ -60,6 +60,9 @@ class TradingBot:
         # Neu >= 3 losses trong 15 phut → pause 30 phut khong mo lenh moi
         self._loss_history: list[float] = []   # timestamps cua tung lenh lo
         self._circuit_breaker_until: float = 0  # timestamp het pause
+        # Daily PnL cache: chi goi API moi 5 phut (tranh rate limit khi goi moi 15 giay)
+        self._daily_pnl_cache: float = 0.0
+        self._daily_pnl_last_check: float = 0.0
 
     def _on_symbol_loss(self, symbol: str, side: str = ""):
         self._recent_loss_ts[symbol] = time.time()
@@ -111,10 +114,19 @@ class TradingBot:
     def _tick(self):
         now = time.time()
 
-        # Daily max loss guard: neu tong PnL hom nay < -(equity * MAX_DAILY_LOSS_PCT) → dung mo lenh moi
-        # Tranh ngay bot chay lien tuc thua → cang thua cang trade nhieu → blow account
+        # Daily max loss guard: chi refresh PnL moi 5 phut (tranh 240 API calls/gio)
+        # Reset cache luc UTC 00:00 (ngay moi bat dau, PnL reset ve 0)
         try:
-            _today_pnl  = self.client.get_today_pnl()
+            from datetime import datetime, timezone as _tz
+            _utc_hour = datetime.now(_tz.utc).hour
+            _utc_min  = datetime.now(_tz.utc).minute
+            if _utc_hour == 0 and _utc_min < 5 and self._daily_pnl_cache != 0.0:
+                self._daily_pnl_cache = 0.0  # reset dau ngay
+                self._daily_pnl_last_check = 0.0
+            if now - self._daily_pnl_last_check >= 300:  # 5 phut
+                self._daily_pnl_cache = self.client.get_today_pnl()
+                self._daily_pnl_last_check = now
+            _today_pnl  = self._daily_pnl_cache
             _cur_equity = self.client.get_wallet_balance()
             if _cur_equity > 0 and _today_pnl < -(_cur_equity * config.MAX_DAILY_LOSS_PCT):
                 logger.warning(
@@ -191,11 +203,17 @@ class TradingBot:
         # Neu symbol vua co position ma gio mat → check closed PnL → neu lo thi fire post-loss
         closed_by_exchange = self._prev_pos_symbols - pos_symbols
         if closed_by_exchange:
+            # Xoa executor state cho cac vi the vua dong boi exchange (SL/TP hit)
+            # Tranh state stale khi bot mo lai lenh moi cung symbol
+            for sym in closed_by_exchange:
+                self.executor.clear_position_state(sym)
             try:
                 closed_pnl = self.client.get_closed_pnl(list(closed_by_exchange))
                 for symbol, pnl in closed_pnl.items():
                     if pnl < 0:
                         self._on_symbol_loss(symbol)
+                        # Force refresh daily PnL ngay sau khi co loss (tranh cache stale)
+                        self._daily_pnl_last_check = 0.0
                         logger.info(f"{symbol}: SL/TP hit by exchange, pnl={pnl:.4f} → post-loss filter")
             except Exception as e:
                 logger.debug(f"get_closed_pnl error: {e}")

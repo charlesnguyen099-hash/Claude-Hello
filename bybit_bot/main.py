@@ -1138,13 +1138,25 @@ class TradingBot:
         btc_trend_4h = self.btc_trend_4h
 
         if symbol == "BTCUSDT":
-            # BTC tu xu ly: hard block nguoc trend 1h chinh no
-            if btc_trend == 1:
+            # BTC: chi SHORT khi CA 1h VA 4h deu bear (tranh short dip tam thoi trong uptrend)
+            # Chi LONG khi CA 1h VA 4h deu bull
+            # BTC/ETH co xu huong V-shape bounce sau dip ngan: chi 1h bear la khong du de short
+            # Dung separate if (khong elif) de ca 2 co the true dong thoi (conflict → no trade)
+            if btc_trend == 1 or btc_trend_4h == 1:
                 short_signals = []
-                logger.debug("BTCUSDT: clear SHORT — BTC 1h UP")
-            elif btc_trend == -1:
+                logger.debug("BTCUSDT: clear SHORT — BTC 1h or 4h UP (V-shape bounce risk)")
+            if btc_trend == -1 or btc_trend_4h == -1:
                 long_signals = []
-                logger.debug("BTCUSDT: clear LONG — BTC 1h DOWN")
+                logger.debug("BTCUSDT: clear LONG — BTC 1h or 4h DOWN")
+        elif symbol == "ETHUSDT":
+            # ETH: tuong tu BTC — chi SHORT khi ca 1h VA 4h ETH deu bear
+            # macro_trend = ETH 1h, macro_4h = ETH 4h
+            if macro_trend == 1 or macro_4h == 1:
+                short_signals = []
+                logger.debug("ETHUSDT: clear SHORT — ETH 1h or 4h UP (V-shape bounce risk)")
+            if macro_trend == -1 or macro_4h == -1:
+                long_signals = []
+                logger.debug("ETHUSDT: clear LONG — ETH 1h or 4h DOWN")
         else:
             # Altcoin: phan tich BTC alignment de quyet dinh hard/soft block
             btc_strongly_bull = (btc_trend == 1  and btc_trend_4h == 1)

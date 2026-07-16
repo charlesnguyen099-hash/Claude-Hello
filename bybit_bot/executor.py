@@ -57,6 +57,21 @@ class Executor:
             self._close_position(existing[0])
             time.sleep(0.5)
 
+        # STALE SIGNAL CHECK: gia market co the da di chuyen tu khi bot phan tich den khi dat lenh
+        # (API data lag, processing time, price dump/pump xay ra trong ~0.5-2 giay)
+        # Neu gia hien tai da lech > 0.5% so voi entry price trong signal → signal stale → bo qua
+        # Vi du: bot thay price 0.228 va quyet dinh SHORT, nhung khi dat lenh gia da dump xuong 0.216
+        #        → vao SHORT tai day cua dump → SL hit ngay khi bounce
+        live_price = self.client.get_current_price(symbol)
+        if live_price > 0 and signal.entry_price > 0:
+            price_drift = abs(live_price - signal.entry_price) / signal.entry_price
+            if price_drift > 0.005:  # 0.5% drift = signal stale / gia da move truoc khi lenh duoc dat
+                logger.warning(
+                    f"{symbol}: STALE SIGNAL — live={live_price:.6f} vs entry={signal.entry_price:.6f} "
+                    f"drift={price_drift*100:.2f}% > 0.5% → skip"
+                )
+                return
+
         params = self.risk_mgr.compute_trade(signal, equity, open_positions, is_priority=is_priority)
         if not params:
             return

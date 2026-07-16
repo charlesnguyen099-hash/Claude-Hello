@@ -198,6 +198,17 @@ class BybitClient:
             logger.warning(f"Cannot get max leverage for {symbol}: {e}")
             return config.DEFAULT_LEVERAGE
 
+    def get_current_price(self, symbol: str) -> float:
+        """Lay gia mark price hien tai (real-time, khong cache) de check stale signal."""
+        try:
+            resp = self.session.get_tickers(category="linear", symbol=symbol)
+            items = resp["result"]["list"]
+            if items:
+                return float(items[0].get("markPrice", 0))
+        except Exception as e:
+            logger.debug(f"get_current_price {symbol}: {e}")
+        return 0.0
+
     def get_closed_pnl(self, symbols: list[str]) -> dict[str, float]:
         """Lay closed PnL cua cac symbol vua dong lenh (trong 5 phut gan nhat).
         Tra ve {symbol: pnl} cho cac symbol co trong danh sach."""

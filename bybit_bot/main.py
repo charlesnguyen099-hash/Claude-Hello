@@ -111,6 +111,29 @@ class TradingBot:
     def _tick(self):
         now = time.time()
 
+        # Daily max loss guard: neu tong PnL hom nay < -(equity * MAX_DAILY_LOSS_PCT) → dung mo lenh moi
+        # Tranh ngay bot chay lien tuc thua → cang thua cang trade nhieu → blow account
+        try:
+            _today_pnl  = self.client.get_today_pnl()
+            _cur_equity = self.client.get_wallet_balance()
+            if _cur_equity > 0 and _today_pnl < -(_cur_equity * config.MAX_DAILY_LOSS_PCT):
+                logger.warning(
+                    f"[DAILY LOSS LIMIT] today_pnl={_today_pnl:.2f} USDT "
+                    f"< -{_cur_equity * config.MAX_DAILY_LOSS_PCT:.2f} USDT "
+                    f"({config.MAX_DAILY_LOSS_PCT*100:.0f}% of equity={_cur_equity:.2f}) "
+                    f"→ pause new entries for rest of today"
+                )
+                # Van quan ly vi the cu nhung khong mo moi
+                try:
+                    open_positions = self.client.get_positions()
+                    if open_positions:
+                        self.executor.manage_open_positions(open_positions)
+                except Exception:
+                    pass
+                return
+        except Exception as e:
+            logger.debug(f"daily_loss_check error: {e}")
+
         # Circuit breaker: neu da co >= 3 losses trong 15 phut, pause mo lenh moi 30 phut
         if now < self._circuit_breaker_until:
             remaining = self._circuit_breaker_until - now

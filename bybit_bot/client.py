@@ -125,22 +125,38 @@ class BybitClient:
         sl: Optional[float] = None,
         tp: Optional[float] = None,
         reduce_only: bool = False,
+        limit_price: Optional[float] = None,  # Dat khi dung Limit/IOC — rounds theo tick
+        tick_size: float = 0.0,               # Can thiet de round limit_price chinh xac
     ) -> dict:
+        # Limit order: dung IOC (fill ngay hoac huy — tranh lenh treo)
+        # Market order: GTC (standard)
+        if order_type == "Limit" and limit_price is not None:
+            time_in_force = "IOC"
+        else:
+            time_in_force = "GoodTillCancel"
+
         params = dict(
             category="linear",
             symbol=symbol,
             side=side,
             orderType=order_type,
             qty=str(qty),
-            timeInForce="GoodTillCancel",
+            timeInForce=time_in_force,
             reduceOnly=reduce_only,
             positionIdx=0,  # one-way mode
         )
+        if order_type == "Limit" and limit_price is not None:
+            lp = self.round_to_tick(limit_price, tick_size) if tick_size > 0 else round(limit_price, 6)
+            params["price"] = str(lp)
+
         if sl:
-            params["stopLoss"] = str(round(sl, 6))
+            # Round SL theo tick size neu co
+            sl_rounded = self.round_to_tick(sl, tick_size) if tick_size > 0 else round(sl, 6)
+            params["stopLoss"] = str(sl_rounded)
             params["slTriggerBy"] = "MarkPrice"
         if tp:
-            params["takeProfit"] = str(round(tp, 6))
+            tp_rounded = self.round_to_tick(tp, tick_size) if tick_size > 0 else round(tp, 6)
+            params["takeProfit"] = str(tp_rounded)
             params["tpTriggerBy"] = "MarkPrice"
 
         resp = self.session.place_order(**params)
@@ -208,6 +224,80 @@ class BybitClient:
         except Exception as e:
             logger.debug(f"get_current_price {symbol}: {e}")
         return 0.0
+
+    def get_bid_ask(self, symbol: str) -> tuple[float, float]:
+        """Lay best bid/ask hien tai. Return (bid, ask), (0,0) neu loi."""
+        try:
+            resp = self.session.get_tickers(category="linear", symbol=symbol)
+            items = resp["result"]["list"]
+            if items:
+                bid = float(items[0].get("bid1Price", 0))
+                ask = float(items[0].get("ask1Price", 0))
+                return bid, ask
+        except Exception as e:
+            logger.debug(f"get_bid_ask {symbol}: {e}")
+        return 0.0, 0.0
+
+    @staticmethod
+    def round_to_tick(price: float, tick_size: float) -> float:
+        """Round price xuong boi so gan nhat cua tick_size (floor)."""
+        import math
+        if tick_size <= 0:
+            return price
+        ticks = math.floor(price / tick_size)
+        result = round(ticks * tick_size, 10)
+        # Trim floating point noise
+        decimals = len(str(tick_size).rstrip("0").split(".")[-1]) if "." in str(tick_size) else 0
+        return round(result, decimals)
+
+    def get_order_status(self, symbol: str, order_id: str) -> str:
+        """Kiem tra trang thai lenh (Filled / Cancelled / PartiallyFilled / ...).
+        Dung de xac nhan IOC Limit order co duoc fill hay bi huy."""
+        try:
+            resp = self.session.get_order_history(
+                category="linear",
+                symbol=symbol,
+                orderId=order_id,
+                limit=1,
+            )
+            items = resp["result"]["list"]
+            if items:
+                return items[0].get("orderStatus", "Unknown")
+        except Exception as e:
+            logger.debug(f"get_order_status {symbol} {order_id}: {e}")
+        return "Unknown"
+
+    def verify_position_sl(self, symbol: str) -> tuple[bool, float]:
+        """Xac nhan vi the co SL dang hoat dong. Return (has_sl, sl_price)."""
+        try:
+            resp = self.session.get_positions(category="linear", symbol=symbol)
+            for p in resp["result"]["list"]:
+                if float(p.get("size", 0)) > 0:
+                    sl = float(p.get("stopLoss", 0))
+                    return sl > 0, sl
+        except Exception as e:
+            logger.debug(f"verify_position_sl {symbol}: {e}")
+        return False, 0.0
+
+    def get_today_pnl(self) -> float:
+        """Tong realized PnL hom nay (UTC 00:00 den gio hien tai).
+        Am = dang lo trong ngay, duong = dang co lai."""
+        from datetime import datetime, timezone
+        today_start_ms = int(
+            datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).timestamp() * 1000
+        )
+        total = 0.0
+        try:
+            resp = self.session.get_closed_pnl(
+                category="linear",
+                startTime=today_start_ms,
+                limit=200,
+            )
+            for item in resp["result"]["list"]:
+                total += float(item.get("closedPnl", 0))
+        except Exception as e:
+            logger.debug(f"get_today_pnl error: {e}")
+        return total
 
     def get_closed_pnl(self, symbols: list[str]) -> dict[str, float]:
         """Lay closed PnL cua cac symbol vua dong lenh (trong 5 phut gan nhat).

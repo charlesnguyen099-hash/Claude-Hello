@@ -6,6 +6,15 @@ Trade Executor — thực thi lệnh và quản lý vị thế
 - Level 3: 50% còn lại chạy đến TP2 với zero downside risk
 - Anti-whipsaw: khong force-close vi the < 30 phut vi signal dao chieu
 - Tự động đóng lệnh khi signal đảo chiều (sau 30 phut hoac PnL < -20%)
+
+Defensive layers (execution):
+  1. Stale signal check (0.3%) trong execute_signal
+  2. Spread check — abort neu spread > nguong hoac SL dist < 2x spread
+  3. IOC Limit order — tranh market order slippage trong dump/pump nhanh
+  4. Fill verification — xac nhan IOC duoc fill truoc khi update state
+  5. SL verification + re-arm — dam bao SL luon active sau khi lenh vao
+  6. Partial close race condition fix — chi update flag sau khi close thanh cong
+  7. Periodic SL check — re-arm SL neu bi huy trong khi quan ly vi the
 """
 
 import logging
@@ -28,12 +37,13 @@ class Executor:
         self.risk_mgr  = risk_mgr
         self.logger    = bot_logger
 
-        self._partial_closed: dict[str, bool] = {}
-        self._breakeven_set: dict[str, bool]  = {}
-        self._atr: dict[str, float]           = {}
-        self._tp2_price: dict[str, float]     = {}
-        # Thoi diem mo lenh — de check minimum holding time truoc khi reversal close
-        self._open_time: dict[str, float]     = {}
+        self._partial_closed: dict[str, bool]  = {}
+        self._breakeven_set: dict[str, bool]   = {}
+        self._atr: dict[str, float]            = {}
+        self._tp2_price: dict[str, float]      = {}
+        self._sl_price: dict[str, float]       = {}   # sl ban dau de re-arm neu mat
+        self._open_time: dict[str, float]      = {}
+        self._sl_verified: dict[str, bool]     = {}   # da verify SL sau fill chua
         # Callback duoc goi khi dong lenh lo — (symbol: str, side: str) -> None
         self.on_loss_callback: Optional[Callable[..., None]] = None
 
@@ -57,12 +67,6 @@ class Executor:
                 return
 
             # Anti-whipsaw: khong force-close neu position mo < MIN_HOLD_SECONDS
-            # (tranh dong lenh chi 4-13 phut vi signal dao chieu ngau nhien tren 15m)
-            # Exception: dong ngay neu position dang lo > 20% margin (emergency exit)
-            # BUG FIX: KHONG dung _open_time (reset khi bot restart moi 60s).
-            #          Dung createdTime tu Bybit position data — chinh xac kể cả sau restart.
-            #          Fallback: neu exchange khong tra createdTime, dung _open_time.
-            #          Neu ca 2 deu khong co → held = 0 → BAO VE position (khong dong)
             MIN_HOLD_SECONDS = 1800  # 30 phut = 2 nen 15m
             pos_pnl_pct = 0.0
             try:
@@ -74,8 +78,7 @@ class Executor:
             except Exception:
                 pass
 
-            # Tinh thoi gian nam giu tu exchange createdTime (khong bi mat khi restart)
-            held_seconds = 0  # mac dinh = 0 (bao ve) neu khong biet
+            held_seconds = 0
             exchange_created_ms = int(existing[0].get("createdTime", 0))
             if exchange_created_ms > 0:
                 held_seconds = time.time() - exchange_created_ms / 1000
@@ -83,7 +86,6 @@ class Executor:
                 open_ts = self._open_time.get(symbol, 0)
                 if open_ts > 0:
                     held_seconds = time.time() - open_ts
-                # Else: held_seconds = 0 → bao ve position
 
             if held_seconds < MIN_HOLD_SECONDS and pos_pnl_pct > -0.20:
                 logger.info(
@@ -97,21 +99,13 @@ class Executor:
             self._close_position(existing[0])
             time.sleep(0.5)
 
-        # STALE SIGNAL CHECK: gia market co the da di chuyen tu khi bot phan tich den khi dat lenh
-        # (API data lag, processing time, price dump/pump xay ra trong ~0.5-2 giay)
-        # Neu gia hien tai da lech > 0.5% so voi entry price trong signal → signal stale → bo qua
-        # Vi du: bot thay price 0.228 va quyet dinh SHORT, nhung khi dat lenh gia da dump xuong 0.216
-        #        → vao SHORT tai day cua dump → SL hit ngay khi bounce
+        # STALE SIGNAL CHECK (0.3%): bat drift xay ra giua analysis va dat lenh
         live_price = self.client.get_current_price(symbol)
-        # BUG FIX: neu live_price == 0 (API loi / timeout), KHONG the xac minh gia hien tai
-        # → SKIP trade, tranh truong hop pump/dump xay ra ma bot khong biet (bypass stale check)
-        # AKEUSDT 19:24 pattern: neu live_price=0, stale check bi skip, lenh dat tai gia cach xa
         if live_price <= 0:
-            logger.warning(f"{symbol}: SKIP — khong lay duoc live price (get_current_price={live_price}), bo qua de tranh stale entry")
+            logger.warning(f"{symbol}: SKIP — khong lay duoc live price, bo qua de tranh stale entry")
             return
         if signal.entry_price > 0:
             price_drift = abs(live_price - signal.entry_price) / signal.entry_price
-            # 0.3% drift: bat micro-move xay ra giua analysis va dat lenh
             if price_drift > 0.003:
                 logger.warning(
                     f"{symbol}: STALE SIGNAL — live={live_price:.6f} vs entry={signal.entry_price:.6f} "
@@ -127,41 +121,125 @@ class Executor:
         self._enter_trade(symbol, signal, params)
 
     def _enter_trade(self, symbol: str, signal: Signal, params: TradeParams):
+        """
+        Dat lenh vao vi the voi day du protection layers:
+        1. Lay bid/ask → spread check → SL-vs-spread check
+        2. Pre-order drift check (0.5%) → abort neu gia di xa tu stale check
+        3. IOC Limit order tai bid/ask → fill ngay hoac huy (khong slip)
+        4. Verify fill → neu IOC khong fill → skip (thi truong da di xa)
+        5. Verify SL active → re-arm neu SL khong duoc dat sau fill
+        """
         try:
             self.client.set_leverage(symbol, params.leverage)
 
-            # Final price check ngay truoc place_order — bat slippage xay ra giua stale check va order routing
-            # Pattern: stale check dung get_current_price() co the tra ve gia cu (API cache / lag)
-            # Trong khi do gia that su dang dump/pump → market order fill tai gia xa → SL hit ngay
-            # SKHYNIXUSDT 19:36: stale check pass (API tra 1228), order fill at 1214.79 (1.1% slippage)
-            # Nguong 0.5%: rong hon stale check (0.3%) de chiu duoc spread binh thuong, nhung bat slippage that su
+            # --- Lay bid/ask va tick_size ---
+            bid, ask = self.client.get_bid_ask(symbol)
+            if bid <= 0 or ask <= 0:
+                logger.warning(f"{symbol}: ABORT entry — khong lay duoc bid/ask")
+                return
+
+            mid_price = (bid + ask) / 2.0
+            spread    = ask - bid
+            spread_pct = spread / mid_price if mid_price > 0 else 0
+
+            # Get tick_size (can thiet cho round SL/TP va limit price)
+            tick_size = 0.0
+            try:
+                info      = self.client.get_instrument_info(symbol)
+                tick_size = float(info["priceFilter"]["tickSize"])
+            except Exception:
+                pass
+
+            # --- Check 1: Spread qua rong → thanh khoan kem, khong trade ---
+            is_largecap = symbol in {"BTCUSDT", "ETHUSDT"}
+            max_spread  = config.MAX_SPREAD_PCT_LARGE if is_largecap else config.MAX_SPREAD_PCT_ALT
+            if spread_pct > max_spread:
+                logger.warning(
+                    f"{symbol}: ABORT — spread={spread_pct*100:.3f}% > {max_spread*100:.3f}% "
+                    f"(low liquidity, spread={spread:.6f})"
+                )
+                return
+
+            # --- Check 2: SL distance vs spread ---
+            # Neu SL qua gan entry so voi spread, price noise co the hit SL ngay
+            sl_dist = abs(params.sl_price - signal.entry_price)
+            if spread > 0 and sl_dist < spread * 2.5:
+                logger.warning(
+                    f"{symbol}: ABORT — SL dist={sl_dist:.6f} < 2.5x spread={spread*2.5:.6f} "
+                    f"(SL too tight for current spread)"
+                )
+                return
+
+            # --- Check 3: Pre-order drift 0.5% (sau stale check 0.3% trong execute_signal) ---
+            # Bat gia di chuyen giua 2 lan check (stale check → set_leverage → get_bid_ask)
             if signal.entry_price > 0:
-                pre_order_price = self.client.get_current_price(symbol)
-                if pre_order_price <= 0:
-                    logger.warning(f"{symbol}: ABORT order — khong lay duoc pre-order price")
-                    return
-                pre_drift = abs(pre_order_price - signal.entry_price) / signal.entry_price
+                pre_drift = abs(mid_price - signal.entry_price) / signal.entry_price
                 if pre_drift > 0.005:
                     logger.warning(
-                        f"{symbol}: ABORT order — pre-order drift {pre_drift*100:.2f}% > 0.5% "
-                        f"(expected={signal.entry_price:.6f}, now={pre_order_price:.6f})"
+                        f"{symbol}: ABORT — pre-order drift {pre_drift*100:.2f}% > 0.5% "
+                        f"(entry={signal.entry_price:.6f}, now={mid_price:.6f})"
                     )
                     return
 
-            # TP1 dat tren san lam safety net — partial close se cap nhat len TP2 khi dat 75% TP1
+            # --- Dat IOC Limit order ---
+            # SHORT (Sell): limit tai bid — fill neu thi truong van o day hoac cao hon
+            #               Neu gia dump xuong (bid giam manh), IOC huy → tranh vao SHORT giua dump
+            # LONG  (Buy):  limit tai ask — fill neu thi truong van o day hoac thap hon
+            #               Neu gia pump len (ask tang manh), IOC huy → tranh vao LONG giua pump
+            if params.side == "Sell":
+                limit_price = self.client.round_to_tick(bid, tick_size) if tick_size > 0 else round(bid, 6)
+            else:
+                limit_price = self.client.round_to_tick(ask, tick_size) if tick_size > 0 else round(ask, 6)
+
+            # Round SL/TP theo tick size de dam bao Bybit chap nhan
+            sl_rounded  = self.client.round_to_tick(params.sl_price,  tick_size) if tick_size > 0 else round(params.sl_price,  6)
+            tp1_rounded = self.client.round_to_tick(params.tp1_price, tick_size) if tick_size > 0 else round(params.tp1_price, 6)
+
             order = self.client.place_order(
                 symbol=symbol,
                 side=params.side,
                 qty=params.qty,
-                sl=params.sl_price,
-                tp=params.tp1_price,
+                order_type="Limit",
+                sl=sl_rounded,
+                tp=tp1_rounded,
+                limit_price=limit_price,
+                tick_size=tick_size,
             )
 
+            order_id = order.get("orderId", "")
+
+            # --- Verify IOC fill ---
+            # IOC Limit: fill ngay hoac huy — khong bao gio treo
+            # Neu huy: gia da di xa khoi limit → dung mo lenh (tranh chase)
+            time.sleep(0.4)
+            status = self.client.get_order_status(symbol, order_id)
+            if status not in ("Filled", "PartiallyFilled"):
+                logger.warning(
+                    f"{symbol}: IOC Limit NOT filled (status={status}) — "
+                    f"market moved away from limit={limit_price:.6f}, trade skipped"
+                )
+                return
+
+            # Update in-memory state sau khi xac nhan fill
             self._partial_closed[symbol] = False
             self._breakeven_set[symbol]  = False
+            self._sl_verified[symbol]    = False
             self._atr[symbol]            = signal.atr
             self._tp2_price[symbol]      = params.tp2_price
+            self._sl_price[symbol]       = sl_rounded
             self._open_time[symbol]      = time.time()
+
+            # --- Verify SL active sau fill ---
+            # Bybit doi khi khong attach SL/TP vao Limit order ngay lap tuc
+            # → check va force-set neu thieu
+            time.sleep(0.5)
+            has_sl, actual_sl = self.client.verify_position_sl(symbol)
+            if not has_sl:
+                logger.warning(
+                    f"{symbol}: SL missing after fill — force setting SL={sl_rounded:.6f}"
+                )
+                self.client.update_stop_loss(symbol, sl_rounded)
+            self._sl_verified[symbol] = True
 
             self.logger.log_trade({
                 "event":     "open",
@@ -170,8 +248,8 @@ class Executor:
                 "qty":       params.qty,
                 "leverage":  params.leverage,
                 "entry":     signal.entry_price,
-                "sl":        params.sl_price,
-                "tp1":       params.tp1_price,
+                "sl":        sl_rounded,
+                "tp1":       tp1_rounded,
                 "tp2":       params.tp2_price,
                 "strategy":  signal.strategy_name,
                 "strength":  signal.strength,
@@ -179,14 +257,14 @@ class Executor:
                 "notional":  params.notional_usdt,
                 "capital":   params.capital_usdt,
                 "fee":       params.fee_usdt,
-                "order_id":  order.get("orderId", ""),
+                "order_id":  order_id,
             })
 
             logger.info(
                 f"[OPEN] {symbol} {params.side} | qty={params.qty} | "
-                f"lev={params.leverage}x | SL={params.sl_price:.4f} | "
-                f"TP1={params.tp1_price:.4f} | strategy={signal.strategy_name} | "
-                f"{signal.reason}"
+                f"lev={params.leverage}x | limit={limit_price:.6f} | "
+                f"SL={sl_rounded:.6f} | TP1={tp1_rounded:.6f} | "
+                f"strategy={signal.strategy_name} | {signal.reason}"
             )
 
         except Exception as e:
@@ -198,12 +276,29 @@ class Executor:
         1. BREAKEVEN_TRIGGER: doi SL ve entry + phi som
         2. PARTIAL_CLOSE_TRIGGER: dong 50% reduce-only, cap nhat TP len TP2, xac nhan breakeven SL
         3. 50% con lai chay den TP2 voi zero downside risk (SL = breakeven)
+
+        Defensive: kiem tra SL con active khong, re-arm neu mat.
         """
         for pos in open_positions:
             symbol     = pos["symbol"]
             entry      = float(pos["avgPrice"])
             mark_price = float(pos.get("markPrice", entry))
             side       = pos["side"]
+
+            # --- Periodic SL health check ---
+            # Neu SL bi huy tren exchange (maintenance, loi API, v.v.), re-arm ngay
+            # Chi check cho cac vi the ma bot nay da mo (co _sl_price)
+            saved_sl = self._sl_price.get(symbol, 0.0)
+            if saved_sl > 0:
+                exchange_sl = float(pos.get("stopLoss", 0))
+                if exchange_sl <= 0:
+                    logger.warning(
+                        f"{symbol}: SL missing on exchange — re-arming SL={saved_sl:.6f}"
+                    )
+                    try:
+                        self.client.update_stop_loss(symbol, saved_sl)
+                    except Exception as e:
+                        logger.error(f"{symbol}: Failed to re-arm SL: {e}")
 
             tp1_threshold = float(pos.get("takeProfit", 0))
 
@@ -214,7 +309,6 @@ class Executor:
                 continue
 
             # Dung recent high/low tu 3 nen 1m de khong bo lo wick ngan giua 2 poll cycle
-            # (Bot poll moi 15s — wick len/xuong co the bien mat truoc poll tiep theo)
             best_price = mark_price
             try:
                 df1m = self.client.get_klines(symbol, "1", 4)
@@ -240,6 +334,8 @@ class Executor:
                         be_price   = entry + fee_buffer if side == "Buy" else entry - fee_buffer
                         self.client.update_stop_loss(symbol, round(be_price, 6))
                         self._breakeven_set[symbol] = True
+                        # Cap nhat saved_sl voi gia moi
+                        self._sl_price[symbol] = round(be_price, 6)
                         logger.info(
                             f"{symbol}: Break-even SL -> {be_price:.4f} "
                             f"(moved {dist_moved:.4f}/{dist_to_tp1:.4f} = "
@@ -249,10 +345,10 @@ class Executor:
                         logger.warning(f"{symbol}: Could not set break-even SL: {e}")
 
             # --- Muc 2: Partial close tai PARTIAL_CLOSE_TRIGGER% (75%) duong den TP1 ---
-            # Dong 50% vi the, cap nhat TP tu TP1 sang TP2, xac nhan SL = breakeven
+            # FIX: _partial_closed chi duoc set True SAU KHI close order thanh cong
+            # (truoc day set True truoc → neu close fail, bot nghi da close nhung khong phai)
             if not self._partial_closed.get(symbol, False) and dist_to_tp1 > 0 and dist_moved > 0:
                 if dist_moved >= dist_to_tp1 * config.PARTIAL_CLOSE_TRIGGER:
-                    self._partial_closed[symbol] = True
                     try:
                         # Cap nhat TP tren san tu TP1 sang TP2
                         tp2 = self._tp2_price.get(symbol, 0.0)
@@ -266,17 +362,23 @@ class Executor:
                             info     = self.client.get_instrument_info(symbol)
                             qty_step = float(info["lotSizeFilter"]["qtyStep"])
                         except Exception:
-                            qty_step = 0.001  # fallback safe default
+                            qty_step = 0.001
                         partial_qty = math.floor(pos_qty * 0.5 / qty_step) * qty_step
                         partial_qty = round(partial_qty, 8)
+
                         if partial_qty > 0:
                             close_side = "Sell" if side == "Buy" else "Buy"
                             self.client.place_order(symbol, close_side, partial_qty, reduce_only=True)
+                            # FIX: chi set True sau khi place_order thanh cong (khong raise exception)
+                            self._partial_closed[symbol] = True
                             logger.info(
                                 f"{symbol}: Partial close 50% ({partial_qty}) at "
                                 f"{dist_moved/dist_to_tp1*100:.0f}% of TP1 | "
                                 f"remaining 50% targets TP2={tp2:.4f}"
                             )
+                        else:
+                            # qty qua nho de chia doi — danh dau da partial (toan bo chay den TP2)
+                            self._partial_closed[symbol] = True
 
                         # Xac nhan breakeven SL neu chua set
                         if not self._breakeven_set.get(symbol, False):
@@ -284,6 +386,7 @@ class Executor:
                             be_price   = entry + fee_buffer if side == "Buy" else entry - fee_buffer
                             self.client.update_stop_loss(symbol, round(be_price, 6))
                             self._breakeven_set[symbol] = True
+                            self._sl_price[symbol] = round(be_price, 6)
                             logger.info(f"{symbol}: Breakeven SL confirmed -> {be_price:.4f}")
 
                     except Exception as e:
@@ -306,6 +409,8 @@ class Executor:
             self._breakeven_set.pop(symbol, None)
             self._atr.pop(symbol, None)
             self._tp2_price.pop(symbol, None)
+            self._sl_price.pop(symbol, None)
+            self._sl_verified.pop(symbol, None)
             self._open_time.pop(symbol, None)
             self.logger.log_trade({
                 "event":  "close",

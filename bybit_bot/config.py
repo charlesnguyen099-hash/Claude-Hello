@@ -62,6 +62,15 @@ MIN_CONSENSUS_TRENDING = 5   # Trending non-priority: can it nhat 5/7 strategies
 MIN_ATR_PCT         = 0.004  # Tang tu 0.003 — ATR >= 0.4% moi trade (bu phi + spread)
 TRADE_SIZE_MULT         = 1    # Khong dung nua — risk-based sizing thay the
 
+# --- Risk Guards --------------------------------------------------------------
+# Daily max loss: neu tong PnL trong ngay < -(equity * MAX_DAILY_LOSS_PCT) → dung mo lenh moi
+MAX_DAILY_LOSS_PCT   = 0.05   # 5% equity — dung ngay khi mat > 5% trong 1 ngay
+
+# Max spread: neu bid-ask spread > nguong nay → khong entry (thanh khoan kem)
+# Largecap (BTC/ETH): 0.05%, Altcoin: 0.15%
+MAX_SPREAD_PCT_LARGE = 0.0005   # 0.05% cho BTC/ETH
+MAX_SPREAD_PCT_ALT   = 0.0015   # 0.15% cho altcoin
+
 # --- Execution ----------------------------------------------------------------
 LOOP_INTERVAL_SEC    = 15   # check moi 15 giay
 

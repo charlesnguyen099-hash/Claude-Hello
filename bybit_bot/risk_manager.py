@@ -89,8 +89,20 @@ class RiskManager:
 
         # Round xuong de khong over-risk
         qty = math.floor(qty_by_risk / qty_step) * qty_step
-        # Phai >= min_qty cua exchange
-        qty = max(qty, min_qty)
+
+        # Neu risk-based qty < min_qty (exchange minimum), cap qty tai min_qty
+        # NHUNG: scale sl_dist down de giu risk_amount khong doi (tranh over-risk)
+        # Neu khong the dieu chinh (min_qty * sl_dist > risk_amount * 3), thi bao log va skip
+        if qty < min_qty:
+            qty = min_qty
+            actual_risk = qty * sl_dist
+            if actual_risk > risk_amount * 3:
+                logger.warning(
+                    f"{signal.symbol}: min_qty risk too high — "
+                    f"actual_risk={actual_risk:.4f} > 3x intended={risk_amount:.4f} → skip"
+                )
+                return None
+
         # Dam bao notional >= $5 (Bybit minimum)
         MIN_NOTIONAL = 5.0
         if qty * signal.entry_price < MIN_NOTIONAL:
@@ -98,19 +110,28 @@ class RiskManager:
 
         notional = qty * signal.entry_price
 
-        # Leverage: dung leverage de chi can margin = MAX_CAPITAL_PCT * equity
-        # Nhung cap tai MAX_LEVERAGE de tranh liquidation risk
-        max_capital = equity * config.MAX_CAPITAL_PCT
-        leverage = math.ceil(notional / max_capital)  # can bao nhieu leverage de margin <= 10% equity
-        leverage = min(leverage, config.MAX_LEVERAGE)  # cap tai 20x
-        leverage = max(leverage, 1)
-        # Neu leverage theo exchange thap hon → dung leverage exchange
+        # Leverage: tinh leverage can thiet de margin = MAX_CAPITAL_PCT * equity
+        # Sau do cap vao min(MAX_LEVERAGE, exchange_max_lev)
+        # Neu leverage bi cap thap hon muc can thiet → capital_used tang > MAX_CAPITAL_PCT
+        # → giam qty de dam bao capital_used <= MAX_CAPITAL_PCT * equity
         exchange_max_lev = self.client.get_max_leverage(signal.symbol) if config.USE_MAX_LEVERAGE \
                            else config.DEFAULT_LEVERAGE
-        leverage = min(leverage, exchange_max_lev)
+        max_capital = equity * config.MAX_CAPITAL_PCT
+        leverage_needed = math.ceil(notional / max_capital)
+        leverage = min(leverage_needed, config.MAX_LEVERAGE, exchange_max_lev)
+        leverage = max(leverage, 1)
 
+        # Neu leverage bi cap thap hon muc can (vi exchange gioi han) → giam qty de giu capital cap
         capital_used = notional / leverage
-        fee_usdt     = notional * config.ROUND_TRIP_FEE
+        if capital_used > max_capital * 1.05:  # 5% tolerance
+            # Giam qty sao cho capital_used <= max_capital
+            max_notional  = max_capital * leverage
+            qty = math.floor(max_notional / signal.entry_price / qty_step) * qty_step
+            qty = max(qty, min_qty)
+            notional = qty * signal.entry_price
+            capital_used = notional / leverage
+
+        fee_usdt = notional * config.ROUND_TRIP_FEE
 
         d   = signal.direction
         sl  = signal.entry_price - d * sl_dist

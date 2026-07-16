@@ -149,16 +149,7 @@ class TradingBot:
                 logger.debug(f"get_closed_pnl error: {e}")
         self._prev_pos_symbols = pos_symbols
 
-        # Hard cap: khong mo them lenh neu da dat MAX_OPEN_POSITIONS
-        if len(open_positions) >= config.MAX_OPEN_POSITIONS:
-            logger.info(
-                f"[TICK] Max positions ({config.MAX_OPEN_POSITIONS}) reached — skip new entries"
-            )
-            return
-
-        top10 = set(self.symbols[:10])
-
-        # Cap nhat BTC global trend moi tick (ca 1h va 4h)
+        # Cap nhat BTC global trend TRUOC cap check — tranh BTC trend stale khi at max positions
         try:
             df_btc_1h = self.client.get_klines("BTCUSDT", config.TIMEFRAMES["trend"], 100)
             df_btc_4h = self.client.get_klines("BTCUSDT", config.TIMEFRAMES["macro"],  100)
@@ -168,6 +159,15 @@ class TradingBot:
                 self.btc_trend_4h = self._trend_direction(df_btc_4h)
         except Exception:
             pass
+
+        # Hard cap: khong mo them lenh neu da dat MAX_OPEN_POSITIONS
+        if len(open_positions) >= config.MAX_OPEN_POSITIONS:
+            logger.info(
+                f"[TICK] Max positions ({config.MAX_OPEN_POSITIONS}) reached — skip new entries"
+            )
+            return
+
+        top10 = set(self.symbols[:10])
 
         # Priority list: top10 only
         priority_set = top10
@@ -548,6 +548,8 @@ class TradingBot:
         # Ca 2 cung xuat hien -> thi truong loan, skip tat ca
         _micro_spike_dump = False
         _micro_spike_pump = False
+        # _micro_price: init truoc block de tranh NameError khi df_micro co < 15 candles
+        _micro_price = df_micro["close"].iloc[-1] if not df_micro.empty else 0.0
         if not df_micro.empty and len(df_micro) >= 15:
             _micro_atr    = compute_atr(df_micro).iloc[-1]
             _micro_bodies = (df_micro["close"].iloc[-15:].values - df_micro["open"].iloc[-15:].values)

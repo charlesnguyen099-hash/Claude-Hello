@@ -341,16 +341,20 @@ class TradingBot:
             else:
                 score -= 1
 
-        # Factor 2: Momentum — 2/3 nen gan nhat phai cung chieu
+        # Factor 2: Momentum — it nhat 1/3 nen gan nhat phai cung chieu (giam tu 2/3)
+        # 2/3 qua chat cho breakout moi bat dau: nen dao chieu chi co 1 nen cung chieu
+        # Chi penalty -1 khi CA 3 nen deu nguoc chieu (ro rang counter-momentum)
         bodies_3 = close.iloc[-3:].values - open_.iloc[-3:].values
         bull3 = sum(1 for b in bodies_3 if b > 0)
         bear3 = sum(1 for b in bodies_3 if b < 0)
         if direction == 1 and bull3 >= 2:
-            score += 1
+            score += 1  # strong momentum
         elif direction == -1 and bear3 >= 2:
-            score += 1
-        else:
-            score -= 1
+            score += 1  # strong momentum
+        elif direction == 1 and bear3 == 3:
+            score -= 1  # ca 3 nen do khi muon long = bad
+        elif direction == -1 and bull3 == 3:
+            score -= 1  # ca 3 nen xanh khi muon short = bad
 
         # Factor 3: Volume binh thuong — khong phai spike va khong qua nho
         if n >= 10:
@@ -388,12 +392,13 @@ class TradingBot:
                 elif h5[-1] > h5[-3] and l5[-1] > l5[-3]:
                     score -= 1
 
-        # Factor 6: Dual range check — 100 nen (xu huong trung han) + 20 nen (local bounce/dip)
-        # HARD BLOCK 100-candle: tranh long o top 25% / short o bottom 25% cua 100 phut qua
-        # HARD BLOCK 20-candle:  tranh long o top 30% / short o bottom 30% cua 20 phut qua
-        #   (bat duoc "short o day local" khi 100-candle range cho thay midrange nhung thuc te dang bounce)
-        #   SKHYNIX 21:24 = 25.7% → 20c block; SOL/ADA 22:15 = 0-6% → block
-        # Ngoai le: is_reversal=True (RSI cuc doan xac nhan) → skip range block
+        # Factor 6: Range check — 100c (xu huong trung han) + 20c (local)
+        # HARD BLOCK chi khi cuc ki cuc doan (dang o top/bottom 10% of range)
+        # Nguong cu 75%/25% (100c) va 65%/35% (20c) qua chat — block het trend-following entries:
+        #   Trong downtrend, price luon o bottom 25% cua 100c → ALL SHORT blocked
+        #   Trong uptrend, price luon o top 25% cua 100c → ALL LONG blocked
+        # Muc 90%/10% chi block khi THUC SU da cham cuc (exhaustion zone)
+        # Ngoai le: is_reversal=True → skip range block (reversal chinh xac la vao o cuc doan)
         _range_window = min(100, n)
         if _range_window >= 20:
             high_rng = high.iloc[-_range_window:].max()
@@ -402,20 +407,20 @@ class TradingBot:
             if rng > 0:
                 range_pos = (price - low_rng) / rng
                 if not is_reversal:
-                    if direction == 1 and range_pos > 0.75:
-                        logger.debug(f"micro_entry: HARD BLOCK long — 100c range_pos={range_pos:.2f} > 0.75")
+                    if direction == 1 and range_pos > 0.90:  # chi block khi o top 10% (tang tu 75%)
+                        logger.debug(f"micro_entry: HARD BLOCK long — 100c range_pos={range_pos:.2f} > 0.90")
                         return False
-                    if direction == -1 and range_pos < 0.25:
-                        logger.debug(f"micro_entry: HARD BLOCK short — 100c range_pos={range_pos:.2f} < 0.25")
+                    if direction == -1 and range_pos < 0.10:  # chi block khi o bottom 10% (tang tu 25%)
+                        logger.debug(f"micro_entry: HARD BLOCK short — 100c range_pos={range_pos:.2f} < 0.10")
                         return False
-                # Bonus cho entry o vung an toan
+                # Bonus cho entry o vung an toan (range 30%-70%)
                 if direction == 1 and range_pos < 0.45:
                     score += 1
                 elif direction == -1 and range_pos > 0.55:
                     score += 1
 
-        # 20-candle local range: check them de tranh short o day local / long o dinh local
-        # Bat cac truong hop 100-candle cho thay midrange nhung local dang o extreme
+        # 20-candle local range: chi block khi thuc su o cuc doan nho (top/bottom 15%)
+        # Nguong cu 65%/35% qua chat — block moi breakout DOWN (luon o bottom 20c sau breakdown)
         _local_window = min(20, n)
         if _local_window >= 10 and not is_reversal:
             local_high = high.iloc[-_local_window:].max()
@@ -423,11 +428,11 @@ class TradingBot:
             local_rng  = local_high - local_low
             if local_rng > 0:
                 local_pos = (price - local_low) / local_rng
-                if direction == 1 and local_pos > 0.65:
-                    logger.debug(f"micro_entry: HARD BLOCK long — 20c local_pos={local_pos:.2f} > 0.65 (local top)")
+                if direction == 1 and local_pos > 0.88:  # tang tu 0.65 → 0.88
+                    logger.debug(f"micro_entry: HARD BLOCK long — 20c local_pos={local_pos:.2f} > 0.88")
                     return False
-                if direction == -1 and local_pos < 0.35:
-                    logger.debug(f"micro_entry: HARD BLOCK short — 20c local_pos={local_pos:.2f} < 0.35 (local bottom)")
+                if direction == -1 and local_pos < 0.12:  # giam tu 0.35 → 0.12
+                    logger.debug(f"micro_entry: HARD BLOCK short — 20c local_pos={local_pos:.2f} < 0.12")
                     return False
 
         # Factor 7: Momentum deceleration — nen gan day nho manh so voi nen truoc
@@ -578,31 +583,32 @@ class TradingBot:
                     _micro_spike_pump = True
                     logger.debug(f"{symbol}: cumulative net pump {_net_move*100:.1f}% in 15 candles → pump flag")
 
-            # RSI 1m: oversold (< 35) → dump flag (tranh short o day);
-            # overbought (> 65) → pump flag (tranh long o dinh)
-            # Nguong 35/65 dong bo voi nguong reversal detection cua 15m
+            # RSI 1m: chi block khi CUC DOAN that su (< 20 hoac > 80)
+            # Nguong 35/65 cu qua rong: trong downtrend 1m RSI thuong 25-40 → block het SHORT
+            # 20/80: chi bat truong hop panic dump/pump that su (gap xuong, margin call cascade)
             if len(df_micro) >= 14:
                 _micro_rsi = compute_rsi(df_micro["close"]).iloc[-1]
-                if _micro_rsi < 35 and not _micro_spike_pump:
+                if _micro_rsi < 20 and not _micro_spike_pump:
                     _micro_spike_dump = True
-                    logger.debug(f"{symbol}: 1m RSI={_micro_rsi:.1f} oversold → dump flag (tranh short o day)")
-                elif _micro_rsi > 65 and not _micro_spike_dump:
+                    logger.debug(f"{symbol}: 1m RSI={_micro_rsi:.1f} extreme oversold → dump flag")
+                elif _micro_rsi > 80 and not _micro_spike_dump:
                     _micro_spike_pump = True
-                    logger.debug(f"{symbol}: 1m RSI={_micro_rsi:.1f} overbought → pump flag (tranh long o dinh)")
+                    logger.debug(f"{symbol}: 1m RSI={_micro_rsi:.1f} extreme overbought → pump flag")
 
-            # Consecutive candles block: 5 nen lien tiep cung chieu = momentum extended
-            # Tranh long sau 5 nen xanh lien tiep (dang o dinh), short sau 5 nen do (dang o day)
-            if len(df_micro) >= 5:
-                _micro_c = df_micro["close"].iloc[-5:].values
-                _micro_o = df_micro["open"].iloc[-5:].values
-                _all_green = all(_micro_c[i] > _micro_o[i] for i in range(5))
-                _all_red   = all(_micro_c[i] < _micro_o[i] for i in range(5))
+            # Consecutive candles block: 8 nen lien tiep cung chieu (tang tu 5)
+            # 5 nen: qua nho — trong trending market thuong co 5-6 nen cung mau lien tiep
+            # 8 nen lien tiep = momentum da qua kiet suc / exhaustion co the dao chieu
+            if len(df_micro) >= 8:
+                _micro_c = df_micro["close"].iloc[-8:].values
+                _micro_o = df_micro["open"].iloc[-8:].values
+                _all_green = all(_micro_c[i] > _micro_o[i] for i in range(8))
+                _all_red   = all(_micro_c[i] < _micro_o[i] for i in range(8))
                 if _all_green and not _micro_spike_pump:
                     _micro_spike_pump = True
-                    logger.debug(f"{symbol}: 5 consecutive green 1m candles → pump flag (extended run)")
+                    logger.debug(f"{symbol}: 8 consecutive green 1m candles → pump flag (exhaustion)")
                 if _all_red and not _micro_spike_dump:
                     _micro_spike_dump = True
-                    logger.debug(f"{symbol}: 5 consecutive red 1m candles → dump flag (extended run)")
+                    logger.debug(f"{symbol}: 8 consecutive red 1m candles → dump flag (exhaustion)")
 
             # 30-candle extended check: bat dump/pump xay ra 15-30 phut truoc (ngoai window 15c)
             # ADA/DOGE: dump tu 30 phut truoc, gia on dinh o day → 15c miss nhung 30c bat duoc
@@ -618,39 +624,27 @@ class TradingBot:
                         _micro_spike_pump = True
                         logger.debug(f"{symbol}: 30c net pump {_net_move_30*100:.1f}% → pump flag")
 
-            # Drop-from-high / Rise-from-low (30c): tranh short sau khi gia da roi >= 0.25% tu dinh
-            # va tranh long sau khi gia da tang >= 0.25% tu day — move da xong roi, vao late
-            # SKHY entry 172.18 vs high 172.42 = 0.14% drop → < 0.5% cu miss → ha xuong 0.25%
-            # NEAR entry 2.0788 vs high 2.0817 = 0.14% drop → tuong tu
-            # SNDK entry 1600.53 vs high 1607.74 = 0.45% drop → < 0.5% cu miss → bat duoc voi 0.25%
+            # Drop-from-high / Rise-from-low (30c): chi block khi da di >= 0.60% (spike that su)
+            # 0.20% cu qua nho — trong downtrend bat ky 30c nao cung co drop > 0.20% → block het SHORT
+            # 0.60% = dich chuyen that su, price da di xa khoi vung vao lenh tot
             if len(df_micro) >= 30:
                 _high_30c = df_micro["high"].iloc[-30:].max()
                 _low_30c  = df_micro["low"].iloc[-30:].min()
                 if _high_30c > 0 and not _micro_spike_dump:
                     _drop_from_high = (_high_30c - _micro_price) / _high_30c
-                    if _drop_from_high > 0.0020:  # gia da roi >= 0.20% tu dinh 30c
+                    if _drop_from_high > 0.0060:  # tang tu 0.20% → 0.60%: chi block spike that su
                         _micro_spike_dump = True
-                        logger.debug(f"{symbol}: 30c drop-from-high {_drop_from_high*100:.2f}% → dump flag (late short)")
+                        logger.debug(f"{symbol}: 30c drop-from-high {_drop_from_high*100:.2f}% → dump flag")
                 if _low_30c > 0 and not _micro_spike_pump:
                     _rise_from_low = (_micro_price - _low_30c) / _low_30c
-                    if _rise_from_low > 0.0020:  # gia da tang >= 0.20% tu day 30c
+                    if _rise_from_low > 0.0060:  # tang tu 0.20% → 0.60%
                         _micro_spike_pump = True
-                        logger.debug(f"{symbol}: 30c rise-from-low {_rise_from_low*100:.2f}% → pump flag (late long)")
+                        logger.debug(f"{symbol}: 30c rise-from-low {_rise_from_low*100:.2f}% → pump flag")
 
-            # Range position in 30c: bottom 30% → dump flag; top 30% → pump flag
-            # Nang len tu 35%/65% → 30%/70% de bat them truong hop price chua dat extreme nhung da gan dinh/day
-            if len(df_micro) >= 30 and _micro_price > 0:
-                _h30 = df_micro["high"].iloc[-30:].max()
-                _l30 = df_micro["low"].iloc[-30:].min()
-                _rng30 = _h30 - _l30
-                if _rng30 > 0:
-                    _pos30 = (_micro_price - _l30) / _rng30  # 0=at low, 1=at high
-                    if _pos30 < 0.35 and not _micro_spike_dump:
-                        _micro_spike_dump = True
-                        logger.debug(f"{symbol}: price in bottom {_pos30*100:.0f}% of 30c range → dump flag (near 30c low, block short)")
-                    elif _pos30 > 0.65 and not _micro_spike_pump:
-                        _micro_spike_pump = True
-                        logger.debug(f"{symbol}: price in top {(1-_pos30)*100:.0f}% of 30c range → pump flag (near 30c high, block long)")
+            # 30c range position block da DUOC XOA:
+            # _pos30 < 0.35 → dump flag: SAI trong downtrend (price luon o bottom 35% → block het SHORT)
+            # _pos30 > 0.65 → pump flag: SAI trong uptrend (price luon o top 35% → block het LONG)
+            # Hay de macro trend + ADX + consensus xu ly phan nay
 
             # Re-check sau extended filters: ca 2 flag co the duoc set boi cac check phia tren
             # (vi du: dump flag boi drop-from-high + pump flag boi rise-from-low trong ranging market)
@@ -658,21 +652,22 @@ class TradingBot:
                 logger.debug(f"{symbol}: skip — dual spike flag after extended checks (ranging/choppy 1m)")
                 return False
 
-        # Drop-from-high / Rise-from-low (60c): extend window de bat moves tu 30-60 phut truoc
-        # Nguong 0.30% (cao hon 30c 0.20%) de tranh false positive trong trending market
+        # Drop-from-high / Rise-from-low (60c): nguong 1.0% (tang tu 0.30%)
+        # 0.30% qua nho — trong uptrend, price luon cach 60c high >= 0.30% sau khi pullback nho
+        # 1.0% = bounce/retracement dang ke, entry co the da muon
         if not df_micro.empty and len(df_micro) >= 60:
             _high_60c = df_micro["high"].iloc[-60:].max()
             _low_60c  = df_micro["low"].iloc[-60:].min()
             if _high_60c > 0 and not _micro_spike_dump:
                 _drop_60 = (_high_60c - _micro_price) / _high_60c
-                if _drop_60 > 0.0030:  # gia da roi >= 0.30% tu dinh 60c
+                if _drop_60 > 0.0100:  # tang tu 0.30% → 1.0%: drop that su trong 1h
                     _micro_spike_dump = True
-                    logger.debug(f"{symbol}: 60c drop-from-high {_drop_60*100:.2f}% → dump flag (late short)")
+                    logger.debug(f"{symbol}: 60c drop-from-high {_drop_60*100:.2f}% → dump flag")
             if _low_60c > 0 and not _micro_spike_pump:
                 _rise_60 = (_micro_price - _low_60c) / _low_60c
-                if _rise_60 > 0.0030:  # gia da tang >= 0.30% tu day 60c
+                if _rise_60 > 0.0100:  # tang tu 0.30% → 1.0%
                     _micro_spike_pump = True
-                    logger.debug(f"{symbol}: 60c rise-from-low {_rise_60*100:.2f}% → pump flag (late long)")
+                    logger.debug(f"{symbol}: 60c rise-from-low {_rise_60*100:.2f}% → pump flag")
 
         # 5m / 1h extended pump-dump check (12 x 5m candles = 1 gio)
         # Bat pump/dump xay ra trong 1h qua ma 30c 1m miss (price rang gan dinh/day trong 30p)
@@ -1062,23 +1057,23 @@ class TradingBot:
                 logger.debug(f"{symbol}: skip — 1m EMA9({_e9:.4f}) > EMA21({_e21:.4f}), bullish micro, block SHORT")
                 return False
 
-        # EMA50 pullback filter (15m): chi enter khi gia GAN EMA50, khong chase khi da extended xa
-        # Uptrend LONG: price nen bounce tu EMA50 (support), khong phai cach EMA50 qua xa
-        # Downtrend SHORT: price nen tu EMA50 (resistance) xuong, khong phai da qua extended
-        # Muc 2.5x ATR_15m: cho phep price o tren/duoi EMA50 mot chut (momentum), nhung khong qua xa
+        # EMA50 pullback filter (15m): noi long len 4.0x ATR (tu 2.0x)
+        # 2.0x ATR qua chat — trong trending market (ADX > 25), price co the gap EMA50 3-5x ATR
+        # voi leverage thap hon (20x thay vi 100x), loss tu EMA50 extended trade nho hon
+        # Chi block khi THUC SU qua extended: 4x ATR (khoang 2-3% cho most coins)
         if len(df_signal) >= 50:
             _ema50_15m = compute_ema(df_signal["close"], 50).iloc[-1]
             _atr_15m   = compute_atr(df_signal, config.ATR_PERIOD).iloc[-1]
             _p15 = df_signal["close"].iloc[-1]
             if _ema50_15m > 0 and _atr_15m > 0:
                 _ema50_dist = _p15 - _ema50_15m  # + = above, - = below
-                if best.direction == 1 and _ema50_dist > 2.0 * _atr_15m:
+                if best.direction == 1 and _ema50_dist > 4.0 * _atr_15m:
                     logger.debug(
                         f"{symbol}: skip LONG — price {_ema50_dist/_ema50_15m*100:.1f}% above 15m EMA50 "
                         f"({_ema50_dist/(_atr_15m+1e-9):.1f}x ATR, too extended)"
                     )
                     return False
-                if best.direction == -1 and _ema50_dist < -2.0 * _atr_15m:
+                if best.direction == -1 and _ema50_dist < -4.0 * _atr_15m:
                     logger.debug(
                         f"{symbol}: skip SHORT — price {-_ema50_dist/_ema50_15m*100:.1f}% below 15m EMA50 "
                         f"({-_ema50_dist/(_atr_15m+1e-9):.1f}x ATR, too extended)"

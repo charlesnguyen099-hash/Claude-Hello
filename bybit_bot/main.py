@@ -416,11 +416,11 @@ class TradingBot:
             local_rng  = local_high - local_low
             if local_rng > 0:
                 local_pos = (price - local_low) / local_rng
-                if direction == 1 and local_pos > 0.70:
-                    logger.debug(f"micro_entry: HARD BLOCK long — 20c local_pos={local_pos:.2f} > 0.70 (local top)")
+                if direction == 1 and local_pos > 0.65:
+                    logger.debug(f"micro_entry: HARD BLOCK long — 20c local_pos={local_pos:.2f} > 0.65 (local top)")
                     return False
-                if direction == -1 and local_pos < 0.30:
-                    logger.debug(f"micro_entry: HARD BLOCK short — 20c local_pos={local_pos:.2f} < 0.30 (local bottom)")
+                if direction == -1 and local_pos < 0.35:
+                    logger.debug(f"micro_entry: HARD BLOCK short — 20c local_pos={local_pos:.2f} < 0.35 (local bottom)")
                     return False
 
         # Factor 7: Momentum deceleration — nen gan day nho manh so voi nen truoc
@@ -621,12 +621,12 @@ class TradingBot:
                 _low_30c  = df_micro["low"].iloc[-30:].min()
                 if _high_30c > 0 and not _micro_spike_dump:
                     _drop_from_high = (_high_30c - _micro_price) / _high_30c
-                    if _drop_from_high > 0.0025:  # gia da roi >= 0.25% tu dinh 30c
+                    if _drop_from_high > 0.0020:  # gia da roi >= 0.20% tu dinh 30c
                         _micro_spike_dump = True
                         logger.debug(f"{symbol}: 30c drop-from-high {_drop_from_high*100:.2f}% → dump flag (late short)")
                 if _low_30c > 0 and not _micro_spike_pump:
                     _rise_from_low = (_micro_price - _low_30c) / _low_30c
-                    if _rise_from_low > 0.0025:  # gia da tang >= 0.25% tu day 30c
+                    if _rise_from_low > 0.0020:  # gia da tang >= 0.20% tu day 30c
                         _micro_spike_pump = True
                         logger.debug(f"{symbol}: 30c rise-from-low {_rise_from_low*100:.2f}% → pump flag (late long)")
 
@@ -638,10 +638,10 @@ class TradingBot:
                 _rng30 = _h30 - _l30
                 if _rng30 > 0:
                     _pos30 = (_micro_price - _l30) / _rng30  # 0=at low, 1=at high
-                    if _pos30 < 0.30 and not _micro_spike_dump:
+                    if _pos30 < 0.35 and not _micro_spike_dump:
                         _micro_spike_dump = True
                         logger.debug(f"{symbol}: price in bottom {_pos30*100:.0f}% of 30c range → dump flag (near 30c low, block short)")
-                    elif _pos30 > 0.70 and not _micro_spike_pump:
+                    elif _pos30 > 0.65 and not _micro_spike_pump:
                         _micro_spike_pump = True
                         logger.debug(f"{symbol}: price in top {(1-_pos30)*100:.0f}% of 30c range → pump flag (near 30c high, block long)")
 

@@ -156,8 +156,8 @@ class Executor:
     def manage_open_positions(self, open_positions: list[dict]):
         """
         Quan ly vi the dang mo theo 3 muc:
-        1. BREAKEVEN_TRIGGER (15%): doi SL ve entry + phi som
-        2. PARTIAL_CLOSE_TRIGGER (75%): dong 50% reduce-only, cap nhat TP len TP2, xac nhan breakeven SL
+        1. BREAKEVEN_TRIGGER: doi SL ve entry + phi som
+        2. PARTIAL_CLOSE_TRIGGER: dong 50% reduce-only, cap nhat TP len TP2, xac nhan breakeven SL
         3. 50% con lai chay den TP2 voi zero downside risk (SL = breakeven)
         """
         for pos in open_positions:
@@ -174,11 +174,24 @@ class Executor:
                     self._close_position(pos)
                 continue
 
+            # Dung recent high/low tu 3 nen 1m de khong bo lo wick ngan giua 2 poll cycle
+            # (Bot poll moi 15s — wick len/xuong co the bien mat truoc poll tiep theo)
+            best_price = mark_price
+            try:
+                df1m = self.client.get_klines(symbol, "1", 4)
+                if not df1m.empty and len(df1m) >= 3:
+                    if side == "Buy":
+                        best_price = df1m["high"].iloc[-3:].max()
+                    else:
+                        best_price = df1m["low"].iloc[-3:].min()
+            except Exception:
+                pass
+
             dist_to_tp1 = abs(tp1_threshold - entry)
             if side == "Buy":
-                dist_moved = mark_price - entry
+                dist_moved = best_price - entry
             else:
-                dist_moved = entry - mark_price
+                dist_moved = entry - best_price
 
             # --- Muc 1: Break-even SL tai BREAKEVEN_TRIGGER% (15%) duong den TP1 ---
             if not self._breakeven_set.get(symbol, False) and dist_to_tp1 > 0 and dist_moved > 0:

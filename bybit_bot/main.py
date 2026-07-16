@@ -493,10 +493,19 @@ class TradingBot:
         if df_signal.empty or len(df_signal) < 50:
             return False
 
+        # Large-cap flag: BTC va ETH co % volatility thap hon altcoin (~0.5x)
+        # Tat ca percentage thresholds (spike, pump/dump detection) can duoc scale xuong
+        # De tranh ETH/BTC bi bo qua (ATR% nho) hoac vao lenh tai dinh/day chua duoc bat
+        _is_largecap = symbol in {"BTCUSDT", "ETHUSDT"}
+        # Scale factor cho tat ca % threshold: largecap dung 0.5x
+        _sp = 0.5 if _is_largecap else 1.0
+
         # ATR filter: bo qua symbol bien dong qua nho
+        # Large-cap: 0.2% (BTC ATR% ~0.3-0.4%, ETH ~0.3%), altcoin: 0.4%
         atr   = compute_atr(df_signal).iloc[-1]
         price = df_signal["close"].iloc[-1]
-        if price > 0 and atr / price < config.MIN_ATR_PCT:
+        _min_atr_pct = config.MIN_ATR_PCT * _sp
+        if price > 0 and atr / price < _min_atr_pct:
             return False
 
         # ADX filter: top10 dung nguong thap hon (18 vs 20) — coin lon trend smoother
@@ -616,10 +625,10 @@ class TradingBot:
             _curr_close = df_micro["close"].iloc[-1]
             if _curr_open > 0:
                 _curr_body_pct = (_curr_close - _curr_open) / _curr_open
-                if _curr_body_pct > 0.003 and not _micro_spike_pump:   # +0.3% body → pump flag (tu 0.4%)
+                if _curr_body_pct > 0.003 * _sp and not _micro_spike_pump:
                     _micro_spike_pump = True
                     logger.debug(f"{symbol}: forming 1m candle body +{_curr_body_pct*100:.2f}% → pump flag (mid-pump)")
-                elif _curr_body_pct < -0.003 and not _micro_spike_dump: # -0.3% body → dump flag (tu 0.4%)
+                elif _curr_body_pct < -0.003 * _sp and not _micro_spike_dump:
                     _micro_spike_dump = True
                     logger.debug(f"{symbol}: forming 1m candle body {_curr_body_pct*100:.2f}% → dump flag (mid-dump)")
             if _micro_spike_dump and _micro_spike_pump:
@@ -631,10 +640,10 @@ class TradingBot:
             _micro_price  = df_micro["close"].iloc[-1]
             if _close_15_ago > 0:
                 _net_move = (_micro_price - _close_15_ago) / _close_15_ago
-                if _net_move < -0.008 and not _micro_spike_dump:   # net drop > 0.8% → dump flag
+                if _net_move < -0.008 * _sp and not _micro_spike_dump:
                     _micro_spike_dump = True
                     logger.debug(f"{symbol}: cumulative net dump {_net_move*100:.1f}% in 15 candles → dump flag")
-                elif _net_move > 0.008 and not _micro_spike_pump:  # net pump > 0.8% → pump flag
+                elif _net_move > 0.008 * _sp and not _micro_spike_pump:
                     _micro_spike_pump = True
                     logger.debug(f"{symbol}: cumulative net pump {_net_move*100:.1f}% in 15 candles → pump flag")
 
@@ -650,20 +659,20 @@ class TradingBot:
                     _micro_spike_pump = True
                     logger.debug(f"{symbol}: 1m RSI={_micro_rsi:.1f} extreme overbought → pump flag")
 
-            # Consecutive candles block: 8 nen lien tiep cung chieu (tang tu 5)
-            # 5 nen: qua nho — trong trending market thuong co 5-6 nen cung mau lien tiep
-            # 8 nen lien tiep = momentum da qua kiet suc / exhaustion co the dao chieu
-            if len(df_micro) >= 8:
-                _micro_c = df_micro["close"].iloc[-8:].values
-                _micro_o = df_micro["open"].iloc[-8:].values
-                _all_green = all(_micro_c[i] > _micro_o[i] for i in range(8))
-                _all_red   = all(_micro_c[i] < _micro_o[i] for i in range(8))
+            # Consecutive candles block: largecap 6 nen (8 lien tiep tren BTC/ETH rat hiem)
+            # Altcoin: 8 nen lien tiep = exhaustion / dao chieu
+            _consec_n = 6 if _is_largecap else 8
+            if len(df_micro) >= _consec_n:
+                _micro_c = df_micro["close"].iloc[-_consec_n:].values
+                _micro_o = df_micro["open"].iloc[-_consec_n:].values
+                _all_green = all(_micro_c[i] > _micro_o[i] for i in range(_consec_n))
+                _all_red   = all(_micro_c[i] < _micro_o[i] for i in range(_consec_n))
                 if _all_green and not _micro_spike_pump:
                     _micro_spike_pump = True
-                    logger.debug(f"{symbol}: 8 consecutive green 1m candles → pump flag (exhaustion)")
+                    logger.debug(f"{symbol}: {_consec_n} consecutive green 1m candles → pump flag (exhaustion)")
                 if _all_red and not _micro_spike_dump:
                     _micro_spike_dump = True
-                    logger.debug(f"{symbol}: 8 consecutive red 1m candles → dump flag (exhaustion)")
+                    logger.debug(f"{symbol}: {_consec_n} consecutive red 1m candles → dump flag (exhaustion)")
 
             # 30-candle extended check: bat dump/pump xay ra 15-30 phut truoc (ngoai window 15c)
             # ADA/DOGE: dump tu 30 phut truoc, gia on dinh o day → 15c miss nhung 30c bat duoc
@@ -672,10 +681,10 @@ class TradingBot:
                 _close_30_ago = df_micro["close"].iloc[-30]
                 if _close_30_ago > 0:
                     _net_move_30 = (_micro_price - _close_30_ago) / _close_30_ago
-                    if _net_move_30 < -0.012:
+                    if _net_move_30 < -0.012 * _sp:
                         _micro_spike_dump = True
                         logger.debug(f"{symbol}: 30c net dump {_net_move_30*100:.1f}% → dump flag")
-                    elif _net_move_30 > 0.012:
+                    elif _net_move_30 > 0.012 * _sp:
                         _micro_spike_pump = True
                         logger.debug(f"{symbol}: 30c net pump {_net_move_30*100:.1f}% → pump flag")
 
@@ -687,12 +696,12 @@ class TradingBot:
                 _low_30c  = df_micro["low"].iloc[-30:].min()
                 if _high_30c > 0 and not _micro_spike_dump:
                     _drop_from_high = (_high_30c - _micro_price) / _high_30c
-                    if _drop_from_high > 0.0060:  # tang tu 0.20% → 0.60%: chi block spike that su
+                    if _drop_from_high > 0.0060 * _sp:
                         _micro_spike_dump = True
                         logger.debug(f"{symbol}: 30c drop-from-high {_drop_from_high*100:.2f}% → dump flag")
                 if _low_30c > 0 and not _micro_spike_pump:
                     _rise_from_low = (_micro_price - _low_30c) / _low_30c
-                    if _rise_from_low > 0.0060:  # tang tu 0.20% → 0.60%
+                    if _rise_from_low > 0.0060 * _sp:
                         _micro_spike_pump = True
                         logger.debug(f"{symbol}: 30c rise-from-low {_rise_from_low*100:.2f}% → pump flag")
 
@@ -715,12 +724,12 @@ class TradingBot:
             _low_60c  = df_micro["low"].iloc[-60:].min()
             if _high_60c > 0 and not _micro_spike_dump:
                 _drop_60 = (_high_60c - _micro_price) / _high_60c
-                if _drop_60 > 0.0100:  # tang tu 0.30% → 1.0%: drop that su trong 1h
+                if _drop_60 > 0.0100 * _sp:
                     _micro_spike_dump = True
                     logger.debug(f"{symbol}: 60c drop-from-high {_drop_60*100:.2f}% → dump flag")
             if _low_60c > 0 and not _micro_spike_pump:
                 _rise_60 = (_micro_price - _low_60c) / _low_60c
-                if _rise_60 > 0.0100:  # tang tu 0.30% → 1.0%
+                if _rise_60 > 0.0100 * _sp:
                     _micro_spike_pump = True
                     logger.debug(f"{symbol}: 60c rise-from-low {_rise_60*100:.2f}% → pump flag")
 
@@ -733,12 +742,13 @@ class TradingBot:
             _s12_high = df_scalp["high"].iloc[-12:].max()
             if _s12_low > 0 and not _micro_spike_pump:
                 _rise_1h = (_s_price - _s12_low) / _s12_low
-                if _rise_1h > 0.015:  # 1.5%: tranh false positive cho MOMENTUM LONG trong uptrend
+                # Largecap: 0.75% (BTC/ETH pump 1% trong 1h = significant); altcoin: 1.5%
+                if _rise_1h > 0.015 * _sp:
                     _micro_spike_pump = True
                     logger.debug(f"{symbol}: 5m 1h rise-from-low {_rise_1h*100:.2f}% → pump flag (momentum)")
             if _s12_high > 0 and not _micro_spike_dump:
                 _drop_1h = (_s12_high - _s_price) / _s12_high
-                if _drop_1h > 0.015:  # 1.5%: tranh false positive cho MOMENTUM SHORT trong downtrend
+                if _drop_1h > 0.015 * _sp:
                     _micro_spike_dump = True
                     logger.debug(f"{symbol}: 5m 1h drop-from-high {_drop_1h*100:.2f}% → dump flag (momentum)")
 

@@ -56,10 +56,25 @@ class TradingBot:
         # BTC global trend: +1 uptrend, -1 downtrend, 0 sideways (cap nhat moi tick)
         self.btc_trend: int = 0
         self.btc_trend_4h: int = 0
+        # Circuit breaker: tat ca losses trong 15 phut gan nhat (bat ky symbol)
+        # Neu >= 3 losses trong 15 phut → pause 30 phut khong mo lenh moi
+        self._loss_history: list[float] = []   # timestamps cua tung lenh lo
+        self._circuit_breaker_until: float = 0  # timestamp het pause
 
     def _on_symbol_loss(self, symbol: str, side: str = ""):
         self._recent_loss_ts[symbol] = time.time()
         logger.info(f"{symbol}: post-loss cooldown started (5 min higher consensus)")
+        # Circuit breaker: track all losses across all symbols
+        now = time.time()
+        self._loss_history.append(now)
+        # Chi giu losses trong 15 phut gan nhat
+        self._loss_history = [t for t in self._loss_history if now - t <= 900]
+        if len(self._loss_history) >= 3:
+            self._circuit_breaker_until = now + 1800  # pause 30 phut
+            logger.warning(
+                f"[CIRCUIT BREAKER] {len(self._loss_history)} losses in 15 min → "
+                f"pause new entries for 30 min (until {time.strftime('%H:%M:%S', time.localtime(self._circuit_breaker_until))})"
+            )
 
     # ── Main loop ────────────────────────────────────────────────────────────
 
@@ -95,6 +110,20 @@ class TradingBot:
 
     def _tick(self):
         now = time.time()
+
+        # Circuit breaker: neu da co >= 3 losses trong 15 phut, pause mo lenh moi 30 phut
+        if now < self._circuit_breaker_until:
+            remaining = self._circuit_breaker_until - now
+            logger.info(f"[CIRCUIT BREAKER] Paused — {remaining/60:.0f} min remaining, manage positions only")
+            # Van quan ly vi the dang mo (SL/TP/breakeven) nhung KHONG mo lenh moi
+            try:
+                equity         = self.client.get_wallet_balance()
+                open_positions = self.client.get_positions()
+                if open_positions:
+                    self.executor.manage_open_positions(open_positions)
+            except Exception:
+                pass
+            return
 
         # Refresh danh sach symbols moi gio — giu nguyen thu tu Bybit (volume cao nhat truoc)
         if now - self.last_scan_ts >= config.SCAN_INTERVAL_SEC:
@@ -497,8 +526,7 @@ class TradingBot:
         # RSI cho reversal detection
         rsi_now = compute_rsi(df_signal["close"]).iloc[-1]
 
-        # 1h range position: block long o TOP 82% / short o BOTTOM 18% cua 20-candle 1h range
-        # LAB Long: vao o 85th pct → block; ADA Short: vao o 12th pct → block; DOGE Short: 15th pct → block
+        # 1h range position: block long o TOP 75% / short o BOTTOM 25% cua 20-candle 1h range
         # Khong ap dung cho REVERSAL (reversal chinh xac la vao o cac cuc doan nay)
         _h1_block_long  = False
         _h1_block_short = False
@@ -508,12 +536,31 @@ class TradingBot:
             h1_rng  = h1_high - h1_low
             if h1_rng > 0:
                 h1_pos = (price - h1_low) / h1_rng
-                if h1_pos > 0.78:
+                if h1_pos > 0.75:
                     _h1_block_long = True
-                    logger.debug(f"{symbol}: 1h range_pos={h1_pos:.2f} > 0.78 → block LONG (1h top)")
-                elif h1_pos < 0.22:
+                    logger.debug(f"{symbol}: 1h range_pos={h1_pos:.2f} > 0.75 → block LONG (1h top)")
+                elif h1_pos < 0.25:
                     _h1_block_short = True
-                    logger.debug(f"{symbol}: 1h range_pos={h1_pos:.2f} < 0.22 → block SHORT (1h bottom)")
+                    logger.debug(f"{symbol}: 1h range_pos={h1_pos:.2f} < 0.25 → block SHORT (1h bottom)")
+
+        # 2h 1m range: block SHORT khi gia o bottom 20% cua range 120 nen 1m (2 gio)
+        # Block LONG khi o top 80%
+        # ONDOUSDT/SKHYNIXUSDT/XAGUSDT pattern: price dump 2h truoc, then bot vao SHORT o day → loss
+        # 120c = 2h 1m candles = du dai de bat dump xay ra truoc 30-60 phut
+        _m2h_block_long  = False
+        _m2h_block_short = False
+        if not df_micro.empty and len(df_micro) >= 120:
+            _m2h_high = df_micro["high"].iloc[-120:].max()
+            _m2h_low  = df_micro["low"].iloc[-120:].min()
+            _m2h_rng  = _m2h_high - _m2h_low
+            if _m2h_rng > 0:
+                _m2h_pos = (price - _m2h_low) / _m2h_rng
+                if _m2h_pos < 0.20:
+                    _m2h_block_short = True
+                    logger.debug(f"{symbol}: 2h 1m range_pos={_m2h_pos:.2f} < 0.20 → block SHORT (2h bottom)")
+                elif _m2h_pos > 0.80:
+                    _m2h_block_long = True
+                    logger.debug(f"{symbol}: 2h 1m range_pos={_m2h_pos:.2f} > 0.80 → block LONG (2h top)")
 
         # Momentum confirmation (15m): 2 nen lien tiep gan nhat phai cung chieu voi signal
         opens  = df_signal["open"]
@@ -739,7 +786,10 @@ class TradingBot:
                     (bo_sig.direction == 1  and (macro_trend + macro_4h) >= 1) or
                     (bo_sig.direction == -1 and (macro_trend + macro_4h) <= -1)
                 )
-                if bo_ok and micro_ok and not is_spike and post_spike_ok and micro_spike_ok and bo_btc_ok and bo_h1_ok and bo_24h_ok and bo_trend_ok:
+                # 2h 1m range block cho BREAKOUT — tranh short o day / long o dinh 2h
+                bo_m2h_ok = not (_m2h_block_short and bo_sig.direction == -1) and \
+                            not (_m2h_block_long  and bo_sig.direction == 1)
+                if bo_ok and micro_ok and not is_spike and post_spike_ok and micro_spike_ok and bo_btc_ok and bo_h1_ok and bo_24h_ok and bo_trend_ok and bo_m2h_ok:
                     # BREAKOUT phai qua range check — tranh long o dinh / short o day
                     if not self._micro_entry_analysis(df_micro, bo_sig.direction):
                         logger.debug(f"{symbol}: BREAKOUT skip — range/micro_entry block")
@@ -1029,12 +1079,21 @@ class TradingBot:
             return False
 
         # 1h range hard block (MOMENTUM path only — REVERSAL duoc phep o cuc doan)
-        # Block long o top 78% / short o bottom 22% cua 20-candle 1h range
+        # Block long o top 75% / short o bottom 25% cua 20-candle 1h range
         if _h1_block_long and best.direction == 1:
-            logger.debug(f"{symbol}: skip — price at 1h range top (>78%), block MOMENTUM LONG")
+            logger.debug(f"{symbol}: skip — price at 1h range top (>75%), block MOMENTUM LONG")
             return False
         if _h1_block_short and best.direction == -1:
-            logger.debug(f"{symbol}: skip — price at 1h range bottom (<22%), block MOMENTUM SHORT")
+            logger.debug(f"{symbol}: skip — price at 1h range bottom (<25%), block MOMENTUM SHORT")
+            return False
+
+        # 2h 1m range block: tranh SHORT khi gia o bottom 20% range 2h
+        # ONDOUSDT/SKHYNIXUSDT/XAGUSDT: dump xay ra truoc do, bot vao SHORT o day → bounce → loss
+        if _m2h_block_short and best.direction == -1:
+            logger.debug(f"{symbol}: skip — price at 2h 1m range bottom (<20%), block MOMENTUM SHORT")
+            return False
+        if _m2h_block_long and best.direction == 1:
+            logger.debug(f"{symbol}: skip — price at 2h 1m range top (>80%), block MOMENTUM LONG")
             return False
 
         # 1m micro trend confirmation — tat ca coin (micro trend phai cung chieu hoac neutral)

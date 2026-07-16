@@ -57,11 +57,13 @@ class Executor:
                 return
 
             # Anti-whipsaw: khong force-close neu position mo < MIN_HOLD_SECONDS
-            # (tranh dong lenh chi 10-12 phut vi signal dao chieu ngau nhien tren 15m)
+            # (tranh dong lenh chi 4-13 phut vi signal dao chieu ngau nhien tren 15m)
             # Exception: dong ngay neu position dang lo > 20% margin (emergency exit)
+            # BUG FIX: KHONG dung _open_time (reset khi bot restart moi 60s).
+            #          Dung createdTime tu Bybit position data — chinh xac kể cả sau restart.
+            #          Fallback: neu exchange khong tra createdTime, dung _open_time.
+            #          Neu ca 2 deu khong co → held = 0 → BAO VE position (khong dong)
             MIN_HOLD_SECONDS = 1800  # 30 phut = 2 nen 15m
-            open_ts = self._open_time.get(symbol, 0)
-            held_seconds = time.time() - open_ts if open_ts > 0 else MIN_HOLD_SECONDS
             pos_pnl_pct = 0.0
             try:
                 notional = float(existing[0].get("positionValue", 1)) or 1
@@ -72,15 +74,26 @@ class Executor:
             except Exception:
                 pass
 
+            # Tinh thoi gian nam giu tu exchange createdTime (khong bi mat khi restart)
+            held_seconds = 0  # mac dinh = 0 (bao ve) neu khong biet
+            exchange_created_ms = int(existing[0].get("createdTime", 0))
+            if exchange_created_ms > 0:
+                held_seconds = time.time() - exchange_created_ms / 1000
+            else:
+                open_ts = self._open_time.get(symbol, 0)
+                if open_ts > 0:
+                    held_seconds = time.time() - open_ts
+                # Else: held_seconds = 0 → bao ve position
+
             if held_seconds < MIN_HOLD_SECONDS and pos_pnl_pct > -0.20:
                 logger.info(
-                    f"{symbol}: Signal reversal — but position only held {held_seconds:.0f}s "
-                    f"(< {MIN_HOLD_SECONDS}s) and PnL={pos_pnl_pct*100:.1f}% → skip reversal close"
+                    f"{symbol}: Signal reversal — SKIP (held={held_seconds:.0f}s "
+                    f"< {MIN_HOLD_SECONDS}s, PnL={pos_pnl_pct*100:.1f}%)"
                 )
                 return
 
-            logger.info(f"{symbol}: Signal reversal — closing {pos_side} before entering {signal_side} "
-                        f"(held={held_seconds:.0f}s, PnL={pos_pnl_pct*100:.1f}%)")
+            logger.info(f"{symbol}: Signal reversal → close {pos_side} (held={held_seconds:.0f}s, "
+                        f"PnL={pos_pnl_pct*100:.1f}%) → enter {signal_side}")
             self._close_position(existing[0])
             time.sleep(0.5)
 

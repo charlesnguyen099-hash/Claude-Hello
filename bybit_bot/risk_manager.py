@@ -101,10 +101,10 @@ class RiskManager:
         if qty < min_qty:
             qty = min_qty
             actual_risk = qty * sl_dist
-            if actual_risk > risk_amount * 3:
+            if actual_risk > risk_amount * 5:
                 logger.warning(
                     f"{signal.symbol}: min_qty risk too high — "
-                    f"actual_risk={actual_risk:.4f} > 3x intended={risk_amount:.4f} -> skip"
+                    f"actual_risk={actual_risk:.4f} > 5x intended={risk_amount:.4f} -> skip"
                 )
                 return None
 

@@ -702,20 +702,9 @@ class TradingBot:
 
         # macro_trend / macro_4h / _atr_for_sl da tinh TRUOC range blocks (tren)
 
-        # STRONG TREND OVERRIDE: priority coins trong confirmed trend (ca 15m VA 1h dong thuan)
-        # Price o bottom/top cua range LA DINH NGHIA cua downtrend/uptrend — KHONG phai exhaustion
-        # BTC -3% downtrend: price luon o bottom 5% moi range -> tat ca range blocks deu sai
-        # Clear range blocks cho CHIEU TREND khi priority + both TF confirm
+        # Strong trend flags — dung cho 30c range bypass va cac check sau
         _strong_bull = is_priority and macro_trend >= 1 and macro_4h >= 1
         _strong_bear = is_priority and macro_trend <= -1 and macro_4h <= -1
-        if _strong_bear:
-            _h1_block_short  = False   # price at 15m bottom = downtrend, not exhaustion
-            _m2h_block_short = False   # price at 2h bottom = downtrend continuation
-            logger.debug(f"{symbol}: strong bear confirmed (15m+1h) — clear short range blocks")
-        if _strong_bull:
-            _h1_block_long  = False    # price at 15m top = uptrend, not exhaustion
-            _m2h_block_long = False    # price at 2h top = uptrend continuation
-            logger.debug(f"{symbol}: strong bull confirmed (15m+1h) — clear long range blocks")
 
         # BREAKOUT: chay cho tat ca scan_list — su dung 1m signal data
         if df_signal is not None and not df_signal.empty and len(df_signal) >= 30:
@@ -843,6 +832,15 @@ class TradingBot:
                     # Chi can 1 trong 2 TF xac nhan — sum=0 (1h+4h conflict) van ok neu 1h confirm
                     long_ok  = macro_trend >= 1 or macro_4h >= 1
                     short_ok = macro_trend <= -1 or macro_4h <= -1
+                    # Early trend entry: cho phep SHORT/LONG khi 1m + 5m da confirm du 15m chua flip
+                    # BTC break down 06:00: 1m bearish + 5m bearish nhung 15m EMA chua cross -> miss het move
+                    # Neu ca micro (1m) va scalp (5m) deu bearish va coin la priority -> cho short du macro chua -1
+                    if is_priority and sig.direction == -1 and not short_ok:
+                        if micro_down and scalp_trend == -1:
+                            short_ok = True   # 1m+5m da confirm breakdown truoc 15m
+                    if is_priority and sig.direction == 1 and not long_ok:
+                        if micro_up and scalp_trend == 1:
+                            long_ok = True    # 1m+5m da confirm breakout truoc 15m
                     # 5m alignment pre-filter: khong dem signal khi 5m nguoc chieu (ALTCOIN ONLY)
                     # BTC/ETH (largecap): 5m corrections trong 1h trend la BINH THUONG (buy dip / sell bounce)
                     # -> khong apply cho largecap, dung 1m micro check (micro_up/down + EMA9/21) thay the

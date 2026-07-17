@@ -49,10 +49,11 @@ class IchimokuStrategy(BaseStrategy):
         trend_1h = self._trend_direction(df_trend)   # 1h
         macro_d  = self._trend_direction(df_macro)   # 4h
 
-        if tk_cross_up and above_cloud and chikou_bullish and (trend_1h + macro_d) >= 1:
+        # Ichimoku da co TK cross + cloud + chikou xac nhan — chi can 1h HOAC 4h dong thuan
+        if tk_cross_up and above_cloud and chikou_bullish and (trend_1h >= 1 or macro_d >= 1):
             return Signal(1, 0.9, self.name, price, atr, "Ichimoku TK cross up above cloud")
 
-        if tk_cross_down and below_cloud and chikou_bearish and (trend_1h + macro_d) <= -1:
+        if tk_cross_down and below_cloud and chikou_bearish and (trend_1h <= -1 or macro_d <= -1):
             return Signal(-1, 0.9, self.name, price, atr, "Ichimoku TK cross down below cloud")
 
         return null

@@ -568,15 +568,16 @@ class TradingBot:
                     _m2h_block_long = True
                     logger.debug(f"{symbol}: 2h 1m range_pos={_m2h_pos:.2f} > {_m2h_top_thresh} -> block LONG (2h top)")
 
-        # Momentum confirmation (15m): 2 nen lien tiep gan nhat phai cung chieu voi signal
+        # Momentum confirmation (15m): it nhat 2/3 nen gan nhat cung chieu voi signal
+        # 2-consecutive (c1 AND c2) qua chat: breakout candle c1=green, c2=red (consolidation) bi block
+        # 2-of-3 cho phep mot nen pullback trong xu huong — van du xac nhan momentum
         opens  = df_signal["open"]
         closes = df_signal["close"]
-        c1_bull = closes.iloc[-1] > opens.iloc[-1]
-        c2_bull = closes.iloc[-2] > opens.iloc[-2]
-        c1_bear = closes.iloc[-1] < opens.iloc[-1]
-        c2_bear = closes.iloc[-2] < opens.iloc[-2]
-        short_term_up   = c1_bull and c2_bull
-        short_term_down = c1_bear and c2_bear
+        _3c_bodies = [closes.iloc[-i] - opens.iloc[-i] for i in range(1, 4)]
+        _n_bull3 = sum(1 for b in _3c_bodies if b > 0)
+        _n_bear3 = sum(1 for b in _3c_bodies if b < 0)
+        short_term_up   = _n_bull3 >= 2   # 2 trong 3 nen xanh
+        short_term_down = _n_bear3 >= 2   # 2 trong 3 nen do
 
         # Spike filter: nen hien tai HOAC bat ky nen nao trong 5 nen gan nhat > 2x ATR
         # Neu co spike dump -> khong short them; spike pump -> khong long them
@@ -1209,7 +1210,7 @@ class TradingBot:
                     )
                     return False
 
-        # 1m micro entry timing: apply cho TAT CA coin voi phan tich day du 5 yeu to
+        # 1m micro entry timing: apply cho TAT CA coin voi phan tich day du 7 yeu to (threshold=2)
         if not self._micro_entry_analysis(df_micro, best.direction):
             logger.debug(f"{symbol}: skip — 1m micro entry timing not confirmed (score too low)")
             return False

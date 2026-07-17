@@ -48,16 +48,16 @@ class VWAPVolumeStrategy(BaseStrategy):
         trend_1h = self._trend_direction(df_trend)   # 1h
         macro_d  = self._trend_direction(df_macro)   # 4h
 
-        # Long: giá vừa breakout VWAP (0.1% - 3%) + it nhat 1 TF xac nhan uptrend
-        if 0.001 < dist_pct < 0.03 and vol_ok and (trend_1h + macro_d) >= 1:
+        # Long: gia breakout VWAP (0.1% - 3%) + 1h HOAC 4h xac nhan uptrend
+        if 0.001 < dist_pct < 0.03 and vol_ok and (trend_1h >= 1 or macro_d >= 1):
             strength = min(0.9, 0.5 + min(dist_pct, 0.03) * 5 + (vol_peak - 1.2) * 0.05)
             return Signal(1, strength, self.name, price, atr,
-                          f"Price {dist_pct*100:.2f}% above VWAP, vol×{vol_peak:.1f}")
+                          f"Price {dist_pct*100:.2f}% above VWAP, vol*{vol_peak:.1f}")
 
-        # Short: giá vừa breakdown VWAP (-0.1% đến -3%) + it nhat 1 TF xac nhan downtrend
-        if -0.03 < dist_pct < -0.001 and vol_ok and (trend_1h + macro_d) <= -1:
+        # Short: gia breakdown VWAP (-0.1% den -3%) + 1h HOAC 4h xac nhan downtrend
+        if -0.03 < dist_pct < -0.001 and vol_ok and (trend_1h <= -1 or macro_d <= -1):
             strength = min(0.9, 0.5 + min(abs(dist_pct), 0.03) * 5 + (vol_peak - 1.2) * 0.05)
             return Signal(-1, strength, self.name, price, atr,
-                          f"Price {abs(dist_pct)*100:.2f}% below VWAP, vol×{vol_peak:.1f}")
+                          f"Price {abs(dist_pct)*100:.2f}% below VWAP, vol*{vol_peak:.1f}")
 
         return null

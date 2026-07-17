@@ -30,10 +30,12 @@ def setup_logging():
     root = logging.getLogger()
     root.setLevel(level)
 
-    # Console — force UTF-8 trên Windows
-    stream = open(sys.stdout.fileno(), mode='w', encoding='utf-8', buffering=1) \
-        if hasattr(sys.stdout, 'fileno') else sys.stdout
-    ch = logging.StreamHandler(stream)
+    # Console — force UTF-8 tren Windows CMD (tranh UnicodeEncodeError voi ky tu dac biet)
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+    ch = logging.StreamHandler(sys.stdout)
     ch.setFormatter(fmt)
     root.addHandler(ch)
 

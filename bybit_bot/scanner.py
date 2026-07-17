@@ -132,7 +132,7 @@ class MarketScanner:
             for _, r in top_trend.head(5).iterrows()
         )
         logger.info(
-            f"Scanner: {n} coins → top{TRENDING_TOP_N} trending | "
+            f"Scanner: {n} coins -> top{TRENDING_TOP_N} trending | "
             f"Top5: {top5_info}"
         )
         return self.trending_symbols

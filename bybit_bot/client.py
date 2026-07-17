@@ -228,7 +228,7 @@ class BybitClient:
                 positionIdx=0,
             )
         except Exception as e:
-            logger.warning(f"Update SL failed for {symbol}: {e}")
+            logger.warning("Update SL failed for %s: %s", symbol, str(e).encode("ascii", "replace").decode())
 
     @retry()
     def update_take_profit(self, symbol: str, tp_price: float):
@@ -242,7 +242,7 @@ class BybitClient:
                 positionIdx=0,
             )
         except Exception as e:
-            logger.warning(f"Update TP failed for {symbol}: {e}")
+            logger.warning("Update TP failed for %s: %s", symbol, str(e).encode("ascii", "replace").decode())
 
     @retry()
     def get_instrument_info(self, symbol: str) -> dict:
@@ -260,7 +260,7 @@ class BybitClient:
             max_lev = int(float(info["leverageFilter"]["maxLeverage"]))
             return min(max_lev, config.MAX_LEVERAGE)
         except Exception as e:
-            logger.warning(f"Cannot get max leverage for {symbol}: {e}")
+            logger.warning("Cannot get max leverage for %s: %s", symbol, str(e).encode("ascii", "replace").decode())
             return config.DEFAULT_LEVERAGE
 
     def get_current_price(self, symbol: str) -> float:

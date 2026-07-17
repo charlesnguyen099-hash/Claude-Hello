@@ -1013,14 +1013,16 @@ class TradingBot:
             coin_independently_bear = (macro_trend == -1 and macro_4h == -1)
             coin_independently_bull = (macro_trend ==  1 and macro_4h ==  1)
 
-            # Hard block: BTC strongly opposes AND coin khong co xu huong doc lap nguoc lai
-            # Neu coin co xu huong doc lap -> cho phep nhung se cap cao consensus
+            # Hard block: BTC strongly opposes AND coin khong co xu huong doc lap
+            # Chi block khi coin CUNG CHIEU voi BTC move (khong co divergence)
+            # Cho phep coin co xu huong doc lap (coin_independently_bull/bear) di nguoc BTC
             if btc_strongly_bull and not is_reversal and not coin_independently_bear:
                 short_signals = []
                 logger.debug(f"{symbol}: BTC 1h+4h BULLISH, coin not independently bearish -> block SHORT")
             if btc_strongly_bear and not is_reversal and not coin_independently_bull:
                 long_signals = []
                 logger.debug(f"{symbol}: BTC 1h+4h BEARISH, coin not independently bullish -> block LONG")
+            # Neu coin doc lap nguoc BTC: van cho phep nhung can consensus cao hon (xu ly o phan duoi)
 
         # BTC alignment flags cho consensus adjustment
         btc_strongly_bull = (btc_trend == 1  and btc_trend_4h == 1)   if symbol != "BTCUSDT" else False

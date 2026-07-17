@@ -58,8 +58,8 @@ PARTIAL_CLOSE_TRIGGER = 0.75  # Dong 50% position tai 75% den TP1, de 50% con la
 # --- Signal sensitivity -------------------------------------------------------
 MIN_SIGNAL_STRENGTH = 0.60   # Chi lay signal chat luong cao
 MIN_ADX             = 18     # ADX >= 18 cho 1m scalp (xu huong nho hon nhung co that)
-MIN_CONSENSUS          = 4   # Can it nhat 4/7 strategies dong thuan
-MIN_CONSENSUS_TRENDING = 4   # Dong bo voi MIN_CONSENSUS
+MIN_CONSENSUS          = 3   # 3/7 strategies dong thuan (4 qua cao cho 1m data)
+MIN_CONSENSUS_TRENDING = 3   # Dong bo voi MIN_CONSENSUS
 MIN_ATR_PCT         = 0.0005 # 0.05% cho 1m (ATR 1m nho hon 15m, largecap BTC ~0.03-0.08%)
 TRADE_SIZE_MULT         = 1    # Khong dung nua — risk-based sizing thay the
 

@@ -55,8 +55,7 @@ class TradingBot:
         # Rotate batch cho rest coins (ngoai top20): moi tick quet 1 batch
         self._rest_batch_idx: int = 0
         REST_BATCH_SIZE = 20  # quet 20 coin/tick tu phan con lai
-        # Daily loss guard: reset equity_day_start moi ngay UTC
-        self._equity_day_start: float = 0.0
+        # Daily loss guard: track ngay UTC, dung realized PnL tu exchange
         self._equity_day_date: str = ""
 
     # ── Main loop ────────────────────────────────────────────────────────────
@@ -115,13 +114,18 @@ class TradingBot:
             return
 
         # Daily loss guard: dung mo lenh moi neu da mat > MAX_DAILY_LOSS_PCT trong ngay
+        # Dung realized PnL tu exchange (get_today_pnl) thay vi equity snapshot:
+        # -> Restart-safe: khong mat lich su khi bot restart giua ngay
+        # -> Chi tinh lenh da dong (realized), khong bi anh huong boi unrealized floating
         _today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         if _today != self._equity_day_date:
-            # Ngay moi: reset moc equity dau ngay
-            self._equity_day_start = equity
-            self._equity_day_date  = _today
-            logger.info(f"[DAILY] New day — equity start: {equity:.2f} USDT")
-        _daily_pnl_pct = (equity - self._equity_day_start) / self._equity_day_start if self._equity_day_start > 0 else 0
+            self._equity_day_date = _today
+            logger.info(f"[DAILY] New day — equity: {equity:.2f} USDT")
+        try:
+            _today_realized_pnl = self.client.get_today_pnl()
+        except Exception:
+            _today_realized_pnl = 0.0
+        _daily_pnl_pct = _today_realized_pnl / equity if equity > 0 else 0
         if _daily_pnl_pct < -config.MAX_DAILY_LOSS_PCT:
             logger.warning(
                 f"[DAILY LOSS GUARD] PnL today={_daily_pnl_pct*100:.2f}% < -{config.MAX_DAILY_LOSS_PCT*100:.0f}% "
@@ -823,12 +827,9 @@ class TradingBot:
                 if sig.direction == -1 and _block_short_24h and not is_reversal:
                     continue
 
-                # Momentum confirmation: dung 5m trend (scalp_trend) thay vi 1m candles
-                # Ly do: strategies chay tren 15m, yeu cau 2/3 nen 1m la sai timeframe
-                # Trong 15m uptrend, 1m co the dang pullback (1-2 nen do) = entry tot, khong phai xau
-                # scalp_trend (5m) on dinh hon, dong bo voi 15m strategy signal
-                # Da duoc xu ly o phan scalp_allows_long/short ben duoi — bo filter nay
-                pass  # filter da chuyen sang scalp_allows_long/short
+                # Filter short_term_up/down (2/3 nen 1m) da xoa:
+                # Strategies chay tren 15m, nen 1m co the do trong pullback binh thuong
+                # Thay the boi scalp_allows_long/short (5m alignment) o phan ben duoi
 
                 # Reversal bypass macro filter — bat day/dinh du macro nguoc
                 if is_reversal:

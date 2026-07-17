@@ -288,14 +288,16 @@ class BybitClient:
         return 0.0, 0.0
 
     @staticmethod
-    def round_to_tick(price: float, tick_size: float) -> float:
-        """Round price xuong boi so gan nhat cua tick_size (floor)."""
+    def round_to_tick(price: float, tick_size: float, ceil: bool = False) -> float:
+        """Round price theo tick_size.
+        ceil=False (default): floor — dung cho TP, LONG SL (di xa khoi entry)
+        ceil=True: ceiling — dung cho SHORT SL (phai o TREN entry, floor lam chat SL)
+        """
         import math
         if tick_size <= 0:
             return price
-        ticks = math.floor(price / tick_size)
+        ticks = math.ceil(price / tick_size) if ceil else math.floor(price / tick_size)
         result = round(ticks * tick_size, 10)
-        # Trim floating point noise
         decimals = len(str(tick_size).rstrip("0").split(".")[-1]) if "." in str(tick_size) else 0
         return round(result, decimals)
 

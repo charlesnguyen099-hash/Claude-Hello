@@ -190,8 +190,12 @@ class Executor:
             else:
                 limit_price = self.client.round_to_tick(ask, tick_size) if tick_size > 0 else round(ask, 6)
 
-            # Round SL/TP theo tick size de dam bao Bybit chap nhan
-            sl_rounded  = self.client.round_to_tick(params.sl_price,  tick_size) if tick_size > 0 else round(params.sl_price,  6)
+            # Round SL/TP theo tick size:
+            # LONG SL < entry -> floor (di xa hon = an toan hon)
+            # SHORT SL > entry -> ceil (di xa hon = an toan hon, floor lam SL sat entry hon)
+            # TP luon floor (entry side): LONG TP tren entry floor ok; SHORT TP duoi entry floor ok
+            _sl_ceil = (params.side == "Sell")  # SHORT SL phai ceil
+            sl_rounded  = self.client.round_to_tick(params.sl_price,  tick_size, ceil=_sl_ceil) if tick_size > 0 else round(params.sl_price,  6)
             tp1_rounded = self.client.round_to_tick(params.tp1_price, tick_size) if tick_size > 0 else round(params.tp1_price, 6)
 
             order = self.client.place_order(
@@ -396,7 +400,9 @@ class Executor:
                         #   Neu dat entry + fee (nhu Long): SL trigger khi price > entry -> DANG LO, khong phai hoa von
                         be_price_raw = entry + fee_buffer if side == "Buy" else entry - fee_buffer
                         ts = self._tick_size.get(symbol, 0.0)
-                        be_price = self.client.round_to_tick(be_price_raw, ts) if ts > 0 else round(be_price_raw, 6)
+                        # LONG BE floor ok (SL duoi entry); SHORT BE ceil (SL duoi entry nhung phai >= tick boundary)
+                        _be_ceil = (side == "Sell")
+                        be_price = self.client.round_to_tick(be_price_raw, ts, ceil=_be_ceil) if ts > 0 else round(be_price_raw, 6)
                         # Validate truoc khi gui: Bybit reject neu SL invalid
                         mark = float(pos.get("markPrice", 0))
                         if mark > 0:

@@ -55,10 +55,10 @@ BREAKEVEN_TRIGGER = 0.20   # Doi SL ve breakeven tai 20% den TP1 — du de tranh
 PARTIAL_CLOSE_TRIGGER = 0.75  # Dong 50% position tai 75% den TP1, de 50% con lai chay den TP2
 
 # --- Signal sensitivity -------------------------------------------------------
-MIN_SIGNAL_STRENGTH = 0.60   # Tang tu 0.55 — chi lay signal chat luong cao
-MIN_ADX             = 22     # Top5 mode: 22 (largecap BTC/ETH ADX thuong 20-35 trong trend)
-MIN_CONSENSUS          = 5   # Top5 mode: can it nhat 5/7 strategies dong thuan (chat luong cao)
-MIN_CONSENSUS_TRENDING = 5   # Khong con dung (khong co trending list), giu cho tuong thich
+MIN_SIGNAL_STRENGTH = 0.60   # Chi lay signal chat luong cao
+MIN_ADX             = 20     # ADX >= 20: co xu huong ro rang (22 qua chat voi largecap BTC/ETH)
+MIN_CONSENSUS          = 4   # Can it nhat 4/7 strategies dong thuan (tu 5 -> de bat nhieu co hoi hon)
+MIN_CONSENSUS_TRENDING = 4   # Dong bo voi MIN_CONSENSUS
 MIN_ATR_PCT         = 0.004  # Tang tu 0.003 — ATR >= 0.4% moi trade (bu phi + spread)
 TRADE_SIZE_MULT         = 1    # Khong dung nua — risk-based sizing thay the
 

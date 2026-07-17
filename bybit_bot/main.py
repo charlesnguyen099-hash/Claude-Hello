@@ -437,7 +437,7 @@ class TradingBot:
                 elif decel > 0.60:  # Momentum on dinh
                     score += 1
 
-        threshold = 3
+        threshold = 2
         ok = score >= threshold
         if not ok:
             logger.debug(f"micro_entry_analysis: dir={direction} score={score}/{threshold} n={n} -> skip")
@@ -1111,7 +1111,7 @@ class TradingBot:
             # Coin diverge nguoc BTC -> tang 2 -> 7
             # both_sideways (+1): ca 1h VA 4h sideways -> thi truong ranging, can them xac nhan
             base = config.MIN_CONSENSUS
-            extra = (1 if both_sideways else 0)
+            extra = 0
             btc_long_bonus  = 1 if btc_strongly_bull else 0
             btc_short_bonus = 1 if btc_strongly_bear else 0
             diverge_long_penalty  = 2 if (btc_strongly_bear and coin_independently_bull)  else 0
@@ -1121,7 +1121,7 @@ class TradingBot:
         else:
             # Non-priority: base = MIN_CONSENSUS_TRENDING = 5
             base = config.MIN_CONSENSUS_TRENDING
-            extra = (1 if sideways_1h else 0)
+            extra = 0
             btc_long_bonus  = 1 if btc_strongly_bull else 0
             btc_short_bonus = 1 if btc_strongly_bear else 0
             diverge_long_penalty  = 2 if (btc_strongly_bear and coin_independently_bull)  else 0

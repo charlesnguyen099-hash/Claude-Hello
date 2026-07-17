@@ -98,19 +98,14 @@ class Executor:
             self._close_position(existing[0])
             time.sleep(0.5)
 
-        # STALE SIGNAL CHECK (0.3%): bat drift xay ra giua analysis va dat lenh
-        live_price = self.client.get_current_price(symbol)
-        if live_price <= 0:
-            logger.warning(f"{symbol}: SKIP — khong lay duoc live price, bo qua de tranh stale entry")
+        # Cap nhat entry_price bang gia live (bid/ask real-time) thay vi gia dong nen 15m (cu toi 14 phut)
+        # Day la nguyen nhan chinh khien stale check block het lenh trong trending market
+        bid_live, ask_live = self.client.get_bid_ask(symbol)
+        if bid_live <= 0 or ask_live <= 0:
+            logger.warning(f"{symbol}: SKIP — khong lay duoc bid/ask live, bo qua")
             return
-        if signal.entry_price > 0:
-            price_drift = abs(live_price - signal.entry_price) / signal.entry_price
-            if price_drift > 0.003:
-                logger.warning(
-                    f"{symbol}: STALE SIGNAL — live={live_price:.6f} vs entry={signal.entry_price:.6f} "
-                    f"drift={price_drift*100:.2f}% > 0.3% -> skip"
-                )
-                return
+        # Long: entry tai ask (mua ngay gia hien tai); Short: entry tai bid
+        signal.entry_price = ask_live if signal.direction == 1 else bid_live
 
         params = self.risk_mgr.compute_trade(signal, equity, open_positions, is_priority=is_priority)
         if not params:
@@ -121,27 +116,25 @@ class Executor:
 
     def _enter_trade(self, symbol: str, signal: Signal, params: TradeParams):
         """
-        Dat lenh vao vi the voi day du protection layers:
-        1. Lay bid/ask -> spread check -> SL-vs-spread check
-        2. Pre-order drift check (0.5%) -> abort neu gia di xa tu stale check
-        3. IOC Limit order tai bid/ask -> fill ngay hoac huy (khong slip)
-        4. Verify fill -> neu IOC khong fill -> skip (thi truong da di xa)
-        5. Verify SL active -> re-arm neu SL khong duoc dat sau fill
+        Dat lenh Market vao vi the:
+        1. Lay tick_size -> round SL/TP
+        2. Spread check -> abort neu spread qua rong (thanh khoan kem)
+        3. Market order -> fill ngay, khong miss lenh vi gia chay di
+        4. Verify SL active sau fill -> re-arm neu thieu
         """
         try:
             self.client.set_leverage(symbol, params.leverage)
 
-            # --- Lay bid/ask va tick_size ---
+            # --- Lay tick_size va bid/ask de check spread ---
             bid, ask = self.client.get_bid_ask(symbol)
             if bid <= 0 or ask <= 0:
                 logger.warning(f"{symbol}: ABORT entry — khong lay duoc bid/ask")
                 return
 
-            mid_price = (bid + ask) / 2.0
-            spread    = ask - bid
+            mid_price  = (bid + ask) / 2.0
+            spread     = ask - bid
             spread_pct = spread / mid_price if mid_price > 0 else 0
 
-            # Get tick_size (can thiet cho round SL/TP va limit price)
             tick_size = 0.0
             try:
                 info      = self.client.get_instrument_info(symbol)
@@ -149,84 +142,31 @@ class Executor:
             except Exception:
                 pass
 
-            # --- Check 1: Spread qua rong -> thanh khoan kem, khong trade ---
+            # Spread check: abort neu spread qua rong (thanh khoan kem, slip lon)
             is_largecap = symbol in {"BTCUSDT", "ETHUSDT"}
             max_spread  = config.MAX_SPREAD_PCT_LARGE if is_largecap else config.MAX_SPREAD_PCT_ALT
             if spread_pct > max_spread:
                 logger.warning(
-                    f"{symbol}: ABORT — spread={spread_pct*100:.3f}% > {max_spread*100:.3f}% "
-                    f"(low liquidity, spread={spread:.6f})"
+                    f"{symbol}: ABORT — spread={spread_pct*100:.3f}% > {max_spread*100:.3f}%"
                 )
                 return
 
-            # --- Check 2: SL distance vs spread ---
-            # Neu SL qua gan entry so voi spread, price noise co the hit SL ngay
-            sl_dist = abs(params.sl_price - signal.entry_price)
-            if spread > 0 and sl_dist < spread * 2.5:
-                logger.warning(
-                    f"{symbol}: ABORT — SL dist={sl_dist:.6f} < 2.5x spread={spread*2.5:.6f} "
-                    f"(SL too tight for current spread)"
-                )
-                return
-
-            # --- Check 3: Pre-order drift 0.5% (sau stale check 0.3% trong execute_signal) ---
-            # Bat gia di chuyen giua 2 lan check (stale check -> set_leverage -> get_bid_ask)
-            if signal.entry_price > 0:
-                pre_drift = abs(mid_price - signal.entry_price) / signal.entry_price
-                if pre_drift > 0.005:
-                    logger.warning(
-                        f"{symbol}: ABORT — pre-order drift {pre_drift*100:.2f}% > 0.5% "
-                        f"(entry={signal.entry_price:.6f}, now={mid_price:.6f})"
-                    )
-                    return
-
-            # --- Dat IOC Limit order ---
-            # SHORT (Sell): limit tai bid — fill neu thi truong van o day hoac cao hon
-            #               Neu gia dump xuong (bid giam manh), IOC huy -> tranh vao SHORT giua dump
-            # LONG  (Buy):  limit tai ask — fill neu thi truong van o day hoac thap hon
-            #               Neu gia pump len (ask tang manh), IOC huy -> tranh vao LONG giua pump
-            if params.side == "Sell":
-                limit_price = self.client.round_to_tick(bid, tick_size) if tick_size > 0 else round(bid, 6)
-            else:
-                limit_price = self.client.round_to_tick(ask, tick_size) if tick_size > 0 else round(ask, 6)
-
-            # Round SL/TP theo tick size:
-            # LONG SL < entry -> floor (di xa hon = an toan hon)
-            # SHORT SL > entry -> ceil (di xa hon = an toan hon, floor lam SL sat entry hon)
-            # TP luon floor (entry side): LONG TP tren entry floor ok; SHORT TP duoi entry floor ok
-            _sl_ceil = (params.side == "Sell")  # SHORT SL phai ceil
+            # Round SL/TP theo tick size
+            _sl_ceil    = (params.side == "Sell")
             sl_rounded  = self.client.round_to_tick(params.sl_price,  tick_size, ceil=_sl_ceil) if tick_size > 0 else round(params.sl_price,  6)
             tp1_rounded = self.client.round_to_tick(params.tp1_price, tick_size) if tick_size > 0 else round(params.tp1_price, 6)
 
+            # --- Market order: fill ngay, khong miss vi IOC bi cancel ---
             order = self.client.place_order(
                 symbol=symbol,
                 side=params.side,
                 qty=params.qty,
-                order_type="Limit",
+                order_type="Market",
                 sl=sl_rounded,
                 tp=tp1_rounded,
-                limit_price=limit_price,
-                tick_size=tick_size,
             )
 
             order_id = order.get("orderId", "")
-
-            # --- Verify IOC fill ---
-            # IOC Limit: fill ngay hoac huy — khong bao gio treo
-            # Neu huy: gia da di xa khoi limit -> dung mo lenh (tranh chase)
-            time.sleep(0.4)
-            status = self.client.get_order_status(symbol, order_id)
-            # "Unknown" = API lag, retry once after 0.5s before giving up
-            if status == "Unknown":
-                time.sleep(0.5)
-                status = self.client.get_order_status(symbol, order_id)
-                logger.debug(f"{symbol}: IOC status retry -> {status}")
-            if status not in ("Filled", "PartiallyFilled"):
-                logger.warning(
-                    f"{symbol}: IOC Limit NOT filled (status={status}) — "
-                    f"market moved away from limit={limit_price:.6f}, trade skipped"
-                )
-                return
 
             # Update in-memory state sau khi xac nhan fill
             self._partial_closed[symbol] = False
@@ -237,11 +177,9 @@ class Executor:
             self._tp2_price[symbol]      = params.tp2_price
             self._sl_price[symbol]       = sl_rounded
             self._open_time[symbol]      = time.time()
-            self._tick_size[symbol]      = tick_size  # dung de round be/tp2 dung exchange format
+            self._tick_size[symbol]      = tick_size
 
             # --- Verify SL active sau fill ---
-            # Bybit doi khi khong attach SL/TP vao Limit order ngay lap tuc
-            # -> check va force-set neu thieu
             time.sleep(0.5)
             has_sl, actual_sl = self.client.verify_position_sl(symbol)
             if not has_sl:
@@ -257,7 +195,7 @@ class Executor:
                 "side":      params.side,
                 "qty":       params.qty,
                 "leverage":  params.leverage,
-                "entry":     limit_price,
+                "entry":     mid_price,
                 "sl":        sl_rounded,
                 "tp1":       tp1_rounded,
                 "tp2":       params.tp2_price,
@@ -272,7 +210,7 @@ class Executor:
 
             logger.info(
                 f"[OPEN] {symbol} {params.side} | qty={params.qty} | "
-                f"lev={params.leverage}x | limit={limit_price:.6f} | "
+                f"lev={params.leverage}x | market~{mid_price:.6f} | "
                 f"SL={sl_rounded:.6f} | TP1={tp1_rounded:.6f} | "
                 f"strategy={signal.strategy_name} | {signal.reason}"
             )

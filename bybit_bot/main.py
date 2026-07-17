@@ -753,11 +753,17 @@ class TradingBot:
                 bo_24h_ok = not (_block_long_24h and bo_sig.direction == 1) and \
                             not (_block_short_24h and bo_sig.direction == -1)
                 # Chi can 1h xac nhan trend la du cho breakout
+                # Top5: cho phep breakout khi 1m confirm du 15m/1h chua flip
+                # (tranh miss move nhu BTC bounce voi volume surge)
+                _bo_macro_not_both_contra_long  = not (macro_trend == -1 and macro_4h == -1)
+                _bo_macro_not_both_contra_short = not (macro_trend ==  1 and macro_4h ==  1)
                 bo_trend_ok = (
                     (bo_sig.direction == 1  and macro_trend >= 1) or
                     (bo_sig.direction == -1 and macro_trend <= -1) or
                     (bo_sig.direction == 1  and macro_4h >= 1) or
-                    (bo_sig.direction == -1 and macro_4h <= -1)
+                    (bo_sig.direction == -1 and macro_4h <= -1) or
+                    (is_top5 and bo_sig.direction == 1  and micro_up   and _bo_macro_not_both_contra_long) or
+                    (is_top5 and bo_sig.direction == -1 and micro_down and _bo_macro_not_both_contra_short)
                 )
                 # 2h 1m range block cho BREAKOUT — tranh short o day / long o dinh 2h
                 bo_m2h_ok = not (_m2h_block_short and bo_sig.direction == -1) and \

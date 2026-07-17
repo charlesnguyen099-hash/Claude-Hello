@@ -55,8 +55,9 @@ class MarketScanner:
             sym = t.get("symbol", "")
             if not sym.endswith("USDT"):
                 continue
-            # Loại leverage token và stable pairs
-            if any(x in sym for x in ["UP", "DOWN", "BULL", "BEAR", "1000", "USDC", "BUSD", "TUSD"]):
+            # Loai leverage token (3L/3S, UP/DOWN) va stable pairs
+            # "1000" la coin thật (1000PEPE, 1000BONK) - KHONG loai
+            if any(x in sym for x in ["3LUSDT", "3SUSDT", "UPUSDT", "DOWNUSDT", "BULLUSDT", "BEARUSDT", "USDC", "BUSD", "TUSD"]):
                 continue
 
             try:

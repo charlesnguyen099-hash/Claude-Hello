@@ -33,7 +33,7 @@ class TradingBot:
         logger.info("="*60)
         logger.info("Bybit Auto Trading Bot starting...")
         logger.info(f"Mode: {'TESTNET' if config.TESTNET else 'MAINNET (LIVE)'}")
-        logger.info(f"Top N symbols: {config.TOP_N_SYMBOLS}")
+        logger.info(f"Scan budget per tick: {config.SCAN_BUDGET_SEC}s")
         logger.info(f"Max positions: {config.MAX_OPEN_POSITIONS}")
         logger.info(f"Strategies: {[s.name for s in ALL_STRATEGIES]}")
         logger.info("="*60)
@@ -52,7 +52,6 @@ class TradingBot:
         # BTC global trend: +1 uptrend, -1 downtrend, 0 sideways (cap nhat moi tick)
         self.btc_trend: int = 0
         self.btc_trend_4h: int = 0
-        # Chi trade top 20 trending — khong rotate
         # Daily loss guard: track ngay UTC, dung realized PnL tu exchange
         self._equity_day_date: str = ""
 
@@ -174,32 +173,32 @@ class TradingBot:
             )
             return
 
-        # Chi scan top 20 trending — moi coin deu la priority
-        scan_list    = self.symbols[:config.TOP_N_SYMBOLS]
-        priority_set = set(scan_list)
-        top10_set    = set(self.symbols[:10])
-
+        # Xu ly TAT CA coin trending, coin score cao nhat truoc
+        # Dung time budget: xu ly lien tuc cho den het SCAN_BUDGET_SEC hoac het positions slot
         logger.info(
-            f"[TICK] Scan {len(scan_list)} trending coins | "
+            f"[TICK] Scan {len(self.symbols)} trending coins (budget={config.SCAN_BUDGET_SEC}s) | "
             f"BTC_1h={'UP' if self.btc_trend==1 else 'DOWN' if self.btc_trend==-1 else 'SIDE'} "
             f"BTC_4h={'UP' if self.btc_trend_4h==1 else 'DOWN' if self.btc_trend_4h==-1 else 'SIDE'}"
         )
 
-        # BTC/ETH direction map: de check correlation truoc khi mo lenh moi
-        # {symbol: "Long" | "Short"} cho cac position dang mo
         _pos_side_map = {p["symbol"]: p.get("side", "") for p in open_positions}
+        _scan_start   = time.time()
+        _analyzed     = 0
 
-        for symbol in scan_list:
+        for symbol in self.symbols:
+            # Dung khi het time budget
+            if time.time() - _scan_start > config.SCAN_BUDGET_SEC:
+                logger.info(f"[TICK] Scan budget hit after {_analyzed} coins")
+                break
 
             if symbol in pos_symbols:
                 continue
 
-            is_priority = symbol in priority_set
-            is_top10    = symbol in top10_set
+            _analyzed += 1
             try:
                 traded = self._process_symbol(
-                    symbol, equity, open_positions, is_priority,
-                    btc_eth_side_map=_pos_side_map, is_top10=is_top10
+                    symbol, equity, open_positions, is_priority=True,
+                    btc_eth_side_map=_pos_side_map,
                 )
                 if traded:
                     try:
@@ -209,6 +208,10 @@ class TradingBot:
                         _pos_side_map  = {p["symbol"]: p.get("side", "") for p in open_positions}
                     except Exception:
                         pass
+                    # Kiem tra lai max positions sau moi lenh mo
+                    if len(open_positions) >= config.MAX_OPEN_POSITIONS:
+                        logger.info(f"[TICK] Max positions ({config.MAX_OPEN_POSITIONS}) reached")
+                        break
             except Exception as e:
                 logger.debug(f"Error {symbol}: {str(e).encode('ascii','replace').decode()}")
 
@@ -464,7 +467,7 @@ class TradingBot:
             logger.debug(f"micro_entry_analysis: dir={direction} score={score}/{threshold} n={n} -> skip")
         return ok
 
-    def _process_symbol(self, symbol: str, equity: float, open_positions: list[dict], is_priority: bool = False, btc_eth_side_map: dict | None = None, is_top10: bool = False) -> bool:
+    def _process_symbol(self, symbol: str, equity: float, open_positions: list[dict], is_priority: bool = True, btc_eth_side_map: dict | None = None) -> bool:
         """Phan tich symbol, chay tat ca filter va strategy, tra True neu da trade."""
         # Init gradual trend flags — se duoc tinh chinh xac sau khi co df_micro
         _is_gradual_uptrend   = False

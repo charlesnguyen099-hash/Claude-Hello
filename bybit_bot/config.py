@@ -10,9 +10,9 @@ API_SECRET = os.getenv("BYBIT_API_SECRET", "YOUR_API_SECRET_HERE")
 TESTNET    = os.getenv("BYBIT_TESTNET", "false").lower() == "true"
 
 # --- Market Scanner -----------------------------------------------------------
-TOP_N_SYMBOLS        = 50             # top 50 trending (bat ca coin nho co trend dep)
-MIN_VOLUME_USDT_24H  = 100_000       # min 100K USDT/24h — bat ca coin nho co trend (LINEA, v.v.)
-SCAN_INTERVAL_SEC    = 15            # cap nhat trending list moi 15 giay
+MIN_VOLUME_USDT_24H  = 100_000       # min 100K USDT/24h — bat ca coin nho co trend dep
+SCAN_INTERVAL_SEC    = 15            # cap nhat danh sach trending moi 15 giay
+SCAN_BUDGET_SEC      = 12.0          # xu ly coin trong toi da 12s moi tick (coin tot nhat truoc)
 
 # --- Multi-Timeframe Analysis -------------------------------------------------
 # 1m  x 2000 = ~33h  — MAIN signal (scalp entry, nhanh, nhieu lenh hon)
@@ -46,7 +46,7 @@ DEFAULT_LEVERAGE       = 10
 # RISK_PER_TRADE_PCT=0.01 -> max 1% equity mat moi lenh -> 100 lenh SL lien tiep het account
 RISK_PER_TRADE_PCT = 0.01   # Max 1% equity mat khi SL hit (base, scale voi consensus)
 MAX_CAPITAL_PCT    = 0.10   # Max 10% equity dung lam margin moi lenh
-MAX_OPEN_POSITIONS = 5      # Max 5 positions mo cung luc
+MAX_OPEN_POSITIONS = 10     # Max 10 positions — trade tat ca co hoi tot
 # SL/TP theo ATR — RR >= 1.3 sau phi (truoc: 1.5/1.5 = 1:1, sau phi am)
 ATR_PERIOD        = 14
 SL_ATR_MULT       = 1.5    # SL  = 1.5x ATR

@@ -768,15 +768,17 @@ class TradingBot:
         long_signals  = []
         short_signals = []
 
-        n_15m_valid = 0  # so strategies co signal hop le tren 15m
+        n_15m_valid = 0  # so strategies co signal hop le
         for strategy in ALL_STRATEGIES:
             try:
-                sig = strategy.generate_signal(df_signal, df_trend, df_macro)
-                # Dem signal 15m hop le
+                # Strategies chay tren 15m (df_trend) — duoc thiet ke cho timeframe nay
+                # 1m (df_signal) chi dung cho entry timing (spike, micro_trend, range checks)
+                # Chay tren 1m: EMA crossover/MACD/Ichimoku/sustained_trend rat hiem fire -> 0 consensus
+                sig = strategy.generate_signal(df_trend, df_macro, df_macro)
                 if sig.direction != 0 and sig.strength >= config.MIN_SIGNAL_STRENGTH:
                     n_15m_valid += 1
-                # Scalp fallback: thu 5m khi 1m khong co signal — 5m on dinh hon 1m trong sideways ngan
-                # Skip VWAP (window 1440x1m=24h, tren 5m cho ra 8h — sai)
+                # Scalp fallback: thu 5m neu 15m khong co signal
+                # Skip VWAP (window tren 5m sai — can 1m/15m data)
                 if sig.direction == 0 and len(df_scalp) >= 50 and strategy.name != "vwap_volume":
                     sig = strategy.generate_signal(df_scalp, df_trend, df_macro)
 

@@ -10,9 +10,9 @@ API_SECRET = os.getenv("BYBIT_API_SECRET", "YOUR_API_SECRET_HERE")
 TESTNET    = os.getenv("BYBIT_TESTNET", "false").lower() == "true"
 
 # --- Market Scanner -----------------------------------------------------------
-TOP_N_SYMBOLS        = 200
-MIN_VOLUME_USDT_24H      = 1_000_000   # filter dau vao khi scan 200 coins
-SCAN_INTERVAL_SEC    = 3600
+TOP_N_SYMBOLS        = 20             # luon focus top 20 coin trending manh nhat
+MIN_VOLUME_USDT_24H  = 10_000_000    # min 10M USDT/24h de dam bao thanh khoan
+SCAN_INTERVAL_SEC    = 15            # cap nhat trending list moi 15 giay
 
 # --- Multi-Timeframe Analysis -------------------------------------------------
 # 1m  x 2000 = ~33h  — MAIN signal (scalp entry, nhanh, nhieu lenh hon)

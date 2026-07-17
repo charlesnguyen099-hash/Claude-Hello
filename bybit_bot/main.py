@@ -52,9 +52,7 @@ class TradingBot:
         # BTC global trend: +1 uptrend, -1 downtrend, 0 sideways (cap nhat moi tick)
         self.btc_trend: int = 0
         self.btc_trend_4h: int = 0
-        # Rotate batch cho rest coins (ngoai top20): moi tick quet 1 batch
-        self._rest_batch_idx: int = 0
-        REST_BATCH_SIZE = 20  # quet 20 coin/tick tu phan con lai
+        # Chi trade top 20 trending — khong rotate
         # Daily loss guard: track ngay UTC, dung realized PnL tu exchange
         self._equity_day_date: str = ""
 
@@ -93,14 +91,13 @@ class TradingBot:
     def _tick(self):
         now = time.time()
 
-        # Refresh danh sach symbols moi gio — giu nguyen thu tu Bybit (volume cao nhat truoc)
+        # Cap nhat top 20 trending moi 15s — dam bao khong bo lo coin moi bat dau trending
         if now - self.last_scan_ts >= config.SCAN_INTERVAL_SEC:
-            logger.info("Scanning top symbols...")
             symbols = self.scanner.scan()
             if symbols:
                 self.symbols = symbols
                 self.last_scan_ts = now
-                logger.info(f"Symbols updated: {len(self.symbols)}, top 20: {self.symbols[:20]}")
+                logger.info(f"Trending top{len(self.symbols)}: {self.symbols}")
             elif not self.symbols:
                 logger.warning("No symbols found, retrying next cycle")
                 return
@@ -177,23 +174,12 @@ class TradingBot:
             )
             return
 
-        # Top 20 (trending cao nhat): phan tich moi tick
-        # Phan con lai: rotate theo batch 20 coin/tick (tranh miss nhung van nhanh)
-        REST_BATCH_SIZE = 20
-        top20 = self.symbols[:20]
-        rest  = self.symbols[20:]
-        if rest:
-            _start = self._rest_batch_idx % len(rest)
-            _end   = _start + REST_BATCH_SIZE
-            rest_batch = (rest + rest)[_start:_end]  # wrap around
-            self._rest_batch_idx = (_start + REST_BATCH_SIZE) % len(rest)
-        else:
-            rest_batch = []
-        scan_list    = top20 + rest_batch
-        priority_set = set(top20)
+        # Chi scan top 20 trending — moi coin deu la priority
+        scan_list    = self.symbols[:config.TOP_N_SYMBOLS]
+        priority_set = set(scan_list)
 
         logger.info(
-            f"[TICK] Scan {len(scan_list)} coins (top20 + {len(rest_batch)} rest batch) | "
+            f"[TICK] Scan {len(scan_list)} trending coins | "
             f"BTC_1h={'UP' if self.btc_trend==1 else 'DOWN' if self.btc_trend==-1 else 'SIDE'} "
             f"BTC_4h={'UP' if self.btc_trend_4h==1 else 'DOWN' if self.btc_trend_4h==-1 else 'SIDE'}"
         )

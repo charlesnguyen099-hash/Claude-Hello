@@ -60,11 +60,21 @@ class RiskManager:
             logger.warning(f"{signal.symbol}: cannot get instrument info: {e}")
             return None
 
-        # Consensus scale: 1=0.5x, 2=0.7x, 3=1.0x, 4=1.3x, 5=1.6x, 6=2.0x, 7=2.5x
-        # Scale nho hon: tranh over-size khi consensus cao nhung thi truong khong ro
+        # CAPITAL SCALE THEO DO TIEM NANG LENH:
+        # Consensus (so strategies dong thuan) x Signal Strength (0.0-1.0)
+        # Cang nhieu strategy dong thuan + strength cao = lenh cang tiem nang = capital lon hon
+        #
+        # Cong thuc:
+        #   potential = (consensus/7) * 0.6 + strength * 0.4   (trong so: consensus quan trong hon)
+        #   scale = 0.5 + potential * 2.0   -> range [0.5x, 2.5x]
+        #     potential=0.0 (consensus=1,strength=0): scale=0.5x  (lenh yeu, bet nho)
+        #     potential=0.5 (consensus=3-4,str~0.7): scale=1.5x  (lenh trung binh)
+        #     potential=1.0 (consensus=7,strength=1): scale=2.5x (lenh manh nhat, all-in)
         consensus = getattr(signal, 'consensus', 1)
-        CONSENSUS_SCALE = {1: 0.5, 2: 0.7, 3: 1.0, 4: 1.3, 5: 1.6, 6: 2.0, 7: 2.5}
-        scale_factor = CONSENSUS_SCALE.get(consensus, 1.0)
+        strength  = getattr(signal, 'strength',  0.5)
+        potential = (consensus / 7) * 0.6 + strength * 0.4
+        potential = max(0.0, min(1.0, potential))
+        scale_factor = 0.5 + potential * 2.0   # [0.5x, 2.5x]
 
         # Phi round-trip (tinh tren entry price de co trong sl/tp calc)
         fee_price = signal.entry_price * config.ROUND_TRIP_FEE

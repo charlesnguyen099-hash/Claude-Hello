@@ -136,6 +136,14 @@ class RiskManager:
             notional = qty * signal.entry_price
             capital_used = notional / leverage
 
+        # Check lai $5 minimum SAU capital adjustment — giam qty co the day notional xuong duoi $5
+        if notional < MIN_NOTIONAL:
+            logger.warning(
+                f"{signal.symbol}: notional={notional:.2f}$ < $5 after capital cap "
+                f"(equity={equity:.2f}, max_capital={max_capital:.2f}, lev={leverage}x) -> skip"
+            )
+            return None
+
         fee_usdt = notional * config.ROUND_TRIP_FEE
 
         d   = signal.direction

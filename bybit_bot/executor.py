@@ -305,11 +305,18 @@ class Executor:
                     self._open_time[symbol] = created_ms / 1000
                 # Infer breakeven: neu SL da chuyen qua phia loi (LONG: SL > entry; SHORT: SL < entry)
                 if exchange_sl > 0:
-                    # BE SL: ca Long va Short deu dat o entry + fee (tren entry)
-                    # -> neu SL >= entry la da set breakeven cho ca 2 chieu
-                    if exchange_sl >= entry:
+                    # BE SL cho ca Long va Short: entry + fee_buffer ≈ entry * 1.0011 (0.11% phi)
+                    # LONG: initial SL < entry, BE SL > entry -> SL >= entry -> da set BE
+                    # SHORT: initial SL = entry + 1.5*ATR >> entry + fee -> phan biet bang tolerance 0.3%
+                    #   BE SL: entry <= SL <= entry * 1.003 (chi phi round-trip <= 0.3%)
+                    #   Initial SL: entry * 1.01+ (1.5x ATR thuong lon hon 1%)
+                    fee_tol = entry * 0.003  # tolerance 0.3% -> phan biet BE vs initial SL
+                    if side == "Buy" and exchange_sl >= entry:
                         self._breakeven_set[symbol] = True
-                        logger.info(f"{symbol}: Inferred breakeven already set (SL={exchange_sl:.6f} >= entry={entry:.6f})")
+                        logger.info(f"{symbol}: Inferred BE set LONG (SL={exchange_sl:.6f} >= entry={entry:.6f})")
+                    elif side == "Sell" and entry <= exchange_sl <= entry + fee_tol:
+                        self._breakeven_set[symbol] = True
+                        logger.info(f"{symbol}: Inferred BE set SHORT (SL={exchange_sl:.6f} in BE range [{entry:.6f}, {entry+fee_tol:.6f}])")
                 # Restore _tp1_price: neu chua co (restart), lay tu exchange TP
                 # Logic: neu partial chua xay ra, exchange TP chinh la TP1
                 # (neu partial da xay ra, exchange TP la TP2 nhung ta khong biet — xem ben duoi)

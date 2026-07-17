@@ -457,7 +457,7 @@ class TradingBot:
 
     def _process_symbol(self, symbol: str, equity: float, open_positions: list[dict], is_priority: bool = False, btc_eth_side_map: dict | None = None) -> bool:
         """Phan tich symbol, chay tat ca filter va strategy, tra True neu da trade."""
-        # Init gradual trend flags truoc block 30c de tranh NameError neu df_micro < 30 candles
+        # Init gradual trend flags — se duoc tinh chinh xac sau khi co df_micro
         _is_gradual_uptrend   = False
         _is_gradual_downtrend = False
 
@@ -470,12 +470,14 @@ class TradingBot:
         if df_signal.empty or len(df_signal) < 50:
             return False
 
-        # Large-cap flag: BTC va ETH co % volatility thap hon altcoin (~0.5x)
-        # Tat ca percentage thresholds (spike, pump/dump detection) can duoc scale xuong
-        # De tranh ETH/BTC bi bo qua (ATR% nho) hoac vao lenh tai dinh/day chua duoc bat
-        _is_largecap = symbol in {"BTCUSDT", "ETHUSDT"}
-        # Scale factor cho tat ca % threshold: largecap dung 0.5x
-        _sp = 0.5 if _is_largecap else 1.0
+        # Volatility bucket cho spike/pump-dump thresholds:
+        # largecap  (BTC/ETH):              _sp = 0.50 — ATR% ~0.3-0.4%, threshold rat thap
+        # midcap    (SOL/XRP/HYPE/BNB/..): _sp = 0.75 — volatility trung binh, giua 2 nhom
+        # altcoin   (phan con lai):          _sp = 1.00 — volatility cao nhat
+        _LARGECAP = {"BTCUSDT", "ETHUSDT"}
+        _MIDCAP   = {"SOLUSDT", "XRPUSDT", "HYPEUSDT", "BNBUSDT", "DOGEUSDT", "ADAUSDT", "TRXUSDT", "AVAXUSDT", "LINKUSDT", "DOTUSDT"}
+        _is_largecap = symbol in _LARGECAP
+        _sp = 0.50 if symbol in _LARGECAP else (0.75 if symbol in _MIDCAP else 1.0)
 
         # ATR filter: bo qua symbol bien dong qua nho
         # Large-cap: 0.2% (BTC ATR% ~0.3-0.4%, ETH ~0.3%), altcoin: 0.4%
@@ -599,9 +601,19 @@ class TradingBot:
         # Ca 2 cung xuat hien -> thi truong loan, skip tat ca
         _micro_spike_dump = False
         _micro_spike_pump = False
-        _live_check_price = 0.0  # init truoc; se duoc set tu get_current_price trong block 30c
-        # _micro_price: init truoc block de tranh NameError khi df_micro co < 15 candles
+        _live_check_price = 0.0
         _micro_price = df_micro["close"].iloc[-1] if not df_micro.empty else 0.0
+
+        # Tinh gradual trend flags TRUOC spike gate — can cho ca hai nhanh (spike va non-spike)
+        # Bug: neu tinh ben trong spike gate, khi spike flag da set truoc, block skip -> flag sai = False
+        if not df_micro.empty and len(df_micro) >= 30:
+            _30c_c = df_micro["close"].iloc[-30:].values
+            _30c_o = df_micro["open"].iloc[-30:].values
+            _n_grn = sum(1 for i in range(30) if _30c_c[i] > _30c_o[i])
+            _n_red = sum(1 for i in range(30) if _30c_c[i] < _30c_o[i])
+            _is_gradual_uptrend   = _n_grn >= 18
+            _is_gradual_downtrend = _n_red >= 18
+
         if not df_micro.empty and len(df_micro) >= 15:
             _micro_atr    = compute_atr(df_micro).iloc[-1]
             _micro_bodies = (df_micro["close"].iloc[-15:].values - df_micro["open"].iloc[-15:].values)
@@ -1063,25 +1075,22 @@ class TradingBot:
         btc_trend_4h = self.btc_trend_4h
 
         if symbol == "BTCUSDT":
-            # BTC: chi SHORT khi CA 1h VA 4h deu bear (tranh short dip tam thoi trong uptrend)
-            # Chi LONG khi CA 1h VA 4h deu bull
-            # BTC/ETH co xu huong V-shape bounce sau dip ngan: chi 1h bear la khong du de short
-            # Dung separate if (khong elif) de ca 2 co the true dong thoi (conflict -> no trade)
-            if btc_trend == 1 or btc_trend_4h == 1:
+            # BTC: block SHORT chi khi CA 1h VA 4h deu bullish (BOTH)
+            # Dung AND thay OR: cho phep short khi 1h da dao chieu du 4h chua flip
+            # 4h EMA50 mat hang ngay moi flip -> AND cho phep bat early downtrend
+            if btc_trend == 1 and btc_trend_4h == 1:
                 short_signals = []
-                logger.debug("BTCUSDT: clear SHORT — BTC 1h or 4h UP (V-shape bounce risk)")
-            if btc_trend == -1 or btc_trend_4h == -1:
+                logger.debug("BTCUSDT: clear SHORT — BTC 1h AND 4h both UP")
+            if btc_trend == -1 and btc_trend_4h == -1:
                 long_signals = []
-                logger.debug("BTCUSDT: clear LONG — BTC 1h or 4h DOWN")
+                logger.debug("BTCUSDT: clear LONG — BTC 1h AND 4h both DOWN")
         elif symbol == "ETHUSDT":
-            # ETH: tuong tu BTC — chi SHORT khi ca 1h VA 4h ETH deu bear
-            # macro_trend = ETH 1h, macro_4h = ETH 4h
-            if macro_trend == 1 or macro_4h == 1:
+            if macro_trend == 1 and macro_4h == 1:
                 short_signals = []
-                logger.debug("ETHUSDT: clear SHORT — ETH 1h or 4h UP (V-shape bounce risk)")
-            if macro_trend == -1 or macro_4h == -1:
+                logger.debug("ETHUSDT: clear SHORT — ETH 1h AND 4h both UP")
+            if macro_trend == -1 and macro_4h == -1:
                 long_signals = []
-                logger.debug("ETHUSDT: clear LONG — ETH 1h or 4h DOWN")
+                logger.debug("ETHUSDT: clear LONG — ETH 1h AND 4h both DOWN")
         else:
             # Altcoin: phan tich BTC alignment de quyet dinh hard/soft block
             btc_strongly_bull = (btc_trend == 1  and btc_trend_4h == 1)
@@ -1268,16 +1277,22 @@ class TradingBot:
         # ETHUSDT 19:30 altcoin pattern: 1h bearish, 5m bounce -> SHORT timing xau -> SL hit
         # BREAKOUT da check scalp_trend rieng; REVERSAL khong block (5m bounce tai day la ok)
         if not _is_largecap:
+            # Block SHORT khi 5m dang bounce LEN — tru khi 5m da bao xac nhan downtrend
+            # scalp_trend == -1 nghia la 5m da flip bearish -> bounce da ket thuc, SHORT ok
             if best.direction == -1 and scalp_trend == 1:
                 logger.debug(
-                    f"{symbol}: skip SHORT — 5m BULLISH (scalp_trend=1) vs 1h DOWN, altcoin bounce, cho 5m roll over"
+                    f"{symbol}: skip SHORT — 5m BULLISH (scalp_trend=1) vs 1h DOWN, altcoin bounce"
                 )
                 return False
             if best.direction == 1 and scalp_trend == -1:
                 logger.debug(
-                    f"{symbol}: skip LONG — 5m BEARISH (scalp_trend=-1) vs 1h UP, altcoin pullback, cho 5m recover"
+                    f"{symbol}: skip LONG — 5m BEARISH (scalp_trend=-1) vs 1h UP, altcoin pullback"
                 )
                 return False
+            # Khi scalp_trend == -1 (5m da xac nhan downtrend): raise drop-from-high threshold
+            # tranh bug: 5m bounce xong -> scalp_trend flip -1 -> gia drop 0.6% -> _micro_spike_dump block SHORT
+            if best.direction == -1 and scalp_trend == -1 and (macro_trend + macro_4h) <= -1:
+                _micro_spike_dump = False  # reset: 5m confirmation du manh, drop nay la trend continuation
 
         # EMA50 pullback filter (15m): noi long len 4.0x ATR (tu 2.0x)
         # 2.0x ATR qua chat — trong trending market (ADX > 25), price co the gap EMA50 3-5x ATR

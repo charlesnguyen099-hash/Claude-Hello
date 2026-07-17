@@ -177,6 +177,7 @@ class TradingBot:
         # Chi scan top 20 trending — moi coin deu la priority
         scan_list    = self.symbols[:config.TOP_N_SYMBOLS]
         priority_set = set(scan_list)
+        top5_set     = set(self.symbols[:5])
 
         logger.info(
             f"[TICK] Scan {len(scan_list)} trending coins | "
@@ -194,10 +195,11 @@ class TradingBot:
                 continue
 
             is_priority = symbol in priority_set
+            is_top5     = symbol in top5_set
             try:
                 traded = self._process_symbol(
                     symbol, equity, open_positions, is_priority,
-                    btc_eth_side_map=_pos_side_map
+                    btc_eth_side_map=_pos_side_map, is_top5=is_top5
                 )
                 if traded:
                     try:
@@ -462,7 +464,7 @@ class TradingBot:
             logger.debug(f"micro_entry_analysis: dir={direction} score={score}/{threshold} n={n} -> skip")
         return ok
 
-    def _process_symbol(self, symbol: str, equity: float, open_positions: list[dict], is_priority: bool = False, btc_eth_side_map: dict | None = None) -> bool:
+    def _process_symbol(self, symbol: str, equity: float, open_positions: list[dict], is_priority: bool = False, btc_eth_side_map: dict | None = None, is_top5: bool = False) -> bool:
         """Phan tich symbol, chay tat ca filter va strategy, tra True neu da trade."""
         # Init gradual trend flags — se duoc tinh chinh xac sau khi co df_micro
         _is_gradual_uptrend   = False
@@ -844,14 +846,14 @@ class TradingBot:
                     if is_priority and sig.direction == 1 and not long_ok:
                         if micro_up and scalp_trend == 1:
                             long_ok = True
-                    # Micro-only entry: neu 15m/1h chua flip nhung 1m da ro rang va 5m neutral/cung chieu
-                    # Bat bounce/breakdown som hon 1 nen 15m — tranh miss move nhu BTC bounce trong hinh
-                    # Chi ap dung priority coins, khong phai khi macro hoàn toàn nguoc chieu (1h+4h ca 2 nguoc)
-                    if is_priority and sig.direction == 1 and not long_ok:
+                    # Micro-only entry: chi ap dung top 5 coin trending manh nhat
+                    # Neu 15m/1h chua flip nhung 1m ro rang va 5m neutral/cung chieu -> vao som
+                    # Khong ap dung khi macro ca 2 TF deu nguoc chieu (risk qua cao)
+                    if is_top5 and sig.direction == 1 and not long_ok:
                         _macro_not_strongly_bear = not (macro_trend == -1 and macro_4h == -1)
                         if micro_up and scalp_trend >= 0 and _macro_not_strongly_bear:
                             long_ok = True
-                    if is_priority and sig.direction == -1 and not short_ok:
+                    if is_top5 and sig.direction == -1 and not short_ok:
                         _macro_not_strongly_bull = not (macro_trend == 1 and macro_4h == 1)
                         if micro_down and scalp_trend <= 0 and _macro_not_strongly_bull:
                             short_ok = True

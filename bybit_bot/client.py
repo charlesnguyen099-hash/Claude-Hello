@@ -196,6 +196,8 @@ class BybitClient:
         )
         if order_type == "Limit" and limit_price is not None:
             lp = self.round_to_tick(limit_price, tick_size) if tick_size > 0 else round(limit_price, 6)
+            if lp <= 0:
+                raise ValueError(f"place_order: limit_price={lp} invalid (<=0), abort")
             params["price"] = str(lp)
 
         if sl:
@@ -275,13 +277,21 @@ class BybitClient:
         return 0.0
 
     def get_bid_ask(self, symbol: str) -> tuple[float, float]:
-        """Lay best bid/ask hien tai. Return (bid, ask), (0,0) neu loi."""
+        """Lay best bid/ask hien tai. Fallback sang markPrice neu bid/ask = 0."""
         try:
-            resp = self.session.get_tickers(category="linear", symbol=symbol)
+            resp  = self.session.get_tickers(category="linear", symbol=symbol)
             items = resp["result"]["list"]
             if items:
-                bid = float(items[0].get("bid1Price", 0))
-                ask = float(items[0].get("ask1Price", 0))
+                bid  = float(items[0].get("bid1Price", 0) or 0)
+                ask  = float(items[0].get("ask1Price", 0) or 0)
+                mark = float(items[0].get("markPrice", 0) or 0)
+                # Fallback: neu bid/ask = 0 (API delay), dung markPrice +/- 0.01%
+                if bid <= 0 or ask <= 0:
+                    if mark > 0:
+                        bid = mark * 0.9999
+                        ask = mark * 1.0001
+                    else:
+                        return 0.0, 0.0
                 return bid, ask
         except Exception as e:
             logger.debug(f"get_bid_ask {symbol}: {e}")

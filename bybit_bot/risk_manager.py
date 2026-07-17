@@ -134,25 +134,14 @@ class RiskManager:
 
         notional = qty * signal.entry_price
 
-        # Leverage: tinh leverage can thiet de margin = MAX_CAPITAL_PCT * equity
-        # Sau do cap vao min(MAX_LEVERAGE, exchange_max_lev)
-        # Neu leverage bi cap thap hon muc can thiet -> capital_used tang > MAX_CAPITAL_PCT
-        # -> giam qty de dam bao capital_used <= MAX_CAPITAL_PCT * equity
+        # Leverage: luon dung leverage cao nhat exchange cho phep (toi da MAX_LEVERAGE)
+        # Margin thap nhat = notional / leverage_max -> von bo vao it nhat, giu room
         exchange_max_lev = self.client.get_max_leverage(signal.symbol) if config.USE_MAX_LEVERAGE \
                            else config.DEFAULT_LEVERAGE
-        max_capital = equity * config.MAX_CAPITAL_PCT
-        leverage_needed = math.ceil(notional / max_capital)
-        leverage = min(leverage_needed, config.MAX_LEVERAGE, exchange_max_lev)
+        leverage = min(config.MAX_LEVERAGE, exchange_max_lev)
         leverage = max(leverage, 1)
 
-        # Neu leverage bi cap thap hon muc can (vi exchange gioi han) -> giam qty de giu capital cap
         capital_used = notional / leverage
-        if capital_used > max_capital * 1.05:  # 5% tolerance
-            # Giam qty sao cho capital_used <= max_capital
-            max_notional  = max_capital * leverage
-            qty = max(_round_qty(max_notional / signal.entry_price), min_qty)
-            notional = qty * signal.entry_price
-            capital_used = notional / leverage
 
         # Check lai $5 minimum SAU capital adjustment — capital cap co the day notional xuong duoi $5
         # Neu van thieu $5: thu dung min qty de dat notional=$5, mien la margin can thiet <= equity

@@ -40,7 +40,7 @@ ROUND_TRIP_FEE = TAKER_FEE * 2   # 0.11% tong phi ca 2 chieu
 
 # --- Risk Management ----------------------------------------------------------
 USE_MAX_LEVERAGE       = True
-MAX_LEVERAGE           = 20    # Cap 20x — cao hon lam SL hit mat >100% margin
+MAX_LEVERAGE           = 100   # Dung leverage cao nhat exchange cho phep moi coin
 DEFAULT_LEVERAGE       = 10
 # Risk-based sizing: RISK_PER_TRADE_PCT% equity mat neu SL hit (scale theo consensus)
 # RISK_PER_TRADE_PCT=0.01 -> max 1% equity mat moi lenh -> 100 lenh SL lien tiep het account

@@ -491,11 +491,12 @@ class TradingBot:
         if price > 0 and atr / price < _min_atr_pct:
             return False
 
-        # Top5 mode: tat ca deu la priority, dung config.MIN_ADX cho tat ca (22)
+        # Dung 15m ADX thay vi 1m ADX: 1m ADX qua nhay, thuong < 18 vao buoi sang/
+        # Asian session du trend 15m+1h co that. 15m ADX on dinh hon, phan anh trend chuan xac.
         min_adx = config.MIN_ADX
-        adx = compute_adx(df_signal).iloc[-1]
+        adx = compute_adx(df_trend).iloc[-1] if not df_trend.empty and len(df_trend) >= 20 else float("nan")
         if math.isnan(adx) or adx < min_adx:
-            logger.debug(f"{symbol}: skip — ADX={adx:.1f} < {min_adx} (sideway)")
+            logger.debug(f"{symbol}: skip — 15m ADX={adx:.1f} < {min_adx} (sideway)")
             return False
 
         # 24h directional move filter: tranh chase sau khi coin da pump/dump > 20% trong 24h
@@ -779,10 +780,9 @@ class TradingBot:
                 # Dem signal 15m hop le
                 if sig.direction != 0 and sig.strength >= config.MIN_SIGNAL_STRENGTH:
                     n_15m_valid += 1
-                # Scalp fallback: chi thu 5m neu 1m chet VA thi truong da co it nhat 1 signal 1m hop le
-                # Tranh pure 5m-only consensus trong thi truong sideways chet hoan toan
+                # Scalp fallback: thu 5m khi 1m khong co signal — 5m on dinh hon 1m trong sideways ngan
                 # Skip VWAP (window 1440x1m=24h, tren 5m cho ra 8h — sai)
-                if sig.direction == 0 and n_15m_valid >= 1 and len(df_scalp) >= 50 and strategy.name != "vwap_volume":
+                if sig.direction == 0 and len(df_scalp) >= 50 and strategy.name != "vwap_volume":
                     sig = strategy.generate_signal(df_scalp, df_trend, df_macro)
 
                 if sig.direction == 0 or sig.strength < config.MIN_SIGNAL_STRENGTH:
@@ -1201,14 +1201,12 @@ class TradingBot:
             if best.direction == -1 and scalp_trend == -1 and (macro_trend + macro_4h) <= -1:
                 _micro_spike_dump = False  # reset: 5m confirmation du manh, drop nay la trend continuation
 
-        # EMA50 pullback filter (15m): noi long len 4.0x ATR (tu 2.0x)
-        # 2.0x ATR qua chat — trong trending market (ADX > 25), price co the gap EMA50 3-5x ATR
-        # voi leverage thap hon (20x thay vi 100x), loss tu EMA50 extended trade nho hon
-        # Chi block khi THUC SU qua extended: 4x ATR (khoang 2-3% cho most coins)
-        if len(df_signal) >= 50:
-            _ema50_15m = compute_ema(df_signal["close"], 50).iloc[-1]
-            _atr_15m   = compute_atr(df_signal, config.ATR_PERIOD).iloc[-1]
-            _p15 = df_signal["close"].iloc[-1]
+        # EMA50 pullback filter: dung df_trend (15m) — 1m EMA50 qua nhay, thuong bien dong qua lon
+        # Chi block khi THUC SU qua extended: 4x ATR(15m)
+        if not df_trend.empty and len(df_trend) >= 50:
+            _ema50_15m = compute_ema(df_trend["close"], 50).iloc[-1]
+            _atr_15m   = _atr_for_sl if _atr_for_sl > 0 else compute_atr(df_trend, config.ATR_PERIOD).iloc[-1]
+            _p15 = df_trend["close"].iloc[-1]
             if _ema50_15m > 0 and _atr_15m > 0:
                 _ema50_dist = _p15 - _ema50_15m  # + = above, - = below
                 if best.direction == 1 and _ema50_dist > 4.0 * _atr_15m:
@@ -1224,8 +1222,9 @@ class TradingBot:
                     )
                     return False
 
-        # 1m micro entry timing: apply cho TAT CA coin voi phan tich day du 7 yeu to (threshold=2)
-        if not self._micro_entry_analysis(df_micro, best.direction):
+        # 1m micro entry timing: chi apply cho non-priority (altcoin) — da co consensus + range checks
+        # Priority coins (top20): bo qua gate nay de khong miss lenh tiem nang trong trending market
+        if not is_priority and not self._micro_entry_analysis(df_micro, best.direction):
             logger.debug(f"{symbol}: skip — 1m micro entry timing not confirmed (score too low)")
             return False
 

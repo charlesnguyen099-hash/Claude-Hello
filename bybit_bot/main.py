@@ -52,8 +52,10 @@ class TradingBot:
         # BTC global trend: +1 uptrend, -1 downtrend, 0 sideways (cap nhat moi tick)
         self.btc_trend: int = 0
         self.btc_trend_4h: int = 0
-        # Daily loss guard: track ngay UTC, dung realized PnL tu exchange
+        # Daily loss guard
         self._equity_day_date: str = ""
+        # Per-symbol cooldown: tranh re-analyze cung coin trong SYMBOL_COOLDOWN_SEC
+        self._last_analyzed: dict[str, float] = {}
 
     # ── Main loop ────────────────────────────────────────────────────────────
 
@@ -67,36 +69,31 @@ class TradingBot:
             except Exception as e:
                 logger.error(f"Unhandled error: {e}\n{traceback.format_exc()}")
 
-            # Khi co vi the mo: check position management moi 3s trong 15s window
-            # De khong miss breakeven/partial-close trong spike ngan (AKE pattern)
+            # Quick position check giua cac tick — bat breakeven/TP spike som
             try:
                 positions_now = self.client.get_positions()
                 if positions_now:
-                    for _ in range(4):
-                        time.sleep(3)
-                        try:
-                            positions_now = self.client.get_positions()
-                            if positions_now:
-                                self.executor.manage_open_positions(positions_now)
-                        except Exception:
-                            pass
-                    # Remaining time in 15s window already elapsed (4×3=12s)
-                    time.sleep(3)
-                else:
-                    time.sleep(config.LOOP_INTERVAL_SEC)
+                    time.sleep(1)
+                    try:
+                        self.executor.manage_open_positions(self.client.get_positions())
+                    except Exception:
+                        pass
             except Exception:
-                time.sleep(config.LOOP_INTERVAL_SEC)
+                pass
+
+            # Minimal pause (rate limit protection)
+            time.sleep(config.LOOP_INTERVAL_SEC)
 
     def _tick(self):
         now = time.time()
 
-        # Cap nhat top 20 trending moi 15s — dam bao khong bo lo coin moi bat dau trending
+        # Cap nhat danh sach trending moi SCAN_INTERVAL_SEC giay
         if now - self.last_scan_ts >= config.SCAN_INTERVAL_SEC:
             symbols = self.scanner.scan()
             if symbols:
                 self.symbols = symbols
                 self.last_scan_ts = now
-                logger.info(f"Trending top{len(self.symbols)}: {self.symbols}")
+                logger.info(f"Trending list updated: {len(self.symbols)} coins")
             elif not self.symbols:
                 logger.warning("No symbols found, retrying next cycle")
                 return
@@ -184,6 +181,7 @@ class TradingBot:
         _pos_side_map = {p["symbol"]: p.get("side", "") for p in open_positions}
         _scan_start   = time.time()
         _analyzed     = 0
+        _now          = time.time()
 
         for symbol in self.symbols:
             # Dung khi het time budget
@@ -194,13 +192,21 @@ class TradingBot:
             if symbol in pos_symbols:
                 continue
 
+            # Cooldown: bo qua coin vua duoc analyze gan day (tranh re-check lien tuc)
+            _last = self._last_analyzed.get(symbol, 0)
+            if _now - _last < config.SYMBOL_COOLDOWN_SEC:
+                continue
+
             _analyzed += 1
+            self._last_analyzed[symbol] = _now
             try:
                 traded = self._process_symbol(
                     symbol, equity, open_positions, is_priority=True,
                     btc_eth_side_map=_pos_side_map,
                 )
                 if traded:
+                    # Reset cooldown ngay khi trade — cho phep re-enter neu co signal moi
+                    self._last_analyzed[symbol] = 0
                     try:
                         open_positions = self.client.get_positions()
                         equity         = self.client.get_wallet_balance()
@@ -208,14 +214,11 @@ class TradingBot:
                         _pos_side_map  = {p["symbol"]: p.get("side", "") for p in open_positions}
                     except Exception:
                         pass
-                    # Kiem tra lai max positions sau moi lenh mo
                     if len(open_positions) >= config.MAX_OPEN_POSITIONS:
                         logger.info(f"[TICK] Max positions ({config.MAX_OPEN_POSITIONS}) reached")
                         break
             except Exception as e:
                 logger.debug(f"Error {symbol}: {str(e).encode('ascii','replace').decode()}")
-
-            time.sleep(0.05)
 
     def _trend_direction(self, df) -> int:
         """+1 up, -1 down, 0 sideways. Pass df_trend for 1h or df_macro for 4h."""
@@ -473,9 +476,9 @@ class TradingBot:
         _is_gradual_uptrend   = False
         _is_gradual_downtrend = False
 
-        # Timeframe moi: signal=1m (paginated, 2000c), scalp=5m, trend=15m, macro=1h
-        # df_micro = df_signal (1m) — dung lai ten cu de khong phai doi het code ben duoi
-        df_signal = self.client.get_klines_paginated(symbol, config.TIMEFRAMES["signal"], config.CANDLE_LIMIT_SIGNAL)
+        # signal=1m (500c, 1 API call), scalp=5m, trend=15m, macro=1h
+        # 500 nen 1m = ~8h — du cho moi indicator (EMA50 can 50, ADX can 14, v.v.)
+        df_signal = self.client.get_klines(symbol, config.TIMEFRAMES["signal"], config.CANDLE_LIMIT_SIGNAL)
         df_scalp  = self.client.get_klines(symbol, config.TIMEFRAMES["scalp"],  config.CANDLE_LIMIT_SCALP)
         df_trend  = self.client.get_klines(symbol, config.TIMEFRAMES["trend"],  config.CANDLE_LIMIT_TREND)
         df_macro  = self.client.get_klines(symbol, config.TIMEFRAMES["macro"],  config.CANDLE_LIMIT_MACRO)

@@ -11,8 +11,8 @@ TESTNET    = os.getenv("BYBIT_TESTNET", "false").lower() == "true"
 
 # --- Market Scanner -----------------------------------------------------------
 MIN_VOLUME_USDT_24H  = 100_000       # min 100K USDT/24h — bat ca coin nho co trend dep
-SCAN_INTERVAL_SEC    = 15            # cap nhat danh sach trending moi 15 giay
-SCAN_BUDGET_SEC      = 12.0          # xu ly coin trong toi da 12s moi tick (coin tot nhat truoc)
+SCAN_INTERVAL_SEC    = 30            # cap nhat danh sach trending moi 30s (giam API call)
+SCAN_BUDGET_SEC      = 8.0           # xu ly coin trong toi da 8s moi tick
 
 # --- Multi-Timeframe Analysis -------------------------------------------------
 # 1m  x 2000 = ~33h  — MAIN signal (scalp entry, nhanh, nhieu lenh hon)
@@ -28,10 +28,10 @@ TIMEFRAMES = {
     "trend":  "15",    # 15m: trend confirmation (was 1h)
     "macro":  "60",    # 1h: macro trend (was 4h)
 }
-CANDLE_LIMIT_SIGNAL = 2000   # 2 API calls x 1000 = ~33h 1m data
-CANDLE_LIMIT_SCALP  = 500    # 500 x 5m = ~42h
-CANDLE_LIMIT_TREND  = 500    # 500 x 15m = ~5 ngay
-CANDLE_LIMIT_MACRO  = 300    # 300 x 1h  = ~12 ngay
+CANDLE_LIMIT_SIGNAL = 500    # 500 x 1m = ~8h — 1 API call, du cho moi indicator (EMA50 can 50)
+CANDLE_LIMIT_SCALP  = 200    # 200 x 5m = ~17h
+CANDLE_LIMIT_TREND  = 200    # 200 x 15m = ~2 ngay
+CANDLE_LIMIT_MACRO  = 150    # 150 x 1h  = ~6 ngay
 
 # --- Phi giao dich Bybit ------------------------------------------------------
 TAKER_FEE      = 0.00055
@@ -73,7 +73,8 @@ MAX_SPREAD_PCT_LARGE = 0.0005   # 0.05% cho BTC/ETH
 MAX_SPREAD_PCT_ALT   = 0.0015   # 0.15% cho altcoin
 
 # --- Execution ----------------------------------------------------------------
-LOOP_INTERVAL_SEC    = 10   # check moi 10 giay (nhanh hon de bat signal top20)
+LOOP_INTERVAL_SEC    = 1    # minimum pause giua cac tick (rate limit only)
+SYMBOL_COOLDOWN_SEC  = 60   # khong re-analyze cung coin trong 60s (tranh spam)
 
 # --- Logging ------------------------------------------------------------------
 LOG_FILE        = "trading_bot.log"

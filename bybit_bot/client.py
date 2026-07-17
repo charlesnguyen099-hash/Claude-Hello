@@ -277,24 +277,29 @@ class BybitClient:
         return 0.0
 
     def get_bid_ask(self, symbol: str) -> tuple[float, float]:
-        """Lay best bid/ask hien tai. Fallback sang markPrice neu bid/ask = 0."""
+        """Lay best bid/ask tu orderbook (chinh xac hon tickers API)."""
+        try:
+            resp = self.session.get_orderbook(category="linear", symbol=symbol, limit=1)
+            data = resp["result"]
+            bids = data.get("b", [])
+            asks = data.get("a", [])
+            if bids and asks:
+                bid = float(bids[0][0])
+                ask = float(asks[0][0])
+                if bid > 0 and ask > 0:
+                    return bid, ask
+        except Exception as e:
+            logger.debug(f"get_bid_ask orderbook {symbol}: {e}")
+        # Fallback: tickers markPrice
         try:
             resp  = self.session.get_tickers(category="linear", symbol=symbol)
             items = resp["result"]["list"]
             if items:
-                bid  = float(items[0].get("bid1Price", 0) or 0)
-                ask  = float(items[0].get("ask1Price", 0) or 0)
                 mark = float(items[0].get("markPrice", 0) or 0)
-                # Fallback: neu bid/ask = 0 (API delay), dung markPrice +/- 0.01%
-                if bid <= 0 or ask <= 0:
-                    if mark > 0:
-                        bid = mark * 0.9999
-                        ask = mark * 1.0001
-                    else:
-                        return 0.0, 0.0
-                return bid, ask
+                if mark > 0:
+                    return mark * 0.9999, mark * 1.0001
         except Exception as e:
-            logger.debug(f"get_bid_ask {symbol}: {e}")
+            logger.debug(f"get_bid_ask tickers {symbol}: {e}")
         return 0.0, 0.0
 
     @staticmethod

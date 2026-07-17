@@ -762,8 +762,8 @@ class TradingBot:
                     (bo_sig.direction == -1 and macro_trend <= -1) or
                     (bo_sig.direction == 1  and macro_4h >= 1) or
                     (bo_sig.direction == -1 and macro_4h <= -1) or
-                    (is_top10 and bo_sig.direction == 1  and micro_up   and _bo_macro_not_both_contra_long) or
-                    (is_top10 and bo_sig.direction == -1 and micro_down and _bo_macro_not_both_contra_short)
+                    (is_priority and bo_sig.direction == 1  and micro_up   and _bo_macro_not_both_contra_long) or
+                    (is_priority and bo_sig.direction == -1 and micro_down and _bo_macro_not_both_contra_short)
                 )
                 # 2h 1m range block cho BREAKOUT — tranh short o day / long o dinh 2h
                 bo_m2h_ok = not (_m2h_block_short and bo_sig.direction == -1) and \
@@ -852,14 +852,14 @@ class TradingBot:
                     if is_priority and sig.direction == 1 and not long_ok:
                         if micro_up and scalp_trend == 1:
                             long_ok = True
-                    # Micro-only entry: chi ap dung top 5 coin trending manh nhat
+                    # Micro-only entry: ap dung cho TAT CA coin trending (is_priority)
                     # Neu 15m/1h chua flip nhung 1m ro rang va 5m neutral/cung chieu -> vao som
                     # Khong ap dung khi macro ca 2 TF deu nguoc chieu (risk qua cao)
-                    if is_top10 and sig.direction == 1 and not long_ok:
+                    if is_priority and sig.direction == 1 and not long_ok:
                         _macro_not_strongly_bear = not (macro_trend == -1 and macro_4h == -1)
                         if micro_up and scalp_trend >= 0 and _macro_not_strongly_bear:
                             long_ok = True
-                    if is_top10 and sig.direction == -1 and not short_ok:
+                    if is_priority and sig.direction == -1 and not short_ok:
                         _macro_not_strongly_bull = not (macro_trend == 1 and macro_4h == 1)
                         if micro_down and scalp_trend <= 0 and _macro_not_strongly_bull:
                             short_ok = True

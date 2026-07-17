@@ -21,7 +21,7 @@ from client import BybitClient
 
 logger = logging.getLogger(__name__)
 
-TRENDING_TOP_N = 20   # luôn chỉ trade top 20 coin trending nhất
+TRENDING_TOP_N = config.TOP_N_SYMBOLS   # lay tu config (default 50)
 
 
 @dataclass
@@ -75,8 +75,16 @@ class MarketScanner:
                 # Fallback: dùng turnover làm proxy volume surge (so với min threshold)
                 vol_surge = vol / max(config.MIN_VOLUME_USDT_24H, 1)
 
-                if vol < 10_000_000 or price <= 0:
+                if vol < config.MIN_VOLUME_USDT_24H or price <= 0:
                     continue
+
+                # Quality gate cho coin nho (vol < 10M): can co momentum ro rang va spread tot
+                # Tranh coin ngu khong co trend (vol thap + flat price = spam API vo ich)
+                if vol < 10_000_000:
+                    if abs(raw_chg) < 1.0:  # gia phai di chuyen it nhat 1% trong 24h
+                        continue
+                    if spread > 0.5:  # spread > 0.5% = thanh khoan kem, kho execute
+                        continue
 
                 # Loại coin đã pump/dump xong (>25% trong 24h → momentum cạn)
                 if abs(raw_chg) > 25:

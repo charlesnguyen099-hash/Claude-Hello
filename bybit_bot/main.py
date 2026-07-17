@@ -662,17 +662,17 @@ class TradingBot:
                     _micro_spike_pump = True
                     logger.debug(f"{symbol}: cumulative net pump {_net_move*100:.1f}% in 15 candles -> pump flag")
 
-            # RSI 1m: chi block khi CUC DOAN that su (< 20 hoac > 80)
-            # Nguong 35/65 cu qua rong: trong downtrend 1m RSI thuong 25-40 -> block het SHORT
-            # 20/80: chi bat truong hop panic dump/pump that su (gap xuong, margin call cascade)
+            # RSI 1m: chi block khi CUC DOAN va 5m KHONG xac nhan trend cung chieu
+            # Trong downtrend BTC: RSI 1m < 20 la BINH THUONG (trend manh), khong phai exhaustion
+            # Chi set dump flag khi scalp_trend KHONG phai bearish (tuc la dump nay la spike, khong phai trend)
             if len(df_micro) >= 14:
                 _micro_rsi = compute_rsi(df_micro["close"]).iloc[-1]
-                if _micro_rsi < 20 and not _micro_spike_pump:
+                if _micro_rsi < 20 and not _micro_spike_pump and scalp_trend != -1:
                     _micro_spike_dump = True
-                    logger.debug(f"{symbol}: 1m RSI={_micro_rsi:.1f} extreme oversold -> dump flag")
-                elif _micro_rsi > 80 and not _micro_spike_dump:
+                    logger.debug(f"{symbol}: 1m RSI={_micro_rsi:.1f} extreme oversold (5m not bearish) -> dump flag")
+                elif _micro_rsi > 80 and not _micro_spike_dump and scalp_trend != 1:
                     _micro_spike_pump = True
-                    logger.debug(f"{symbol}: 1m RSI={_micro_rsi:.1f} extreme overbought -> pump flag")
+                    logger.debug(f"{symbol}: 1m RSI={_micro_rsi:.1f} extreme overbought (5m not bullish) -> pump flag")
 
             # Consecutive candles block: largecap 10 nen (6 green 1m candles binh thuong trong BTC uptrend)
             # Altcoin: 8 nen lien tiep = exhaustion / dao chieu
@@ -701,6 +701,21 @@ class TradingBot:
                 logger.debug(f"{symbol}: dual spike flag (ranging 1m) — skip reversal path only")
 
         # macro_trend / macro_4h / _atr_for_sl da tinh TRUOC range blocks (tren)
+
+        # STRONG TREND OVERRIDE: priority coins trong confirmed trend (ca 15m VA 1h dong thuan)
+        # Price o bottom/top cua range LA DINH NGHIA cua downtrend/uptrend — KHONG phai exhaustion
+        # BTC -3% downtrend: price luon o bottom 5% moi range -> tat ca range blocks deu sai
+        # Clear range blocks cho CHIEU TREND khi priority + both TF confirm
+        _strong_bull = is_priority and macro_trend >= 1 and macro_4h >= 1
+        _strong_bear = is_priority and macro_trend <= -1 and macro_4h <= -1
+        if _strong_bear:
+            _h1_block_short  = False   # price at 15m bottom = downtrend, not exhaustion
+            _m2h_block_short = False   # price at 2h bottom = downtrend continuation
+            logger.debug(f"{symbol}: strong bear confirmed (15m+1h) — clear short range blocks")
+        if _strong_bull:
+            _h1_block_long  = False    # price at 15m top = uptrend, not exhaustion
+            _m2h_block_long = False    # price at 2h top = uptrend continuation
+            logger.debug(f"{symbol}: strong bull confirmed (15m+1h) — clear long range blocks")
 
         # BREAKOUT: chay cho tat ca scan_list — su dung 1m signal data
         if df_signal is not None and not df_signal.empty and len(df_signal) >= 30:
@@ -1143,13 +1158,13 @@ class TradingBot:
             _r30m_rng  = _r30m_high - _r30m_low
             if _r30m_rng > 0:
                 _r30m_pos = (_range_price - _r30m_low) / _r30m_rng
-                if best.direction == 1 and _r30m_pos > 0.75 and not _is_gradual_uptrend:
+                if best.direction == 1 and _r30m_pos > 0.75 and not _is_gradual_uptrend and not _strong_bull:
                     logger.debug(
                         f"{symbol}: skip LONG — 30c range_pos={_r30m_pos:.2f} > 0.75 "
                         f"(not gradual uptrend, bad entry timing)"
                     )
                     return False
-                if best.direction == -1 and _r30m_pos < 0.25 and not _is_gradual_downtrend:
+                if best.direction == -1 and _r30m_pos < 0.25 and not _is_gradual_downtrend and not _strong_bear:
                     logger.debug(
                         f"{symbol}: skip SHORT — 30c range_pos={_r30m_pos:.2f} < 0.25 "
                         f"(not gradual downtrend, bad entry timing)"

@@ -47,37 +47,11 @@ class TradingBot:
         self.symbols: list[str] = []
         self.last_scan_ts: float = 0
 
-        # Post-loss tracking: symbol -> timestamp dong lenh lo
-        # Trong 5 phut sau lo, can consensus >= MIN_CONSENSUS+1 de vao lai
-        self._recent_loss_ts: dict[str, float] = {}
-        self.executor.on_loss_callback = self._on_symbol_loss
         # Track positions de detect SL/TP hit boi exchange (khong qua executor)
         self._prev_pos_symbols: set[str] = set()
         # BTC global trend: +1 uptrend, -1 downtrend, 0 sideways (cap nhat moi tick)
         self.btc_trend: int = 0
         self.btc_trend_4h: int = 0
-        # Circuit breaker: tat ca losses trong 15 phut gan nhat (bat ky symbol)
-        # Neu >= 3 losses trong 15 phut -> pause 30 phut khong mo lenh moi
-        self._loss_history: list[float] = []   # timestamps cua tung lenh lo
-        self._circuit_breaker_until: float = 0  # timestamp het pause
-        # Daily PnL cache: chi goi API moi 5 phut (tranh rate limit khi goi moi 15 giay)
-        self._daily_pnl_cache: float = 0.0
-        self._daily_pnl_last_check: float = 0.0
-
-    def _on_symbol_loss(self, symbol: str, side: str = ""):
-        self._recent_loss_ts[symbol] = time.time()
-        logger.info(f"{symbol}: post-loss cooldown started (5 min higher consensus)")
-        # Circuit breaker: track all losses across all symbols
-        now = time.time()
-        self._loss_history.append(now)
-        # Chi giu losses trong 15 phut gan nhat
-        self._loss_history = [t for t in self._loss_history if now - t <= 900]
-        if len(self._loss_history) >= 3:
-            self._circuit_breaker_until = now + 1800  # pause 30 phut
-            logger.warning(
-                f"[CIRCUIT BREAKER] {len(self._loss_history)} losses in 15 min -> "
-                f"pause new entries for 30 min (until {time.strftime('%H:%M:%S', time.localtime(self._circuit_breaker_until))})"
-            )
 
     # ── Main loop ────────────────────────────────────────────────────────────
 
@@ -113,52 +87,6 @@ class TradingBot:
 
     def _tick(self):
         now = time.time()
-
-        # Daily max loss guard: chi refresh PnL moi 5 phut (tranh 240 API calls/gio)
-        # Reset cache luc UTC 00:00 (ngay moi bat dau, PnL reset ve 0)
-        try:
-            from datetime import datetime, timezone as _tz
-            _utc_hour = datetime.now(_tz.utc).hour
-            _utc_min  = datetime.now(_tz.utc).minute
-            if _utc_hour == 0 and _utc_min < 5 and self._daily_pnl_cache != 0.0:
-                self._daily_pnl_cache = 0.0  # reset dau ngay
-                self._daily_pnl_last_check = 0.0
-            if now - self._daily_pnl_last_check >= 300:  # 5 phut
-                self._daily_pnl_cache = self.client.get_today_pnl()
-                self._daily_pnl_last_check = now
-            _today_pnl  = self._daily_pnl_cache
-            _cur_equity = self.client.get_wallet_balance()
-            if _cur_equity > 0 and _today_pnl < -(_cur_equity * config.MAX_DAILY_LOSS_PCT):
-                logger.warning(
-                    f"[DAILY LOSS LIMIT] today_pnl={_today_pnl:.2f} USDT "
-                    f"< -{_cur_equity * config.MAX_DAILY_LOSS_PCT:.2f} USDT "
-                    f"({config.MAX_DAILY_LOSS_PCT*100:.0f}% of equity={_cur_equity:.2f}) "
-                    f"-> pause new entries for rest of today"
-                )
-                # Van quan ly vi the cu nhung khong mo moi
-                try:
-                    open_positions = self.client.get_positions()
-                    if open_positions:
-                        self.executor.manage_open_positions(open_positions)
-                except Exception:
-                    pass
-                return
-        except Exception as e:
-            logger.debug(f"daily_loss_check error: {e}")
-
-        # Circuit breaker: neu da co >= 3 losses trong 15 phut, pause mo lenh moi 30 phut
-        if now < self._circuit_breaker_until:
-            remaining = self._circuit_breaker_until - now
-            logger.info(f"[CIRCUIT BREAKER] Paused — {remaining/60:.0f} min remaining, manage positions only")
-            # Van quan ly vi the dang mo (SL/TP/breakeven) nhung KHONG mo lenh moi
-            try:
-                equity         = self.client.get_wallet_balance()
-                open_positions = self.client.get_positions()
-                if open_positions:
-                    self.executor.manage_open_positions(open_positions)
-            except Exception:
-                pass
-            return
 
         # Refresh danh sach symbols moi gio — giu nguyen thu tu Bybit (volume cao nhat truoc)
         if now - self.last_scan_ts >= config.SCAN_INTERVAL_SEC:
@@ -199,24 +127,12 @@ class TradingBot:
 
         pos_symbols = {p["symbol"] for p in open_positions}
 
-        # Detect position dong boi exchange (SL/TP hit) — khong qua executor._close_position
-        # Neu symbol vua co position ma gio mat -> check closed PnL -> neu lo thi fire post-loss
+        # Detect position dong boi exchange (SL/TP hit) — xoa executor state de tranh stale
         closed_by_exchange = self._prev_pos_symbols - pos_symbols
         if closed_by_exchange:
-            # Xoa executor state cho cac vi the vua dong boi exchange (SL/TP hit)
-            # Tranh state stale khi bot mo lai lenh moi cung symbol
             for sym in closed_by_exchange:
                 self.executor.clear_position_state(sym)
-            try:
-                closed_pnl = self.client.get_closed_pnl(list(closed_by_exchange))
-                for symbol, pnl in closed_pnl.items():
-                    if pnl < 0:
-                        self._on_symbol_loss(symbol)
-                        # Force refresh daily PnL ngay sau khi co loss (tranh cache stale)
-                        self._daily_pnl_last_check = 0.0
-                        logger.info(f"{symbol}: SL/TP hit by exchange, pnl={pnl:.4f} -> post-loss filter")
-            except Exception as e:
-                logger.debug(f"get_closed_pnl error: {e}")
+                logger.info(f"{sym}: position closed by exchange (SL/TP hit) — state cleared")
         self._prev_pos_symbols = pos_symbols
 
         # Cap nhat BTC global trend TRUOC cap check — tranh BTC trend stale khi at max positions
@@ -862,13 +778,8 @@ class TradingBot:
         macro_trend = self._trend_direction(df_trend)
         macro_4h    = self._trend_direction(df_macro)
 
-        # Post-loss filter — tinh som de ap dung cho ca BREAKOUT va momentum
-        post_loss = (time.time() - self._recent_loss_ts.get(symbol, 0)) < 300
-        if post_loss:
-            logger.debug(f"{symbol}: post-loss 5min active -> consensus+1 / BREAKOUT blocked")
-
-        # BREAKOUT: chay cho tat ca scan_list, skip neu post_loss
-        if not post_loss and df_micro is not None and not df_micro.empty and len(df_micro) >= 30:
+        # BREAKOUT: chay cho tat ca scan_list
+        if df_micro is not None and not df_micro.empty and len(df_micro) >= 30:
             bo_sig = BREAKOUT_STRATEGY.generate_signal(df_micro, df_scalp, df_signal)
             if bo_sig.direction != 0:
                 # 5m khong duoc nguoc chieu — cho phep sideways
@@ -1082,14 +993,12 @@ class TradingBot:
                 ) and self._micro_entry_analysis(df_micro, reversal_dir, is_reversal=True)
                 reversal_signals = long_signals if reversal_dir == 1 else short_signals
                 reversal_base = config.MIN_CONSENSUS if is_priority else config.MIN_CONSENSUS_TRENDING
-                # Deep trend guard: neu ca 1h VA 4h deu oppose reversal direction
-                # (vi du: BILL -45% — 1h bearish + 4h bearish -> can them +1 consensus)
-                # Tranh catch the falling knife khi trend lon duoc xac nhan tren nhieu TF
+                # Deep trend guard: neu ca 1h VA 4h deu oppose reversal direction -> +1 consensus
                 reversal_deep_opposed = (
                     (reversal_dir == 1  and macro_trend == -1 and macro_4h == -1) or
                     (reversal_dir == -1 and macro_trend ==  1 and macro_4h ==  1)
                 )
-                reversal_min = reversal_base + (1 if post_loss else 0) + (1 if reversal_deep_opposed else 0)
+                reversal_min = reversal_base + (1 if reversal_deep_opposed else 0)
                 if reversal_deep_opposed:
                     logger.debug(
                         f"{symbol}: reversal deep-trend guard +1 consensus "
@@ -1198,11 +1107,11 @@ class TradingBot:
 
         if is_priority:
             # Priority (top10): base = MIN_CONSENSUS = 5
-            # BTC cung chieu (bonus) -> giam 1 -> 3 (bat nhieu co hoi hon)
-            # Coin diverge nguoc BTC -> tang 2 -> 6 (can xac nhan cao)
+            # BTC cung chieu (bonus) -> giam 1 -> 4
+            # Coin diverge nguoc BTC -> tang 2 -> 7
             # both_sideways (+1): ca 1h VA 4h sideways -> thi truong ranging, can them xac nhan
             base = config.MIN_CONSENSUS
-            extra = (1 if post_loss else 0) + (1 if both_sideways else 0)
+            extra = (1 if both_sideways else 0)
             btc_long_bonus  = 1 if btc_strongly_bull else 0
             btc_short_bonus = 1 if btc_strongly_bear else 0
             diverge_long_penalty  = 2 if (btc_strongly_bear and coin_independently_bull)  else 0
@@ -1210,11 +1119,9 @@ class TradingBot:
             required_long  = max(2, min(7, base + extra - btc_long_bonus  + diverge_long_penalty))
             required_short = max(2, min(7, base + extra - btc_short_bonus + diverge_short_penalty))
         else:
-            # Trending non-priority: base = MIN_CONSENSUS_TRENDING = 5
-            # BTC cung chieu -> giam 1 -> 4 (non-priority de vao hon khi trend ro)
-            # Coin diverge nguoc BTC -> tang 2 -> 7 (rat kho vao, can gan tat ca strategies)
+            # Non-priority: base = MIN_CONSENSUS_TRENDING = 5
             base = config.MIN_CONSENSUS_TRENDING
-            extra = (1 if sideways_1h else 0) + (1 if post_loss else 0)
+            extra = (1 if sideways_1h else 0)
             btc_long_bonus  = 1 if btc_strongly_bull else 0
             btc_short_bonus = 1 if btc_strongly_bear else 0
             diverge_long_penalty  = 2 if (btc_strongly_bear and coin_independently_bull)  else 0
@@ -1224,7 +1131,7 @@ class TradingBot:
 
         # TOP10 PRIORITY: 2 trong 2 Tier-1 strategy (supertrend + vwap_volume) dong thuan -> trade
         # Tier-1 bypass: KHONG bi chan boi BTC filter — top10 coin lon co momentum rieng
-        # post_loss KHONG ap dung cho Tier1 — tin hieu Tier1 du manh de vao lai ngay
+        # Tier1 bypass: 2/2 strategies dong thuan, khong bi chan boi bat ky extra filter nao
         TIER1 = {"supertrend", "vwap_volume"}
         tier1_long  = sum(1 for s in long_signals  if s.strategy_name in TIER1)
         tier1_short = sum(1 for s in short_signals if s.strategy_name in TIER1)

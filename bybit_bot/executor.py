@@ -20,7 +20,6 @@ Defensive layers (execution):
 import logging
 import math
 import time
-from typing import Callable, Optional
 
 from client import BybitClient
 from risk_manager import RiskManager, TradeParams
@@ -46,8 +45,6 @@ class Executor:
         self._open_time: dict[str, float]      = {}
         self._sl_verified: dict[str, bool]     = {}   # da verify SL sau fill chua
         self._tick_size: dict[str, float]      = {}   # tick size de round be/tp2 dung exchange format
-        # Callback duoc goi khi dong lenh lo — (symbol: str, side: str) -> None
-        self.on_loss_callback: Optional[Callable[..., None]] = None
 
     def execute_signal(
         self,
@@ -518,7 +515,5 @@ class Executor:
                 "reason": "signal_reversal_or_emergency",
             })
             logger.info(f"[CLOSE] {symbol} {side} qty={qty} pnl={pnl:.4f}")
-            if pnl < 0 and self.on_loss_callback:
-                self.on_loss_callback(symbol, side)
         except Exception as e:
             logger.error(f"Failed to close position {symbol}: {str(e).encode('ascii', 'replace').decode()}")

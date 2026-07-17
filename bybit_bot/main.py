@@ -862,8 +862,14 @@ class TradingBot:
                         scalp_allows_short = True
                         scalp_allows_long  = True
                     else:
-                        scalp_allows_short = scalp_trend != 1   # 5m khong bullish
-                        scalp_allows_long  = scalp_trend != -1  # 5m khong bearish
+                        # Altcoin: 5m phai CONFIRM cung chieu (khong chi "khong nguoc chieu")
+                        # SHORT chi ok khi 5m bearish (-1); neutral (0) = chua confirm -> skip
+                        # LONG  chi ok khi 5m bullish (+1); neutral (0) = chua confirm -> skip
+                        # Ngoai le: neu ca micro (1m) va 15m deu xac nhan -> cho phep neutral 5m
+                        _micro_short_ok = micro_down and macro_trend <= -1
+                        _micro_long_ok  = micro_up   and macro_trend >= 1
+                        scalp_allows_short = (scalp_trend == -1) or _micro_short_ok
+                        scalp_allows_long  = (scalp_trend ==  1) or _micro_long_ok
                     if sig.direction == 1 and long_ok and scalp_allows_long:
                         long_signals.append(sig)
                     elif sig.direction == -1 and short_ok and scalp_allows_short:
@@ -1138,6 +1144,23 @@ class TradingBot:
                     f"block {signal_side} to avoid double correlated exposure"
                 )
                 return False
+
+        # Volume pressure filter: neu 5 nen 1m gan nhat co volume mua (green) > volume ban (red)
+        # thi momentum dang thuoc ve nguoi mua -> khong nen SHORT; nguoc lai khong nen LONG
+        # Chi ap dung khi du data va volume chech lech ro rang (>= 60% cung 1 chieu)
+        if not df_micro.empty and len(df_micro) >= 5:
+            _vbars = df_micro.iloc[-5:]
+            _green_vol = _vbars.loc[_vbars["close"] >= _vbars["open"], "volume"].sum()
+            _red_vol   = _vbars.loc[_vbars["close"] <  _vbars["open"], "volume"].sum()
+            _total_vol = _green_vol + _red_vol
+            if _total_vol > 0:
+                _buy_ratio = _green_vol / _total_vol
+                if best.direction == -1 and _buy_ratio >= 0.75:
+                    logger.debug(f"{symbol}: skip SHORT — 5-bar volume pressure BUY {_buy_ratio*100:.0f}% (buyers dominating)")
+                    return False
+                if best.direction == 1 and _buy_ratio <= 0.25:
+                    logger.debug(f"{symbol}: skip LONG — 5-bar volume pressure SELL {(1-_buy_ratio)*100:.0f}% (sellers dominating)")
+                    return False
 
         # Direction-aware 1m spike filter:
         # Pump spike -> block LONG (khong mua dinh), SHORT van duoc phep (ban dinh tot)

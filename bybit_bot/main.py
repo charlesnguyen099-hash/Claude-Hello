@@ -151,6 +151,36 @@ class TradingBot:
         except Exception:
             pass
 
+        # =====================================================================
+        # TEST TRADE — XOA SAU KHI XAC NHAN BOT PULL CODE DUOC
+        # Force trade BTCUSDT theo btc_trend de kiem tra bot co chay code moi
+        # =====================================================================
+        _btc_in_pos = any(p["symbol"] == "BTCUSDT" for p in open_positions)
+        if not _btc_in_pos and self.btc_trend != 0:
+            try:
+                from strategies.base import Signal
+                _test_dir = self.btc_trend  # 1=Long, -1=Short theo 15m trend
+                _df_btc15 = self.client.get_klines("BTCUSDT", config.TIMEFRAMES["trend"], 20)
+                _btc_price = float(_df_btc15["close"].iloc[-1]) if not _df_btc15.empty else 0.0
+                _btc_atr   = compute_atr(_df_btc15, 14).iloc[-1] if not _df_btc15.empty and len(_df_btc15) >= 14 else _btc_price * 0.005
+                _test_sig = Signal(
+                    direction=_test_dir,
+                    strength=0.85,
+                    strategy_name="TEST_FORCE",
+                    entry_price=_btc_price,
+                    atr=_btc_atr,
+                    reason="TEST: forced BTC trade to verify bot pulls new code",
+                    symbol="BTCUSDT",
+                    consensus=3,
+                )
+                logger.warning(f"[TEST] Forcing BTCUSDT {'LONG' if _test_dir==1 else 'SHORT'} @ {_btc_price:.2f} — DELETE AFTER CONFIRM")
+                self.executor.execute_signal("BTCUSDT", _test_sig, equity, open_positions, is_priority=True)
+            except Exception as _e:
+                logger.error(f"[TEST] Force trade failed: {_e}")
+        # =====================================================================
+        # END TEST TRADE
+        # =====================================================================
+
         # Hard cap: khong mo them lenh neu da dat MAX_OPEN_POSITIONS
         if len(open_positions) >= config.MAX_OPEN_POSITIONS:
             logger.info(

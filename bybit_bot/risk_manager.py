@@ -92,12 +92,19 @@ class RiskManager:
         risk_amount = equity * config.RISK_PER_TRADE_PCT * scale_factor
         qty_by_risk = risk_amount / sl_dist
 
+        # Helper: round qty theo so chu so thap phan cua qty_step (tranh float artifact)
+        _qty_decimals = len(str(qty_step).rstrip("0").split(".")[-1]) if "." in str(qty_step) else 0
+
+        def _round_qty(q: float) -> float:
+            return round(math.floor(q / qty_step) * qty_step, _qty_decimals)
+
+        def _ceil_qty(q: float) -> float:
+            return round(math.ceil(q / qty_step) * qty_step, _qty_decimals)
+
         # Round xuong de khong over-risk
-        qty = math.floor(qty_by_risk / qty_step) * qty_step
+        qty = _round_qty(qty_by_risk)
 
         # Neu risk-based qty < min_qty (exchange minimum), cap qty tai min_qty
-        # NHUNG: scale sl_dist down de giu risk_amount khong doi (tranh over-risk)
-        # Neu khong the dieu chinh (min_qty * sl_dist > risk_amount * 3), thi bao log va skip
         if qty < min_qty:
             qty = min_qty
             actual_risk = qty * sl_dist
@@ -111,7 +118,7 @@ class RiskManager:
         # Dam bao notional >= $5 (Bybit minimum)
         MIN_NOTIONAL = 5.0
         if qty * signal.entry_price < MIN_NOTIONAL:
-            qty = math.ceil(MIN_NOTIONAL / signal.entry_price / qty_step) * qty_step
+            qty = _ceil_qty(MIN_NOTIONAL / signal.entry_price)
 
         notional = qty * signal.entry_price
 
@@ -131,8 +138,7 @@ class RiskManager:
         if capital_used > max_capital * 1.05:  # 5% tolerance
             # Giam qty sao cho capital_used <= max_capital
             max_notional  = max_capital * leverage
-            qty = math.floor(max_notional / signal.entry_price / qty_step) * qty_step
-            qty = max(qty, min_qty)
+            qty = max(_round_qty(max_notional / signal.entry_price), min_qty)
             notional = qty * signal.entry_price
             capital_used = notional / leverage
 
@@ -140,7 +146,7 @@ class RiskManager:
         # Neu van thieu $5: thu dung min qty de dat notional=$5, mien la margin can thiet <= equity
         # (voi max leverage, $5 notional chi can $5/lev margin — hoan toan kha thi voi tai khoan nho)
         if notional < MIN_NOTIONAL:
-            min_qty_for_notional = math.ceil(MIN_NOTIONAL / signal.entry_price / qty_step) * qty_step
+            min_qty_for_notional = _ceil_qty(MIN_NOTIONAL / signal.entry_price)
             min_margin_needed = (min_qty_for_notional * signal.entry_price) / leverage
             if min_margin_needed <= equity:
                 qty = min_qty_for_notional

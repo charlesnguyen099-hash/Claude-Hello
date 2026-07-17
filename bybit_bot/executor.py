@@ -389,10 +389,12 @@ class Executor:
                 if dist_moved >= dist_to_tp1 * config.BREAKEVEN_TRIGGER:
                     try:
                         fee_buffer = entry * config.ROUND_TRIP_FEE
-                        # LONG BE: SL tai entry + fee (tren entry, duoi mark) -> dong neu price quay xuong
-                        # SHORT BE: SL tai entry + fee (tren entry, tren mark khi o trong profit) -> dong neu price quay len
-                        # Ca 2 deu la entry + fee_buffer — SHORT SL phai > current price nen phai o tren entry
-                        be_price_raw = entry + fee_buffer
+                        # LONG BE:  SL tai entry + fee (tren entry) — trigger khi price quay xuong qua entry
+                        # SHORT BE: SL tai entry - fee (duoi entry) — trigger khi price quay len qua entry
+                        #   Ly do: SHORT profit = entry - close - fees
+                        #   Hoa von: close = entry - fees -> SL = entry - fee_buffer
+                        #   Neu dat entry + fee (nhu Long): SL trigger khi price > entry -> DANG LO, khong phai hoa von
+                        be_price_raw = entry + fee_buffer if side == "Buy" else entry - fee_buffer
                         ts = self._tick_size.get(symbol, 0.0)
                         be_price = self.client.round_to_tick(be_price_raw, ts) if ts > 0 else round(be_price_raw, 6)
                         # Validate truoc khi gui: Bybit reject neu SL invalid
@@ -455,11 +457,11 @@ class Executor:
                             self._partial_closed[symbol] = True
 
                         # Xac nhan breakeven SL neu chua set (tick-aligned)
-                        # Ca LONG va SHORT deu dung entry + fee_buffer:
-                        # SHORT SL phai TREN entry (tren mark price khi o trong profit) de Bybit chap nhan
+                        # LONG: SL tai entry + fee (tren entry)
+                        # SHORT: SL tai entry - fee (duoi entry, nhung TREN mark khi profitable)
                         if not self._breakeven_set.get(symbol, False):
                             fee_buffer = entry * config.ROUND_TRIP_FEE
-                            be_price_raw = entry + fee_buffer
+                            be_price_raw = entry + fee_buffer if side == "Buy" else entry - fee_buffer
                             ts3 = self._tick_size.get(symbol, 0.0)
                             be_price = self.client.round_to_tick(be_price_raw, ts3) if ts3 > 0 else round(be_price_raw, 6)
                             mark3 = float(pos.get("markPrice", 0))

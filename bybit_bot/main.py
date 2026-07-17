@@ -55,6 +55,9 @@ class TradingBot:
         # Rotate batch cho rest coins (ngoai top20): moi tick quet 1 batch
         self._rest_batch_idx: int = 0
         REST_BATCH_SIZE = 20  # quet 20 coin/tick tu phan con lai
+        # Daily loss guard: reset equity_day_start moi ngay UTC
+        self._equity_day_start: float = 0.0
+        self._equity_day_date: str = ""
 
     # ── Main loop ────────────────────────────────────────────────────────────
 
@@ -111,10 +114,29 @@ class TradingBot:
             logger.error(f"Failed to get account state: {str(e).encode('ascii','replace').decode()}")
             return
 
+        # Daily loss guard: dung mo lenh moi neu da mat > MAX_DAILY_LOSS_PCT trong ngay
+        _today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        if _today != self._equity_day_date:
+            # Ngay moi: reset moc equity dau ngay
+            self._equity_day_start = equity
+            self._equity_day_date  = _today
+            logger.info(f"[DAILY] New day — equity start: {equity:.2f} USDT")
+        _daily_pnl_pct = (equity - self._equity_day_start) / self._equity_day_start if self._equity_day_start > 0 else 0
+        if _daily_pnl_pct < -config.MAX_DAILY_LOSS_PCT:
+            logger.warning(
+                f"[DAILY LOSS GUARD] PnL today={_daily_pnl_pct*100:.2f}% < -{config.MAX_DAILY_LOSS_PCT*100:.0f}% "
+                f"— STOP new entries for today"
+            )
+            # Van quan ly vi the dang mo (SL/TP, breakeven) nhung khong mo them
+            if open_positions:
+                self.executor.manage_open_positions(open_positions)
+            return
+
         logger.info(
             f"[TICK] {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')} | "
             f"Equity={equity:.2f} USDT | "
-            f"Open={len(open_positions)}"
+            f"Open={len(open_positions)} | "
+            f"DayPnL={_daily_pnl_pct*100:+.2f}%"
         )
 
         # Quan ly vi the dang mo
@@ -743,22 +765,21 @@ class TradingBot:
                 bo_m2h_ok = not (_m2h_block_short and bo_sig.direction == -1) and \
                             not (_m2h_block_long  and bo_sig.direction == 1)
                 if bo_ok and micro_ok and not is_spike and post_spike_ok and micro_spike_ok and bo_btc_ok and bo_h1_ok and bo_24h_ok and bo_trend_ok and bo_m2h_ok:
-                    # BREAKOUT phai qua range check — tranh long o dinh / short o day
-                    if not self._micro_entry_analysis(df_signal, bo_sig.direction):
-                        logger.debug(f"{symbol}: BREAKOUT skip — range/micro_entry block")
-                    else:
-                        bo_sig.symbol    = symbol
-                        bo_sig.consensus = 1
-                        # ATR override: dung 15m ATR cho SL/TP (1m ATR qua nho)
-                        if _atr_for_sl > 0:
-                            bo_sig.atr = _atr_for_sl
-                        logger.info(
-                            f"{symbol} [BREAKOUT] -> "
-                            f"{'LONG' if bo_sig.direction==1 else 'SHORT'} "
-                            f"strength={bo_sig.strength:.2f} | {bo_sig.reason}"
-                        )
-                        self.executor.execute_signal(symbol, bo_sig, equity, open_positions, is_priority=is_priority)
-                        return True
+                    # micro_entry_analysis da xoa: BREAKOUT theo dinh nghia la break qua range
+                    # -> range check trong _micro_entry_analysis se HARD BLOCK moi breakout hop le
+                    # Da co: bo_h1_ok, bo_m2h_ok, bo_trend_ok, micro_ok thay the
+                    bo_sig.symbol    = symbol
+                    bo_sig.consensus = 1
+                    # ATR override: dung 15m ATR cho SL/TP (1m ATR qua nho)
+                    if _atr_for_sl > 0:
+                        bo_sig.atr = _atr_for_sl
+                    logger.info(
+                        f"{symbol} [BREAKOUT] -> "
+                        f"{'LONG' if bo_sig.direction==1 else 'SHORT'} "
+                        f"strength={bo_sig.strength:.2f} | {bo_sig.reason}"
+                    )
+                    self.executor.execute_signal(symbol, bo_sig, equity, open_positions, is_priority=is_priority)
+                    return True
 
         # Xac dinh mode: REVERSAL hay MOMENTUM
         # Nguong 35/65 dong bo voi sustained_trend va bollinger — bat duoc reversal som hon
@@ -802,13 +823,12 @@ class TradingBot:
                 if sig.direction == -1 and _block_short_24h and not is_reversal:
                     continue
 
-                # Long chi khi 2 nen xanh lien tiep (momentum xac nhan)
-                # top10 priority: bo qua yeu cau nay, dung 1m micro trend thay the
-                if sig.direction == 1 and not short_term_up and not is_reversal and not is_priority:
-                    continue
-                # Short chi khi 2 nen do lien tiep (momentum xac nhan)
-                if sig.direction == -1 and not short_term_down and not is_reversal and not is_priority:
-                    continue
+                # Momentum confirmation: dung 5m trend (scalp_trend) thay vi 1m candles
+                # Ly do: strategies chay tren 15m, yeu cau 2/3 nen 1m la sai timeframe
+                # Trong 15m uptrend, 1m co the dang pullback (1-2 nen do) = entry tot, khong phai xau
+                # scalp_trend (5m) on dinh hon, dong bo voi 15m strategy signal
+                # Da duoc xu ly o phan scalp_allows_long/short ben duoi — bo filter nay
+                pass  # filter da chuyen sang scalp_allows_long/short
 
                 # Reversal bypass macro filter — bat day/dinh du macro nguoc
                 if is_reversal:
@@ -1051,8 +1071,10 @@ class TradingBot:
             extra = 0
             btc_long_bonus  = 1 if btc_strongly_bull else 0
             btc_short_bonus = 1 if btc_strongly_bear else 0
-            diverge_long_penalty  = 2 if (btc_strongly_bear and coin_independently_bull)  else 0
-            diverge_short_penalty = 2 if (btc_strongly_bull and coin_independently_bear) else 0
+            # Giam tu 2 -> 1: penalty=2 tren base=3 = 5/7 strategies, gan nhu khong bao gio dat
+            # penalty=1 -> required=4/7 — con siet chac nhung co the dat voi coin co momentum ro
+            diverge_long_penalty  = 1 if (btc_strongly_bear and coin_independently_bull)  else 0
+            diverge_short_penalty = 1 if (btc_strongly_bull and coin_independently_bear) else 0
             required_long  = max(2, min(7, base + extra - btc_long_bonus  + diverge_long_penalty))
             required_short = max(2, min(7, base + extra - btc_short_bonus + diverge_short_penalty))
         else:
@@ -1061,8 +1083,10 @@ class TradingBot:
             extra = 0
             btc_long_bonus  = 1 if btc_strongly_bull else 0
             btc_short_bonus = 1 if btc_strongly_bear else 0
-            diverge_long_penalty  = 2 if (btc_strongly_bear and coin_independently_bull)  else 0
-            diverge_short_penalty = 2 if (btc_strongly_bull and coin_independently_bear) else 0
+            # Giam tu 2 -> 1: penalty=2 tren base=3 = 5/7 strategies, gan nhu khong bao gio dat
+            # penalty=1 -> required=4/7 — con siet chac nhung co the dat voi coin co momentum ro
+            diverge_long_penalty  = 1 if (btc_strongly_bear and coin_independently_bull)  else 0
+            diverge_short_penalty = 1 if (btc_strongly_bull and coin_independently_bear) else 0
             required_long  = max(2, min(7, base + extra - btc_long_bonus  + diverge_long_penalty + (1 if btc_opposes_long  else 0)))
             required_short = max(2, min(7, base + extra - btc_short_bonus + diverge_short_penalty + (1 if btc_opposes_short else 0)))
 

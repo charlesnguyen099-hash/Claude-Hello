@@ -69,14 +69,26 @@ class RiskManager:
         # Phi round-trip (tinh tren entry price de co trong sl/tp calc)
         fee_price = signal.entry_price * config.ROUND_TRIP_FEE
 
-        # SL/TP dua tren ATR
-        # SL  = 1.5x ATR + phi (entry - sl_dist)
-        # TP1 = 1.5x ATR - phi -> max(tp1_dist, sl_dist) lam cho TP1 = sl_dist -> RR ~1:1 sau phi
-        # TP2 = 3.0x ATR - phi -> max(tp2_dist, sl_dist*2) -> TP2 = 2×SL (RR 2:1)
-        # Partial close 50% tai 75% cua TP1 = 1.125x ATR, con lai chay den TP2
-        sl_dist  = config.SL_ATR_MULT  * signal.atr + fee_price
-        tp1_dist = config.TP1_ATR_MULT * signal.atr - fee_price
-        tp2_dist = config.TP2_ATR_MULT * signal.atr - fee_price
+        # SL/TP — Swing-based voi ATR clamp
+        # Uu tien dat SL tai swing high/low 15m (co y nghia cau truc hon ATR thuan tuy)
+        # Clamp trong [1.5x, 3.0x] ATR: khong qua chat (noise hit) va khong qua rong (mat nhieu)
+        # TP1/TP2 tu dong scale theo sl_dist de giu RR
+        _atr = signal.atr
+        _swing_sl = getattr(signal, 'swing_sl', 0.0)
+        if _swing_sl > 0 and signal.entry_price > 0:
+            _swing_dist = abs(signal.entry_price - _swing_sl)
+            _sl_floor   = 1.5 * _atr  # toi thieu: khong chat hon 1.5x ATR
+            _sl_cap     = 3.0 * _atr  # toi da:    khong rong hon 3.0x ATR
+            sl_dist = max(_sl_floor, min(_sl_cap, _swing_dist)) + fee_price
+            logger.debug(
+                f"{signal.symbol}: swing SL dist={_swing_dist:.4f} "
+                f"clamped [{_sl_floor:.4f}, {_sl_cap:.4f}] -> {sl_dist:.4f}"
+            )
+        else:
+            sl_dist = config.SL_ATR_MULT * _atr + fee_price
+
+        tp1_dist = config.TP1_ATR_MULT * _atr - fee_price
+        tp2_dist = config.TP2_ATR_MULT * _atr - fee_price
         # TP1_ATR_MULT == SL_ATR_MULT nen tp1_dist < sl_dist (fee offset nguoc chieu)
         # -> max dam bao TP1 >= SL distance -> RR >= 1
         tp1_dist = max(tp1_dist, sl_dist)

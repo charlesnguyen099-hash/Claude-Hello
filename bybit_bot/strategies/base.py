@@ -21,6 +21,7 @@ class Signal:
     reason: str = ""        # Mo ta ly do vao lenh (positional arg thu 6)
     symbol: str = ""
     consensus: int = 1      # So strategies dong thuan cung chieu
+    swing_sl: float = 0.0   # Swing high/low 15m lam SL reference (0 = dung ATR thuan tuy)
 
 
 def compute_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:

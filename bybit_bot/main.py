@@ -1433,6 +1433,17 @@ class TradingBot:
         # ATR override: dung 15m ATR cho SL/TP — 1m ATR qua nho (noise se hit SL lien tuc)
         if _atr_for_sl > 0:
             best.atr = _atr_for_sl
+
+        # Swing SL: SL dat tai swing high/low gan nhat tren 15m
+        # SHORT: swing high = dinh cao nhat 5 nen 15m gan nhat (75 phut)
+        # LONG:  swing low  = day thap nhat 5 nen 15m gan nhat (75 phut)
+        # risk_manager se clamp trong khoang [1.5x, 3.0x] ATR
+        if not df_trend.empty and len(df_trend) >= 6 and _atr_for_sl > 0:
+            _swing_n = 5
+            if best.direction == -1:
+                best.swing_sl = df_trend["high"].iloc[-_swing_n:].max()
+            elif best.direction == 1:
+                best.swing_sl = df_trend["low"].iloc[-_swing_n:].min()
         names = "+".join(s.strategy_name for s in signals)
 
         logger.info(

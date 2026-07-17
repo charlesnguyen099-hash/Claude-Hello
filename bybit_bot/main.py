@@ -838,14 +838,23 @@ class TradingBot:
                     long_ok  = macro_trend >= 1 or macro_4h >= 1
                     short_ok = macro_trend <= -1 or macro_4h <= -1
                     # Early trend entry: cho phep SHORT/LONG khi 1m + 5m da confirm du 15m chua flip
-                    # BTC break down 06:00: 1m bearish + 5m bearish nhung 15m EMA chua cross -> miss het move
-                    # Neu ca micro (1m) va scalp (5m) deu bearish va coin la priority -> cho short du macro chua -1
                     if is_priority and sig.direction == -1 and not short_ok:
                         if micro_down and scalp_trend == -1:
-                            short_ok = True   # 1m+5m da confirm breakdown truoc 15m
+                            short_ok = True
                     if is_priority and sig.direction == 1 and not long_ok:
                         if micro_up and scalp_trend == 1:
-                            long_ok = True    # 1m+5m da confirm breakout truoc 15m
+                            long_ok = True
+                    # Micro-only entry: neu 15m/1h chua flip nhung 1m da ro rang va 5m neutral/cung chieu
+                    # Bat bounce/breakdown som hon 1 nen 15m — tranh miss move nhu BTC bounce trong hinh
+                    # Chi ap dung priority coins, khong phai khi macro hoàn toàn nguoc chieu (1h+4h ca 2 nguoc)
+                    if is_priority and sig.direction == 1 and not long_ok:
+                        _macro_not_strongly_bear = not (macro_trend == -1 and macro_4h == -1)
+                        if micro_up and scalp_trend >= 0 and _macro_not_strongly_bear:
+                            long_ok = True
+                    if is_priority and sig.direction == -1 and not short_ok:
+                        _macro_not_strongly_bull = not (macro_trend == 1 and macro_4h == 1)
+                        if micro_down and scalp_trend <= 0 and _macro_not_strongly_bull:
+                            short_ok = True
                     # 5m alignment pre-filter: khong dem signal khi 5m nguoc chieu (ALTCOIN ONLY)
                     # BTC/ETH (largecap): 5m corrections trong 1h trend la BINH THUONG (buy dip / sell bounce)
                     # -> khong apply cho largecap, dung 1m micro check (micro_up/down + EMA9/21) thay the

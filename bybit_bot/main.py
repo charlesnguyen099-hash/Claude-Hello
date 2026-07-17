@@ -633,17 +633,8 @@ class TradingBot:
             # Current forming candle: block neu body 1m hien tai >= 0.4% (mid-pump/dump entry)
             # Bat cac truong hop vao lenh DANG GIUA pump — candle chua dong nen 2x ATR chua dat
             # SOXL/NEAR/HYPE/SNDK: gia tang 0.7-1.8% trong candle dang hinh thanh -> block LONG
-            _curr_open  = df_micro["open"].iloc[-1]
-            _curr_close = df_micro["close"].iloc[-1]
-            if _curr_open > 0:
-                _curr_body_pct = (_curr_close - _curr_open) / _curr_open
-                # Tang tu 0.3% -> 0.8%: 0.3% qua thap, candle binh thuong cung vuot
-                if _curr_body_pct > 0.008 * _sp and not _micro_spike_pump:
-                    _micro_spike_pump = True
-                    logger.debug(f"{symbol}: forming 1m candle body +{_curr_body_pct*100:.2f}% -> pump flag (mid-pump)")
-                elif _curr_body_pct < -0.008 * _sp and not _micro_spike_dump:
-                    _micro_spike_dump = True
-                    logger.debug(f"{symbol}: forming 1m candle body {_curr_body_pct*100:.2f}% -> dump flag (mid-dump)")
+            # Forming candle body check da xoa: body % block entry dung luc momentum manh nhat
+            # 1.5x ATR spike check (ben tren) du de bat candle bat thuong that su
             if _micro_spike_dump and _micro_spike_pump:
                 logger.debug(f"{symbol}: 1m spike ca 2 chieu (ranging) — flags cleared, let consensus decide")
                 _micro_spike_dump = False
@@ -1146,28 +1137,7 @@ class TradingBot:
             logger.debug(f"{symbol}: skip — price at 2h 1m range top (>80%), block MOMENTUM LONG")
             return False
 
-        # 30c 1m range position: block MOMENTUM khi gia o top/bottom 25% cua range 30 phut
-        # AKEUSDT pattern: pump tu 0.0009201 len 0.0009818 = 77% of 30c range -> bad long entry
-        # Exception: gradual trend (>= 60% candles same direction) -> cho phep trend-following
-        # La lap phong thu thu 3 (sau spike flag va 2h range block) — catch edge cases slip qua
-        if not df_micro.empty and len(df_micro) >= 30:
-            _r30m_high = df_micro["high"].iloc[-30:].max()
-            _r30m_low  = df_micro["low"].iloc[-30:].min()
-            _r30m_rng  = _r30m_high - _r30m_low
-            if _r30m_rng > 0:
-                _r30m_pos = (_range_price - _r30m_low) / _r30m_rng
-                if best.direction == 1 and _r30m_pos > 0.75 and not _is_gradual_uptrend and not _strong_bull:
-                    logger.debug(
-                        f"{symbol}: skip LONG — 30c range_pos={_r30m_pos:.2f} > 0.75 "
-                        f"(not gradual uptrend, bad entry timing)"
-                    )
-                    return False
-                if best.direction == -1 and _r30m_pos < 0.25 and not _is_gradual_downtrend and not _strong_bear:
-                    logger.debug(
-                        f"{symbol}: skip SHORT — 30c range_pos={_r30m_pos:.2f} < 0.25 "
-                        f"(not gradual downtrend, bad entry timing)"
-                    )
-                    return False
+        # 30c range block da xoa: redundant — da co 15m range + 2h range blocks
 
         # 1m micro trend confirmation — tat ca coin (micro trend phai cung chieu hoac neutral)
         # Tranh trade khi 1m dang nguoc chieu hoan toan voi signal
@@ -1178,41 +1148,14 @@ class TradingBot:
             logger.debug(f"{symbol}: skip — 1m micro trend BULLISH vs SHORT signal")
             return False
 
-        # 1m EMA alignment check (MOMENTUM path) — bat cac truong hop _micro_trend tra ve 0 (neutral)
-        # do chi dat 2/5 factors thay vi 3/5, nhung EMA9 vs EMA21 dang nguoc chieu ro rang
-        # EMA9 < EMA21: 1m bearish alignment -> tranh long; EMA9 > EMA21: 1m bullish -> tranh short
-        if len(df_micro) >= 21:
-            _e9  = compute_ema(df_micro["close"], 9).iloc[-1]
-            _e21 = compute_ema(df_micro["close"], 21).iloc[-1]
-            if best.direction == 1 and _e9 < _e21:
-                logger.debug(f"{symbol}: skip — 1m EMA9({_e9:.4f}) < EMA21({_e21:.4f}), bearish micro, block LONG")
-                return False
-            if best.direction == -1 and _e9 > _e21:
-                logger.debug(f"{symbol}: skip — 1m EMA9({_e9:.4f}) > EMA21({_e21:.4f}), bullish micro, block SHORT")
-                return False
+        # 1m EMA9/21 check da xoa: redundant — micro_trend da dung EMA lam 1 trong 5 factors
 
-        # 5m (scalp) trend alignment: hard block MOMENTUM ALTCOIN khi 5m nguoc chieu signal
-        # BTC/ETH largecap: 5m correction la binh thuong trong 1h trend — la entry tot (buy dip)
-        #   -> KHONG block largecap, de 1m micro check (micro_up/down + EMA9/21) xu ly
-        # ETHUSDT 19:30 altcoin pattern: 1h bearish, 5m bounce -> SHORT timing xau -> SL hit
-        # BREAKOUT da check scalp_trend rieng; REVERSAL khong block (5m bounce tai day la ok)
+        # 5m hard block da xoa: "sell the bounce" la chien thuat tot trong downtrend
+        # 5m bounce trong 1h downtrend = timing SHORT tot, khong phai xau
+        # Giu lai reset cho micro_spike_dump khi 5m da xac nhan
         if not _is_largecap:
-            # Block SHORT khi 5m dang bounce LEN — tru khi 5m da bao xac nhan downtrend
-            # scalp_trend == -1 nghia la 5m da flip bearish -> bounce da ket thuc, SHORT ok
-            if best.direction == -1 and scalp_trend == 1:
-                logger.debug(
-                    f"{symbol}: skip SHORT — 5m BULLISH (scalp_trend=1) vs 1h DOWN, altcoin bounce"
-                )
-                return False
-            if best.direction == 1 and scalp_trend == -1:
-                logger.debug(
-                    f"{symbol}: skip LONG — 5m BEARISH (scalp_trend=-1) vs 1h UP, altcoin pullback"
-                )
-                return False
-            # Khi scalp_trend == -1 (5m da xac nhan downtrend): raise drop-from-high threshold
-            # tranh bug: 5m bounce xong -> scalp_trend flip -1 -> gia drop 0.6% -> _micro_spike_dump block SHORT
             if best.direction == -1 and scalp_trend == -1 and (macro_trend + macro_4h) <= -1:
-                _micro_spike_dump = False  # reset: 5m confirmation du manh, drop nay la trend continuation
+                _micro_spike_dump = False
 
         # EMA50 pullback filter: dung df_trend (15m) — 1m EMA50 qua nhay, thuong bien dong qua lon
         # Chi block khi THUC SU qua extended: 4x ATR(15m)
@@ -1235,11 +1178,7 @@ class TradingBot:
                     )
                     return False
 
-        # 1m micro entry timing: chi apply cho non-priority (altcoin) — da co consensus + range checks
-        # Priority coins (top20): bo qua gate nay de khong miss lenh tiem nang trong trending market
-        if not is_priority and not self._micro_entry_analysis(df_micro, best.direction):
-            logger.debug(f"{symbol}: skip — 1m micro entry timing not confirmed (score too low)")
-            return False
+        # micro_entry_analysis da xoa: redundant sau consensus 4/7 + range blocks + micro_trend check
 
         best.consensus = len(signals)
         best.symbol    = symbol

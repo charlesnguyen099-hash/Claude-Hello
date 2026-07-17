@@ -529,8 +529,15 @@ class TradingBot:
         _range_live_price = self.client.get_current_price(symbol)
         _range_price = _range_live_price if _range_live_price > 0 else price
 
-        # 15m range position: block long o TOP 75% / short o BOTTOM 25% cua 20-candle 15m range
-        # 20 nen x 15m = 5h range — phu hop voi 1m scalping (khong qua rong)
+        # Tinh macro_trend TRUOC range blocks — can de relax threshold cho priority coins trong trend
+        macro_trend = self._trend_direction(df_trend)   # 15m direction
+        macro_4h    = self._trend_direction(df_macro)   # 1h direction
+        # ATR tu 15m cho SL/TP — 1m ATR qua nho, noise hit SL lien tuc
+        _atr_for_sl = compute_atr(df_trend, config.ATR_PERIOD).iloc[-1] if not df_trend.empty and len(df_trend) >= config.ATR_PERIOD else 0.0
+
+        # 15m range position: block long o TOP / short o BOTTOM cua 20-candle 15m range
+        # Priority coins trong confirmed trend duoc phep entry o top/bottom hon (85/15 thay vi 75/25)
+        # Vi trong uptrend BTC, price hop le o top 75-90% cua range 5h
         _h1_block_long  = False
         _h1_block_short = False
         if not df_trend.empty and len(df_trend) >= 20:
@@ -539,17 +546,18 @@ class TradingBot:
             h1_rng  = h1_high - h1_low
             if h1_rng > 0:
                 h1_pos = (_range_price - h1_low) / h1_rng
-                if h1_pos > 0.75:
+                _h1_long_thresh  = 0.85 if (is_priority and macro_trend >= 1) else 0.75
+                _h1_short_thresh = 0.15 if (is_priority and macro_trend <= -1) else 0.25
+                if h1_pos > _h1_long_thresh:
                     _h1_block_long = True
-                    logger.debug(f"{symbol}: 15m range_pos={h1_pos:.2f} > 0.75 -> block LONG (15m top)")
-                elif h1_pos < 0.25:
+                    logger.debug(f"{symbol}: 15m range_pos={h1_pos:.2f} > {_h1_long_thresh} -> block LONG (15m top)")
+                elif h1_pos < _h1_short_thresh:
                     _h1_block_short = True
-                    logger.debug(f"{symbol}: 15m range_pos={h1_pos:.2f} < 0.25 -> block SHORT (15m bottom)")
+                    logger.debug(f"{symbol}: 15m range_pos={h1_pos:.2f} < {_h1_short_thresh} -> block SHORT (15m bottom)")
 
         # 2h 1m range: block SHORT khi gia o bottom 20% cua range 120 nen 1m (2 gio)
         # Block LONG khi o top 80%
-        # ONDOUSDT/SKHYNIXUSDT/XAGUSDT pattern: price dump 2h truoc, then bot vao SHORT o day -> loss
-        # 120c = 2h 1m candles = du dai de bat dump xay ra truoc 30-60 phut
+        # Priority coins trong confirmed trend: relax den 88%/12%
         _m2h_block_long  = False
         _m2h_block_short = False
         _m2h_pos = 0.5  # default mid-range (used also in reversal extreme block below)
@@ -559,11 +567,8 @@ class TradingBot:
             _m2h_rng  = _m2h_high - _m2h_low
             if _m2h_rng > 0:
                 _m2h_pos = (_range_price - _m2h_low) / _m2h_rng
-                # 80%/20% uniform for all coins — live price ensures accuracy.
-                # Gradual-trend exception in 30c/60c/5m blocks handles "allow LONG in uptrend";
-                # this guard prevents chasing near 2h range extremes regardless of coin size.
-                _m2h_top_thresh = 0.80
-                _m2h_bot_thresh = 0.20
+                _m2h_top_thresh = 0.88 if (is_priority and macro_trend >= 1) else 0.80
+                _m2h_bot_thresh = 0.12 if (is_priority and macro_trend <= -1) else 0.20
                 if _m2h_pos < _m2h_bot_thresh:
                     _m2h_block_short = True
                     logger.debug(f"{symbol}: 2h 1m range_pos={_m2h_pos:.2f} < {_m2h_bot_thresh} -> block SHORT (2h bottom)")
@@ -648,10 +653,11 @@ class TradingBot:
             _micro_price  = df_micro["close"].iloc[-1]
             if _close_15_ago > 0:
                 _net_move = (_micro_price - _close_15_ago) / _close_15_ago
-                if _net_move < -0.008 * _sp and not _micro_spike_dump:
+                # scalp_trend bypass: neu 5m xac nhan cung chieu -> la trend, khong phai spike
+                if _net_move < -0.008 * _sp and not _micro_spike_dump and scalp_trend != -1:
                     _micro_spike_dump = True
                     logger.debug(f"{symbol}: cumulative net dump {_net_move*100:.1f}% in 15 candles -> dump flag")
-                elif _net_move > 0.008 * _sp and not _micro_spike_pump:
+                elif _net_move > 0.008 * _sp and not _micro_spike_pump and scalp_trend != 1:
                     _micro_spike_pump = True
                     logger.debug(f"{symbol}: cumulative net pump {_net_move*100:.1f}% in 15 candles -> pump flag")
 
@@ -667,18 +673,19 @@ class TradingBot:
                     _micro_spike_pump = True
                     logger.debug(f"{symbol}: 1m RSI={_micro_rsi:.1f} extreme overbought -> pump flag")
 
-            # Consecutive candles block: largecap 6 nen (8 lien tiep tren BTC/ETH rat hiem)
+            # Consecutive candles block: largecap 10 nen (6 green 1m candles binh thuong trong BTC uptrend)
             # Altcoin: 8 nen lien tiep = exhaustion / dao chieu
-            _consec_n = 6 if _is_largecap else 8
+            # scalp_trend bypass: neu 5m xac nhan cung chieu -> la trend that, khong phai exhaustion
+            _consec_n = 10 if _is_largecap else 8
             if len(df_micro) >= _consec_n:
                 _micro_c = df_micro["close"].iloc[-_consec_n:].values
                 _micro_o = df_micro["open"].iloc[-_consec_n:].values
                 _all_green = all(_micro_c[i] > _micro_o[i] for i in range(_consec_n))
                 _all_red   = all(_micro_c[i] < _micro_o[i] for i in range(_consec_n))
-                if _all_green and not _micro_spike_pump:
+                if _all_green and scalp_trend != 1 and not _micro_spike_pump:
                     _micro_spike_pump = True
                     logger.debug(f"{symbol}: {_consec_n} consecutive green 1m candles -> pump flag (exhaustion)")
-                if _all_red and not _micro_spike_dump:
+                if _all_red and scalp_trend != -1 and not _micro_spike_dump:
                     _micro_spike_dump = True
                     logger.debug(f"{symbol}: {_consec_n} consecutive red 1m candles -> dump flag (exhaustion)")
 
@@ -692,13 +699,7 @@ class TradingBot:
             if _micro_spike_dump and _micro_spike_pump:
                 logger.debug(f"{symbol}: dual spike flag (ranging 1m) — skip reversal path only")
 
-        # 15m trend va 1h macro trend — dung cho strategy filter va BTC global check
-        macro_trend = self._trend_direction(df_trend)   # 15m direction
-        macro_4h    = self._trend_direction(df_macro)   # 1h direction
-
-        # ATR tu 15m (df_trend) cho SL/TP sizing — 1m ATR qua nho, bi noise hit SL lien tuc
-        # ATR 1m BTC ~$30-80, ATR 15m BTC ~$150-300 -> SL 1.5x 15m ATR = $225-450 (hop ly)
-        _atr_for_sl = compute_atr(df_trend, config.ATR_PERIOD).iloc[-1] if not df_trend.empty and len(df_trend) >= config.ATR_PERIOD else 0.0
+        # macro_trend / macro_4h / _atr_for_sl da tinh TRUOC range blocks (tren)
 
         # BREAKOUT: chay cho tat ca scan_list — su dung 1m signal data
         if df_signal is not None and not df_signal.empty and len(df_signal) >= 30:

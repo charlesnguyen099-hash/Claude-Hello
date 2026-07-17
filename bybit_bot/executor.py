@@ -308,12 +308,11 @@ class Executor:
                     self._open_time[symbol] = created_ms / 1000
                 # Infer breakeven: neu SL da chuyen qua phia loi (LONG: SL > entry; SHORT: SL < entry)
                 if exchange_sl > 0:
-                    if side == "Buy"  and exchange_sl >= entry:
+                    # BE SL: ca Long va Short deu dat o entry + fee (tren entry)
+                    # -> neu SL >= entry la da set breakeven cho ca 2 chieu
+                    if exchange_sl >= entry:
                         self._breakeven_set[symbol] = True
                         logger.info(f"{symbol}: Inferred breakeven already set (SL={exchange_sl:.6f} >= entry={entry:.6f})")
-                    elif side == "Sell" and exchange_sl <= entry:
-                        self._breakeven_set[symbol] = True
-                        logger.info(f"{symbol}: Inferred breakeven already set (SL={exchange_sl:.6f} <= entry={entry:.6f})")
                 # Restore _tp1_price: neu chua co (restart), lay tu exchange TP
                 # Logic: neu partial chua xay ra, exchange TP chinh la TP1
                 # (neu partial da xay ra, exchange TP la TP2 nhung ta khong biet — xem ben duoi)
@@ -452,15 +451,29 @@ class Executor:
                             self._partial_closed[symbol] = True
 
                         # Xac nhan breakeven SL neu chua set (tick-aligned)
+                        # Ca LONG va SHORT deu dung entry + fee_buffer:
+                        # SHORT SL phai TREN entry (tren mark price khi o trong profit) de Bybit chap nhan
                         if not self._breakeven_set.get(symbol, False):
                             fee_buffer = entry * config.ROUND_TRIP_FEE
-                            be_price_raw = entry + fee_buffer if side == "Buy" else entry - fee_buffer
+                            be_price_raw = entry + fee_buffer
                             ts3 = self._tick_size.get(symbol, 0.0)
                             be_price = self.client.round_to_tick(be_price_raw, ts3) if ts3 > 0 else round(be_price_raw, 6)
-                            self.client.update_stop_loss(symbol, be_price)
-                            self._breakeven_set[symbol] = True
-                            self._sl_price[symbol] = be_price
-                            logger.info(f"{symbol}: Breakeven SL confirmed -> {be_price:.6f}")
+                            mark3 = float(pos.get("markPrice", 0))
+                            if mark3 > 0:
+                                if side == "Buy" and be_price >= mark3:
+                                    logger.debug(f"{symbol}: partial BE SL {be_price:.6f} >= mark {mark3:.6f} (LONG) — skip")
+                                elif side == "Sell" and be_price <= mark3:
+                                    logger.debug(f"{symbol}: partial BE SL {be_price:.6f} <= mark {mark3:.6f} (SHORT) — skip")
+                                else:
+                                    self.client.update_stop_loss(symbol, be_price)
+                                    self._breakeven_set[symbol] = True
+                                    self._sl_price[symbol] = be_price
+                                    logger.info(f"{symbol}: Breakeven SL confirmed -> {be_price:.6f}")
+                            else:
+                                self.client.update_stop_loss(symbol, be_price)
+                                self._breakeven_set[symbol] = True
+                                self._sl_price[symbol] = be_price
+                                logger.info(f"{symbol}: Breakeven SL confirmed -> {be_price:.6f}")
 
                     except Exception as e:
                         logger.warning(f"{symbol}: Could not execute partial close: {e}")

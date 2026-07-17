@@ -167,7 +167,7 @@ class TradingBot:
             if symbols:
                 self.symbols = symbols
                 self.last_scan_ts = now
-                logger.info(f"Symbols updated: {len(self.symbols)}, top 5: {self.symbols[:5]}")
+                logger.info(f"Symbols updated: {len(self.symbols)}, top 10: {self.symbols[:10]}")
             elif not self.symbols:
                 logger.warning("No symbols found, retrying next cycle")
                 return
@@ -237,14 +237,14 @@ class TradingBot:
             )
             return
 
-        # Chi trade TOP 5 coins theo volume (chat luong cao nhat, thanh khoan tot nhat)
-        # Bo trending list hoan toan — tap trung 100% capacity vao 5 coin chinh
-        top5 = self.symbols[:5]
-        priority_set = set(top5)
-        scan_list = top5  # tat ca top5 deu la priority
+        # Chi trade TOP 10 coins theo volume (chat luong cao nhat, thanh khoan tot nhat)
+        # Bo trending list hoan toan — tap trung 100% capacity vao 10 coin chinh
+        top10 = self.symbols[:10]
+        priority_set = set(top10)
+        scan_list = top10  # tat ca top10 deu la priority
 
         logger.info(
-            f"[TICK] TOP5 scan: {scan_list} | "
+            f"[TICK] TOP10 scan: {scan_list} | "
             f"BTC_1h={'UP' if self.btc_trend==1 else 'DOWN' if self.btc_trend==-1 else 'SIDE'} "
             f"BTC_4h={'UP' if self.btc_trend_4h==1 else 'DOWN' if self.btc_trend_4h==-1 else 'SIDE'}"
         )
@@ -258,7 +258,7 @@ class TradingBot:
             if symbol in pos_symbols:
                 continue
 
-            is_priority = True  # tat ca top5 deu la priority
+            is_priority = True  # tat ca top10 deu la priority
             try:
                 traded = self._process_symbol(
                     symbol, equity, open_positions, is_priority,
@@ -919,7 +919,7 @@ class TradingBot:
                         bo_sig.symbol    = symbol
                         bo_sig.consensus = 1
                         logger.info(
-                            f"{symbol} [BREAKOUT TOP20] -> "
+                            f"{symbol} [BREAKOUT TOP10] -> "
                             f"{'LONG' if bo_sig.direction==1 else 'SHORT'} "
                             f"strength={bo_sig.strength:.2f} | {bo_sig.reason}"
                         )
@@ -1197,7 +1197,7 @@ class TradingBot:
         both_sideways = (macro_trend == 0 and macro_4h == 0)  # ca 2 TF sideways = thi truong ranging
 
         if is_priority:
-            # Priority (top10): base = MIN_CONSENSUS = 4
+            # Priority (top10): base = MIN_CONSENSUS = 5
             # BTC cung chieu (bonus) -> giam 1 -> 3 (bat nhieu co hoi hon)
             # Coin diverge nguoc BTC -> tang 2 -> 6 (can xac nhan cao)
             # both_sideways (+1): ca 1h VA 4h sideways -> thi truong ranging, can them xac nhan
@@ -1242,10 +1242,10 @@ class TradingBot:
 
         if tier1_bypass_long:
             signals = long_signals
-            logger.info(f"{symbol}: [TOP5 TIER1] 2/2 Tier-1 LONG — bypass consensus")
+            logger.info(f"{symbol}: [TOP10 TIER1] 2/2 Tier-1 LONG — bypass consensus")
         elif tier1_bypass_short:
             signals = short_signals
-            logger.info(f"{symbol}: [TOP5 TIER1] 2/2 Tier-1 SHORT — bypass consensus")
+            logger.info(f"{symbol}: [TOP10 TIER1] 2/2 Tier-1 SHORT — bypass consensus")
         elif len(long_signals) >= required_long:
             signals = long_signals
         elif len(short_signals) >= required_short:

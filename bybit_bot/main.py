@@ -52,6 +52,9 @@ class TradingBot:
         # BTC global trend: +1 uptrend, -1 downtrend, 0 sideways (cap nhat moi tick)
         self.btc_trend: int = 0
         self.btc_trend_4h: int = 0
+        # Rotate batch cho rest coins (ngoai top20): moi tick quet 1 batch
+        self._rest_batch_idx: int = 0
+        REST_BATCH_SIZE = 20  # quet 20 coin/tick tu phan con lai
 
     # ── Main loop ────────────────────────────────────────────────────────────
 
@@ -153,12 +156,23 @@ class TradingBot:
             )
             return
 
-        # Trade toan bo cac cap coin da qua filter volume/liquidity cua scanner
-        scan_list = self.symbols
-        priority_set = set(scan_list)
+        # Top 20 (trending cao nhat): phan tich moi tick
+        # Phan con lai: rotate theo batch 20 coin/tick (tranh miss nhung van nhanh)
+        REST_BATCH_SIZE = 20
+        top20 = self.symbols[:20]
+        rest  = self.symbols[20:]
+        if rest:
+            _start = self._rest_batch_idx % len(rest)
+            _end   = _start + REST_BATCH_SIZE
+            rest_batch = (rest + rest)[_start:_end]  # wrap around
+            self._rest_batch_idx = (_start + REST_BATCH_SIZE) % len(rest)
+        else:
+            rest_batch = []
+        scan_list    = top20 + rest_batch
+        priority_set = set(top20)
 
         logger.info(
-            f"[TICK] ALL {len(scan_list)} coins scan | "
+            f"[TICK] Scan {len(scan_list)} coins (top20 + {len(rest_batch)} rest batch) | "
             f"BTC_1h={'UP' if self.btc_trend==1 else 'DOWN' if self.btc_trend==-1 else 'SIDE'} "
             f"BTC_4h={'UP' if self.btc_trend_4h==1 else 'DOWN' if self.btc_trend_4h==-1 else 'SIDE'}"
         )
@@ -172,7 +186,7 @@ class TradingBot:
             if symbol in pos_symbols:
                 continue
 
-            is_priority = True
+            is_priority = symbol in priority_set
             try:
                 traded = self._process_symbol(
                     symbol, equity, open_positions, is_priority,

@@ -72,7 +72,7 @@ MAX_SPREAD_PCT_LARGE = 0.0005   # 0.05% cho BTC/ETH
 MAX_SPREAD_PCT_ALT   = 0.0015   # 0.15% cho altcoin
 
 # --- Execution ----------------------------------------------------------------
-LOOP_INTERVAL_SEC    = 15   # check moi 15 giay
+LOOP_INTERVAL_SEC    = 10   # check moi 10 giay (nhanh hon de bat signal top20)
 
 # --- Logging ------------------------------------------------------------------
 LOG_FILE        = "trading_bot.log"

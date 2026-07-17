@@ -177,7 +177,7 @@ class TradingBot:
         # Chi scan top 20 trending — moi coin deu la priority
         scan_list    = self.symbols[:config.TOP_N_SYMBOLS]
         priority_set = set(scan_list)
-        top5_set     = set(self.symbols[:5])
+        top10_set    = set(self.symbols[:10])
 
         logger.info(
             f"[TICK] Scan {len(scan_list)} trending coins | "
@@ -195,11 +195,11 @@ class TradingBot:
                 continue
 
             is_priority = symbol in priority_set
-            is_top5     = symbol in top5_set
+            is_top10    = symbol in top10_set
             try:
                 traded = self._process_symbol(
                     symbol, equity, open_positions, is_priority,
-                    btc_eth_side_map=_pos_side_map, is_top5=is_top5
+                    btc_eth_side_map=_pos_side_map, is_top10=is_top10
                 )
                 if traded:
                     try:
@@ -464,7 +464,7 @@ class TradingBot:
             logger.debug(f"micro_entry_analysis: dir={direction} score={score}/{threshold} n={n} -> skip")
         return ok
 
-    def _process_symbol(self, symbol: str, equity: float, open_positions: list[dict], is_priority: bool = False, btc_eth_side_map: dict | None = None, is_top5: bool = False) -> bool:
+    def _process_symbol(self, symbol: str, equity: float, open_positions: list[dict], is_priority: bool = False, btc_eth_side_map: dict | None = None, is_top10: bool = False) -> bool:
         """Phan tich symbol, chay tat ca filter va strategy, tra True neu da trade."""
         # Init gradual trend flags — se duoc tinh chinh xac sau khi co df_micro
         _is_gradual_uptrend   = False
@@ -762,8 +762,8 @@ class TradingBot:
                     (bo_sig.direction == -1 and macro_trend <= -1) or
                     (bo_sig.direction == 1  and macro_4h >= 1) or
                     (bo_sig.direction == -1 and macro_4h <= -1) or
-                    (is_top5 and bo_sig.direction == 1  and micro_up   and _bo_macro_not_both_contra_long) or
-                    (is_top5 and bo_sig.direction == -1 and micro_down and _bo_macro_not_both_contra_short)
+                    (is_top10 and bo_sig.direction == 1  and micro_up   and _bo_macro_not_both_contra_long) or
+                    (is_top10 and bo_sig.direction == -1 and micro_down and _bo_macro_not_both_contra_short)
                 )
                 # 2h 1m range block cho BREAKOUT — tranh short o day / long o dinh 2h
                 bo_m2h_ok = not (_m2h_block_short and bo_sig.direction == -1) and \
@@ -855,11 +855,11 @@ class TradingBot:
                     # Micro-only entry: chi ap dung top 5 coin trending manh nhat
                     # Neu 15m/1h chua flip nhung 1m ro rang va 5m neutral/cung chieu -> vao som
                     # Khong ap dung khi macro ca 2 TF deu nguoc chieu (risk qua cao)
-                    if is_top5 and sig.direction == 1 and not long_ok:
+                    if is_top10 and sig.direction == 1 and not long_ok:
                         _macro_not_strongly_bear = not (macro_trend == -1 and macro_4h == -1)
                         if micro_up and scalp_trend >= 0 and _macro_not_strongly_bear:
                             long_ok = True
-                    if is_top5 and sig.direction == -1 and not short_ok:
+                    if is_top10 and sig.direction == -1 and not short_ok:
                         _macro_not_strongly_bull = not (macro_trend == 1 and macro_4h == 1)
                         if micro_down and scalp_trend <= 0 and _macro_not_strongly_bull:
                             short_ok = True

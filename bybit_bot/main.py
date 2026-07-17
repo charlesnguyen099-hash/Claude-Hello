@@ -773,14 +773,13 @@ class TradingBot:
             try:
                 # Strategies chay tren 15m (df_trend) — duoc thiet ke cho timeframe nay
                 # 1m (df_signal) chi dung cho entry timing (spike, micro_trend, range checks)
-                # Chay tren 1m: EMA crossover/MACD/Ichimoku/sustained_trend rat hiem fire -> 0 consensus
+                # Chay tren 1m: EMA/MACD/Ichimoku/sustained_trend rat hiem fire -> 0 consensus
                 sig = strategy.generate_signal(df_trend, df_macro, df_macro)
-                if sig.direction != 0 and sig.strength >= config.MIN_SIGNAL_STRENGTH:
-                    n_15m_valid += 1
-                # Scalp fallback: thu 5m neu 15m khong co signal
-                # Skip VWAP (window tren 5m sai — can 1m/15m data)
+                # Fallback: thu 5m neu 15m khong co signal (VWAP skip: window 5m sai)
                 if sig.direction == 0 and len(df_scalp) >= 50 and strategy.name != "vwap_volume":
                     sig = strategy.generate_signal(df_scalp, df_trend, df_macro)
+                if sig.direction != 0 and sig.strength >= config.MIN_SIGNAL_STRENGTH:
+                    n_15m_valid += 1
 
                 if sig.direction == 0 or sig.strength < config.MIN_SIGNAL_STRENGTH:
                     continue
@@ -1012,8 +1011,10 @@ class TradingBot:
             # Coin co xu huong doc lap nguoc BTC (ca 1h VA 4h cua chinh coin do)
             # Vi du: BTC bull nhung coin rieng dang bearish 1h+4h -> co the cho phep short
             # Yeu cau them consensus cao hon (xu ly o phan consensus ben duoi)
-            coin_independently_bear = (macro_trend == -1 and macro_4h == -1)
-            coin_independently_bull = (macro_trend ==  1 and macro_4h ==  1)
+            # OR: neu 1 trong 2 TF da xac nhan xu huong doc lap la du
+            # Vi du: MNTUSDT co 15m bullish du 1h chua flip -> van cho phep LONG vs BTC bear
+            coin_independently_bear = (macro_trend == -1 or macro_4h == -1)
+            coin_independently_bull = (macro_trend ==  1 or macro_4h ==  1)
 
             # Hard block: BTC strongly opposes AND coin khong co xu huong doc lap
             # Chi block khi coin CUNG CHIEU voi BTC move (khong co divergence)
@@ -1029,8 +1030,8 @@ class TradingBot:
         # BTC alignment flags cho consensus adjustment
         btc_strongly_bull = (btc_trend == 1  and btc_trend_4h == 1)   if symbol != "BTCUSDT" else False
         btc_strongly_bear = (btc_trend == -1 and btc_trend_4h == -1)  if symbol != "BTCUSDT" else False
-        coin_independently_bear = (macro_trend == -1 and macro_4h == -1)
-        coin_independently_bull = (macro_trend ==  1 and macro_4h ==  1)
+        coin_independently_bear = (macro_trend == -1 or macro_4h == -1)
+        coin_independently_bull = (macro_trend ==  1 or macro_4h ==  1)
 
         # Soft penalty cho non-priority khi BTC 1 TF nguoc (chua confirm 2/2)
         btc_opposes_long  = (btc_trend == -1 and symbol != "BTCUSDT" and not is_priority and btc_trend_4h != -1)

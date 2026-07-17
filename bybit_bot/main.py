@@ -1106,12 +1106,15 @@ class TradingBot:
                               and (macro_trend + macro_4h) <= -1  # it nhat 1 timeframe xac nhan downtrend
                               and not btc_strongly_bull)
 
+        _tier1_active = False
         if tier1_bypass_long:
             signals = long_signals
-            logger.info(f"{symbol}: [TIER1] 2/2 Tier-1 LONG — bypass consensus")
+            _tier1_active = True
+            logger.info(f"{symbol}: [TIER1] 2/2 Tier-1 LONG - bypass consensus")
         elif tier1_bypass_short:
             signals = short_signals
-            logger.info(f"{symbol}: [TIER1] 2/2 Tier-1 SHORT — bypass consensus")
+            _tier1_active = True
+            logger.info(f"{symbol}: [TIER1] 2/2 Tier-1 SHORT - bypass consensus")
         elif len(long_signals) >= required_long:
             signals = long_signals
         elif len(short_signals) >= required_short:
@@ -1120,6 +1123,14 @@ class TradingBot:
             return False
 
         best = max(signals, key=lambda s: s.strength)
+
+        def _block(reason: str) -> bool:
+            """Log block reason at INFO if tier1 active, else DEBUG."""
+            if _tier1_active:
+                logger.info(f"{symbol}: [TIER1-BLOCKED] {reason}")
+            else:
+                logger.debug(f"{symbol}: {reason}")
+            return False
 
         # BTC/ETH CORRELATION BLOCK: block neu pair kia da co position CUNG CHIEU
         # BTC va ETH correlated manh -> ca 2 cung SHORT = double loss khi bounce
@@ -1130,15 +1141,9 @@ class TradingBot:
             # side tu Bybit: "Buy" = Long, "Sell" = Short
             signal_side = "Buy" if best.direction == 1 else "Sell"
             if pair_side == signal_side:
-                logger.info(
-                    f"{symbol}: skip — BTC/ETH correlation: {pair} already {pair_side}, "
-                    f"block {signal_side} to avoid double correlated exposure"
-                )
-                return False
+                return _block(f"BTC/ETH correlation: {pair} already {pair_side}, block {signal_side}")
 
-        # Volume pressure filter: neu 5 nen 1m gan nhat co volume mua (green) > volume ban (red)
-        # thi momentum dang thuoc ve nguoi mua -> khong nen SHORT; nguoc lai khong nen LONG
-        # Chi ap dung khi du data va volume chech lech ro rang (>= 60% cung 1 chieu)
+        # Volume pressure filter
         if not df_micro.empty and len(df_micro) >= 5:
             _vbars = df_micro.iloc[-5:]
             _green_vol = _vbars.loc[_vbars["close"] >= _vbars["open"], "volume"].sum()
@@ -1147,92 +1152,51 @@ class TradingBot:
             if _total_vol > 0:
                 _buy_ratio = _green_vol / _total_vol
                 if best.direction == -1 and _buy_ratio >= 0.75:
-                    logger.debug(f"{symbol}: skip SHORT — 5-bar volume pressure BUY {_buy_ratio*100:.0f}% (buyers dominating)")
-                    return False
+                    return _block(f"skip SHORT - 5-bar volume pressure BUY {_buy_ratio*100:.0f}%")
                 if best.direction == 1 and _buy_ratio <= 0.25:
-                    logger.debug(f"{symbol}: skip LONG — 5-bar volume pressure SELL {(1-_buy_ratio)*100:.0f}% (sellers dominating)")
-                    return False
+                    return _block(f"skip LONG - 5-bar volume pressure SELL {(1-_buy_ratio)*100:.0f}%")
 
-        # Direction-aware 1m spike filter:
-        # Pump spike -> block LONG (khong mua dinh), SHORT van duoc phep (ban dinh tot)
-        # Dump spike -> block SHORT (khong ban day), LONG van duoc phep (mua day tot)
+        # 1m spike filter
         if _micro_spike_pump and best.direction == 1:
-            logger.debug(f"{symbol}: skip — 1m pump spike, khong long")
-            return False
+            return _block("skip - 1m pump spike, no long")
         if _micro_spike_dump and best.direction == -1:
-            logger.debug(f"{symbol}: skip — 1m dump spike, khong short")
-            return False
+            return _block("skip - 1m dump spike, no short")
 
-        # 1h range hard block (MOMENTUM path only — REVERSAL duoc phep o cuc doan)
-        # Block long o top 75% / short o bottom 25% cua 20-candle 1h range
+        # 1h range block
         if _h1_block_long and best.direction == 1:
-            logger.debug(f"{symbol}: skip — price at 1h range top (>75%), block MOMENTUM LONG")
-            return False
+            return _block("skip - price at 1h range top (>75%), block LONG")
         if _h1_block_short and best.direction == -1:
-            logger.debug(f"{symbol}: skip — price at 1h range bottom (<25%), block MOMENTUM SHORT")
-            return False
+            return _block("skip - price at 1h range bottom (<25%), block SHORT")
 
-        # 2h 1m range block: tranh SHORT khi gia o bottom 20% range 2h
-        # ONDOUSDT/SKHYNIXUSDT/XAGUSDT: dump xay ra truoc do, bot vao SHORT o day -> bounce -> loss
+        # 2h range block
         if _m2h_block_short and best.direction == -1:
-            logger.debug(f"{symbol}: skip — price at 2h 1m range bottom (<20%), block MOMENTUM SHORT")
-            return False
+            return _block("skip - price at 2h range bottom (<20%), block SHORT")
         if _m2h_block_long and best.direction == 1:
-            logger.debug(f"{symbol}: skip — price at 2h 1m range top (>80%), block MOMENTUM LONG")
-            return False
+            return _block("skip - price at 2h range top (>80%), block LONG")
 
-        # 30c range block da xoa: redundant — da co 15m range + 2h range blocks
-
-        # 1m micro trend confirmation — tat ca coin (micro trend phai cung chieu hoac neutral)
-        # Tranh trade khi 1m dang nguoc chieu hoan toan voi signal
+        # 1m micro trend confirmation
         if best.direction == 1 and micro_down:
-            logger.debug(f"{symbol}: skip — 1m micro trend BEARISH vs LONG signal")
-            return False
+            return _block("skip - 1m micro trend BEARISH vs LONG")
         if best.direction == -1 and micro_up:
-            logger.debug(f"{symbol}: skip — 1m micro trend BULLISH vs SHORT signal")
-            return False
+            return _block("skip - 1m micro trend BULLISH vs SHORT")
 
-        # 1m EMA9/21 check da xoa: redundant — micro_trend da dung EMA lam 1 trong 5 factors
-
-        # 5m hard block da xoa: "sell the bounce" la chien thuat tot trong downtrend
-        # 5m bounce trong 1h downtrend = timing SHORT tot, khong phai xau
-        # Giu lai reset cho micro_spike_dump khi 5m da xac nhan
         if not _is_largecap:
             if best.direction == -1 and scalp_trend == -1 and (macro_trend + macro_4h) <= -1:
                 _micro_spike_dump = False
 
-        # EMA50 pullback filter: dung df_trend (15m) — 1m EMA50 qua nhay, thuong bien dong qua lon
-        # Chi block khi THUC SU qua extended: 4x ATR(15m)
+        # EMA50 pullback filter (15m, 4x ATR)
         if not df_trend.empty and len(df_trend) >= 50:
             _ema50_15m = compute_ema(df_trend["close"], 50).iloc[-1]
             _atr_15m   = _atr_for_sl if _atr_for_sl > 0 else compute_atr(df_trend, config.ATR_PERIOD).iloc[-1]
             _p15 = df_trend["close"].iloc[-1]
             if _ema50_15m > 0 and _atr_15m > 0:
-                _ema50_dist = _p15 - _ema50_15m  # + = above, - = below
+                _ema50_dist = _p15 - _ema50_15m
                 if best.direction == 1 and _ema50_dist > 4.0 * _atr_15m:
-                    logger.debug(
-                        f"{symbol}: skip LONG — price {_ema50_dist/_ema50_15m*100:.1f}% above 15m EMA50 "
-                        f"({_ema50_dist/(_atr_15m+1e-9):.1f}x ATR, too extended)"
-                    )
-                    return False
+                    return _block(f"skip LONG - price {_ema50_dist/_ema50_15m*100:.1f}% above 15m EMA50 ({_ema50_dist/(_atr_15m+1e-9):.1f}x ATR)")
                 if best.direction == -1 and _ema50_dist < -4.0 * _atr_15m:
-                    logger.debug(
-                        f"{symbol}: skip SHORT — price {-_ema50_dist/_ema50_15m*100:.1f}% below 15m EMA50 "
-                        f"({-_ema50_dist/(_atr_15m+1e-9):.1f}x ATR, too extended)"
-                    )
-                    return False
+                    return _block(f"skip SHORT - price {-_ema50_dist/_ema50_15m*100:.1f}% below 15m EMA50 ({-_ema50_dist/(_atr_15m+1e-9):.1f}x ATR)")
 
-        # ══════════════════════════════════════════════════════════════════════
-        # ADVANCED ENTRY QUALITY FILTERS
-        # Nguyen tac: moi filter phai dua tren evidence cu the tu price action,
-        # volume, momentum — KHONG phai assumption chung chung.
-        # Muc tieu: giam loss trade, KHONG block profitable trade.
-        # ══════════════════════════════════════════════════════════════════════
-
-        # [AEQ-1] ATR VOLATILITY REGIME — news/event spike
-        # Neu 1m ATR hien tai > 2.5x trung binh 20-period -> thi truong dang o che do
-        # tin tuc bat thuong: SL bi hit ngau nhien truoc khi price di dung huong
-        # Ngoai le: neu coin la priority VA 15m/1h xac nhan manh -> van cho phep
+        # [AEQ-1] ATR spike
         if not df_micro.empty and len(df_micro) >= 35:
             _atr_ser_1m = compute_atr(df_micro, 14)
             _atr_cur_1m = _atr_ser_1m.iloc[-1]
@@ -1240,128 +1204,77 @@ class TradingBot:
             if _atr_avg_1m > 0 and _atr_cur_1m > _atr_avg_1m * 2.5:
                 _atr_strong_trend = is_priority and abs(macro_trend + macro_4h) >= 2
                 if not _atr_strong_trend:
-                    logger.debug(
-                        f"{symbol}: skip — ATR spike {_atr_cur_1m:.4f} > 2.5x avg {_atr_avg_1m:.4f} (news/event mode)"
-                    )
-                    return False
+                    return _block(f"skip - ATR spike {_atr_cur_1m:.4f} > 2.5x avg {_atr_avg_1m:.4f}")
 
-        # [AEQ-2] RSI DIVERGENCE on 1m — trend exhaustion signal
-        # Bearish divergence: price higher high but RSI lower high -> khong LONG (uptrend het hoi)
-        # Bullish divergence: price lower low but RSI higher low -> khong SHORT (downtrend het hoi)
-        # Dung 20c lookback chia 2 window (early vs recent) de detect divergence
+        # [AEQ-2] RSI divergence
         if not df_micro.empty and len(df_micro) >= 30:
-            _rsi_1m_ser  = compute_rsi(df_micro["close"], 14)
-            _price_1m    = df_micro["close"]
-            _p_early     = _price_1m.iloc[-20:-8]
-            _p_recent    = _price_1m.iloc[-8:-1]
-            _r_early     = _rsi_1m_ser.iloc[-20:-8]
-            _r_recent    = _rsi_1m_ser.iloc[-8:-1]
+            _rsi_1m_ser = compute_rsi(df_micro["close"], 14)
+            _price_1m   = df_micro["close"]
+            _p_early    = _price_1m.iloc[-20:-8]
+            _p_recent   = _price_1m.iloc[-8:-1]
+            _r_early    = _rsi_1m_ser.iloc[-20:-8]
+            _r_recent   = _rsi_1m_ser.iloc[-8:-1]
             if len(_p_early) >= 5 and len(_p_recent) >= 5:
-                if best.direction == 1:
-                    # Bearish div: price new high but RSI not
-                    if _p_recent.max() > _p_early.max() and _r_recent.max() < _r_early.max() - 8:
-                        logger.debug(
-                            f"{symbol}: skip LONG — bearish divergence: price HH={_p_recent.max():.4f} > {_p_early.max():.4f} "
-                            f"but RSI {_r_recent.max():.1f} < {_r_early.max():.1f}"
-                        )
-                        return False
-                if best.direction == -1:
-                    # Bullish div: price new low but RSI not
-                    if _p_recent.min() < _p_early.min() and _r_recent.min() > _r_early.min() + 8:
-                        logger.debug(
-                            f"{symbol}: skip SHORT — bullish divergence: price LL={_p_recent.min():.4f} < {_p_early.min():.4f} "
-                            f"but RSI {_r_recent.min():.1f} > {_r_early.min():.1f}"
-                        )
-                        return False
+                if best.direction == 1 and _p_recent.max() > _p_early.max() and _r_recent.max() < _r_early.max() - 8:
+                    return _block(f"skip LONG - bearish divergence RSI {_r_recent.max():.1f} < {_r_early.max():.1f}")
+                if best.direction == -1 and _p_recent.min() < _p_early.min() and _r_recent.min() > _r_early.min() + 8:
+                    return _block(f"skip SHORT - bullish divergence RSI {_r_recent.min():.1f} > {_r_early.min():.1f}")
 
-        # [AEQ-3] WICK REJECTION — nguong 75%: chi block khi wick THUC SU lon bat thuong
-        # 55% qua thap: wick 55% la binh thuong trong 1m candle, block qua nhieu lenh tot
+        # [AEQ-3] Wick rejection
         if not df_micro.empty and len(df_micro) >= 3:
-            _lc       = df_micro.iloc[-2]
-            _lc_rng   = _lc["high"] - _lc["low"]
+            _lc     = df_micro.iloc[-2]
+            _lc_rng = _lc["high"] - _lc["low"]
             if _lc_rng > 0:
-                _up_wick  = _lc["high"] - max(_lc["open"], _lc["close"])
-                _dn_wick  = min(_lc["open"], _lc["close"]) - _lc["low"]
+                _up_wick = _lc["high"] - max(_lc["open"], _lc["close"])
+                _dn_wick = min(_lc["open"], _lc["close"]) - _lc["low"]
                 if best.direction == 1 and _up_wick / _lc_rng > 0.75:
-                    logger.debug(f"{symbol}: skip LONG — 1m extreme wick rejection {_up_wick/_lc_rng*100:.0f}%")
-                    return False
+                    return _block(f"skip LONG - 1m wick rejection {_up_wick/_lc_rng*100:.0f}%")
                 if best.direction == -1 and _dn_wick / _lc_rng > 0.75:
-                    logger.debug(f"{symbol}: skip SHORT — 1m extreme wick rejection {_dn_wick/_lc_rng*100:.0f}%")
-                    return False
+                    return _block(f"skip SHORT - 1m wick rejection {_dn_wick/_lc_rng*100:.0f}%")
 
-        # [AEQ-4] LAST 15m CANDLE CONFLICT — 15m nen cuoi cung MANH nguoc chieu
-        # Neu nen 15m vua dong co body > 0.8x ATR nguoc chieu signal ->
-        # momentum 15m dang nguoc lai, chua phai entry tot
-        # Ngoai le: reversal trade -> candle nguoc chieu la tin hieu dao chieu, OK
+        # [AEQ-4] Last 15m candle conflict
         if not df_trend.empty and len(df_trend) >= 3 and _atr_for_sl > 0 and not is_reversal:
-            _c15 = df_trend.iloc[-2]  # last CLOSED 15m candle
+            _c15      = df_trend.iloc[-2]
             _c15_body = _c15["close"] - _c15["open"]
             if best.direction == 1 and _c15_body < -0.8 * _atr_for_sl:
-                logger.debug(
-                    f"{symbol}: skip LONG — last 15m candle strongly bearish (body={_c15_body:.4f}, ATR={_atr_for_sl:.4f})"
-                )
-                return False
+                return _block(f"skip LONG - last 15m strongly bearish (body={_c15_body:.4f})")
             if best.direction == -1 and _c15_body > 0.8 * _atr_for_sl:
-                logger.debug(
-                    f"{symbol}: skip SHORT — last 15m candle strongly bullish (body={_c15_body:.4f}, ATR={_atr_for_sl:.4f})"
-                )
-                return False
+                return _block(f"skip SHORT - last 15m strongly bullish (body={_c15_body:.4f})")
 
-        # [AEQ-5] PRICE STRUCTURE — da xoa: rising highs trong downtrend la BINH THUONG
-        # Trong downtrend: moi bounce tao rising highs -> chinh la luc SHORT tot nhat
-        # Filter nay block chinh xac nhung lenh tot nhat -> XOA
-
-        # [AEQ-6] FUNDING RATE PERIOD — skip entry gan gio funding (gia bi manipulate)
-        # Bybit linear futures: funding moi 8h tai 00:00, 08:00, 16:00 UTC
-        # 10 phut truoc funding: whale bom/xa gia de max funding harvest -> SL hit ngau nhien
-        # 5 phut sau funding: price often snap back -> entry sau funding period an toan hon
-        _utc_now_f   = datetime.now(timezone.utc)
-        _f_hour      = _utc_now_f.hour
-        _f_min       = _utc_now_f.minute
-        _near_funding_pre  = (_f_hour % 8 == 7 and _f_min >= 50)   # 10 phut cuoi truoc funding
-        _near_funding_post = (_f_hour % 8 == 0 and _f_min <= 5)    # 5 phut dau sau funding
+        # [AEQ-6] Funding period
+        _utc_now_f  = datetime.now(timezone.utc)
+        _f_hour     = _utc_now_f.hour
+        _f_min      = _utc_now_f.minute
+        _near_funding_pre  = (_f_hour % 8 == 7 and _f_min >= 50)
+        _near_funding_post = (_f_hour % 8 == 0 and _f_min <= 5)
         if _near_funding_pre or _near_funding_post:
-            logger.debug(
-                f"{symbol}: skip — near 8h funding window ({_f_hour:02d}:{_f_min:02d} UTC "
-                f"{'pre' if _near_funding_pre else 'post'}-funding)"
-            )
-            return False
+            return _block(f"skip - near funding window {_f_hour:02d}:{_f_min:02d} UTC")
 
-        # [AEQ-7] VOLUME TREND DECLINING — chi block khi volume sap gan 0 (< 20% prior)
-        # 40% qua chat: volume tu nhien giam sau spike, block het hau-spike consolidation entries
+        # [AEQ-7] Volume near-zero
         if not df_micro.empty and len(df_micro) >= 20:
             _vol_r = df_micro["volume"].iloc[-5:].mean()
             _vol_p = df_micro["volume"].iloc[-15:-5].mean()
             if _vol_p > 0 and _vol_r < _vol_p * 0.20:
-                logger.debug(f"{symbol}: skip — volume near-zero: {_vol_r:.0f} < 20% of prior {_vol_p:.0f}")
-                return False
+                return _block(f"skip - volume near-zero {_vol_r:.0f} < 20% of {_vol_p:.0f}")
 
-        # [AEQ-8] CANDLE MOMENTUM DECELERATION — chi block khi bodies gan bang 0 (< 10%)
-        # 20% qua chat: consolidation sau trend la binh thuong, khong phai dau hieu dao chieu
+        # [AEQ-8] Body deceleration near-zero
         if not df_micro.empty and len(df_micro) >= 15:
             _bd_r = abs(df_micro["close"].iloc[-4:-1] - df_micro["open"].iloc[-4:-1]).mean()
             _bd_p = abs(df_micro["close"].iloc[-11:-4] - df_micro["open"].iloc[-11:-4]).mean()
             if _bd_p > 0 and _bd_r < _bd_p * 0.10:
-                logger.debug(f"{symbol}: skip — candle bodies near-zero: {_bd_r:.4f} < 10% of prior {_bd_p:.4f}")
-                return False
+                return _block(f"skip - candle bodies near-zero {_bd_r:.4f} < 10% of {_bd_p:.4f}")
 
-
-        # [AEQ-10] STOCHASTIC EXTREME on 5m — gia o vung qua mua/qua ban 5m
-        # Stochastic > 85 khi LONG = overbought tren 5m, risk pullback ngay sau entry
-        # Stochastic < 15 khi SHORT = oversold tren 5m, risk bounce ngay sau entry
-        # Chi ap dung khi KHONG o trong strong trend (macro deu cung chieu)
+        # [AEQ-10] Stochastic extreme on 5m
         if not df_scalp.empty and len(df_scalp) >= 14:
-            _slo_k  = df_scalp["close"].iloc[-14:] - df_scalp["low"].iloc[-14:]
+            _slo_k   = df_scalp["close"].iloc[-14:] - df_scalp["low"].iloc[-14:]
             _slo_rng = df_scalp["high"].iloc[-14:].max() - df_scalp["low"].iloc[-14:].min()
             if _slo_rng > 0:
-                _stoch_k = (_slo_k.iloc[-1] / _slo_rng) * 100
+                _stoch_k      = (_slo_k.iloc[-1] / _slo_rng) * 100
                 _macro_confirm = (macro_trend == best.direction and macro_4h == best.direction)
                 if best.direction == 1 and _stoch_k > 85 and not _macro_confirm:
-                    logger.debug(f"{symbol}: skip LONG — 5m Stochastic overbought K={_stoch_k:.1f}")
-                    return False
+                    return _block(f"skip LONG - 5m Stochastic overbought K={_stoch_k:.1f}")
                 if best.direction == -1 and _stoch_k < 15 and not _macro_confirm:
-                    logger.debug(f"{symbol}: skip SHORT — 5m Stochastic oversold K={_stoch_k:.1f}")
-                    return False
+                    return _block(f"skip SHORT - 5m Stochastic oversold K={_stoch_k:.1f}")
 
         # ══════════════════════════════════════════════════════════════════════
 

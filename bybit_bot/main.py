@@ -113,10 +113,8 @@ class TradingBot:
             logger.error(f"Failed to get account state: {str(e).encode('ascii','replace').decode()}")
             return
 
-        # Daily loss guard: dung mo lenh moi neu da mat > MAX_DAILY_LOSS_PCT trong ngay
-        # Dung realized PnL tu exchange (get_today_pnl) thay vi equity snapshot:
-        # -> Restart-safe: khong mat lich su khi bot restart giua ngay
-        # -> Chi tinh lenh da dong (realized), khong bi anh huong boi unrealized floating
+        # Daily loss guard: chi LOG thong tin, KHONG chan mo lenh moi
+        # Bot luon tiep tuc trade de co co hoi bu lo — filter chat o AEQ-1..10 da lo viec ngan lenh xau
         _today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         if _today != self._equity_day_date:
             self._equity_day_date = _today
@@ -127,14 +125,9 @@ class TradingBot:
             _today_realized_pnl = 0.0
         _daily_pnl_pct = _today_realized_pnl / equity if equity > 0 else 0
         if _daily_pnl_pct < -config.MAX_DAILY_LOSS_PCT:
-            logger.warning(
-                f"[DAILY LOSS GUARD] PnL today={_daily_pnl_pct*100:.2f}% < -{config.MAX_DAILY_LOSS_PCT*100:.0f}% "
-                f"— STOP new entries for today"
+            logger.info(
+                f"[DAILY PnL] today={_daily_pnl_pct*100:.2f}% — continuing to trade to recover"
             )
-            # Van quan ly vi the dang mo (SL/TP, breakeven) nhung khong mo them
-            if open_positions:
-                self.executor.manage_open_positions(open_positions)
-            return
 
         logger.info(
             f"[TICK] {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')} | "

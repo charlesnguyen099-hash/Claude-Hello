@@ -136,13 +136,26 @@ class RiskManager:
             notional = qty * signal.entry_price
             capital_used = notional / leverage
 
-        # Check lai $5 minimum SAU capital adjustment — giam qty co the day notional xuong duoi $5
+        # Check lai $5 minimum SAU capital adjustment — capital cap co the day notional xuong duoi $5
+        # Neu van thieu $5: thu dung min qty de dat notional=$5, mien la margin can thiet <= equity
+        # (voi max leverage, $5 notional chi can $5/lev margin — hoan toan kha thi voi tai khoan nho)
         if notional < MIN_NOTIONAL:
-            logger.warning(
-                f"{signal.symbol}: notional={notional:.2f}$ < $5 after capital cap "
-                f"(equity={equity:.2f}, max_capital={max_capital:.2f}, lev={leverage}x) -> skip"
-            )
-            return None
+            min_qty_for_notional = math.ceil(MIN_NOTIONAL / signal.entry_price / qty_step) * qty_step
+            min_margin_needed = (min_qty_for_notional * signal.entry_price) / leverage
+            if min_margin_needed <= equity:
+                qty = min_qty_for_notional
+                notional = qty * signal.entry_price
+                capital_used = notional / leverage
+                logger.info(
+                    f"{signal.symbol}: min-notional override — notional={notional:.2f}$ "
+                    f"margin={capital_used:.4f}$ lev={leverage}x"
+                )
+            else:
+                logger.warning(
+                    f"{signal.symbol}: notional={notional:.2f}$ < $5, margin needed={min_margin_needed:.4f}$ "
+                    f"> equity={equity:.2f}$ -> skip"
+                )
+                return None
 
         fee_usdt = notional * config.ROUND_TRIP_FEE
 

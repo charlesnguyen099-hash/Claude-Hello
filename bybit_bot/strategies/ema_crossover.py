@@ -1,7 +1,7 @@
 """
 Strategy 1: EMA Crossover + Trend Filter
-- EMA 9 cắt lên EMA 21 + giá trên EMA 50 → Long
-- EMA 9 cắt xuống EMA 21 + giá dưới EMA 50 → Short
+- EMA 9 cắt lên EMA 21 + giá trên EMA 50 -> Long
+- EMA 9 cắt xuống EMA 21 + giá dưới EMA 50 -> Short
 - Xác nhận bằng volume spike
 """
 

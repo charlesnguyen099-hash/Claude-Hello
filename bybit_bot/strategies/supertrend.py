@@ -1,7 +1,7 @@
 """
 Strategy 4: Supertrend
-- Supertrend flip từ bear → bull → Long
-- Supertrend flip từ bull → bear → Short
+- Supertrend flip từ bear -> bull -> Long
+- Supertrend flip từ bull -> bear -> Short
 - Kết hợp ADX để chỉ trade khi trend đủ mạnh (ADX > 25)
 """
 

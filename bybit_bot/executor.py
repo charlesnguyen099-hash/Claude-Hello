@@ -96,8 +96,8 @@ class Executor:
                 )
                 return
 
-            logger.info(f"{symbol}: Signal reversal → close {pos_side} (held={held_seconds:.0f}s, "
-                        f"PnL={pos_pnl_pct*100:.1f}%) → enter {signal_side}")
+            logger.info(f"{symbol}: Signal reversal -> close {pos_side} (held={held_seconds:.0f}s, "
+                        f"PnL={pos_pnl_pct*100:.1f}%) -> enter {signal_side}")
             self._close_position(existing[0])
             time.sleep(0.5)
 
@@ -111,7 +111,7 @@ class Executor:
             if price_drift > 0.003:
                 logger.warning(
                     f"{symbol}: STALE SIGNAL — live={live_price:.6f} vs entry={signal.entry_price:.6f} "
-                    f"drift={price_drift*100:.2f}% > 0.3% → skip"
+                    f"drift={price_drift*100:.2f}% > 0.3% -> skip"
                 )
                 return
 
@@ -125,11 +125,11 @@ class Executor:
     def _enter_trade(self, symbol: str, signal: Signal, params: TradeParams):
         """
         Dat lenh vao vi the voi day du protection layers:
-        1. Lay bid/ask → spread check → SL-vs-spread check
-        2. Pre-order drift check (0.5%) → abort neu gia di xa tu stale check
-        3. IOC Limit order tai bid/ask → fill ngay hoac huy (khong slip)
-        4. Verify fill → neu IOC khong fill → skip (thi truong da di xa)
-        5. Verify SL active → re-arm neu SL khong duoc dat sau fill
+        1. Lay bid/ask -> spread check -> SL-vs-spread check
+        2. Pre-order drift check (0.5%) -> abort neu gia di xa tu stale check
+        3. IOC Limit order tai bid/ask -> fill ngay hoac huy (khong slip)
+        4. Verify fill -> neu IOC khong fill -> skip (thi truong da di xa)
+        5. Verify SL active -> re-arm neu SL khong duoc dat sau fill
         """
         try:
             self.client.set_leverage(symbol, params.leverage)
@@ -152,7 +152,7 @@ class Executor:
             except Exception:
                 pass
 
-            # --- Check 1: Spread qua rong → thanh khoan kem, khong trade ---
+            # --- Check 1: Spread qua rong -> thanh khoan kem, khong trade ---
             is_largecap = symbol in {"BTCUSDT", "ETHUSDT"}
             max_spread  = config.MAX_SPREAD_PCT_LARGE if is_largecap else config.MAX_SPREAD_PCT_ALT
             if spread_pct > max_spread:
@@ -173,7 +173,7 @@ class Executor:
                 return
 
             # --- Check 3: Pre-order drift 0.5% (sau stale check 0.3% trong execute_signal) ---
-            # Bat gia di chuyen giua 2 lan check (stale check → set_leverage → get_bid_ask)
+            # Bat gia di chuyen giua 2 lan check (stale check -> set_leverage -> get_bid_ask)
             if signal.entry_price > 0:
                 pre_drift = abs(mid_price - signal.entry_price) / signal.entry_price
                 if pre_drift > 0.005:
@@ -185,9 +185,9 @@ class Executor:
 
             # --- Dat IOC Limit order ---
             # SHORT (Sell): limit tai bid — fill neu thi truong van o day hoac cao hon
-            #               Neu gia dump xuong (bid giam manh), IOC huy → tranh vao SHORT giua dump
+            #               Neu gia dump xuong (bid giam manh), IOC huy -> tranh vao SHORT giua dump
             # LONG  (Buy):  limit tai ask — fill neu thi truong van o day hoac thap hon
-            #               Neu gia pump len (ask tang manh), IOC huy → tranh vao LONG giua pump
+            #               Neu gia pump len (ask tang manh), IOC huy -> tranh vao LONG giua pump
             if params.side == "Sell":
                 limit_price = self.client.round_to_tick(bid, tick_size) if tick_size > 0 else round(bid, 6)
             else:
@@ -212,14 +212,14 @@ class Executor:
 
             # --- Verify IOC fill ---
             # IOC Limit: fill ngay hoac huy — khong bao gio treo
-            # Neu huy: gia da di xa khoi limit → dung mo lenh (tranh chase)
+            # Neu huy: gia da di xa khoi limit -> dung mo lenh (tranh chase)
             time.sleep(0.4)
             status = self.client.get_order_status(symbol, order_id)
             # "Unknown" = API lag, retry once after 0.5s before giving up
             if status == "Unknown":
                 time.sleep(0.5)
                 status = self.client.get_order_status(symbol, order_id)
-                logger.debug(f"{symbol}: IOC status retry → {status}")
+                logger.debug(f"{symbol}: IOC status retry -> {status}")
             if status not in ("Filled", "PartiallyFilled"):
                 logger.warning(
                     f"{symbol}: IOC Limit NOT filled (status={status}) — "
@@ -240,7 +240,7 @@ class Executor:
 
             # --- Verify SL active sau fill ---
             # Bybit doi khi khong attach SL/TP vao Limit order ngay lap tuc
-            # → check va force-set neu thieu
+            # -> check va force-set neu thieu
             time.sleep(0.5)
             has_sl, actual_sl = self.client.verify_position_sl(symbol)
             if not has_sl:
@@ -322,7 +322,7 @@ class Executor:
                     # Gia su day la TP1 (neu partial chua xay ra)
                     self._tp1_price[symbol] = exchange_tp
                     logger.info(f"{symbol}: Restored TP1={exchange_tp:.6f} from exchange after restart")
-                # Infer partial close: neu TP tren san != _tp1_price ban dau → partial da xay ra
+                # Infer partial close: neu TP tren san != _tp1_price ban dau -> partial da xay ra
                 # Chi co the detect duoc tren VONG LAP THU 2+ (khi _tp1_price da co gia tri khac exchange TP)
                 stored_tp1 = self._tp1_price.get(symbol, 0.0)
                 if (exchange_tp > 0 and stored_tp1 > 0
@@ -386,9 +386,21 @@ class Executor:
                 if dist_moved >= dist_to_tp1 * config.BREAKEVEN_TRIGGER:
                     try:
                         fee_buffer = entry * config.ROUND_TRIP_FEE
-                        be_price_raw = entry + fee_buffer if side == "Buy" else entry - fee_buffer
+                        # LONG BE: SL tai entry + fee (tren entry, duoi mark) -> dong neu price quay xuong
+                        # SHORT BE: SL tai entry + fee (tren entry, tren mark khi o trong profit) -> dong neu price quay len
+                        # Ca 2 deu la entry + fee_buffer — SHORT SL phai > current price nen phai o tren entry
+                        be_price_raw = entry + fee_buffer
                         ts = self._tick_size.get(symbol, 0.0)
                         be_price = self.client.round_to_tick(be_price_raw, ts) if ts > 0 else round(be_price_raw, 6)
+                        # Validate truoc khi gui: Bybit reject neu SL invalid
+                        mark = float(pos.get("markPrice", 0))
+                        if mark > 0:
+                            if side == "Buy" and be_price >= mark:
+                                logger.debug(f"{symbol}: BE SL {be_price:.6f} >= mark {mark:.6f} (LONG) — skip, wait")
+                                raise ValueError("BE above mark for LONG — skip")
+                            if side == "Sell" and be_price <= mark:
+                                logger.debug(f"{symbol}: BE SL {be_price:.6f} <= mark {mark:.6f} (SHORT) — skip, wait")
+                                raise ValueError("BE below mark for SHORT — skip")
                         self.client.update_stop_loss(symbol, be_price)
                         self._breakeven_set[symbol] = True
                         self._sl_price[symbol] = be_price
@@ -402,7 +414,7 @@ class Executor:
 
             # --- Muc 2: Partial close tai PARTIAL_CLOSE_TRIGGER% (75%) duong den TP1 ---
             # FIX: _partial_closed chi duoc set True SAU KHI close order thanh cong
-            # (truoc day set True truoc → neu close fail, bot nghi da close nhung khong phai)
+            # (truoc day set True truoc -> neu close fail, bot nghi da close nhung khong phai)
             if not self._partial_closed.get(symbol, False) and dist_to_tp1 > 0 and dist_moved > 0:
                 if dist_moved >= dist_to_tp1 * config.PARTIAL_CLOSE_TRIGGER:
                     try:

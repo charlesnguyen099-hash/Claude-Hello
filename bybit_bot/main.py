@@ -57,7 +57,7 @@ class TradingBot:
         self.btc_trend: int = 0
         self.btc_trend_4h: int = 0
         # Circuit breaker: tat ca losses trong 15 phut gan nhat (bat ky symbol)
-        # Neu >= 3 losses trong 15 phut → pause 30 phut khong mo lenh moi
+        # Neu >= 3 losses trong 15 phut -> pause 30 phut khong mo lenh moi
         self._loss_history: list[float] = []   # timestamps cua tung lenh lo
         self._circuit_breaker_until: float = 0  # timestamp het pause
         # Daily PnL cache: chi goi API moi 5 phut (tranh rate limit khi goi moi 15 giay)
@@ -75,7 +75,7 @@ class TradingBot:
         if len(self._loss_history) >= 3:
             self._circuit_breaker_until = now + 1800  # pause 30 phut
             logger.warning(
-                f"[CIRCUIT BREAKER] {len(self._loss_history)} losses in 15 min → "
+                f"[CIRCUIT BREAKER] {len(self._loss_history)} losses in 15 min -> "
                 f"pause new entries for 30 min (until {time.strftime('%H:%M:%S', time.localtime(self._circuit_breaker_until))})"
             )
 
@@ -133,7 +133,7 @@ class TradingBot:
                     f"[DAILY LOSS LIMIT] today_pnl={_today_pnl:.2f} USDT "
                     f"< -{_cur_equity * config.MAX_DAILY_LOSS_PCT:.2f} USDT "
                     f"({config.MAX_DAILY_LOSS_PCT*100:.0f}% of equity={_cur_equity:.2f}) "
-                    f"→ pause new entries for rest of today"
+                    f"-> pause new entries for rest of today"
                 )
                 # Van quan ly vi the cu nhung khong mo moi
                 try:
@@ -200,7 +200,7 @@ class TradingBot:
         pos_symbols = {p["symbol"] for p in open_positions}
 
         # Detect position dong boi exchange (SL/TP hit) — khong qua executor._close_position
-        # Neu symbol vua co position ma gio mat → check closed PnL → neu lo thi fire post-loss
+        # Neu symbol vua co position ma gio mat -> check closed PnL -> neu lo thi fire post-loss
         closed_by_exchange = self._prev_pos_symbols - pos_symbols
         if closed_by_exchange:
             # Xoa executor state cho cac vi the vua dong boi exchange (SL/TP hit)
@@ -214,7 +214,7 @@ class TradingBot:
                         self._on_symbol_loss(symbol)
                         # Force refresh daily PnL ngay sau khi co loss (tranh cache stale)
                         self._daily_pnl_last_check = 0.0
-                        logger.info(f"{symbol}: SL/TP hit by exchange, pnl={pnl:.4f} → post-loss filter")
+                        logger.info(f"{symbol}: SL/TP hit by exchange, pnl={pnl:.4f} -> post-loss filter")
             except Exception as e:
                 logger.debug(f"get_closed_pnl error: {e}")
         self._prev_pos_symbols = pos_symbols
@@ -385,10 +385,10 @@ class TradingBot:
         Tat ca coin: can score >= 3/7. Tra True = timing tot, False = nen cho.
         """
         if df_micro is None or df_micro.empty:
-            return False  # khong co data → khong trade
+            return False  # khong co data -> khong trade
         n = len(df_micro)
         if n < 5:
-            return False  # qua it data → khong trade
+            return False  # qua it data -> khong trade
 
         close  = df_micro["close"]
         open_  = df_micro["open"]
@@ -398,7 +398,7 @@ class TradingBot:
 
         atr_1m = compute_atr(df_micro).iloc[-1]
         if atr_1m == 0:
-            return False  # gia bat dong → khong trade
+            return False  # gia bat dong -> khong trade
 
         price = close.iloc[-1]
         score = 0
@@ -469,10 +469,10 @@ class TradingBot:
         # Factor 6: Range check — 100c (xu huong trung han) + 20c (local)
         # HARD BLOCK chi khi cuc ki cuc doan (dang o top/bottom 10% of range)
         # Nguong cu 75%/25% (100c) va 65%/35% (20c) qua chat — block het trend-following entries:
-        #   Trong downtrend, price luon o bottom 25% cua 100c → ALL SHORT blocked
-        #   Trong uptrend, price luon o top 25% cua 100c → ALL LONG blocked
+        #   Trong downtrend, price luon o bottom 25% cua 100c -> ALL SHORT blocked
+        #   Trong uptrend, price luon o top 25% cua 100c -> ALL LONG blocked
         # Muc 90%/10% chi block khi THUC SU da cham cuc (exhaustion zone)
-        # Ngoai le: is_reversal=True → skip range block (reversal chinh xac la vao o cuc doan)
+        # Ngoai le: is_reversal=True -> skip range block (reversal chinh xac la vao o cuc doan)
         _range_window = min(100, n)
         if _range_window >= 20:
             high_rng = high.iloc[-_range_window:].max()
@@ -502,10 +502,10 @@ class TradingBot:
             local_rng  = local_high - local_low
             if local_rng > 0:
                 local_pos = (price - local_low) / local_rng
-                if direction == 1 and local_pos > 0.88:  # tang tu 0.65 → 0.88
+                if direction == 1 and local_pos > 0.88:  # tang tu 0.65 -> 0.88
                     logger.debug(f"micro_entry: HARD BLOCK long — 20c local_pos={local_pos:.2f} > 0.88")
                     return False
-                if direction == -1 and local_pos < 0.12:  # giam tu 0.35 → 0.12
+                if direction == -1 and local_pos < 0.12:  # giam tu 0.35 -> 0.12
                     logger.debug(f"micro_entry: HARD BLOCK short — 20c local_pos={local_pos:.2f} < 0.12")
                     return False
 
@@ -565,10 +565,10 @@ class TradingBot:
             return False
 
         # 24h directional move filter: tranh chase sau khi coin da pump/dump > 20% trong 24h
-        # Coin up > 20%  → block LONG momentum (move da xong, late entry); SHORT reversal van ok
-        # Coin down > 20% → block SHORT momentum; LONG reversal van ok
-        # HARD SKIP: abs > 30% → skip TOAN BO (AKEUSDT +39%: ca SHORT reversal cung nguy hiem)
-        # Scanner da skip o >25% nhung self.symbols la cache cu (1h) → coin co the pump them
+        # Coin up > 20%  -> block LONG momentum (move da xong, late entry); SHORT reversal van ok
+        # Coin down > 20% -> block SHORT momentum; LONG reversal van ok
+        # HARD SKIP: abs > 30% -> skip TOAN BO (AKEUSDT +39%: ca SHORT reversal cung nguy hiem)
+        # Scanner da skip o >25% nhung self.symbols la cache cu (1h) -> coin co the pump them
         # Tinh tu df_signal: close[-1] vs close 96 nen 15m truoc (~24h)
         _block_long_24h  = False
         _block_short_24h = False
@@ -578,14 +578,14 @@ class TradingBot:
             if _ref_24h > 0:
                 _change_24h = (df_signal["close"].iloc[-1] - _ref_24h) / _ref_24h * 100
                 if abs(_change_24h) > 30:
-                    logger.info(f"{symbol}: 24h change={_change_24h:.1f}% > 30% → HARD SKIP (extreme move)")
+                    logger.info(f"{symbol}: 24h change={_change_24h:.1f}% > 30% -> HARD SKIP (extreme move)")
                     return False
                 if _change_24h > 20:
                     _block_long_24h = True
-                    logger.debug(f"{symbol}: 24h change=+{_change_24h:.1f}% → block LONG (pump exhausted)")
+                    logger.debug(f"{symbol}: 24h change=+{_change_24h:.1f}% -> block LONG (pump exhausted)")
                 elif _change_24h < -20:
                     _block_short_24h = True
-                    logger.debug(f"{symbol}: 24h change={_change_24h:.1f}% → block SHORT (dump exhausted)")
+                    logger.debug(f"{symbol}: 24h change={_change_24h:.1f}% -> block SHORT (dump exhausted)")
 
         # RSI cho reversal detection
         rsi_now = compute_rsi(df_signal["close"]).iloc[-1]
@@ -608,14 +608,14 @@ class TradingBot:
                 h1_pos = (_range_price - h1_low) / h1_rng
                 if h1_pos > 0.75:
                     _h1_block_long = True
-                    logger.debug(f"{symbol}: 1h range_pos={h1_pos:.2f} > 0.75 → block LONG (1h top)")
+                    logger.debug(f"{symbol}: 1h range_pos={h1_pos:.2f} > 0.75 -> block LONG (1h top)")
                 elif h1_pos < 0.25:
                     _h1_block_short = True
-                    logger.debug(f"{symbol}: 1h range_pos={h1_pos:.2f} < 0.25 → block SHORT (1h bottom)")
+                    logger.debug(f"{symbol}: 1h range_pos={h1_pos:.2f} < 0.25 -> block SHORT (1h bottom)")
 
         # 2h 1m range: block SHORT khi gia o bottom 20% cua range 120 nen 1m (2 gio)
         # Block LONG khi o top 80%
-        # ONDOUSDT/SKHYNIXUSDT/XAGUSDT pattern: price dump 2h truoc, then bot vao SHORT o day → loss
+        # ONDOUSDT/SKHYNIXUSDT/XAGUSDT pattern: price dump 2h truoc, then bot vao SHORT o day -> loss
         # 120c = 2h 1m candles = du dai de bat dump xay ra truoc 30-60 phut
         _m2h_block_long  = False
         _m2h_block_short = False
@@ -633,10 +633,10 @@ class TradingBot:
                 _m2h_bot_thresh = 0.20
                 if _m2h_pos < _m2h_bot_thresh:
                     _m2h_block_short = True
-                    logger.debug(f"{symbol}: 2h 1m range_pos={_m2h_pos:.2f} < {_m2h_bot_thresh} → block SHORT (2h bottom)")
+                    logger.debug(f"{symbol}: 2h 1m range_pos={_m2h_pos:.2f} < {_m2h_bot_thresh} -> block SHORT (2h bottom)")
                 elif _m2h_pos > _m2h_top_thresh:
                     _m2h_block_long = True
-                    logger.debug(f"{symbol}: 2h 1m range_pos={_m2h_pos:.2f} > {_m2h_top_thresh} → block LONG (2h top)")
+                    logger.debug(f"{symbol}: 2h 1m range_pos={_m2h_pos:.2f} > {_m2h_top_thresh} -> block LONG (2h top)")
 
         # Momentum confirmation (15m): 2 nen lien tiep gan nhat phai cung chieu voi signal
         opens  = df_signal["open"]
@@ -682,17 +682,17 @@ class TradingBot:
             _micro_spike_pump = any(b >  _micro_atr * 1.5 for b in _micro_bodies)
             # Current forming candle: block neu body 1m hien tai >= 0.4% (mid-pump/dump entry)
             # Bat cac truong hop vao lenh DANG GIUA pump — candle chua dong nen 2x ATR chua dat
-            # SOXL/NEAR/HYPE/SNDK: gia tang 0.7-1.8% trong candle dang hinh thanh → block LONG
+            # SOXL/NEAR/HYPE/SNDK: gia tang 0.7-1.8% trong candle dang hinh thanh -> block LONG
             _curr_open  = df_micro["open"].iloc[-1]
             _curr_close = df_micro["close"].iloc[-1]
             if _curr_open > 0:
                 _curr_body_pct = (_curr_close - _curr_open) / _curr_open
                 if _curr_body_pct > 0.003 * _sp and not _micro_spike_pump:
                     _micro_spike_pump = True
-                    logger.debug(f"{symbol}: forming 1m candle body +{_curr_body_pct*100:.2f}% → pump flag (mid-pump)")
+                    logger.debug(f"{symbol}: forming 1m candle body +{_curr_body_pct*100:.2f}% -> pump flag (mid-pump)")
                 elif _curr_body_pct < -0.003 * _sp and not _micro_spike_dump:
                     _micro_spike_dump = True
-                    logger.debug(f"{symbol}: forming 1m candle body {_curr_body_pct*100:.2f}% → dump flag (mid-dump)")
+                    logger.debug(f"{symbol}: forming 1m candle body {_curr_body_pct*100:.2f}% -> dump flag (mid-dump)")
             if _micro_spike_dump and _micro_spike_pump:
                 logger.debug(f"{symbol}: skip — 1m spike ca 2 chieu (thi truong loan)")
                 return False
@@ -704,22 +704,22 @@ class TradingBot:
                 _net_move = (_micro_price - _close_15_ago) / _close_15_ago
                 if _net_move < -0.008 * _sp and not _micro_spike_dump:
                     _micro_spike_dump = True
-                    logger.debug(f"{symbol}: cumulative net dump {_net_move*100:.1f}% in 15 candles → dump flag")
+                    logger.debug(f"{symbol}: cumulative net dump {_net_move*100:.1f}% in 15 candles -> dump flag")
                 elif _net_move > 0.008 * _sp and not _micro_spike_pump:
                     _micro_spike_pump = True
-                    logger.debug(f"{symbol}: cumulative net pump {_net_move*100:.1f}% in 15 candles → pump flag")
+                    logger.debug(f"{symbol}: cumulative net pump {_net_move*100:.1f}% in 15 candles -> pump flag")
 
             # RSI 1m: chi block khi CUC DOAN that su (< 20 hoac > 80)
-            # Nguong 35/65 cu qua rong: trong downtrend 1m RSI thuong 25-40 → block het SHORT
+            # Nguong 35/65 cu qua rong: trong downtrend 1m RSI thuong 25-40 -> block het SHORT
             # 20/80: chi bat truong hop panic dump/pump that su (gap xuong, margin call cascade)
             if len(df_micro) >= 14:
                 _micro_rsi = compute_rsi(df_micro["close"]).iloc[-1]
                 if _micro_rsi < 20 and not _micro_spike_pump:
                     _micro_spike_dump = True
-                    logger.debug(f"{symbol}: 1m RSI={_micro_rsi:.1f} extreme oversold → dump flag")
+                    logger.debug(f"{symbol}: 1m RSI={_micro_rsi:.1f} extreme oversold -> dump flag")
                 elif _micro_rsi > 80 and not _micro_spike_dump:
                     _micro_spike_pump = True
-                    logger.debug(f"{symbol}: 1m RSI={_micro_rsi:.1f} extreme overbought → pump flag")
+                    logger.debug(f"{symbol}: 1m RSI={_micro_rsi:.1f} extreme overbought -> pump flag")
 
             # Consecutive candles block: largecap 6 nen (8 lien tiep tren BTC/ETH rat hiem)
             # Altcoin: 8 nen lien tiep = exhaustion / dao chieu
@@ -731,31 +731,31 @@ class TradingBot:
                 _all_red   = all(_micro_c[i] < _micro_o[i] for i in range(_consec_n))
                 if _all_green and not _micro_spike_pump:
                     _micro_spike_pump = True
-                    logger.debug(f"{symbol}: {_consec_n} consecutive green 1m candles → pump flag (exhaustion)")
+                    logger.debug(f"{symbol}: {_consec_n} consecutive green 1m candles -> pump flag (exhaustion)")
                 if _all_red and not _micro_spike_dump:
                     _micro_spike_dump = True
-                    logger.debug(f"{symbol}: {_consec_n} consecutive red 1m candles → dump flag (exhaustion)")
+                    logger.debug(f"{symbol}: {_consec_n} consecutive red 1m candles -> dump flag (exhaustion)")
 
             # 30-candle extended check: bat dump/pump xay ra 15-30 phut truoc (ngoai window 15c)
-            # ADA/DOGE: dump tu 30 phut truoc, gia on dinh o day → 15c miss nhung 30c bat duoc
-            # WLD: dump trong 10 phut, 30c net drop > 1.2% → block short
+            # ADA/DOGE: dump tu 30 phut truoc, gia on dinh o day -> 15c miss nhung 30c bat duoc
+            # WLD: dump trong 10 phut, 30c net drop > 1.2% -> block short
             if len(df_micro) >= 30 and not _micro_spike_dump and not _micro_spike_pump:
                 _close_30_ago = df_micro["close"].iloc[-30]
                 if _close_30_ago > 0:
                     _net_move_30 = (_micro_price - _close_30_ago) / _close_30_ago
                     if _net_move_30 < -0.012 * _sp:
                         _micro_spike_dump = True
-                        logger.debug(f"{symbol}: 30c net dump {_net_move_30*100:.1f}% → dump flag")
+                        logger.debug(f"{symbol}: 30c net dump {_net_move_30*100:.1f}% -> dump flag")
                     elif _net_move_30 > 0.012 * _sp:
                         _micro_spike_pump = True
-                        logger.debug(f"{symbol}: 30c net pump {_net_move_30*100:.1f}% → pump flag")
+                        logger.debug(f"{symbol}: 30c net pump {_net_move_30*100:.1f}% -> pump flag")
 
             # Drop-from-high / Rise-from-low (30c): chi block khi da di >= 0.60% (spike that su)
-            # 0.20% cu qua nho — trong downtrend bat ky 30c nao cung co drop > 0.20% → block het SHORT
+            # 0.20% cu qua nho — trong downtrend bat ky 30c nao cung co drop > 0.20% -> block het SHORT
             # 0.60% = dich chuyen that su, price da di xa khoi vung vao lenh tot
             # BUGFIX: dung live mark price thay vi _micro_price (last closed candle) de bat forming-candle dump
-            # Truoc: neu dump xay ra trong forming candle (chua dong), _micro_price = gia truoc dump → miss
-            # Sau: _live_check_price = max(live_price, _micro_price) → bat ca hai truong hop
+            # Truoc: neu dump xay ra trong forming candle (chua dong), _micro_price = gia truoc dump -> miss
+            # Sau: _live_check_price = max(live_price, _micro_price) -> bat ca hai truong hop
             if len(df_micro) >= 30:
                 _high_30c = df_micro["high"].iloc[-30:].max()
                 _low_30c  = df_micro["low"].iloc[-30:].min()
@@ -764,34 +764,34 @@ class TradingBot:
 
                 # Phan biet spike vs gradual trend dua tren ty le nen theo chieu:
                 # Spike: 1-3 nen khong lo, phan lon cac nen con lai flat
-                # Trend: >= 50% nen trong 30c la nen cung chieu → la trend that su, khong block
+                # Trend: >= 50% nen trong 30c la nen cung chieu -> la trend that su, khong block
                 _30c_closes = df_micro["close"].iloc[-30:].values
                 _30c_opens  = df_micro["open"].iloc[-30:].values
                 _n_green_30 = sum(1 for i in range(30) if _30c_closes[i] > _30c_opens[i])
                 _n_red_30   = sum(1 for i in range(30) if _30c_closes[i] < _30c_opens[i])
-                _is_gradual_uptrend   = _n_green_30 >= 18  # >= 60% nen xanh = uptrend ro rang (18+18>30 → not both true)
+                _is_gradual_uptrend   = _n_green_30 >= 18  # >= 60% nen xanh = uptrend ro rang (18+18>30 -> not both true)
                 _is_gradual_downtrend = _n_red_30   >= 18  # >= 60% nen do  = downtrend ro rang
 
                 if _high_30c > 0 and not _micro_spike_dump:
                     _drop_from_high = (_high_30c - _live_check_price) / _high_30c
                     # Spike: 0.60% threshold; Gradual downtrend (>=50% red candles): raise to 2.0%
-                    # Downtrend that su → cho phep vao SHORT, chi block khi drop THAT SU nhanh (spike)
+                    # Downtrend that su -> cho phep vao SHORT, chi block khi drop THAT SU nhanh (spike)
                     _dump_threshold = 0.0200 * _sp if _is_gradual_downtrend else 0.0060 * _sp
                     if _drop_from_high > _dump_threshold:
                         _micro_spike_dump = True
-                        logger.debug(f"{symbol}: 30c drop-from-high {_drop_from_high*100:.2f}% > {_dump_threshold*100:.2f}% (live={_live_check_price:.4f}) → dump flag")
+                        logger.debug(f"{symbol}: 30c drop-from-high {_drop_from_high*100:.2f}% > {_dump_threshold*100:.2f}% (live={_live_check_price:.4f}) -> dump flag")
                 if _low_30c > 0 and not _micro_spike_pump:
                     _rise_from_low = (_live_check_price - _low_30c) / _low_30c
                     # Spike: 0.60% threshold; Gradual uptrend (>=50% green candles): raise to 2.0%
-                    # Uptrend that su → cho phep vao LONG, chi block khi rise THAT SU nhanh (spike)
+                    # Uptrend that su -> cho phep vao LONG, chi block khi rise THAT SU nhanh (spike)
                     _pump_threshold = 0.0200 * _sp if _is_gradual_uptrend else 0.0060 * _sp
                     if _rise_from_low > _pump_threshold:
                         _micro_spike_pump = True
-                        logger.debug(f"{symbol}: 30c rise-from-low {_rise_from_low*100:.2f}% > {_pump_threshold*100:.2f}% → pump flag")
+                        logger.debug(f"{symbol}: 30c rise-from-low {_rise_from_low*100:.2f}% > {_pump_threshold*100:.2f}% -> pump flag")
 
             # 30c range position block da DUOC XOA:
-            # _pos30 < 0.35 → dump flag: SAI trong downtrend (price luon o bottom 35% → block het SHORT)
-            # _pos30 > 0.65 → pump flag: SAI trong uptrend (price luon o top 35% → block het LONG)
+            # _pos30 < 0.35 -> dump flag: SAI trong downtrend (price luon o bottom 35% -> block het SHORT)
+            # _pos30 > 0.65 -> pump flag: SAI trong uptrend (price luon o top 35% -> block het LONG)
             # Hay de macro trend + ADX + consensus xu ly phan nay
 
             # Re-check sau extended filters: ca 2 flag co the duoc set boi cac check phia tren
@@ -812,20 +812,20 @@ class TradingBot:
             _60c_opens  = df_micro["open"].iloc[-60:].values
             _n_green_60 = sum(1 for i in range(60) if _60c_closes[i] > _60c_opens[i])
             _n_red_60   = sum(1 for i in range(60) if _60c_closes[i] < _60c_opens[i])
-            _is_grad_up_60   = _n_green_60 >= 36  # >= 60% nen xanh = uptrend ro rang (36+36>60 → not both true)
+            _is_grad_up_60   = _n_green_60 >= 36  # >= 60% nen xanh = uptrend ro rang (36+36>60 -> not both true)
             _is_grad_down_60 = _n_red_60   >= 36  # >= 60% nen do  = downtrend ro rang
             if _high_60c > 0 and not _micro_spike_dump:
                 _drop_60 = (_high_60c - _lcp60) / _high_60c
                 _dump_thr_60 = 0.0250 * _sp if _is_grad_down_60 else 0.0100 * _sp
                 if _drop_60 > _dump_thr_60:
                     _micro_spike_dump = True
-                    logger.debug(f"{symbol}: 60c drop-from-high {_drop_60*100:.2f}% > {_dump_thr_60*100:.2f}% → dump flag")
+                    logger.debug(f"{symbol}: 60c drop-from-high {_drop_60*100:.2f}% > {_dump_thr_60*100:.2f}% -> dump flag")
             if _low_60c > 0 and not _micro_spike_pump:
                 _rise_60 = (_lcp60 - _low_60c) / _low_60c
                 _pump_thr_60 = 0.0250 * _sp if _is_grad_up_60 else 0.0100 * _sp
                 if _rise_60 > _pump_thr_60:
                     _micro_spike_pump = True
-                    logger.debug(f"{symbol}: 60c rise-from-low {_rise_60*100:.2f}% > {_pump_thr_60*100:.2f}% → pump flag")
+                    logger.debug(f"{symbol}: 60c rise-from-low {_rise_60*100:.2f}% > {_pump_thr_60*100:.2f}% -> pump flag")
 
         # 5m / 1h extended pump-dump check (12 x 5m candles = 1 gio)
         # Bat pump/dump SPIKE xay ra trong 1h qua ma 30c/60c 1m miss
@@ -841,7 +841,7 @@ class TradingBot:
             _s12_opens  = df_scalp["open"].iloc[-12:].values
             _n_green_5m = sum(1 for i in range(12) if _s12_closes[i] > _s12_opens[i])
             _n_red_5m   = sum(1 for i in range(12) if _s12_closes[i] < _s12_opens[i])
-            _is_grad_up_5m   = _n_green_5m >= 8  # >= 67% nen xanh = uptrend ro rang (8+8>12 → not both true)
+            _is_grad_up_5m   = _n_green_5m >= 8  # >= 67% nen xanh = uptrend ro rang (8+8>12 -> not both true)
             _is_grad_down_5m = _n_red_5m   >= 8  # >= 67% nen do  = downtrend ro rang
             if _s12_low > 0 and not _micro_spike_pump:
                 _rise_1h = (_lcp_5m - _s12_low) / _s12_low
@@ -850,13 +850,13 @@ class TradingBot:
                 _pump_thr_5m = 0.0300 * _sp if _is_grad_up_5m else 0.0150 * _sp
                 if _rise_1h > _pump_thr_5m:
                     _micro_spike_pump = True
-                    logger.debug(f"{symbol}: 5m 1h rise-from-low {_rise_1h*100:.2f}% > {_pump_thr_5m*100:.2f}% → pump flag")
+                    logger.debug(f"{symbol}: 5m 1h rise-from-low {_rise_1h*100:.2f}% > {_pump_thr_5m*100:.2f}% -> pump flag")
             if _s12_high > 0 and not _micro_spike_dump:
                 _drop_1h = (_s12_high - _lcp_5m) / _s12_high
                 _dump_thr_5m = 0.0300 * _sp if _is_grad_down_5m else 0.0150 * _sp
                 if _drop_1h > _dump_thr_5m:
                     _micro_spike_dump = True
-                    logger.debug(f"{symbol}: 5m 1h drop-from-high {_drop_1h*100:.2f}% > {_dump_thr_5m*100:.2f}% → dump flag")
+                    logger.debug(f"{symbol}: 5m 1h drop-from-high {_drop_1h*100:.2f}% > {_dump_thr_5m*100:.2f}% -> dump flag")
 
         # 1h macro trend va 4h macro trend — can truoc BREAKOUT de tranh NameError
         macro_trend = self._trend_direction(df_trend)
@@ -865,7 +865,7 @@ class TradingBot:
         # Post-loss filter — tinh som de ap dung cho ca BREAKOUT va momentum
         post_loss = (time.time() - self._recent_loss_ts.get(symbol, 0)) < 300
         if post_loss:
-            logger.debug(f"{symbol}: post-loss 5min active → consensus+1 / BREAKOUT blocked")
+            logger.debug(f"{symbol}: post-loss 5min active -> consensus+1 / BREAKOUT blocked")
 
         # BREAKOUT: chay cho tat ca scan_list, skip neu post_loss
         if not post_loss and df_micro is not None and not df_micro.empty and len(df_micro) >= 30:
@@ -984,15 +984,15 @@ class TradingBot:
                         short_signals.append(sig)
                 else:
                     # Yeu cau it nhat 1 TF (1h hoac 4h) xac nhan trend — tranh trade trong double-sideways
-                    # sum >= 1: it nhat 1 trong 2 TF la uptrend → long ok
-                    # sum <= -1: it nhat 1 trong 2 TF la downtrend → short ok
+                    # sum >= 1: it nhat 1 trong 2 TF la uptrend -> long ok
+                    # sum <= -1: it nhat 1 trong 2 TF la downtrend -> short ok
                     # sum = 0 (0+0 hoac 1+(-1) conflict): block het — khong trade MOMENTUM
                     long_ok  = (macro_trend + macro_4h) >= 1
                     short_ok = (macro_trend + macro_4h) <= -1
                     # 5m alignment pre-filter: khong dem signal khi 5m nguoc chieu (ALTCOIN ONLY)
                     # BTC/ETH (largecap): 5m corrections trong 1h trend la BINH THUONG (buy dip / sell bounce)
-                    # → khong apply cho largecap, dung 1m micro check (micro_up/down + EMA9/21) thay the
-                    # Altcoin: 5m bounce trong 1h downtrend = timing xau cho SHORT → bo qua
+                    # -> khong apply cho largecap, dung 1m micro check (micro_up/down + EMA9/21) thay the
+                    # Altcoin: 5m bounce trong 1h downtrend = timing xau cho SHORT -> bo qua
                     if _is_largecap:
                         scalp_allows_short = True
                         scalp_allows_long  = True
@@ -1026,11 +1026,11 @@ class TradingBot:
                         logger.debug(f"{symbol}: reversal SHORT blocked — 1h range_pos={_s12_pos:.2f} < 0.40 (not near top)")
 
             # 30c 1m range: check gia co phai da bounce/dump TRUOC KHI entry hay chua
-            # SNDKUSDT pattern: RSI < 35 (chua recover) nhung price da bounce 89% tu day 30c (1513→1535)
-            # AKEUSDT 19:24 pattern: dump 0.0009030 → bounce len 0.0009631 = 69.6% of 30c range
-            #   threshold 0.70 miss (69.6% < 70%) → vao LONG o gan dinh bounce → price dao chieu → SL hit
-            # Giam tu 0.70 → 0.65: them dem buffer de bat cac truong hop bounce 65-70%
-            # Tuong tu: giam SHORT threshold tu 0.30 → 0.35
+            # SNDKUSDT pattern: RSI < 35 (chua recover) nhung price da bounce 89% tu day 30c (1513->1535)
+            # AKEUSDT 19:24 pattern: dump 0.0009030 -> bounce len 0.0009631 = 69.6% of 30c range
+            #   threshold 0.70 miss (69.6% < 70%) -> vao LONG o gan dinh bounce -> price dao chieu -> SL hit
+            # Giam tu 0.70 -> 0.65: them dem buffer de bat cac truong hop bounce 65-70%
+            # Tuong tu: giam SHORT threshold tu 0.30 -> 0.35
             if not _rev_1h_blocked and not df_micro.empty and len(df_micro) >= 30:
                 _r30_hi = df_micro["high"].iloc[-30:].max()
                 _r30_lo = df_micro["low"].iloc[-30:].min()
@@ -1051,8 +1051,8 @@ class TradingBot:
                         )
 
             # 2h extreme block cho REVERSAL: tranh reversal LONG o dinh 2h / SHORT o day 2h
-            # SKHYUSDT pattern: RSI < 35 nhung price da o top 85% of 2h range → bad long reversal
-            # MUUSDT pattern: RSI > 65 nhung price da o bottom 15% of 2h range → bad short reversal
+            # SKHYUSDT pattern: RSI < 35 nhung price da o top 85% of 2h range -> bad long reversal
+            # MUUSDT pattern: RSI > 65 nhung price da o bottom 15% of 2h range -> bad short reversal
             # Nguong 85%/15% ketat hon momentum (80%/20%) vi reversal can price THUC SU o cuc doan chinh xac
             if not _rev_1h_blocked:
                 if reversal_dir == 1 and _m2h_pos > 0.85:
@@ -1083,7 +1083,7 @@ class TradingBot:
                 reversal_signals = long_signals if reversal_dir == 1 else short_signals
                 reversal_base = config.MIN_CONSENSUS if is_priority else config.MIN_CONSENSUS_TRENDING
                 # Deep trend guard: neu ca 1h VA 4h deu oppose reversal direction
-                # (vi du: BILL -45% — 1h bearish + 4h bearish → can them +1 consensus)
+                # (vi du: BILL -45% — 1h bearish + 4h bearish -> can them +1 consensus)
                 # Tranh catch the falling knife khi trend lon duoc xac nhan tren nhieu TF
                 reversal_deep_opposed = (
                     (reversal_dir == 1  and macro_trend == -1 and macro_4h == -1) or
@@ -1096,7 +1096,7 @@ class TradingBot:
                         f"(1h={'UP' if macro_trend==1 else 'DOWN'}, "
                         f"4h={'UP' if macro_4h==1 else 'DOWN'}, "
                         f"reversal={'LONG' if reversal_dir==1 else 'SHORT'}) "
-                        f"→ need {reversal_min}/{len(ALL_STRATEGIES)}"
+                        f"-> need {reversal_min}/{len(ALL_STRATEGIES)}"
                     )
                 if len(reversal_signals) >= reversal_min and reversal_confirmed:
                     signals = reversal_signals
@@ -1116,8 +1116,8 @@ class TradingBot:
 
         # RE-APPLY MACRO FILTER sau reversal path (tranh signal leak)
         # Khi is_reversal=True, signals duoc collect KHONG co macro filter (de bat counter-trend)
-        # Neu reversal khong du consensus → phai loc lai truoc khi MOMENTUM path chay
-        # Tranh truong hop: BTC bearish + reversal fail → MOMENTUM van long voi signals chua filter
+        # Neu reversal khong du consensus -> phai loc lai truoc khi MOMENTUM path chay
+        # Tranh truong hop: BTC bearish + reversal fail -> MOMENTUM van long voi signals chua filter
         _long_ok_macro  = (macro_trend + macro_4h) >= 1
         _short_ok_macro = (macro_trend + macro_4h) <= -1
         if is_reversal:
@@ -1133,8 +1133,8 @@ class TradingBot:
             long_signals = []
 
         # BTC GLOBAL TREND FILTER — HARD BLOCK khi ca 1h VA 4h BTC cung chieu
-        # Neu BTC 1h+4h BULLISH → xoa het SHORT signals (tat ca coin, ke ca priority SOL/ETH)
-        # Neu BTC 1h+4h BEARISH → xoa het LONG signals
+        # Neu BTC 1h+4h BULLISH -> xoa het SHORT signals (tat ca coin, ke ca priority SOL/ETH)
+        # Neu BTC 1h+4h BEARISH -> xoa het LONG signals
         # Ngoai le: REVERSAL signal (RSI cuc doan) — reversal co the di nguoc BTC
         # Ngoai le: BTCUSDT chinh no — tu xu ly theo trend chinh no
         # Day la nguyen nhan chinh khien bot short SOL/WLD/ZEC/ADA khi BTC dang pump
@@ -1145,7 +1145,7 @@ class TradingBot:
             # BTC: chi SHORT khi CA 1h VA 4h deu bear (tranh short dip tam thoi trong uptrend)
             # Chi LONG khi CA 1h VA 4h deu bull
             # BTC/ETH co xu huong V-shape bounce sau dip ngan: chi 1h bear la khong du de short
-            # Dung separate if (khong elif) de ca 2 co the true dong thoi (conflict → no trade)
+            # Dung separate if (khong elif) de ca 2 co the true dong thoi (conflict -> no trade)
             if btc_trend == 1 or btc_trend_4h == 1:
                 short_signals = []
                 logger.debug("BTCUSDT: clear SHORT — BTC 1h or 4h UP (V-shape bounce risk)")
@@ -1167,19 +1167,19 @@ class TradingBot:
             btc_strongly_bear = (btc_trend == -1 and btc_trend_4h == -1)
 
             # Coin co xu huong doc lap nguoc BTC (ca 1h VA 4h cua chinh coin do)
-            # Vi du: BTC bull nhung coin rieng dang bearish 1h+4h → co the cho phep short
+            # Vi du: BTC bull nhung coin rieng dang bearish 1h+4h -> co the cho phep short
             # Yeu cau them consensus cao hon (xu ly o phan consensus ben duoi)
             coin_independently_bear = (macro_trend == -1 and macro_4h == -1)
             coin_independently_bull = (macro_trend ==  1 and macro_4h ==  1)
 
             # Hard block: BTC strongly opposes AND coin khong co xu huong doc lap nguoc lai
-            # Neu coin co xu huong doc lap → cho phep nhung se cap cao consensus
+            # Neu coin co xu huong doc lap -> cho phep nhung se cap cao consensus
             if btc_strongly_bull and not is_reversal and not coin_independently_bear:
                 short_signals = []
-                logger.debug(f"{symbol}: BTC 1h+4h BULLISH, coin not independently bearish → block SHORT")
+                logger.debug(f"{symbol}: BTC 1h+4h BULLISH, coin not independently bearish -> block SHORT")
             if btc_strongly_bear and not is_reversal and not coin_independently_bull:
                 long_signals = []
-                logger.debug(f"{symbol}: BTC 1h+4h BEARISH, coin not independently bullish → block LONG")
+                logger.debug(f"{symbol}: BTC 1h+4h BEARISH, coin not independently bullish -> block LONG")
 
         # BTC alignment flags cho consensus adjustment
         btc_strongly_bull = (btc_trend == 1  and btc_trend_4h == 1)   if symbol != "BTCUSDT" else False
@@ -1198,9 +1198,9 @@ class TradingBot:
 
         if is_priority:
             # Priority (top10): base = MIN_CONSENSUS = 4
-            # BTC cung chieu (bonus) → giam 1 → 3 (bat nhieu co hoi hon)
-            # Coin diverge nguoc BTC → tang 2 → 6 (can xac nhan cao)
-            # both_sideways (+1): ca 1h VA 4h sideways → thi truong ranging, can them xac nhan
+            # BTC cung chieu (bonus) -> giam 1 -> 3 (bat nhieu co hoi hon)
+            # Coin diverge nguoc BTC -> tang 2 -> 6 (can xac nhan cao)
+            # both_sideways (+1): ca 1h VA 4h sideways -> thi truong ranging, can them xac nhan
             base = config.MIN_CONSENSUS
             extra = (1 if post_loss else 0) + (1 if both_sideways else 0)
             btc_long_bonus  = 1 if btc_strongly_bull else 0
@@ -1211,8 +1211,8 @@ class TradingBot:
             required_short = max(2, min(7, base + extra - btc_short_bonus + diverge_short_penalty))
         else:
             # Trending non-priority: base = MIN_CONSENSUS_TRENDING = 5
-            # BTC cung chieu → giam 1 → 4 (non-priority de vao hon khi trend ro)
-            # Coin diverge nguoc BTC → tang 2 → 7 (rat kho vao, can gan tat ca strategies)
+            # BTC cung chieu -> giam 1 -> 4 (non-priority de vao hon khi trend ro)
+            # Coin diverge nguoc BTC -> tang 2 -> 7 (rat kho vao, can gan tat ca strategies)
             base = config.MIN_CONSENSUS_TRENDING
             extra = (1 if sideways_1h else 0) + (1 if post_loss else 0)
             btc_long_bonus  = 1 if btc_strongly_bull else 0
@@ -1256,7 +1256,7 @@ class TradingBot:
         best = max(signals, key=lambda s: s.strength)
 
         # BTC/ETH CORRELATION BLOCK: block neu pair kia da co position CUNG CHIEU
-        # BTC va ETH correlated manh → ca 2 cung SHORT = double loss khi bounce
+        # BTC va ETH correlated manh -> ca 2 cung SHORT = double loss khi bounce
         # Cho phep nguoc chieu (BTC long + ETH short = hedging, khac strategy)
         if btc_eth_side_map and symbol in ("BTCUSDT", "ETHUSDT"):
             pair = "ETHUSDT" if symbol == "BTCUSDT" else "BTCUSDT"
@@ -1290,7 +1290,7 @@ class TradingBot:
             return False
 
         # 2h 1m range block: tranh SHORT khi gia o bottom 20% range 2h
-        # ONDOUSDT/SKHYNIXUSDT/XAGUSDT: dump xay ra truoc do, bot vao SHORT o day → bounce → loss
+        # ONDOUSDT/SKHYNIXUSDT/XAGUSDT: dump xay ra truoc do, bot vao SHORT o day -> bounce -> loss
         if _m2h_block_short and best.direction == -1:
             logger.debug(f"{symbol}: skip — price at 2h 1m range bottom (<20%), block MOMENTUM SHORT")
             return False
@@ -1299,8 +1299,8 @@ class TradingBot:
             return False
 
         # 30c 1m range position: block MOMENTUM khi gia o top/bottom 25% cua range 30 phut
-        # AKEUSDT pattern: pump tu 0.0009201 len 0.0009818 = 77% of 30c range → bad long entry
-        # Exception: gradual trend (>= 60% candles same direction) → cho phep trend-following
+        # AKEUSDT pattern: pump tu 0.0009201 len 0.0009818 = 77% of 30c range -> bad long entry
+        # Exception: gradual trend (>= 60% candles same direction) -> cho phep trend-following
         # La lap phong thu thu 3 (sau spike flag va 2h range block) — catch edge cases slip qua
         if not df_micro.empty and len(df_micro) >= 30:
             _r30m_high = df_micro["high"].iloc[-30:].max()
@@ -1332,7 +1332,7 @@ class TradingBot:
 
         # 1m EMA alignment check (MOMENTUM path) — bat cac truong hop _micro_trend tra ve 0 (neutral)
         # do chi dat 2/5 factors thay vi 3/5, nhung EMA9 vs EMA21 dang nguoc chieu ro rang
-        # EMA9 < EMA21: 1m bearish alignment → tranh long; EMA9 > EMA21: 1m bullish → tranh short
+        # EMA9 < EMA21: 1m bearish alignment -> tranh long; EMA9 > EMA21: 1m bullish -> tranh short
         if len(df_micro) >= 21:
             _e9  = compute_ema(df_micro["close"], 9).iloc[-1]
             _e21 = compute_ema(df_micro["close"], 21).iloc[-1]
@@ -1345,8 +1345,8 @@ class TradingBot:
 
         # 5m (scalp) trend alignment: hard block MOMENTUM ALTCOIN khi 5m nguoc chieu signal
         # BTC/ETH largecap: 5m correction la binh thuong trong 1h trend — la entry tot (buy dip)
-        #   → KHONG block largecap, de 1m micro check (micro_up/down + EMA9/21) xu ly
-        # ETHUSDT 19:30 altcoin pattern: 1h bearish, 5m bounce → SHORT timing xau → SL hit
+        #   -> KHONG block largecap, de 1m micro check (micro_up/down + EMA9/21) xu ly
+        # ETHUSDT 19:30 altcoin pattern: 1h bearish, 5m bounce -> SHORT timing xau -> SL hit
         # BREAKOUT da check scalp_trend rieng; REVERSAL khong block (5m bounce tai day la ok)
         if not _is_largecap:
             if best.direction == -1 and scalp_trend == 1:

@@ -96,7 +96,7 @@ class MarketScanner:
         # Rank tung tieu chi (1 = tot nhat), tinh weighted score
         df["vol_rank"]        = df["volume_usdt_24h"].rank(ascending=False)
         df["volatility_rank"] = df["price_change_pct"].rank(ascending=False)
-        # Liquidity: spread cang nho cang tot → rank ascending=True
+        # Liquidity: spread cang nho cang tot -> rank ascending=True
         df["liquidity_rank"]  = df["bid_ask_spread_pct"].rank(ascending=True)
 
         n = len(df)

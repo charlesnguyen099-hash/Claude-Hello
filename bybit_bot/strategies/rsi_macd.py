@@ -1,7 +1,7 @@
 """
 Strategy 2: RSI + MACD Momentum
-- RSI thoát khỏi vùng oversold (< 35 → > 35) + MACD histogram dương → Long
-- RSI thoát khỏi vùng overbought (> 65 → < 65) + MACD histogram âm → Short
+- RSI thoát khỏi vùng oversold (< 35 -> > 35) + MACD histogram dương -> Long
+- RSI thoát khỏi vùng overbought (> 65 -> < 65) + MACD histogram âm -> Short
 - Trend filter từ 1h
 """
 

@@ -45,7 +45,7 @@ class SustainedTrendStrategy(BaseStrategy):
         trend_1h = self._trend_direction(df_trend)   # 1h
         macro_d  = self._trend_direction(df_macro)   # 4h
 
-        # ── SUSTAINED DOWNTREND → SHORT ──────────────────────────────────────
+        # ── SUSTAINED DOWNTREND -> SHORT ──────────────────────────────────────
         # EMA xep theo thu tu giam + ca 2 EMA dang doc xuong + RSI chua oversold
         ema_bear   = price < e9_now < e21_now < e28_now
         slope_down = e9_slope < -0.001 and e21_slope < -0.0005
@@ -62,7 +62,7 @@ class SustainedTrendStrategy(BaseStrategy):
                 reason=f"Sustained DOWN: EMA9slope={e9_slope*100:.3f}% RSI={rsi:.0f}"
             )
 
-        # ── SUSTAINED UPTREND → LONG ─────────────────────────────────────────
+        # ── SUSTAINED UPTREND -> LONG ─────────────────────────────────────────
         ema_bull   = price > e9_now > e21_now > e28_now
         slope_up   = e9_slope > 0.001 and e21_slope > 0.0005
         rsi_mid_up = 35 < rsi < 65
@@ -78,7 +78,7 @@ class SustainedTrendStrategy(BaseStrategy):
                 reason=f"Sustained UP: EMA9slope={e9_slope*100:.3f}% RSI={rsi:.0f}"
             )
 
-        # ── REVERSAL TẠI ĐÁY → LONG ─────────────────────────────────────────
+        # ── REVERSAL TẠI ĐÁY -> LONG ─────────────────────────────────────────
         # RSI oversold (< 35) + nen dao chieu (close > open, than lon) + volume tang
         vol_now  = volume.iloc[-1]
         vol_prev = volume.iloc[-2]
@@ -103,7 +103,7 @@ class SustainedTrendStrategy(BaseStrategy):
                 reason=f"Reversal LONG at bottom: RSI={rsi:.0f} engulf up"
             )
 
-        # ── REVERSAL TẠI ĐỈNH → SHORT ────────────────────────────────────────
+        # ── REVERSAL TẠI ĐỈNH -> SHORT ────────────────────────────────────────
         reversal_short = (
             rsi > self.rsi_overbought and
             last_body < 0 and           # nen do

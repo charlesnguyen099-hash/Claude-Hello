@@ -71,14 +71,14 @@ class RiskManager:
 
         # SL/TP dua tren ATR
         # SL  = 1.5x ATR + phi (entry - sl_dist)
-        # TP1 = 1.5x ATR - phi → max(tp1_dist, sl_dist) lam cho TP1 = sl_dist → RR ~1:1 sau phi
-        # TP2 = 3.0x ATR - phi → max(tp2_dist, sl_dist*2) → TP2 = 2×SL (RR 2:1)
+        # TP1 = 1.5x ATR - phi -> max(tp1_dist, sl_dist) lam cho TP1 = sl_dist -> RR ~1:1 sau phi
+        # TP2 = 3.0x ATR - phi -> max(tp2_dist, sl_dist*2) -> TP2 = 2×SL (RR 2:1)
         # Partial close 50% tai 75% cua TP1 = 1.125x ATR, con lai chay den TP2
         sl_dist  = config.SL_ATR_MULT  * signal.atr + fee_price
         tp1_dist = config.TP1_ATR_MULT * signal.atr - fee_price
         tp2_dist = config.TP2_ATR_MULT * signal.atr - fee_price
         # TP1_ATR_MULT == SL_ATR_MULT nen tp1_dist < sl_dist (fee offset nguoc chieu)
-        # → max dam bao TP1 >= SL distance → RR >= 1
+        # -> max dam bao TP1 >= SL distance -> RR >= 1
         tp1_dist = max(tp1_dist, sl_dist)
         tp2_dist = max(tp2_dist, sl_dist * 2.0)
         # Dam bao SL/TP duong
@@ -104,7 +104,7 @@ class RiskManager:
             if actual_risk > risk_amount * 3:
                 logger.warning(
                     f"{signal.symbol}: min_qty risk too high — "
-                    f"actual_risk={actual_risk:.4f} > 3x intended={risk_amount:.4f} → skip"
+                    f"actual_risk={actual_risk:.4f} > 3x intended={risk_amount:.4f} -> skip"
                 )
                 return None
 
@@ -117,8 +117,8 @@ class RiskManager:
 
         # Leverage: tinh leverage can thiet de margin = MAX_CAPITAL_PCT * equity
         # Sau do cap vao min(MAX_LEVERAGE, exchange_max_lev)
-        # Neu leverage bi cap thap hon muc can thiet → capital_used tang > MAX_CAPITAL_PCT
-        # → giam qty de dam bao capital_used <= MAX_CAPITAL_PCT * equity
+        # Neu leverage bi cap thap hon muc can thiet -> capital_used tang > MAX_CAPITAL_PCT
+        # -> giam qty de dam bao capital_used <= MAX_CAPITAL_PCT * equity
         exchange_max_lev = self.client.get_max_leverage(signal.symbol) if config.USE_MAX_LEVERAGE \
                            else config.DEFAULT_LEVERAGE
         max_capital = equity * config.MAX_CAPITAL_PCT
@@ -126,7 +126,7 @@ class RiskManager:
         leverage = min(leverage_needed, config.MAX_LEVERAGE, exchange_max_lev)
         leverage = max(leverage, 1)
 
-        # Neu leverage bi cap thap hon muc can (vi exchange gioi han) → giam qty de giu capital cap
+        # Neu leverage bi cap thap hon muc can (vi exchange gioi han) -> giam qty de giu capital cap
         capital_used = notional / leverage
         if capital_used > max_capital * 1.05:  # 5% tolerance
             # Giam qty sao cho capital_used <= max_capital

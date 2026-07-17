@@ -1,7 +1,7 @@
 """
 Strategy 5: VWAP + Volume Profile Breakout
-- Giá breakout trên VWAP + volume tăng mạnh → Long
-- Giá breakdown dưới VWAP + volume tăng mạnh → Short
+- Giá breakout trên VWAP + volume tăng mạnh -> Long
+- Giá breakdown dưới VWAP + volume tăng mạnh -> Short
 - VWAP hàng ngày tính từ nến 15m (không cần tick data)
 """
 

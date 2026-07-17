@@ -1,7 +1,7 @@
 """
 Strategy 6: Ichimoku Cloud
-- Giá trên cloud + Tenkan cắt lên Kijun + Chikou xác nhận → Long
-- Giá dưới cloud + Tenkan cắt xuống Kijun + Chikou xác nhận → Short
+- Giá trên cloud + Tenkan cắt lên Kijun + Chikou xác nhận -> Long
+- Giá dưới cloud + Tenkan cắt xuống Kijun + Chikou xác nhận -> Short
 Ichimoku là hệ thống hoàn chỉnh nhất cho trend trading.
 """
 

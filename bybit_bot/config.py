@@ -42,7 +42,7 @@ USE_MAX_LEVERAGE       = True
 MAX_LEVERAGE           = 20    # Cap 20x — cao hon lam SL hit mat >100% margin
 DEFAULT_LEVERAGE       = 10
 # Risk-based sizing: RISK_PER_TRADE_PCT% equity mat neu SL hit (scale theo consensus)
-# RISK_PER_TRADE_PCT=0.01 → max 1% equity mat moi lenh → 100 lenh SL lien tiep het account
+# RISK_PER_TRADE_PCT=0.01 -> max 1% equity mat moi lenh -> 100 lenh SL lien tiep het account
 RISK_PER_TRADE_PCT = 0.01   # Max 1% equity mat khi SL hit (base, scale voi consensus)
 MAX_CAPITAL_PCT    = 0.10   # Max 10% equity dung lam margin moi lenh
 MAX_OPEN_POSITIONS = 3      # Max 3/5 positions mo cung luc (top5 focus mode)
@@ -63,10 +63,10 @@ MIN_ATR_PCT         = 0.004  # Tang tu 0.003 — ATR >= 0.4% moi trade (bu phi +
 TRADE_SIZE_MULT         = 1    # Khong dung nua — risk-based sizing thay the
 
 # --- Risk Guards --------------------------------------------------------------
-# Daily max loss: neu tong PnL trong ngay < -(equity * MAX_DAILY_LOSS_PCT) → dung mo lenh moi
+# Daily max loss: neu tong PnL trong ngay < -(equity * MAX_DAILY_LOSS_PCT) -> dung mo lenh moi
 MAX_DAILY_LOSS_PCT   = 0.05   # 5% equity — dung ngay khi mat > 5% trong 1 ngay
 
-# Max spread: neu bid-ask spread > nguong nay → khong entry (thanh khoan kem)
+# Max spread: neu bid-ask spread > nguong nay -> khong entry (thanh khoan kem)
 # Largecap (BTC/ETH): 0.05%, Altcoin: 0.15%
 MAX_SPREAD_PCT_LARGE = 0.0005   # 0.05% cho BTC/ETH
 MAX_SPREAD_PCT_ALT   = 0.0015   # 0.15% cho altcoin

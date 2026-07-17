@@ -1,7 +1,7 @@
 """
 Strategy 3: Bollinger Bands + RSI Divergence (reversal)
-- Giá chạm lower band + RSI < 35 + nến đảo chiều → Long (reversal from oversold)
-- Giá chạm upper band + RSI > 65 + nến đảo chiều → Short (reversal from overbought)
+- Giá chạm lower band + RSI < 35 + nến đảo chiều -> Long (reversal from oversold)
+- Giá chạm upper band + RSI > 65 + nến đảo chiều -> Short (reversal from overbought)
 - 1h+4h không được oppose: LONG chỉ khi sum(1h,4h) >= 0; SHORT chỉ khi sum <= 0
 """
 

@@ -139,13 +139,15 @@ class TradingBot:
         self._prev_pos_symbols = pos_symbols
 
         # Cap nhat BTC global trend TRUOC cap check — tranh BTC trend stale khi at max positions
+        # btc_trend    = 15m trend direction (nhanh, bat flip som)
+        # btc_trend_4h = 1h trend direction  (chac chan hon, xac nhan xu huong lon)
         try:
-            df_btc_1h = self.client.get_klines("BTCUSDT", config.TIMEFRAMES["trend"], 100)
-            df_btc_4h = self.client.get_klines("BTCUSDT", config.TIMEFRAMES["macro"],  100)
+            df_btc_15m = self.client.get_klines("BTCUSDT", config.TIMEFRAMES["trend"], 100)
+            df_btc_1h  = self.client.get_klines("BTCUSDT", config.TIMEFRAMES["macro"],  100)
+            if not df_btc_15m.empty and len(df_btc_15m) >= 50:
+                self.btc_trend = self._trend_direction(df_btc_15m)
             if not df_btc_1h.empty and len(df_btc_1h) >= 50:
-                self.btc_trend = self._trend_direction(df_btc_1h)
-            if not df_btc_4h.empty and len(df_btc_4h) >= 50:
-                self.btc_trend_4h = self._trend_direction(df_btc_4h)
+                self.btc_trend_4h = self._trend_direction(df_btc_1h)
         except Exception:
             pass
 
@@ -461,11 +463,13 @@ class TradingBot:
         _is_gradual_uptrend   = False
         _is_gradual_downtrend = False
 
-        df_micro  = self.client.get_klines(symbol, config.TIMEFRAMES["micro"], config.CANDLE_LIMIT_MICRO)
+        # Timeframe moi: signal=1m (paginated, 2000c), scalp=5m, trend=15m, macro=1h
+        # df_micro = df_signal (1m) — dung lai ten cu de khong phai doi het code ben duoi
+        df_signal = self.client.get_klines_paginated(symbol, config.TIMEFRAMES["signal"], config.CANDLE_LIMIT_SIGNAL)
         df_scalp  = self.client.get_klines(symbol, config.TIMEFRAMES["scalp"],  config.CANDLE_LIMIT_SCALP)
-        df_signal = self.client.get_klines(symbol, config.TIMEFRAMES["signal"], config.CANDLE_LIMIT_SIGNAL)
         df_trend  = self.client.get_klines(symbol, config.TIMEFRAMES["trend"],  config.CANDLE_LIMIT_TREND)
         df_macro  = self.client.get_klines(symbol, config.TIMEFRAMES["macro"],  config.CANDLE_LIMIT_MACRO)
+        df_micro  = df_signal   # alias: 1m data dung cho micro analysis (khong fetch them)
 
         if df_signal.empty or len(df_signal) < 50:
             return False
@@ -495,18 +499,15 @@ class TradingBot:
             return False
 
         # 24h directional move filter: tranh chase sau khi coin da pump/dump > 20% trong 24h
-        # Coin up > 20%  -> block LONG momentum (move da xong, late entry); SHORT reversal van ok
-        # Coin down > 20% -> block SHORT momentum; LONG reversal van ok
-        # HARD SKIP: abs > 30% -> skip TOAN BO (AKEUSDT +39%: ca SHORT reversal cung nguy hiem)
-        # Scanner da skip o >25% nhung self.symbols la cache cu (1h) -> coin co the pump them
-        # Tinh tu df_signal: close[-1] vs close 96 nen 15m truoc (~24h)
+        # Dung df_trend (15m): 96 nen x 15m = 24h (chinh xac, khong bi anh huong boi doi sang 1m)
+        # df_signal la 1m: 96 nen 1m = 96 phut, khong dung cho 24h check
         _block_long_24h  = False
         _block_short_24h = False
         _change_24h = 0.0
-        if len(df_signal) >= 96:
-            _ref_24h = df_signal["close"].iloc[-96]
+        if len(df_trend) >= 96:
+            _ref_24h = df_trend["close"].iloc[-96]
             if _ref_24h > 0:
-                _change_24h = (df_signal["close"].iloc[-1] - _ref_24h) / _ref_24h * 100
+                _change_24h = (df_trend["close"].iloc[-1] - _ref_24h) / _ref_24h * 100
                 if abs(_change_24h) > 30:
                     logger.info(f"{symbol}: 24h change={_change_24h:.1f}% > 30% -> HARD SKIP (extreme move)")
                     return False
@@ -517,8 +518,10 @@ class TradingBot:
                     _block_short_24h = True
                     logger.debug(f"{symbol}: 24h change={_change_24h:.1f}% -> block SHORT (dump exhausted)")
 
-        # RSI cho reversal detection
-        rsi_now = compute_rsi(df_signal["close"]).iloc[-1]
+        # RSI cho reversal detection — dung df_trend (15m) thay df_signal (1m)
+        # RSI 1m qua nhay, oversold/overbought xuyen hien lien tuc trong noise binh thuong
+        # RSI 15m on dinh hon, chi bat reversal that su
+        rsi_now = compute_rsi(df_trend["close"]).iloc[-1] if not df_trend.empty and len(df_trend) >= 14 else 50.0
 
         # Lay live mark price mot lan cho range position checks — tranh dung 15m close (stale up to 14m)
         # Tai day la diem dau tien co du context de goi API (sau spike filter da pass)
@@ -526,8 +529,8 @@ class TradingBot:
         _range_live_price = self.client.get_current_price(symbol)
         _range_price = _range_live_price if _range_live_price > 0 else price
 
-        # 1h range position: block long o TOP 75% / short o BOTTOM 25% cua 20-candle 1h range
-        # Khong ap dung cho REVERSAL (reversal chinh xac la vao o cac cuc doan nay)
+        # 15m range position: block long o TOP 75% / short o BOTTOM 25% cua 20-candle 15m range
+        # 20 nen x 15m = 5h range — phu hop voi 1m scalping (khong qua rong)
         _h1_block_long  = False
         _h1_block_short = False
         if not df_trend.empty and len(df_trend) >= 20:
@@ -538,10 +541,10 @@ class TradingBot:
                 h1_pos = (_range_price - h1_low) / h1_rng
                 if h1_pos > 0.75:
                     _h1_block_long = True
-                    logger.debug(f"{symbol}: 1h range_pos={h1_pos:.2f} > 0.75 -> block LONG (1h top)")
+                    logger.debug(f"{symbol}: 15m range_pos={h1_pos:.2f} > 0.75 -> block LONG (15m top)")
                 elif h1_pos < 0.25:
                     _h1_block_short = True
-                    logger.debug(f"{symbol}: 1h range_pos={h1_pos:.2f} < 0.25 -> block SHORT (1h bottom)")
+                    logger.debug(f"{symbol}: 15m range_pos={h1_pos:.2f} < 0.25 -> block SHORT (15m bottom)")
 
         # 2h 1m range: block SHORT khi gia o bottom 20% cua range 120 nen 1m (2 gio)
         # Block LONG khi o top 80%
@@ -579,7 +582,7 @@ class TradingBot:
         short_term_up   = _n_bull3 >= 2   # 2 trong 3 nen xanh
         short_term_down = _n_bear3 >= 2   # 2 trong 3 nen do
 
-        # Spike filter: nen hien tai HOAC bat ky nen nao trong 5 nen gan nhat > 2x ATR
+        # Spike filter tren 1m signal: nen lon bat thuong > 2x ATR (ATR 1m)
         # Neu co spike dump -> khong short them; spike pump -> khong long them
         spike_lookback = 10
         recent_bodies  = closes.iloc[-spike_lookback:].values - opens.iloc[-spike_lookback:].values
@@ -689,13 +692,17 @@ class TradingBot:
             if _micro_spike_dump and _micro_spike_pump:
                 logger.debug(f"{symbol}: dual spike flag (ranging 1m) — skip reversal path only")
 
-        # 1h macro trend va 4h macro trend — can truoc BREAKOUT de tranh NameError
-        macro_trend = self._trend_direction(df_trend)
-        macro_4h    = self._trend_direction(df_macro)
+        # 15m trend va 1h macro trend — dung cho strategy filter va BTC global check
+        macro_trend = self._trend_direction(df_trend)   # 15m direction
+        macro_4h    = self._trend_direction(df_macro)   # 1h direction
 
-        # BREAKOUT: chay cho tat ca scan_list
-        if df_micro is not None and not df_micro.empty and len(df_micro) >= 30:
-            bo_sig = BREAKOUT_STRATEGY.generate_signal(df_micro, df_scalp, df_signal)
+        # ATR tu 15m (df_trend) cho SL/TP sizing — 1m ATR qua nho, bi noise hit SL lien tuc
+        # ATR 1m BTC ~$30-80, ATR 15m BTC ~$150-300 -> SL 1.5x 15m ATR = $225-450 (hop ly)
+        _atr_for_sl = compute_atr(df_trend, config.ATR_PERIOD).iloc[-1] if not df_trend.empty and len(df_trend) >= config.ATR_PERIOD else 0.0
+
+        # BREAKOUT: chay cho tat ca scan_list — su dung 1m signal data
+        if df_signal is not None and not df_signal.empty and len(df_signal) >= 30:
+            bo_sig = BREAKOUT_STRATEGY.generate_signal(df_signal, df_scalp, df_trend)
             if bo_sig.direction != 0:
                 # 5m khong duoc nguoc chieu — cho phep sideways
                 bo_ok = (
@@ -740,11 +747,14 @@ class TradingBot:
                             not (_m2h_block_long  and bo_sig.direction == 1)
                 if bo_ok and micro_ok and not is_spike and post_spike_ok and micro_spike_ok and bo_btc_ok and bo_h1_ok and bo_24h_ok and bo_trend_ok and bo_m2h_ok:
                     # BREAKOUT phai qua range check — tranh long o dinh / short o day
-                    if not self._micro_entry_analysis(df_micro, bo_sig.direction):
+                    if not self._micro_entry_analysis(df_signal, bo_sig.direction):
                         logger.debug(f"{symbol}: BREAKOUT skip — range/micro_entry block")
                     else:
                         bo_sig.symbol    = symbol
                         bo_sig.consensus = 1
+                        # ATR override: dung 15m ATR cho SL/TP (1m ATR qua nho)
+                        if _atr_for_sl > 0:
+                            bo_sig.atr = _atr_for_sl
                         logger.info(
                             f"{symbol} [BREAKOUT] -> "
                             f"{'LONG' if bo_sig.direction==1 else 'SHORT'} "
@@ -768,9 +778,9 @@ class TradingBot:
                 # Dem signal 15m hop le
                 if sig.direction != 0 and sig.strength >= config.MIN_SIGNAL_STRENGTH:
                     n_15m_valid += 1
-                # Scalp fallback: chi thu 5m neu 15m chet VA thi truong da co it nhat 1 signal 15m hop le
-                # Tranh pure 5m-only consensus trong thi truong sideways chet 15m
-                # Skip VWAP (window 96x15m=24h, tren 5m cho ra 8h — sai)
+                # Scalp fallback: chi thu 5m neu 1m chet VA thi truong da co it nhat 1 signal 1m hop le
+                # Tranh pure 5m-only consensus trong thi truong sideways chet hoan toan
+                # Skip VWAP (window 1440x1m=24h, tren 5m cho ra 8h — sai)
                 if sig.direction == 0 and n_15m_valid >= 1 and len(df_scalp) >= 50 and strategy.name != "vwap_volume":
                     sig = strategy.generate_signal(df_scalp, df_trend, df_macro)
 
@@ -930,8 +940,11 @@ class TradingBot:
                     best.strength = min(0.95, best.strength + 0.15)
                     best.consensus = len(signals)
                     best.symbol    = symbol
+                    # ATR override: dung 15m ATR cho SL/TP (1m ATR qua nho)
+                    if _atr_for_sl > 0:
+                        best.atr = _atr_for_sl
                     names = "+".join(s.strategy_name for s in signals)
-                    rsi_label = f"RSI={rsi_now:.0f}({'OVERSOLD' if reversal_dir==1 else 'OVERBOUGHT'})"
+                    rsi_label = f"RSI15m={rsi_now:.0f}({'OVERSOLD' if reversal_dir==1 else 'OVERBOUGHT'})"
                     logger.info(
                         f"{symbol} [REVERSAL {rsi_label}] [{names}] -> "
                         f"{'LONG' if best.direction==1 else 'SHORT'} "
@@ -1217,6 +1230,9 @@ class TradingBot:
 
         best.consensus = len(signals)
         best.symbol    = symbol
+        # ATR override: dung 15m ATR cho SL/TP — 1m ATR qua nho (noise se hit SL lien tuc)
+        if _atr_for_sl > 0:
+            best.atr = _atr_for_sl
         names = "+".join(s.strategy_name for s in signals)
 
         logger.info(

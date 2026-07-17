@@ -54,14 +54,14 @@ class BybitClient:
     @retry()
     def get_klines(self, symbol: str, interval: str, limit: int = 200) -> pd.DataFrame:
         """
-        Lấy nến OHLCV từ Bybit API — không lưu local.
-        Bybit trả về dữ liệu theo thứ tự mới nhất trước.
+        Lay nen OHLCV tu Bybit API — khong luu local.
+        Bybit tra ve du lieu theo thu tu moi nhat truoc.
         """
         resp = self.session.get_kline(
             category="linear",
             symbol=symbol,
             interval=interval,
-            limit=limit,
+            limit=min(limit, 1000),
         )
         rows = resp["result"]["list"]
         if not rows:
@@ -78,6 +78,55 @@ class BybitClient:
         })
         df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
         df = df.sort_values("timestamp").reset_index(drop=True)
+        return df
+
+    def get_klines_paginated(self, symbol: str, interval: str, total_limit: int = 2000) -> pd.DataFrame:
+        """
+        Lay nhieu trang nen OHLCV bang cach phan trang nguoc ve qua khu.
+        Bybit max 1000 nen/call -> de lay 2000 nen can 2 calls.
+        Dung cho 1m signal timeframe de co du lich su indicator (EMA, VWAP, v.v.).
+        """
+        MAX_PER_CALL = 1000
+        all_rows: list = []
+        end_ts: int | None = None   # phan trang: end timestamp cho call tiep theo
+        remaining = total_limit
+
+        while remaining > 0:
+            limit = min(remaining, MAX_PER_CALL)
+            params: dict = dict(category="linear", symbol=symbol, interval=interval, limit=limit)
+            if end_ts is not None:
+                params["end"] = end_ts
+            try:
+                resp = self.session.get_kline(**params)
+                rows = resp["result"]["list"]
+            except Exception as e:
+                logger.warning(f"get_klines_paginated {symbol} {interval}: {str(e).encode('ascii','replace').decode()}")
+                break
+            if not rows:
+                break
+            all_rows.extend(rows)
+            remaining -= len(rows)
+            if len(rows) < limit:
+                break   # het data
+            # Nen cu nhat trong batch nay: timestamp rows[-1][0] (Bybit sort moi truoc)
+            end_ts = int(rows[-1][0]) - 1  # -1ms de tranh trung lap
+            if remaining <= 0:
+                break
+
+        if not all_rows:
+            return pd.DataFrame()
+
+        df = pd.DataFrame(all_rows, columns=["timestamp", "open", "high", "low", "close", "volume", "turnover"])
+        df = df.astype({
+            "timestamp": "int64",
+            "open": "float64",
+            "high": "float64",
+            "low": "float64",
+            "close": "float64",
+            "volume": "float64",
+        })
+        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+        df = df.drop_duplicates("timestamp").sort_values("timestamp").reset_index(drop=True)
         return df
 
     # ── Account ───────────────────────────────────────────────────────────────

@@ -15,22 +15,23 @@ MIN_VOLUME_USDT_24H      = 1_000_000   # filter dau vao khi scan 200 coins
 SCAN_INTERVAL_SEC    = 3600
 
 # --- Multi-Timeframe Analysis -------------------------------------------------
-# 5m  x 1000 = 3.5 ngay — bat scalp signal ngan han
-# 15m x 1000 = 10.4 ngay — signal chinh
-# 1h  x 500  = 20 ngay — xu huong
-# 4h  x 300  = 50 ngay — xu huong lon
+# 1m  x 2000 = ~33h  — MAIN signal (scalp entry, nhanh, nhieu lenh hon)
+# 5m  x 500  = ~42h  — 5m alignment check (tranh vao giua bounce)
+# 15m x 500  = 5 ngay — trend confirmation (thay 1h)
+# 1h  x 300  = 12 ngay — macro trend (thay 4h)
+#
+# Chuyen tu 15m/1h/4h sang 1m/5m/15m/1h: bat lenh nhanh hon, nhieu co hoi hon
+# ATR cho SL/TP tinh tu 15m (khong phai 1m) de tranh SL qua chat bi noise hit
 TIMEFRAMES = {
-    "micro":  "1",     # 1m: xac nhan entry (3 nen gan nhat)
-    "scalp":  "5",     # 5m: scalp / signal ngan han
-    "signal": "15",    # 15m: signal chinh
-    "trend":  "60",    # 1h: xu huong
-    "macro":  "240",   # 4h: xu huong lon
+    "signal": "1",     # 1m: MAIN signal (was 15m)
+    "scalp":  "5",     # 5m: alignment check
+    "trend":  "15",    # 15m: trend confirmation (was 1h)
+    "macro":  "60",    # 1h: macro trend (was 4h)
 }
-CANDLE_LIMIT_MICRO       = 300   # 300 nen 1m — du EMA on dinh
-CANDLE_LIMIT_SCALP  = 1000
-CANDLE_LIMIT_SIGNAL = 1000
-CANDLE_LIMIT_TREND  = 500
-CANDLE_LIMIT_MACRO  = 300
+CANDLE_LIMIT_SIGNAL = 2000   # 2 API calls x 1000 = ~33h 1m data
+CANDLE_LIMIT_SCALP  = 500    # 500 x 5m = ~42h
+CANDLE_LIMIT_TREND  = 500    # 500 x 15m = ~5 ngay
+CANDLE_LIMIT_MACRO  = 300    # 300 x 1h  = ~12 ngay
 
 # --- Phi giao dich Bybit ------------------------------------------------------
 TAKER_FEE      = 0.00055
@@ -56,10 +57,10 @@ PARTIAL_CLOSE_TRIGGER = 0.75  # Dong 50% position tai 75% den TP1, de 50% con la
 
 # --- Signal sensitivity -------------------------------------------------------
 MIN_SIGNAL_STRENGTH = 0.60   # Chi lay signal chat luong cao
-MIN_ADX             = 20     # ADX >= 20: co xu huong ro rang (22 qua chat voi largecap BTC/ETH)
-MIN_CONSENSUS          = 4   # Can it nhat 4/7 strategies dong thuan (tu 5 -> de bat nhieu co hoi hon)
+MIN_ADX             = 18     # ADX >= 18 cho 1m scalp (xu huong nho hon nhung co that)
+MIN_CONSENSUS          = 4   # Can it nhat 4/7 strategies dong thuan
 MIN_CONSENSUS_TRENDING = 4   # Dong bo voi MIN_CONSENSUS
-MIN_ATR_PCT         = 0.004  # Tang tu 0.003 — ATR >= 0.4% moi trade (bu phi + spread)
+MIN_ATR_PCT         = 0.0005 # 0.05% cho 1m (ATR 1m nho hon 15m, largecap BTC ~0.03-0.08%)
 TRADE_SIZE_MULT         = 1    # Khong dung nua — risk-based sizing thay the
 
 # --- Risk Guards --------------------------------------------------------------

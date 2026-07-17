@@ -15,11 +15,28 @@ logger = logging.getLogger(__name__)
 
 
 def compute_vwap(df: pd.DataFrame) -> pd.Series:
-    """VWAP tính rolling 96 nến (= 1 ngày với 15m candles)."""
+    """VWAP rolling 24h.
+    1m candles: window=1440 (1440 x 1m = 24h).
+    15m candles: window=96 (96 x 15m = 24h).
+    Tu dong chon window dua tren so nen va khoang cach timestamp.
+    """
     typical = (df["high"] + df["low"] + df["close"]) / 3
     tpv     = typical * df["volume"]
-    window  = 96  # 96 × 15m = 24h
-    vwap    = tpv.rolling(window, min_periods=1).sum() / df["volume"].rolling(window, min_periods=1).sum()
+    # Detect interval: neu >= 500 nen trong df, gia su la 1m (signal=2000c), nguoc lai 15m/5m
+    # Chinh xac hon: tinh tu 2 timestamp lien tiep
+    window = 96  # default 15m
+    if len(df) >= 2:
+        try:
+            dt_diff = (df["timestamp"].iloc[-1] - df["timestamp"].iloc[-2]).total_seconds()
+            if dt_diff <= 60:      # 1m
+                window = 1440
+            elif dt_diff <= 300:   # 5m
+                window = 288
+            else:                  # 15m+
+                window = 96
+        except Exception:
+            window = 96
+    vwap = tpv.rolling(window, min_periods=1).sum() / df["volume"].rolling(window, min_periods=1).sum()
     return vwap
 
 

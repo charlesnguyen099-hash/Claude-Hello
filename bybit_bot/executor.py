@@ -460,7 +460,10 @@ class Executor:
                             ts2 = self._tick_size.get(symbol, 0.0)
                             tp2 = self.client.round_to_tick(tp2_raw, ts2) if ts2 > 0 else round(tp2_raw, 6)
                             # Luon truyen ca hai SL+TP — tpslMode=Full xoa gia tri bi bo qua
-                            current_sl = _fval(pos, "stopLoss")
+                            # Uu tien _sl_price (in-memory) hon pos.stopLoss (stale):
+                            # neu level-1 (breakeven) vua chay cung tick, _sl_price da duoc cap nhat
+                            # nhung pos van giu SL cu → dung _sl_price de tranh revert breakeven
+                            current_sl = self._sl_price.get(symbol, 0.0) or _fval(pos, "stopLoss")
                             self.client.set_sl_tp(symbol, current_sl, tp2)
                             self._tp2_price[symbol] = tp2
                             logger.info(f"{symbol}: TP updated TP1={tp1_threshold:.4f} -> TP2={tp2:.6f}")
@@ -508,7 +511,9 @@ class Executor:
                                     if (side == "Buy" and be_price >= mark3) or (side == "Sell" and be_price <= mark3):
                                         ok = False
                                 if ok:
-                                    current_tp2 = _fval(pos, "takeProfit")
+                                    # Uu tien _tp2_price (vua duoc set o line tren) hon pos.takeProfit (stale TP1):
+                                    # pos.takeProfit van la TP1 du ta da goi set_sl_tp(_, tp2) o tren
+                                    current_tp2 = self._tp2_price.get(symbol, 0.0) or _fval(pos, "takeProfit")
                                     self.client.set_sl_tp(symbol, be_price, current_tp2)
                                     self._breakeven_set[symbol] = True
                                     self._sl_price[symbol] = be_price

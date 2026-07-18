@@ -1,8 +1,9 @@
 """
 Strategy 3: Bollinger Bands + RSI Divergence (reversal)
-- Giá chạm lower band + RSI < 35 + nến đảo chiều -> Long (reversal from oversold)
-- Giá chạm upper band + RSI > 65 + nến đảo chiều -> Short (reversal from overbought)
-- 1h+4h không được oppose: LONG chỉ khi sum(1h,4h) >= 0; SHORT chỉ khi sum <= 0
+- Giá chạm lower band + RSI < 30 + nến đảo chiều -> Long (reversal from oversold)
+- Giá chạm upper band + RSI > 70 + nến đảo chiều -> Short (reversal from overbought)
+- Dong bo voi main.py reversal routing: 30/70 thay vi 35/65
+- 1h+4h khong duoc oppose: LONG chi khi sum(1h,4h) >= 0; SHORT chi khi sum <= 0
 """
 
 import numpy as np

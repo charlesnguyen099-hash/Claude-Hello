@@ -1,8 +1,9 @@
 """
 Strategy 2: RSI + MACD Momentum
-- RSI thoát khỏi vùng oversold (< 35 -> > 35) + MACD histogram dương -> Long
-- RSI thoát khỏi vùng overbought (> 65 -> < 65) + MACD histogram âm -> Short
-- Trend filter từ 1h
+- RSI trong vung momentum (30-65) + MACD histogram tang 2 nen lien tiep -> Long
+- RSI trong vung momentum (35-70) + MACD histogram giam 2 nen lien tiep -> Short
+- Tranh vung reversal (< 30 / > 70) — main.py xu ly rieng
+- Trend filter tu 1m EMA100/250 (macro) va EMA300/600 (macro)
 """
 
 import pandas as pd
@@ -13,10 +14,8 @@ import config
 class RSIMACDStrategy(BaseStrategy):
     name = "rsi_macd"
 
-    def __init__(self, rsi_period=14, oversold=30, overbought=70):
+    def __init__(self, rsi_period=14):
         self.rsi_period  = rsi_period
-        self.oversold    = oversold
-        self.overbought  = overbought
 
     def generate_signal(self, df: pd.DataFrame, df_trend: pd.DataFrame, df_macro: pd.DataFrame) -> Signal:
         null = Signal(0, 0.0, self.name, 0, 0)

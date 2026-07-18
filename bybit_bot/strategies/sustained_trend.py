@@ -1,7 +1,7 @@
 """
 Sustained Trend + Reversal Strategy
 - Bat sustained downtrend/uptrend: EMA doc deu >= 20 nen lien tiep
-- Bat reversal tai day/dinh: RSI < 35 hoac > 65 + nen dao chieu + volume tang
+- Bat reversal tai day/dinh: RSI < 30 hoac > 70 + nen dao chieu + volume tang
 """
 
 import pandas as pd
@@ -80,7 +80,7 @@ class SustainedTrendStrategy(BaseStrategy):
             )
 
         # ── REVERSAL TẠI ĐÁY -> LONG ─────────────────────────────────────────
-        # RSI oversold (< 35) + nen dao chieu (close > open, than lon) + volume tang
+        # RSI oversold (< 30, dong bo main.py) + nen dao chieu (close > open, than lon) + volume tang
         vol_now  = volume.iloc[-1]
         vol_prev = volume.iloc[-2]
         last_body    = close.iloc[-1] - open_.iloc[-1]   # duong = xanh

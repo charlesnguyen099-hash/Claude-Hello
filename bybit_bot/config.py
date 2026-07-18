@@ -61,7 +61,7 @@ PARTIAL_CLOSE_TRIGGER = 0.75  # Dong 50% position tai 75% den TP1, de 50% con la
 SL_MAX_PCT   = 0.040   # 4%  — SL khong duoc rong hon 4% du ATR the nao
 TP1_MAX_PCT  = 0.060   # 6%  — TP1 khong cao hon 6% (de dat duoc)
 TP2_MAX_PCT  = 0.100   # 10% — TP2 khong cao hon 10%
-SL_MIN_PCT   = 0.003   # 0.3% — SL toi thieu (tranh SL qua sat spread+phi bi hit ngay)
+SL_MIN_PCT   = 0.60    # 60% — SL toi thieu 60% khoang cach tu entry
 
 # --- Signal sensitivity -------------------------------------------------------
 MIN_SIGNAL_STRENGTH = 0.60   # Chi lay signal chat luong cao

@@ -483,7 +483,7 @@ class TradingBot:
         # Fetch 1 lan duy nhat: 2000 nen 1m = ~33h data chi tiet
         # Tat ca df_ reuse cung bo data nay — khong co API call thua
         # Trend/macro duoc tinh bang EMA dai hon tren 1m (chinh xac hon multi-TF)
-        df_signal = self.client.get_klines(symbol, "1", config.CANDLE_LIMIT_SIGNAL)
+        df_signal = self.client.get_klines_paginated(symbol, "1", config.CANDLE_LIMIT_SIGNAL)
         df_scalp  = df_signal
         df_trend  = df_signal
         df_macro  = df_signal

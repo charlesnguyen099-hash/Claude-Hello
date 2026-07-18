@@ -231,10 +231,36 @@ class BybitClient:
         close_side = "Sell" if side == "Buy" else "Buy"
         return self.place_order(symbol, close_side, qty, reduce_only=True)
 
+    def _tick_round(self, price: float, tick_size: float) -> str:
+        """Round price theo tick_size va tra ve string cho Bybit API.
+        Neu tick_size=0: tu dong lay tu cache instrument info.
+        Dam bao LUON tra ve gia hop le — tranh Bybit reject SL/TP vi sai decimal."""
+        if tick_size > 0:
+            return str(self.round_to_tick(price, tick_size))
+        # fallback: xac dinh so decimal tu do lon gia
+        if price >= 10:
+            return str(round(price, 2))
+        elif price >= 1:
+            return str(round(price, 4))
+        elif price >= 0.01:
+            return str(round(price, 6))
+        elif price >= 0.0001:
+            return str(round(price, 8))
+        else:
+            return str(round(price, 10))
+
     @retry(attempts=5, delay=1.0)
-    def set_sl_tp(self, symbol: str, sl_price: float, tp_price: float):
+    def set_sl_tp(self, symbol: str, sl_price: float, tp_price: float, tick_size: float = 0.0):
         """Set CA HAI SL va TP tren position (position-level).
-        tpslMode='Full' bat buoc khi set ca hai cung luc tren Bybit V5."""
+        tpslMode='Full' bat buoc khi set ca hai cung luc tren Bybit V5.
+        tick_size: truyen vao de round dung — neu =0 tu lay tu instrument cache."""
+        if tick_size <= 0:
+            try:
+                info = self.get_instrument_info(symbol)
+                tick_size = float(info["priceFilter"]["tickSize"])
+            except Exception:
+                tick_size = 0.0
+
         params: dict = dict(
             category="linear",
             symbol=symbol,
@@ -244,46 +270,63 @@ class BybitClient:
             positionIdx=0,
         )
         if sl_price > 0:
-            params["stopLoss"] = str(round(sl_price, 6))
+            params["stopLoss"] = self._tick_round(sl_price, tick_size)
         if tp_price > 0:
-            params["takeProfit"] = str(round(tp_price, 6))
-        logger.info(f"set_sl_tp {symbol}: SL={sl_price:.6f} TP={tp_price:.6f}")
+            params["takeProfit"] = self._tick_round(tp_price, tick_size)
+
+        if not params.get("stopLoss") and not params.get("takeProfit"):
+            logger.warning(f"set_sl_tp {symbol}: ca SL va TP deu = 0, skip")
+            return
+
+        logger.info(f"set_sl_tp {symbol}: SL={params.get('stopLoss','0')} TP={params.get('takeProfit','0')} (tick={tick_size})")
         resp = self.session.set_trading_stop(**params)
         ret_code = resp.get("retCode", -1)
         if ret_code != 0:
             raise RuntimeError(f"set_trading_stop failed retCode={ret_code} msg={resp.get('retMsg')}")
 
     @retry(attempts=5, delay=1.0)
-    def update_stop_loss(self, symbol: str, sl_price: float):
+    def update_stop_loss(self, symbol: str, sl_price: float, tick_size: float = 0.0):
         """Cap nhat SL cho vi the dang mo."""
+        if tick_size <= 0:
+            try:
+                info = self.get_instrument_info(symbol)
+                tick_size = float(info["priceFilter"]["tickSize"])
+            except Exception:
+                tick_size = 0.0
         resp = self.session.set_trading_stop(
             category="linear",
             symbol=symbol,
             tpslMode="Full",
-            stopLoss=str(round(sl_price, 6)),
+            stopLoss=self._tick_round(sl_price, tick_size),
             slTriggerBy="MarkPrice",
             positionIdx=0,
         )
         ret_code = resp.get("retCode", -1)
         if ret_code != 0:
             raise RuntimeError(f"update_stop_loss {symbol} failed retCode={ret_code} msg={resp.get('retMsg')}")
-        logger.info(f"update_stop_loss {symbol}: SL={sl_price:.6f} OK")
+        logger.info(f"update_stop_loss {symbol}: SL={sl_price} (tick={tick_size}) OK")
 
     @retry(attempts=5, delay=1.0)
-    def update_take_profit(self, symbol: str, tp_price: float):
+    def update_take_profit(self, symbol: str, tp_price: float, tick_size: float = 0.0):
         """Cap nhat TP cho vi the dang mo (dung de chuyen tu TP1 sang TP2)."""
+        if tick_size <= 0:
+            try:
+                info = self.get_instrument_info(symbol)
+                tick_size = float(info["priceFilter"]["tickSize"])
+            except Exception:
+                tick_size = 0.0
         resp = self.session.set_trading_stop(
             category="linear",
             symbol=symbol,
             tpslMode="Full",
-            takeProfit=str(round(tp_price, 6)),
+            takeProfit=self._tick_round(tp_price, tick_size),
             tpTriggerBy="MarkPrice",
             positionIdx=0,
         )
         ret_code = resp.get("retCode", -1)
         if ret_code != 0:
             raise RuntimeError(f"update_take_profit {symbol} failed retCode={ret_code} msg={resp.get('retMsg')}")
-        logger.info(f"update_take_profit {symbol}: TP={tp_price:.6f} OK")
+        logger.info(f"update_take_profit {symbol}: TP={tp_price} (tick={tick_size}) OK")
 
     @retry()
     def get_instrument_info(self, symbol: str) -> dict:

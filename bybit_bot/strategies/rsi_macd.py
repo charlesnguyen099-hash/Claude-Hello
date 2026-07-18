@@ -13,7 +13,7 @@ import config
 class RSIMACDStrategy(BaseStrategy):
     name = "rsi_macd"
 
-    def __init__(self, rsi_period=14, oversold=35, overbought=65):
+    def __init__(self, rsi_period=14, oversold=30, overbought=70):
         self.rsi_period  = rsi_period
         self.oversold    = oversold
         self.overbought  = overbought
@@ -35,20 +35,21 @@ class RSIMACDStrategy(BaseStrategy):
         hist_now = hist.iloc[-1]
         hist_prev = hist.iloc[-2]
 
-        # Long: RSI vung 35-60 (mo rong tu 55 -> 60 de bat RSI 55-60 trong uptrend) + MACD tang 2 nen
-        # Dung OR thay sum: chi can 1h HOAC 4h xac nhan, khong bat buoc ca 2 dong thuan
+        # Momentum zone dong bo voi reversal routing moi (30/70):
+        # Long: RSI 30-65 — tranh entry khi RSI > 65 (sap overbought reversal zone)
+        # Short: RSI 35-70 — tranh entry khi RSI < 35 (sap oversold reversal zone)
+        # Ca 2 loai tru vung reversal (< 30 / > 70) — khu vuc do main.py xu ly rieng
         hist_prev2 = hist.iloc[-3]
         macd_accel_up   = hist_now > hist_prev > hist_prev2  # tang 2 nen lien tiep
         macd_accel_down = hist_now < hist_prev < hist_prev2  # giam 2 nen lien tiep
 
-        if 35 <= rsi_now <= 60 and macd_accel_up and hist_now > 0 and (trend_1h >= 1 or macro_d >= 1):
-            strength = min(0.85, 0.5 + (rsi_now - 35) / 100 + (hist_now - hist_prev) / (abs(hist_now) + 1e-9) * 0.1)
+        if 30 <= rsi_now <= 65 and macd_accel_up and hist_now > 0 and (trend_1h >= 1 or macro_d >= 1):
+            strength = min(0.85, 0.5 + (rsi_now - 30) / 100 + (hist_now - hist_prev) / (abs(hist_now) + 1e-9) * 0.1)
             return Signal(1, strength, self.name, price, atr,
                           f"RSI={rsi_now:.0f} MACD accel up {hist_prev2:.4f}->{hist_prev:.4f}->{hist_now:.4f}")
 
-        # Short: RSI vung 40-65 (mo rong tu 45 -> 40) + MACD giam 2 nen
-        if 40 <= rsi_now <= 65 and macd_accel_down and hist_now < 0 and (trend_1h <= -1 or macro_d <= -1):
-            strength = min(0.85, 0.5 + (65 - rsi_now) / 100 + (hist_prev - hist_now) / (abs(hist_now) + 1e-9) * 0.1)
+        if 35 <= rsi_now <= 70 and macd_accel_down and hist_now < 0 and (trend_1h <= -1 or macro_d <= -1):
+            strength = min(0.85, 0.5 + (70 - rsi_now) / 100 + (hist_prev - hist_now) / (abs(hist_now) + 1e-9) * 0.1)
             return Signal(-1, strength, self.name, price, atr,
                           f"RSI={rsi_now:.0f} MACD accel down {hist_prev2:.4f}->{hist_prev:.4f}->{hist_now:.4f}")
 

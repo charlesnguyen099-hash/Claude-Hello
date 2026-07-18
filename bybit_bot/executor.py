@@ -1,20 +1,20 @@
 """
 Trade Executor — thực thi lệnh và quản lý vị thế
-- Đặt lệnh với SL + TP1 (safety net trên sàn)
-- Level 1 (BREAKEVEN_TRIGGER=20%): chuyển SL về break-even sớm
-- Level 2 (PARTIAL_CLOSE_TRIGGER=75%): đóng 50% vị thế, cập nhật TP lên TP2, xác nhận SL break-even
-- Level 3: 50% còn lại chạy đến TP2 với zero downside risk
+- Dat lenh Market (fill ngay, khong bi cancel) voi SL + TP1 (safety net tren san)
+- Level 1 (BREAKEVEN_TRIGGER=50%): chuyen SL ve break-even khi gia di 50% duong den TP1
+- Level 2 (PARTIAL_CLOSE_TRIGGER=75%): dong 50% vi the, cap nhat TP len TP2, xac nhan SL breakeven
+- Level 3: 50% con lai chay den TP2 voi zero downside risk (SL = breakeven)
 - Anti-whipsaw: khong force-close vi the < 30 phut vi signal dao chieu
-- Tự động đóng lệnh khi signal đảo chiều (sau 30 phut hoac PnL < -20%)
+- Tu dong dong lenh khi signal dao chieu (sau 30 phut hoac PnL < -20% margin)
+- entry_price cap nhat bang live bid/ask trc khi compute_trade (khong dung gia nen stale)
 
 Defensive layers (execution):
-  1. Stale signal check (0.3%) trong execute_signal
-  2. Spread check — abort neu spread > nguong hoac SL dist < 2x spread
-  3. IOC Limit order — tranh market order slippage trong dump/pump nhanh
-  4. Fill verification — xac nhan IOC duoc fill truoc khi update state
-  5. SL verification + re-arm — dam bao SL luon active sau khi lenh vao
-  6. Partial close race condition fix — chi update flag sau khi close thanh cong
-  7. Periodic SL check — re-arm SL neu bi huy trong khi quan ly vi the
+  1. Live bid/ask update — entry_price bang gia real-time thay vi nen 15m cu (14 phut)
+  2. Spread check — abort neu spread > nguong (thanh khoan kem, slip lon)
+  3. Market order — fill ngay, khong miss vi gia chay di (thay the IOC Limit bi cancel)
+  4. SL verification + re-arm — dam bao SL luon active sau khi lenh vao
+  5. Partial close race condition fix — chi update flag sau khi close thanh cong
+  6. Periodic SL health check — re-arm SL neu bi huy trong khi quan ly vi the
 """
 
 import logging
@@ -221,8 +221,8 @@ class Executor:
     def manage_open_positions(self, open_positions: list[dict]):
         """
         Quan ly vi the dang mo theo 3 muc:
-        1. BREAKEVEN_TRIGGER: doi SL ve entry + phi som
-        2. PARTIAL_CLOSE_TRIGGER: dong 50% reduce-only, cap nhat TP len TP2, xac nhan breakeven SL
+        1. BREAKEVEN_TRIGGER (50%): doi SL ve entry + phi khi gia di 50% duong den TP1
+        2. PARTIAL_CLOSE_TRIGGER (75%): dong 50% reduce-only, cap nhat TP len TP2, xac nhan breakeven SL
         3. 50% con lai chay den TP2 voi zero downside risk (SL = breakeven)
 
         Defensive: kiem tra SL con active khong, re-arm neu mat.
@@ -326,7 +326,7 @@ class Executor:
             else:
                 dist_moved = entry - best_price
 
-            # --- Muc 1: Break-even SL tai BREAKEVEN_TRIGGER% (20%) duong den TP1 ---
+            # --- Muc 1: Break-even SL tai BREAKEVEN_TRIGGER% (50%) duong den TP1 ---
             if not self._breakeven_set.get(symbol, False) and dist_to_tp1 > 0 and dist_moved > 0:
                 if dist_moved >= dist_to_tp1 * config.BREAKEVEN_TRIGGER:
                     try:

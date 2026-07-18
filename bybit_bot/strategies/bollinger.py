@@ -55,11 +55,13 @@ class BollingerStrategy(BaseStrategy):
             prev_high >= upper.iloc[-2] or df["high"].iloc[-1] >= upper.iloc[-1]
         )
 
-        # RSI: accept neu nen hien tai HOAC nen truoc o vung extreme
-        rsi_oversold   = rsi.iloc[-1] < 35 or rsi.iloc[-2] < 35
-        rsi_overbought = rsi.iloc[-1] > 65 or rsi.iloc[-2] > 65
+        # RSI: dung 30/70 dong bo voi main.py reversal routing (35/65 cu tao mau thuan)
+        # main.py phan loai is_reversal tai RSI < 30 / > 70
+        # Neu bollinger fire tai RSI 30-35, se bi route sang MOMENTUM path thay vi reversal
+        rsi_oversold   = rsi.iloc[-1] < 30 or rsi.iloc[-2] < 30
+        rsi_overbought = rsi.iloc[-1] > 70 or rsi.iloc[-2] > 70
 
-        macro_d  = self._trend_direction(df_macro)   # 4h
+        macro_d  = self._trend_direction(df_macro)   # 1h (duoc truyen tu main.py)
         trend_1h = self._trend_direction(df_trend)   # 1h
 
         if bullish_reversal and rsi_oversold and trend_1h >= 0 and macro_d >= 0:

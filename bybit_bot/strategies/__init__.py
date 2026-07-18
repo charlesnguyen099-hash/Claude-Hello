@@ -11,10 +11,10 @@ ALL_STRATEGIES = [
     EMACrossoverStrategy(),
     RSIMACDStrategy(),
     BollingerStrategy(),
-    SupertrendStrategy(),
+    SupertrendStrategy(adx_threshold=20),   # 25 qua cao vs config.MIN_ADX=12, 20 la hop ly
     VWAPVolumeStrategy(),
     IchimokuStrategy(),
-    SustainedTrendStrategy(),   # strategy thu 7 — bat trend deu + reversal
+    SustainedTrendStrategy(),
 ]
 
-BREAKOUT_STRATEGY = BreakoutStrategy(vol_mult=3.0, lookback=20)
+BREAKOUT_STRATEGY = BreakoutStrategy(vol_mult=2.5, lookback=20)   # 3.0 qua cao (hiem gặp), 2.5 hop ly

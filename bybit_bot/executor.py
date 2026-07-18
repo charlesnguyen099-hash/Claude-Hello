@@ -367,7 +367,7 @@ class Executor:
                     self.client.set_sl_tp(symbol, rearm_sl, rearm_tp)
                     logger.info(f"{symbol}: Re-armed SL={rearm_sl:.6f} TP={rearm_tp:.6f}")
                 except Exception as e:
-                    logger.error(f"{symbol}: Failed to re-arm SL/TP: {e}")
+                    logger.error(f"{symbol}: Failed to re-arm SL/TP: {str(e).encode('ascii','replace').decode()}")
 
             # Dung saved value lam fallback neu exchange value = 0 (vua re-arm xong, pos stale)
             tp1_threshold = _fval(pos, "takeProfit")

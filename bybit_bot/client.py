@@ -299,12 +299,33 @@ class BybitClient:
             positionIdx=0,
         )
         if sl_price > 0:
-            params["stopLoss"] = self._tick_round(sl_price, tick_size)
+            sl_rounded = self._tick_round(sl_price, tick_size)
+            if float(sl_rounded) > 0:   # guard: sau khi round khong duoc = 0 (scientific notation bug)
+                params["stopLoss"] = sl_rounded
+            else:
+                logger.warning(f"set_sl_tp {symbol}: sl_price={sl_price} round->0 (tick={tick_size}) — skip SL")
         if tp_price > 0:
-            params["takeProfit"] = self._tick_round(tp_price, tick_size)
+            tp_rounded = self._tick_round(tp_price, tick_size)
+            if float(tp_rounded) > 0:
+                params["takeProfit"] = tp_rounded
+            else:
+                logger.warning(f"set_sl_tp {symbol}: tp_price={tp_price} round->0 (tick={tick_size}) — skip TP")
+
+        # Neu khong co ca hai sau khi guard, skip luon (khong gui request vo nghia)
+        if "stopLoss" not in params and "takeProfit" not in params:
+            logger.warning(f"set_sl_tp {symbol}: ca SL va TP deu round ve 0 — skip request")
+            return
 
         logger.info(f"set_sl_tp {symbol}: SL={params.get('stopLoss','(none)')} TP={params.get('takeProfit','(none)')} tick={tick_size}")
-        resp = self.session.set_trading_stop(**params)
+        try:
+            resp = self.session.set_trading_stop(**params)
+        except Exception as e:
+            err_str = str(e).encode("ascii", "replace").decode()
+            # ErrCode 34040 "not modified": gia tri da duoc set, khong can thay doi -> success
+            if "34040" in str(e):
+                logger.info(f"set_sl_tp {symbol}: 34040 not modified (SL/TP da dung gia tri nay) — OK")
+                return
+            raise
         ret_code = resp.get("retCode", -1)
         if ret_code != 0:
             msg = resp.get("retMsg", "")
@@ -406,7 +427,10 @@ class BybitClient:
             return price
         ticks = math.ceil(price / tick_size) if ceil else math.floor(price / tick_size)
         result = round(ticks * tick_size, 10)
-        decimals = len(str(tick_size).rstrip("0").split(".")[-1]) if "." in str(tick_size) else 0
+        # Fix: str(1e-05)="1e-05" khong chua "." -> decimals=0 -> round(0.0722,0)=0.0
+        # Dung format fixed-decimal de xu ly scientific notation chinh xac
+        tick_str = f"{tick_size:.10f}".rstrip("0")
+        decimals = len(tick_str.split(".")[-1]) if "." in tick_str else 0
         return round(result, decimals)
 
     def get_order_status(self, symbol: str, order_id: str) -> str:

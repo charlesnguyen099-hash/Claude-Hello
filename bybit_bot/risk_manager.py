@@ -97,36 +97,34 @@ class RiskManager:
         else:
             sl_dist = config.SL_ATR_MULT * _atr + fee_price
 
-        # TP scale theo do tiem nang lenh (consensus x strength):
-        # Lenh manh (7 strategies dong thuan, strength=1.0) -> TP xa hon (ambitious target)
-        # Lenh yeu (2 strategies, strength=0.5) -> TP gan hon (de dat duoc hon)
-        # TP1: [TP1_ATR_MULT, TP1_ATR_MULT + 1.5x] = [2.0, 3.5]x ATR theo potential
-        # TP2: [TP2_ATR_MULT, TP2_ATR_MULT + 2.0x] = [3.5, 5.5]x ATR theo potential
+        # Buoc 1: SL cap truoc — SL_MIN_PCT=60%, SL_MAX_PCT=4%
+        sl_dist = max(sl_dist, signal.entry_price * config.SL_MIN_PCT)
+        sl_dist = min(sl_dist, signal.entry_price * config.SL_MAX_PCT)
+
+        # Buoc 2: TP scale theo do tiem nang lenh
         tp1_mult = config.TP1_ATR_MULT + potential * 1.5
         tp2_mult = config.TP2_ATR_MULT + potential * 2.0
         tp1_dist = tp1_mult * _atr - fee_price
         tp2_dist = tp2_mult * _atr - fee_price
         logger.debug(
-            f"{signal.symbol}: potential={potential:.2f} -> "
+            f"{signal.symbol}: potential={potential:.2f} sl={sl_dist/signal.entry_price*100:.1f}% "
             f"TP1={tp1_mult:.2f}xATR TP2={tp2_mult:.2f}xATR"
         )
-        # Enforce minimum RR 1.5: TP1 >= 1.5x SL distance
+
+        # Buoc 3: RR enforce dua tren SL da cap
         tp1_dist = max(tp1_dist, sl_dist * 1.5)
         tp2_dist = max(tp2_dist, sl_dist * 2.5)
-        # Dam bao SL/TP toi thieu tuyet doi — bao ve khi ATR qua nho
-        sl_dist  = max(sl_dist,  signal.entry_price * config.SL_MIN_PCT)   # toi thieu 0.3%
-        tp1_dist = max(tp1_dist, signal.entry_price * 0.005)
-        tp2_dist = max(tp2_dist, signal.entry_price * 0.010)
 
-        # Hard cap SL/TP theo % gia — tranh phi ly khi ATR qua lon (coin dang pump/dip manh)
-        # SL cap 4%: du rong de wick tam thoi khong hit SL, gia van co the quay dau
-        # TP cap 6%/10%: TP phai co the dat duoc trong dieu kien market binh thuong
-        sl_dist  = min(sl_dist,  signal.entry_price * config.SL_MAX_PCT)
+        # Buoc 4 (CUOI CUNG — khong gi override duoc):
+        # TP toi da 50%, SL toi thieu 60% — absolute hard cap
         tp1_dist = min(tp1_dist, signal.entry_price * config.TP1_MAX_PCT)
         tp2_dist = min(tp2_dist, signal.entry_price * config.TP2_MAX_PCT)
-        # Re-enforce RR sau khi cap — neu SL bi cap xuong, TP phai giu RR >= 1.5
-        tp1_dist = max(tp1_dist, sl_dist * 1.5)
-        tp2_dist = max(tp2_dist, sl_dist * 2.5)
+
+        logger.info(
+            f"{signal.symbol}: SL={sl_dist/signal.entry_price*100:.2f}% "
+            f"TP1={tp1_dist/signal.entry_price*100:.2f}% "
+            f"TP2={tp2_dist/signal.entry_price*100:.2f}%"
+        )
 
         # RISK-BASED POSITION SIZING:
         # Muc tieu: neu SL hit thi mat dung RISK_PER_TRADE_PCT% equity (x scale_factor)

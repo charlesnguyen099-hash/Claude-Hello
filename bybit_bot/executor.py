@@ -165,16 +165,17 @@ class Executor:
             sl_rounded  = self.client.round_to_tick(params.sl_price,  tick_size, ceil=_sl_ceil) if tick_size > 0 else round(params.sl_price,  6)
             tp1_rounded = self.client.round_to_tick(params.tp1_price, tick_size) if tick_size > 0 else round(params.tp1_price, 6)
 
-            # --- Market order: fill ngay (KHONG set SL/TP trong order) ---
-            # Ly do tach rieng: Bybit market order voi SL/TP params doi khi tao
-            # "order-level conditional orders" thay vi "position-level TP/SL"
-            # -> position field stopLoss/takeProfit van rong du lenh co SL/TP
-            # Giai phap: dat Market order truoc, sau do set SL+TP bang set_trading_stop
+            # --- Market order VOI SL+TP (layer 1) ---
+            # Dat SL/TP trong order truoc (nhanh nhat, ngay khi fill)
+            # set_trading_stop sau do la layer 2 backup — dam bao double-set
             order = self.client.place_order(
                 symbol=symbol,
                 side=params.side,
                 qty=params.qty,
                 order_type="Market",
+                sl=sl_rounded,
+                tp=tp1_rounded,
+                tick_size=tick_size,
             )
 
             order_id = order.get("orderId", "")
@@ -190,28 +191,28 @@ class Executor:
             self._open_time[symbol]      = time.time()
             self._tick_size[symbol]      = tick_size
 
-            # --- Set SL + TP tren position (position-level) sau khi fill ---
-            # Doi 1s de Bybit xu ly fill hoan toan
+            # --- set_trading_stop (layer 2 backup) sau khi fill ---
+            # Du SL/TP da duoc set trong order o layer 1,
+            # van goi set_trading_stop de dam bao position-level TP/SL chinh xac
             time.sleep(1.0)
             try:
                 self.client.set_sl_tp(symbol, sl_rounded, tp1_rounded)
             except Exception as e:
-                logger.error(
-                    f"{symbol}: CRITICAL — set_sl_tp that bai sau 5 retries: "
+                logger.warning(
+                    f"{symbol}: set_sl_tp layer2 that bai (layer1 van co hieu luc): "
                     f"{str(e).encode('ascii','replace').decode()}"
                 )
 
-            # --- Verify SL+TP sau set ---
+            # --- Verify va re-arm neu van thieu ---
             time.sleep(0.5)
             has_sl, actual_sl, has_tp, actual_tp = self.client.verify_position_tp_sl(symbol)
             if not has_sl or not has_tp:
                 logger.warning(
-                    f"{symbol}: SL/TP MISSING sau set (has_sl={has_sl}, has_tp={has_tp}) — force re-arm"
+                    f"{symbol}: SL/TP MISSING sau 2 layers (has_sl={has_sl}, has_tp={has_tp}) — re-arm"
                 )
                 try:
-                    _sl_fix = sl_rounded if not has_sl else 0.0
-                    _tp_fix = tp1_rounded if not has_tp else 0.0
-                    self.client.set_sl_tp(symbol, _sl_fix, _tp_fix)
+                    # Luon truyen CA HAI gia tri — tranh tpslMode=Full xoa cai con lai
+                    self.client.set_sl_tp(symbol, sl_rounded, tp1_rounded)
                 except Exception as e2:
                     logger.error(f"{symbol}: CRITICAL — re-arm SL/TP that bai: {str(e2).encode('ascii','replace').decode()}")
             else:
@@ -324,15 +325,14 @@ class Executor:
             need_rearm_sl = saved_sl > 0 and exchange_sl <= 0
             need_rearm_tp = saved_tp > 0 and exchange_tp <= 0
             if need_rearm_sl or need_rearm_tp:
-                _rearm_sl = saved_sl if need_rearm_sl else 0.0
-                _rearm_tp = saved_tp if need_rearm_tp else 0.0
                 logger.warning(
                     f"{symbol}: SL/TP missing on exchange "
                     f"(SL={'missing' if need_rearm_sl else 'ok'}, "
-                    f"TP={'missing' if need_rearm_tp else 'ok'}) — re-arming"
+                    f"TP={'missing' if need_rearm_tp else 'ok'}) — re-arming both"
                 )
                 try:
-                    self.client.set_sl_tp(symbol, _rearm_sl, _rearm_tp)
+                    # Luon truyen CA HAI (SL va TP) de tranh xoa cai con lai
+                    self.client.set_sl_tp(symbol, saved_sl, saved_tp)
                 except Exception as e:
                     logger.error(f"{symbol}: Failed to re-arm SL/TP: {e}")
 

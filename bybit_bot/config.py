@@ -71,8 +71,8 @@ TP2_SCALE   = 1.5    # TP2 = 1.5 x TP1 ROI (cho 50% con lai sau partial close)
 # --- Signal sensitivity -------------------------------------------------------
 MIN_SIGNAL_STRENGTH = 0.60   # Chi lay signal chat luong cao
 MIN_ADX             = 12     # ADX >= 12 cho 1m scalp — 18 qua cao, block het trong sideway/Asian session
-MIN_CONSENSUS          = 2   # 2/7 strategies dong thuan — 3 qua cao, hiem co 3 strategy 15m dong thuan
-MIN_CONSENSUS_TRENDING = 2   # Dong bo voi MIN_CONSENSUS
+MIN_CONSENSUS          = 3   # 3/7 strategies dong thuan — 2 qua thap, de bi noise
+MIN_CONSENSUS_TRENDING = 3   # Dong bo voi MIN_CONSENSUS
 MIN_ATR_PCT         = 0.0005 # 0.05% cho 1m (ATR 1m nho hon 15m, largecap BTC ~0.03-0.08%)
 TRADE_SIZE_MULT         = 1    # Khong dung nua — risk-based sizing thay the
 

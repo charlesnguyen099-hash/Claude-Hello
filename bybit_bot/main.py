@@ -1206,11 +1206,32 @@ class TradingBot:
         if _m2h_block_long and best.direction == 1:
             return _block("skip - price at 2h range top (>80%), block LONG")
 
-        # 1m micro trend confirmation
-        if best.direction == 1 and micro_down:
-            return _block("skip - 1m micro trend BEARISH vs LONG")
-        if best.direction == -1 and micro_up:
-            return _block("skip - 1m micro trend BULLISH vs SHORT")
+        # SHORT-TERM TREND CONFIRMATION — BAT BUOC
+        # Truoc: chi block khi 1m MANH NGUOC (micro_down/micro_up, score <= -3)
+        # -> micro=0 (neutral) + scalp=0 (neutral) van qua duoc: lenh ngu xuat hien
+        #
+        # Nay: can IT NHAT 1 trong {1m micro, 5m scalp} XANH cho LONG, DO cho SHORT
+        # Neu ca hai deu 0 (neutral) hoac nguoc chieu -> SKIP (khong co gi xac nhan)
+        # Ngoai le: reversal (RSI cuc doan) — duoc phep vao nguoc micro/scalp
+        _st_confirm_long  = (micro == 1  or scalp_trend == 1)
+        _st_confirm_short = (micro == -1 or scalp_trend == -1)
+        if not is_reversal:
+            if best.direction == 1 and not _st_confirm_long:
+                return _block(
+                    f"skip LONG — khong co xac nhan ngan han "
+                    f"(1m_micro={micro}, 5m_scalp={scalp_trend}) — can it nhat 1 TF bullish"
+                )
+            if best.direction == -1 and not _st_confirm_short:
+                return _block(
+                    f"skip SHORT — khong co xac nhan ngan han "
+                    f"(1m_micro={micro}, 5m_scalp={scalp_trend}) — can it nhat 1 TF bearish"
+                )
+        else:
+            # Reversal: van block khi MANH nguoc chieu (bar thap hon, cho 0 qua)
+            if best.direction == 1 and micro_down:
+                return _block("skip - 1m micro BEARISH vs REVERSAL LONG")
+            if best.direction == -1 and micro_up:
+                return _block("skip - 1m micro BULLISH vs REVERSAL SHORT")
 
         if not _is_largecap:
             if best.direction == -1 and scalp_trend == -1 and (macro_trend + macro_4h) <= -1:

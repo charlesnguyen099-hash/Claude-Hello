@@ -202,9 +202,10 @@ class TradingBot:
                     btc_eth_side_map=_pos_side_map,
                 )
                 if traded:
-                    # Giu cooldown sau khi trade — tranh double-entry trong cung tick
-                    # (exchange chua ghi nhan vi the moi, tick tiep theo symbol chua co trong pos_symbols)
+                    # Giu cooldown + add vao pos_symbols ngay lap tuc tranh double-entry
+                    # (exchange chua ghi nhan vi the moi, symbol chua co trong pos_symbols tu API)
                     self._last_analyzed[symbol] = time.time()
+                    pos_symbols.add(symbol)  # block ngay, khong cho loop tiep tu o symbol nay
                     try:
                         open_positions = self.client.get_positions()
                         equity         = self.client.get_wallet_balance()

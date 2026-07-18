@@ -58,10 +58,10 @@ PARTIAL_CLOSE_TRIGGER = 0.75  # Dong 50% position tai 75% den TP1, de 50% con la
 # Hard cap SL/TP theo % gia — tranh SL/TP phi ly khi ATR qua lon (coin pump/dip)
 # SL toi da 4%: du rong de vuot qua spike tam thoi ma gia van co the quay dau
 # TP1 toi da 6%, TP2 toi da 10%: TP phai co the dat duoc trong dieu kien binh thuong
-SL_MAX_PCT   = 0.040   # 4%  — SL khong duoc rong hon 4% du ATR the nao
-TP1_MAX_PCT  = 0.060   # 6%  — TP1 khong cao hon 6% (de dat duoc)
-TP2_MAX_PCT  = 0.100   # 10% — TP2 khong cao hon 10%
-SL_MIN_PCT   = 0.60    # 60% — SL toi thieu 60% khoang cach tu entry
+SL_MAX_PCT   = 0.040   # 4%  — SL khong duoc rong hon 4%
+TP1_MAX_PCT  = 0.50    # 50% — TP toi da 50% tu entry
+TP2_MAX_PCT  = 0.50    # 50% — TP2 toi da 50% tu entry
+SL_MIN_PCT   = 0.60    # 60% — SL toi thieu 60% tu entry
 
 # --- Signal sensitivity -------------------------------------------------------
 MIN_SIGNAL_STRENGTH = 0.60   # Chi lay signal chat luong cao

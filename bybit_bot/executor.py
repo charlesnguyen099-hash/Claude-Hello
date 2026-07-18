@@ -331,10 +331,11 @@ class Executor:
                     f"TP={'missing' if need_rearm_tp else 'ok'}) — re-arming"
                 )
                 try:
-                    # Chi re-arm gia tri bi mat — KHONG truyen gia tri con lai
-                    # Neu truyen ca hai voi tpslMode=Full, se override TP/SL user set tay
-                    rearm_sl = saved_sl if need_rearm_sl else 0.0
-                    rearm_tp = saved_tp if need_rearm_tp else 0.0
+                    # LUON truyen CA HAI gia tri voi tpslMode=Full:
+                    # neu chi truyen 1 gia tri, Bybit se XOA gia tri con lai (bug cu)
+                    # Dung exchange value cho gia tri dang ok, dung saved value cho gia tri bi mat
+                    rearm_sl = saved_sl if need_rearm_sl else exchange_sl
+                    rearm_tp = saved_tp if need_rearm_tp else exchange_tp
                     self.client.set_sl_tp(symbol, rearm_sl, rearm_tp)
                 except Exception as e:
                     logger.error(f"{symbol}: Failed to re-arm SL/TP: {e}")

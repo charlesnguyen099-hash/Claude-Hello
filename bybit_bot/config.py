@@ -50,7 +50,7 @@ DEFAULT_LEVERAGE       = 10
 # RISK_PER_TRADE_PCT=0.01 -> max 1% equity mat moi lenh -> 100 lenh SL lien tiep het account
 RISK_PER_TRADE_PCT = 0.01   # Max 1% equity mat khi SL hit (base, scale voi consensus)
 MAX_CAPITAL_PCT    = 0.10   # Max 10% equity dung lam margin moi lenh
-MAX_OPEN_POSITIONS = 10     # Max 10 positions — trade tat ca co hoi tot
+# So lenh mo cung luc: khong gioi han cung, phu thuoc do tiem nang thi truong va equity con lai
 # ATR period (dung cho compute_atr trong signal analysis, KHONG dung cho SL/TP sizing)
 # SL/TP sizing hien tai dung ROI-based (xem TP_ROI_MIN/MAX, SL_TP_RATIO ben duoi)
 ATR_PERIOD        = 14

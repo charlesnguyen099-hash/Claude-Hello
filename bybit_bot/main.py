@@ -34,7 +34,7 @@ class TradingBot:
         logger.info("Bybit Auto Trading Bot starting...")
         logger.info(f"Mode: {'TESTNET' if config.TESTNET else 'MAINNET (LIVE)'}")
         logger.info(f"Scan budget per tick: {config.SCAN_BUDGET_SEC}s")
-        logger.info(f"Max positions: {config.MAX_OPEN_POSITIONS}")
+        logger.info("Max positions: unlimited (limited by equity & market opportunity)")
         logger.info(f"Strategies: {[s.name for s in ALL_STRATEGIES]}")
         logger.info("="*60)
 
@@ -160,17 +160,13 @@ class TradingBot:
         except Exception:
             pass
 
-        # Hard cap: khong mo them lenh neu da dat MAX_OPEN_POSITIONS
-        if len(open_positions) >= config.MAX_OPEN_POSITIONS:
-            logger.info(
-                f"[TICK] Max positions ({config.MAX_OPEN_POSITIONS}) reached — skip new entries"
-            )
-            return
+
 
         # Xu ly TAT CA coin trending, coin score cao nhat truoc
         # Dung time budget: xu ly lien tuc cho den het SCAN_BUDGET_SEC hoac het positions slot
         logger.info(
             f"[TICK] Scan {len(self.symbols)} trending coins (budget={config.SCAN_BUDGET_SEC}s) | "
+            f"open={len(open_positions)} | "
             f"BTC_1m(EMA100/250)={'UP' if self.btc_trend==1 else 'DOWN' if self.btc_trend==-1 else 'SIDE'} "
             f"BTC_1m(EMA300/600)={'UP' if self.btc_trend_4h==1 else 'DOWN' if self.btc_trend_4h==-1 else 'SIDE'}"
         )
@@ -213,8 +209,8 @@ class TradingBot:
                         _pos_side_map  = {p["symbol"]: p.get("side", "") for p in open_positions}
                     except Exception:
                         pass
-                    if len(open_positions) >= config.MAX_OPEN_POSITIONS:
-                        logger.info(f"[TICK] Max positions ({config.MAX_OPEN_POSITIONS}) reached")
+                    if equity <= 0:
+                        logger.info("[TICK] Equity exhausted — skip new entries")
                         break
             except Exception as e:
                 logger.warning(f"Error processing {symbol}: {str(e).encode('ascii','replace').decode()}")

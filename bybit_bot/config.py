@@ -23,15 +23,19 @@ SCAN_BUDGET_SEC      = 8.0           # xu ly coin trong toi da 8s moi tick
 # Doi tu 15m/1h sang 5m/15m: bat lenh trong 15-30 phut thay vi can 1-3 gio cho EMA 1h flip
 # ATR cho swing SL tinh tu 5m trend TF (on dinh hon 1m, nhanh hon 15m)
 TIMEFRAMES = {
-    "signal": "1",     # 1m: entry timing + micro analysis
-    "scalp":  "5",     # 5m: scalp alignment check
-    "trend":  "5",     # 5m: strategy signal TF (was 15m — too slow, misses 20-30min moves)
-    "macro":  "15",    # 15m: trend confirmation (was 1h — too slow for futures)
+    "signal": "1",   # 1m duy nhat — 2000 nen 1m chua day du thong tin cua 15m/1h nhung chi tiet hon
+    "scalp":  "1",   # reuse df_signal
+    "trend":  "1",   # reuse df_signal (EMA dai hon de tinh medium trend)
+    "macro":  "1",   # reuse df_signal (EMA rat dai de tinh macro trend)
 }
-CANDLE_LIMIT_SIGNAL = 500    # 500 x 1m = ~8h — du cho moi indicator (EMA50 can 50)
-CANDLE_LIMIT_SCALP  = 200    # 200 x 5m = ~17h
-CANDLE_LIMIT_TREND  = 200    # 200 x 5m = ~17h (reuse df_scalp khi trend==scalp TF)
-CANDLE_LIMIT_MACRO  = 150    # 150 x 15m = ~37h (96 x 15m = 24h cho daily change check)
+# 2000 x 1m = ~33h — tat ca timeframe logic tinh tu cung bo data nay
+# EMA(100/250) tren 1m = tuong duong EMA(20/50) tren 5m
+# EMA(300/600) tren 1m = tuong duong EMA(20/40) tren 15m
+# EMA(500/1000) tren 1m = tuong duong EMA(8/17) tren 1h — nhung chinh xac hon vi du lieu 1m
+CANDLE_LIMIT_SIGNAL = 2000
+CANDLE_LIMIT_SCALP  = 2000   # reuse
+CANDLE_LIMIT_TREND  = 2000   # reuse
+CANDLE_LIMIT_MACRO  = 2000   # reuse
 
 # --- Phi giao dich Bybit ------------------------------------------------------
 TAKER_FEE      = 0.00055

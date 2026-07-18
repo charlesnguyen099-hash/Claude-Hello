@@ -61,8 +61,8 @@ class BollingerStrategy(BaseStrategy):
         rsi_oversold   = rsi.iloc[-1] < 30 or rsi.iloc[-2] < 30
         rsi_overbought = rsi.iloc[-1] > 70 or rsi.iloc[-2] > 70
 
-        macro_d  = self._trend_direction(df_macro)   # 1h (duoc truyen tu main.py)
-        trend_1h = self._trend_direction(df_trend)   # 1h
+        macro_d  = self._trend_direction(df_macro)   # EMA20/50 tren 1m ~ medium trend
+        trend_1h = self._trend_direction(df_trend)   # EMA20/50 tren 1m (cung data)
 
         if bullish_reversal and rsi_oversold and trend_1h >= 0 and macro_d >= 0:
             # Do khoang cach gia vs lower band (khoang phuc hoi tu band)

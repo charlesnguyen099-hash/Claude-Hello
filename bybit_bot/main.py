@@ -50,8 +50,8 @@ class TradingBot:
         # Track positions de detect SL/TP hit boi exchange (khong qua executor)
         self._prev_pos_symbols: set[str] = set()
         # BTC global trend: +1 uptrend, -1 downtrend, 0 sideways (cap nhat moi tick)
-        self.btc_trend: int = 0
-        self.btc_trend_4h: int = 0
+        self.btc_trend: int = 0      # EMA(100/250) tren 1m ~ medium trend (~1.5h)
+        self.btc_trend_4h: int = 0   # EMA(300/600) tren 1m ~ macro trend (~5h, ten giu nguyen de tranh refactor lon)
         # Daily loss guard
         self._equity_day_date: str = ""
         # Per-symbol cooldown: tranh re-analyze cung coin trong SYMBOL_COOLDOWN_SEC
@@ -525,7 +525,7 @@ class TradingBot:
         min_adx = config.MIN_ADX
         adx = compute_adx(df_signal).iloc[-1] if not df_signal.empty and len(df_signal) >= 20 else float("nan")
         if math.isnan(adx) or adx < min_adx:
-            logger.debug(f"{symbol}: skip — 15m ADX={adx:.1f} < {min_adx} (sideway)")
+            logger.debug(f"{symbol}: skip — 1m ADX={adx:.1f} < {min_adx} (sideway)")
             return False
 
         # 24h directional move filter: tranh chase sau khi coin da pump/dump > 20% trong 24h
@@ -811,10 +811,8 @@ class TradingBot:
         n_15m_valid = 0  # so strategies co signal hop le
         for strategy in ALL_STRATEGIES:
             try:
-                # Strategies chay tren 15m (df_trend) — duoc thiet ke cho timeframe nay
-                # 1m (df_signal) chi dung cho entry timing (spike, micro_trend, range checks)
-                # Chay tren 1m: EMA/MACD/Ichimoku/sustained_trend rat hiem fire -> 0 consensus
-                # Strategies chay tren 1m data (df_signal) — nhanh nhat, chi tiet nhat
+                # Tat ca strategies chay tren 1m data (2000 nen)
+                # EMA dai hon (EMA9/21/50/100/250) tinh trend chuan xac hon multi-TF
                 sig = strategy.generate_signal(df_signal, df_signal, df_signal)
                 if sig.direction != 0 and sig.strength >= config.MIN_SIGNAL_STRENGTH:
                     n_15m_valid += 1

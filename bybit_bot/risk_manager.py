@@ -104,7 +104,7 @@ class RiskManager:
 
         logger.info(
             f"{signal.symbol}: lev={leverage}x | "
-            f"TP_ROI={tp_roi*100:.0f}% SL_ROI={sl_roi*100:.0f}% (cap 80% ROI) | "
+            f"TP_ROI={tp_roi*100:.0f}% SL_ROI={sl_roi*100:.0f}% | "
             f"tp1_dist={tp1_dist:.6f} sl_dist={sl_dist:.6f}"
         )
 

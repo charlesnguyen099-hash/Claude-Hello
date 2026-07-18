@@ -42,8 +42,8 @@ class SustainedTrendStrategy(BaseStrategy):
         e9_slope  = (ema9.iloc[-1]  - ema9.iloc[-self.slope_bars])  / (abs(ema9.iloc[-self.slope_bars])  + 1e-9)
         e21_slope = (ema21.iloc[-1] - ema21.iloc[-self.slope_bars]) / (abs(ema21.iloc[-self.slope_bars]) + 1e-9)
 
-        trend_1h = self._trend_direction(df_trend)   # 1h
-        macro_d  = self._trend_direction(df_macro)   # 1h (main.py truyen df_macro=1h)
+        trend_1h = self._trend_direction(df_trend)   # EMA20/50 tren 1m ~ medium trend
+        macro_d  = self._trend_direction(df_macro)   # EMA20/50 tren 1m (cung data — macro confirmation)
 
         # ── SUSTAINED DOWNTREND -> SHORT ──────────────────────────────────────
         # EMA xep theo thu tu giam + ca 2 EMA dang doc xuong + RSI chua oversold

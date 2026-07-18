@@ -51,11 +51,10 @@ DEFAULT_LEVERAGE       = 10
 RISK_PER_TRADE_PCT = 0.01   # Max 1% equity mat khi SL hit (base, scale voi consensus)
 MAX_CAPITAL_PCT    = 0.10   # Max 10% equity dung lam margin moi lenh
 MAX_OPEN_POSITIONS = 10     # Max 10 positions — trade tat ca co hoi tot
-# SL/TP theo ATR — RR >= 1.3 sau phi (truoc: 1.5/1.5 = 1:1, sau phi am)
+# ATR period (dung cho compute_atr trong signal analysis, KHONG dung cho SL/TP sizing)
+# SL/TP sizing hien tai dung ROI-based (xem TP_ROI_MIN/MAX, SL_TP_RATIO ben duoi)
 ATR_PERIOD        = 14
-SL_ATR_MULT       = 1.5    # SL  = 1.5x ATR (swing-based se dung high/low 5 nen 15m, clamp 1.5-3x ATR)
-TP1_ATR_MULT      = 2.0    # TP1 = 2.0x ATR — dam bao loi sau phi 0.11%
-TP2_ATR_MULT      = 3.5    # TP2 = 3.5x ATR — cho 50% con lai sau partial close
+# SL_ATR_MULT / TP1_ATR_MULT / TP2_ATR_MULT: KHONG DUNG — da thay bang ROI-based sizing
 BREAKEVEN_TRIGGER = 0.60   # Doi SL ve breakeven tai 60% den TP1
 PARTIAL_CLOSE_TRIGGER = 0.75  # Dong 50% position tai 75% den TP1, de 50% con lai chay den TP2
 

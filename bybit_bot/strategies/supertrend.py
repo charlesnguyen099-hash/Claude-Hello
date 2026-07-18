@@ -19,7 +19,7 @@ def compute_supertrend(df: pd.DataFrame, period: int = 10, multiplier: float = 3
     supertrend = pd.Series(index=df.index, dtype=float)
     direction  = pd.Series(index=df.index, dtype=int)
 
-    supertrend.iloc[0] = upper.iloc[0]
+    supertrend.iloc[0] = lower.iloc[0]   # bullish init: dung lower band lam support
     direction.iloc[0]  = 1
 
     for i in range(1, len(df)):

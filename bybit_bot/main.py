@@ -1314,12 +1314,31 @@ class TradingBot:
 
         # ══════════════════════════════════════════════════════════════════════
 
-        # MOMENTUM GATE: neu consensus thap (== MIN_CONSENSUS = 2) thi phai qua micro_entry_analysis
-        # Khi chi co 2 strategies dong thuan, can them xac nhan timing entry tot de tranh lenh xau
-        # Tier1 bypass (supertrend + vwap_volume) va consensus cao hon (3+) khong can check them
-        if not _tier1_active and len(signals) <= config.MIN_CONSENSUS:
-            if not self._micro_entry_analysis(df_micro, best.direction, is_reversal=False):
-                return _block(f"skip - MOMENTUM low-consensus ({len(signals)}) micro_entry_analysis rejected")
+        # MOMENTUM GATE: LUON goi micro_entry_analysis cho tat ca momentum trade
+        # Tranh vao lenh khi 1m dang di nguoc chieu (JASMY Long trong downtrend, v.v.)
+        # Tier1 bypass KHONG duoc mien kieu tra nay — timing xau van la timing xau du consensus cao
+        if not self._micro_entry_analysis(df_micro, best.direction, is_reversal=False):
+            return _block(f"skip - MOMENTUM micro_entry_analysis rejected (consensus={len(signals)})")
+
+        # [AEQ-PUMP] Live price vs 5-candle average: neu gia dang DANG pump/dump (chua ngung)
+        # Tranh Short vao giua pump dang chay (GWEI: gia tang 1.3% vs avg, Short bi SL ngay)
+        # Tranh Long vao giua dump dang chay (nguoc lai)
+        # Nguong: _sp-scale -> largecap 0.15%, altcoin 0.3% — scaled by volatility class
+        if _range_live_price > 0 and not df_micro.empty and len(df_micro) >= 6:
+            _avg_5c = df_micro["close"].iloc[-6:-1].mean()
+            if _avg_5c > 0:
+                _live_move_pct = (_range_live_price - _avg_5c) / _avg_5c
+                _pump_thresh = 0.003 * _sp   # 0.15% largecap, 0.225% midcap, 0.3% altcoin
+                if best.direction == -1 and _live_move_pct > _pump_thresh:
+                    return _block(
+                        f"skip SHORT - live {_live_move_pct*100:.2f}% above 5c avg "
+                        f"(gia dang pump, Short qua som)"
+                    )
+                if best.direction == 1 and _live_move_pct < -_pump_thresh:
+                    return _block(
+                        f"skip LONG - live {_live_move_pct*100:.2f}% below 5c avg "
+                        f"(gia dang dump, Long qua som)"
+                    )
 
         best.consensus = len(signals)
         best.symbol    = symbol

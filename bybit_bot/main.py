@@ -725,9 +725,6 @@ class TradingBot:
         # macro_trend / macro_4h / _atr_for_sl da tinh TRUOC range blocks (tren)
 
         # Strong trend flags — dung cho 30c range bypass va cac check sau
-        _strong_bull = is_priority and macro_trend >= 1 and macro_4h >= 1
-        _strong_bear = is_priority and macro_trend <= -1 and macro_4h <= -1
-
         # BREAKOUT: chay cho tat ca scan_list — su dung 1m signal data
         if df_signal is not None and not df_signal.empty and len(df_signal) >= 30:
             bo_sig = BREAKOUT_STRATEGY.generate_signal(df_signal, df_scalp, df_trend)
@@ -1402,14 +1399,6 @@ class TradingBot:
         if _atr_for_sl > 0:
             best.atr = _atr_for_sl
 
-        # Swing SL: SL dat tai swing high/low trong 75 nen 1m gan nhat (= 75 phut = 5x15m cu)
-        # Chinh xac hon vi dung 75 diem du lieu thay vi 5 diem (5 nen 15m)
-        if not df_signal.empty and len(df_signal) >= 80 and _atr_for_sl > 0:
-            _swing_n = 75   # 75 x 1m = 75 phut swing window
-            if best.direction == -1:
-                best.swing_sl = df_signal["high"].iloc[-_swing_n:].max()
-            elif best.direction == 1:
-                best.swing_sl = df_signal["low"].iloc[-_swing_n:].min()
         names = "+".join(s.strategy_name for s in signals)
 
         logger.info(

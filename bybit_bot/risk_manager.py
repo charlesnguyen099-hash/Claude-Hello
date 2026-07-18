@@ -208,8 +208,12 @@ class RiskManager:
         )
 
     def should_close_position(self, position: dict, current_price: float) -> bool:
-        # So sanh PnL voi margin (von bo vao lenh), khong phai notional
-        # positionValue = notional (qty x price), margin = notional / leverage
+        # Emergency close: chi trigger khi SL exchange KHONG hoat dong (SL bi missed/huy)
+        # Nguong -0.80 (80% margin loss) dam bao:
+        #   - SL min = 60% ROI: exchange close TRUOC emergency (60% < 80%) — khong can thiep
+        #   - SL max = 250% ROI: emergency close truoc de tranh liquidation
+        # Truoc day -0.30 fire TRUOC exchange SL (30% < 60% min SL) -> force-close qua som,
+        # cat lenh o -30% du price se phuc hoi — nguyen nhan mat lenh loi.
         def _f(d, k, default=0.0):
             v = d.get(k, default)
             try:
@@ -221,6 +225,6 @@ class RiskManager:
         margin   = notional / leverage
         unrealised_pnl = _f(position, "unrealisedPnl")
         unrealised_pnl_pct = unrealised_pnl / margin if margin > 0 else 0
-        if unrealised_pnl_pct < -0.30:
+        if unrealised_pnl_pct < -0.80:
             return True
         return False

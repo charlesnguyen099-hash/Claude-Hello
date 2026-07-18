@@ -65,7 +65,7 @@ PARTIAL_CLOSE_TRIGGER = 0.75  # Dong 50% position tai 75% den TP1, de 50% con la
 #   -> SL range [60%, 150%] ROI, toi thieu 60% khi TP=20%
 TP_ROI_MIN  = 0.20   # TP toi thieu 20% ROI (khi lenh yeu)
 TP_ROI_MAX  = 0.50   # TP toi da 50% ROI (khi lenh manh)
-SL_TP_RATIO = 3.0    # SL luon gap 3 lan TP (SL ROI = 3 x TP ROI)
+SL_TP_RATIO = 5.0    # SL luon gap 5 lan TP (SL ROI = 5 x TP ROI)
 TP2_SCALE   = 1.5    # TP2 = 1.5 x TP1 ROI (cho 50% con lai sau partial close)
 
 # --- Signal sensitivity -------------------------------------------------------

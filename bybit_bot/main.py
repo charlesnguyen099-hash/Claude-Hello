@@ -1206,32 +1206,49 @@ class TradingBot:
         if _m2h_block_long and best.direction == 1:
             return _block("skip - price at 2h range top (>80%), block LONG")
 
-        # SHORT-TERM TREND CONFIRMATION — BAT BUOC
-        # Truoc: chi block khi 1m MANH NGUOC (micro_down/micro_up, score <= -3)
-        # -> micro=0 (neutral) + scalp=0 (neutral) van qua duoc: lenh ngu xuat hien
+        # ══ SHORT-TERM TREND CONFIRMATION — 3 CẤP ĐỘ ══════════════════════════
         #
-        # Nay: can IT NHAT 1 trong {1m micro, 5m scalp} XANH cho LONG, DO cho SHORT
-        # Neu ca hai deu 0 (neutral) hoac nguoc chieu -> SKIP (khong co gi xac nhan)
-        # Ngoai le: reversal (RSI cuc doan) — duoc phep vao nguoc micro/scalp
-        _st_confirm_long  = (micro == 1  or scalp_trend == 1)
-        _st_confirm_short = (micro == -1 or scalp_trend == -1)
+        # Căn nguyên lệnh ngu: strategy chạy trên 15m thấy tín hiệu (EMA lag)
+        # nhưng thực tế 1m đang GIẢM RÕ RÀNG → Long vào downtrend → SL ngay
+        #
+        # Cấp 1 — HARD BLOCK: 1m bearish (micro=-1) cho Long, bullish cho Short
+        #   Không có ngoại lệ. Giá đang giảm = không Long. Đơn giản vậy thôi.
+        #   (JASMY/MUSDT/HUMA đều vào đây)
+        #
+        # Cấp 2-3 — SOFT BLOCK: cả {1m, 5m} đều không xác nhận
+        #   Ngoại lệ: macro STRONG (cả 15m VÀ 1h cùng chiều) → pullback entry trong trend
+        #   → Cho phép Long khi 1m đang nghỉ (neutral) nếu macro rõ ràng UP
+
+        # --- Cấp 1: HARD BLOCK (không ngoại lệ) ---
+        if best.direction == 1 and micro_down:    # micro == -1
+            return _block(
+                f"HARD BLOCK LONG — 1m BEARISH (micro=-1, gia dang giam) "
+                f"| 5m={scalp_trend} 15m={macro_trend} 1h={macro_4h}"
+            )
+        if best.direction == -1 and micro_up:     # micro == 1
+            return _block(
+                f"HARD BLOCK SHORT — 1m BULLISH (micro=+1, gia dang tang) "
+                f"| 5m={scalp_trend} 15m={macro_trend} 1h={macro_4h}"
+            )
+
+        # --- Cấp 2-3: SOFT BLOCK khi không có TF ngắn nào xác nhận ---
+        # Macro STRONG = cả 15m VÀ 1h cùng chiều → pullback entry ok
+        _strong_macro_bull = (macro_trend == 1  and macro_4h == 1)
+        _strong_macro_bear = (macro_trend == -1 and macro_4h == -1)
+        _has_st_long  = (micro == 1  or scalp_trend == 1)
+        _has_st_short = (micro == -1 or scalp_trend == -1)
+
         if not is_reversal:
-            if best.direction == 1 and not _st_confirm_long:
+            if best.direction == 1 and not _has_st_long and not _strong_macro_bull:
                 return _block(
-                    f"skip LONG — khong co xac nhan ngan han "
-                    f"(1m_micro={micro}, 5m_scalp={scalp_trend}) — can it nhat 1 TF bullish"
+                    f"skip LONG — khong co TF ngan han xac nhan va macro khong manh "
+                    f"(1m={micro}, 5m={scalp_trend}, 15m={macro_trend}, 1h={macro_4h})"
                 )
-            if best.direction == -1 and not _st_confirm_short:
+            if best.direction == -1 and not _has_st_short and not _strong_macro_bear:
                 return _block(
-                    f"skip SHORT — khong co xac nhan ngan han "
-                    f"(1m_micro={micro}, 5m_scalp={scalp_trend}) — can it nhat 1 TF bearish"
+                    f"skip SHORT — khong co TF ngan han xac nhan va macro khong manh "
+                    f"(1m={micro}, 5m={scalp_trend}, 15m={macro_trend}, 1h={macro_4h})"
                 )
-        else:
-            # Reversal: van block khi MANH nguoc chieu (bar thap hon, cho 0 qua)
-            if best.direction == 1 and micro_down:
-                return _block("skip - 1m micro BEARISH vs REVERSAL LONG")
-            if best.direction == -1 and micro_up:
-                return _block("skip - 1m micro BULLISH vs REVERSAL SHORT")
 
         if not _is_largecap:
             if best.direction == -1 and scalp_trend == -1 and (macro_trend + macro_4h) <= -1:

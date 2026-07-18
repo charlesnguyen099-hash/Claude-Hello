@@ -328,11 +328,14 @@ class Executor:
                 logger.warning(
                     f"{symbol}: SL/TP missing on exchange "
                     f"(SL={'missing' if need_rearm_sl else 'ok'}, "
-                    f"TP={'missing' if need_rearm_tp else 'ok'}) — re-arming both"
+                    f"TP={'missing' if need_rearm_tp else 'ok'}) — re-arming"
                 )
                 try:
-                    # Luon truyen CA HAI (SL va TP) de tranh xoa cai con lai
-                    self.client.set_sl_tp(symbol, saved_sl, saved_tp)
+                    # Chi re-arm gia tri bi mat — KHONG truyen gia tri con lai
+                    # Neu truyen ca hai voi tpslMode=Full, se override TP/SL user set tay
+                    rearm_sl = saved_sl if need_rearm_sl else 0.0
+                    rearm_tp = saved_tp if need_rearm_tp else 0.0
+                    self.client.set_sl_tp(symbol, rearm_sl, rearm_tp)
                 except Exception as e:
                     logger.error(f"{symbol}: Failed to re-arm SL/TP: {e}")
 

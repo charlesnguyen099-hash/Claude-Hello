@@ -211,14 +211,16 @@ class BybitClient:
                 raise ValueError(f"place_order: limit_price={lp} invalid (<=0), abort")
             params["price"] = str(lp)
 
+        if sl or tp:
+            # tpslMode="Full" bat buoc de Bybit ap dung SL/TP len toan bo position
+            params["tpslMode"] = "Full"
         if sl:
-            # Round SL theo tick size neu co
             sl_rounded = self.round_to_tick(sl, tick_size) if tick_size > 0 else round(sl, 6)
-            params["stopLoss"] = str(sl_rounded)
+            params["stopLoss"]    = str(sl_rounded)
             params["slTriggerBy"] = "MarkPrice"
         if tp:
             tp_rounded = self.round_to_tick(tp, tick_size) if tick_size > 0 else round(tp, 6)
-            params["takeProfit"] = str(tp_rounded)
+            params["takeProfit"]  = str(tp_rounded)
             params["tpTriggerBy"] = "MarkPrice"
 
         resp = self.session.place_order(**params)

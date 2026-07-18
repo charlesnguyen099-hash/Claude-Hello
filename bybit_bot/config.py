@@ -63,10 +63,10 @@ PARTIAL_CLOSE_TRIGGER = 0.75  # Dong 50% position tai 75% den TP1, de 50% con la
 # TP1 toi da 6%, TP2 toi da 10%: TP phai co the dat duoc trong dieu kien binh thuong
 # SL/TP TINH THEO ROI% (% tren margin = loi/lo / von bo vao)
 # ROI = (price_dist / entry) * leverage
-# TP ROI: scale theo potential [20%, 50%] — lenh manh TP cao hon
+# TP ROI: scale theo potential [12%, 50%] — lenh manh TP cao hon
 # SL ROI = SL_TP_RATIO x TP ROI (hien tai 5x)
-#   -> SL range [100%, 250%] ROI — can win rate > 83% de break even
-TP_ROI_MIN  = 0.20   # TP toi thieu 20% ROI (khi lenh yeu)
+#   -> SL range [60%, 250%] ROI — toi thieu -60% ROI
+TP_ROI_MIN  = 0.12   # TP toi thieu 12% ROI (khi lenh yeu) -> SL toi thieu 60% ROI (5x)
 TP_ROI_MAX  = 0.50   # TP toi da 50% ROI (khi lenh manh)
 SL_TP_RATIO = 5.0    # SL luon gap 5 lan TP (SL ROI = 5 x TP ROI)
 TP2_SCALE   = 1.5    # TP2 = 1.5 x TP1 ROI (cho 50% con lai sau partial close)

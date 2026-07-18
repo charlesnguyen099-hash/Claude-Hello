@@ -76,10 +76,10 @@ class TradingBot:
                     time.sleep(1)
                     try:
                         self.executor.manage_open_positions(self.client.get_positions())
-                    except Exception:
-                        pass
-            except Exception:
-                pass
+                    except Exception as _e:
+                        logger.error(f"manage_open_positions error: {str(_e).encode('ascii','replace').decode()}")
+            except Exception as _e:
+                logger.error(f"get_positions error (inter-tick): {str(_e).encode('ascii','replace').decode()}")
 
             # Minimal pause (rate limit protection)
             time.sleep(config.LOOP_INTERVAL_SEC)
@@ -106,8 +106,6 @@ class TradingBot:
             logger.error(f"Failed to get account state: {str(e).encode('ascii','replace').decode()}")
             return
 
-        # Daily loss guard: chi LOG thong tin, KHONG chan mo lenh moi
-        # Bot luon tiep tuc trade de co co hoi bu lo — filter chat o AEQ-1..10 da lo viec ngan lenh xau
         _today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         if _today != self._equity_day_date:
             self._equity_day_date = _today
@@ -118,9 +116,10 @@ class TradingBot:
             _today_realized_pnl = 0.0
         _daily_pnl_pct = _today_realized_pnl / equity if equity > 0 else 0
         if _daily_pnl_pct < -config.MAX_DAILY_LOSS_PCT:
-            logger.info(
-                f"[DAILY PnL] today={_daily_pnl_pct*100:.2f}% — continuing to trade to recover"
+            logger.warning(
+                f"[DAILY LOSS LIMIT] today={_daily_pnl_pct*100:.2f}% < -{config.MAX_DAILY_LOSS_PCT*100:.0f}% — DUNG MO LENH MOI"
             )
+            return
 
         logger.info(
             f"[TICK] {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')} | "
@@ -218,7 +217,7 @@ class TradingBot:
                         logger.info(f"[TICK] Max positions ({config.MAX_OPEN_POSITIONS}) reached")
                         break
             except Exception as e:
-                logger.debug(f"Error {symbol}: {str(e).encode('ascii','replace').decode()}")
+                logger.warning(f"Error processing {symbol}: {str(e).encode('ascii','replace').decode()}")
 
     def _trend_direction(self, df, fast: int = 20, slow: int = 50) -> int:
         """+1 up, -1 down, 0 sideways.

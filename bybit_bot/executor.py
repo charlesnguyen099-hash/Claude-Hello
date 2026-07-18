@@ -211,14 +211,16 @@ class Executor:
                 print(f"[CRITICAL] {symbol} SL/TP MISSING: {err_detail}", flush=True)
                 try:
                     self.client.set_sl_tp(symbol, sl_rounded, tp1_rounded)
+                    self._sl_verified[symbol] = True
                 except Exception as e2:
                     err2 = str(e2).encode('ascii','replace').decode()
                     logger.error(f"{symbol}: re-arm FAILED: {err2}")
                     print(f"[CRITICAL] {symbol} re-arm FAILED: {err2}", flush=True)
+                    self._sl_verified[symbol] = False
             else:
                 logger.info(f"{symbol}: CONFIRMED SL={actual_sl} TP={actual_tp} active")
                 print(f"[OK] {symbol} SL={actual_sl} TP={actual_tp} confirmed", flush=True)
-            self._sl_verified[symbol] = True
+                self._sl_verified[symbol] = True
 
             self.logger.log_trade({
                 "event":     "open",
@@ -283,31 +285,35 @@ class Executor:
                     # SHORT: initial SL = entry + 1.5*ATR >> entry + fee -> phan biet bang tolerance 0.3%
                     #   BE SL: entry <= SL <= entry * 1.003 (chi phi round-trip <= 0.3%)
                     #   Initial SL: entry * 1.01+ (1.5x ATR thuong lon hon 1%)
-                    fee_tol = entry * 0.003  # tolerance 0.3% -> phan biet BE vs initial SL
+                    # LONG: SL da trail khi SL >= entry (da vuot qua entry)
+                    # SHORT: SL da trail khi SL <= entry (da xuong duoi entry)
+                    # Nguong 0.3% cu qua nho — trail SHORT co the o entry - 1.5*ATR (~1-3% duoi entry)
                     if side == "Buy" and exchange_sl >= entry:
                         self._breakeven_set[symbol] = True
                         logger.info(f"{symbol}: Inferred BE set LONG (SL={exchange_sl:.6f} >= entry={entry:.6f})")
-                    elif side == "Sell" and entry <= exchange_sl <= entry + fee_tol:
+                    elif side == "Sell" and exchange_sl <= entry:
                         self._breakeven_set[symbol] = True
-                        logger.info(f"{symbol}: Inferred BE set SHORT (SL={exchange_sl:.6f} in BE range [{entry:.6f}, {entry+fee_tol:.6f}])")
+                        logger.info(f"{symbol}: Inferred BE set SHORT (SL={exchange_sl:.6f} <= entry={entry:.6f})")
                 # Restore _tp1_price: neu chua co (restart), lay tu exchange TP
                 # Logic: neu partial chua xay ra, exchange TP chinh la TP1
                 # (neu partial da xay ra, exchange TP la TP2 nhung ta khong biet — xem ben duoi)
                 exchange_tp = _fval(pos, "takeProfit")
-                if exchange_tp > 0 and symbol not in self._tp1_price:
-                    # Gia su day la TP1 (neu partial chua xay ra)
-                    self._tp1_price[symbol] = exchange_tp
-                    logger.info(f"{symbol}: Restored TP1={exchange_tp:.6f} from exchange after restart")
-                # Infer partial close: neu TP tren san != _tp1_price ban dau -> partial da xay ra
-                # Chi co the detect duoc tren VONG LAP THU 2+ (khi _tp1_price da co gia tri khac exchange TP)
-                stored_tp1 = self._tp1_price.get(symbol, 0.0)
-                if (exchange_tp > 0 and stored_tp1 > 0
-                        and abs(exchange_tp - stored_tp1) > stored_tp1 * 0.001
+                # Infer partial close: size bi cat xuong 50% so voi ban dau
+                # Day la cach chac chan nhat — exchange_tp co the la TP1 hoac TP2
+                exchange_size = _fval(pos, "size")
+                # Heuristic: neu position size la le (khong tron) kha nang da partial close
+                # Chinh xac hon: size <= 60% of expected full qty -> da partial
+                # Ta luu qty ban dau trong _tp1_price key khong co, nen dung size check
+                # Neu _tp2_price da co (tu lenh ban dau) va exchange_tp # TP1 -> partial done
+                stored_tp2 = self._tp2_price.get(symbol, 0.0)
+                if (exchange_tp > 0 and stored_tp2 > 0
+                        and abs(exchange_tp - stored_tp2) < stored_tp2 * 0.005
                         and not self._partial_closed.get(symbol, False)):
                     self._partial_closed[symbol] = True
-                    logger.info(
-                        f"{symbol}: Inferred partial close already done (exchange TP={exchange_tp:.6f} != stored tp1={stored_tp1:.6f})"
-                    )
+                    logger.info(f"{symbol}: Inferred partial close (exchange TP={exchange_tp:.6f} matches TP2={stored_tp2:.6f})")
+                if exchange_tp > 0 and symbol not in self._tp1_price:
+                    self._tp1_price[symbol] = exchange_tp
+                    logger.info(f"{symbol}: Restored TP1={exchange_tp:.6f} from exchange after restart")
                 # Lay tick_size neu chua co
                 if symbol not in self._tick_size:
                     try:
@@ -402,7 +408,9 @@ class Executor:
                                 raise ValueError(f"trail SL {be_price:.6f} >= mark {mark:.6f} LONG — wait")
                             if side == "Sell" and be_price <= mark:
                                 raise ValueError(f"trail SL {be_price:.6f} <= mark {mark:.6f} SHORT — wait")
-                        self.client.update_stop_loss(symbol, be_price)
+                        # Luon truyen ca hai SL+TP — tpslMode=Full xoa gia tri bi bo qua
+                        current_tp = _fval(pos, "takeProfit")
+                        self.client.set_sl_tp(symbol, be_price, current_tp)
                         self._breakeven_set[symbol] = True
                         self._sl_price[symbol] = be_price
                         logger.info(
@@ -425,8 +433,10 @@ class Executor:
                         if tp2_raw > 0:
                             ts2 = self._tick_size.get(symbol, 0.0)
                             tp2 = self.client.round_to_tick(tp2_raw, ts2) if ts2 > 0 else round(tp2_raw, 6)
-                            self.client.update_take_profit(symbol, tp2)
-                            self._tp2_price[symbol] = tp2  # update to tick-aligned value
+                            # Luon truyen ca hai SL+TP — tpslMode=Full xoa gia tri bi bo qua
+                            current_sl = _fval(pos, "stopLoss")
+                            self.client.set_sl_tp(symbol, current_sl, tp2)
+                            self._tp2_price[symbol] = tp2
                             logger.info(f"{symbol}: TP updated TP1={tp1_threshold:.4f} -> TP2={tp2:.6f}")
 
                         # Dong 50% vi the — align voi qty_step cua instrument
@@ -472,7 +482,8 @@ class Executor:
                                     if (side == "Buy" and be_price >= mark3) or (side == "Sell" and be_price <= mark3):
                                         ok = False
                                 if ok:
-                                    self.client.update_stop_loss(symbol, be_price)
+                                    current_tp2 = _fval(pos, "takeProfit")
+                                    self.client.set_sl_tp(symbol, be_price, current_tp2)
                                     self._breakeven_set[symbol] = True
                                     self._sl_price[symbol] = be_price
                                     logger.info(f"{symbol}: SL trailed (partial) -> {be_price:.6f} ({lock_ratio2*100:.0f}% buffer duoi entry)")

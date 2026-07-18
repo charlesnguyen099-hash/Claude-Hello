@@ -112,14 +112,10 @@ class TradingBot:
             logger.info(f"[DAILY] New day — equity: {equity:.2f} USDT")
         try:
             _today_realized_pnl = self.client.get_today_pnl()
+            _daily_pnl_pct = _today_realized_pnl / equity if equity > 0 else 0
+            logger.debug(f"[DAILY PnL] today={_daily_pnl_pct*100:.2f}%")
         except Exception:
-            _today_realized_pnl = 0.0
-        _daily_pnl_pct = _today_realized_pnl / equity if equity > 0 else 0
-        if _daily_pnl_pct < -config.MAX_DAILY_LOSS_PCT:
-            logger.warning(
-                f"[DAILY LOSS LIMIT] today={_daily_pnl_pct*100:.2f}% < -{config.MAX_DAILY_LOSS_PCT*100:.0f}% — DUNG MO LENH MOI"
-            )
-            return
+            pass
 
         logger.info(
             f"[TICK] {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')} | "

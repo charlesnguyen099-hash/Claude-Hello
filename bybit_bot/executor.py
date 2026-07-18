@@ -333,23 +333,23 @@ class Executor:
 
             # Compute fallback SL/TP tu entry neu khong co saved value (bot restart sau khi SL/TP bi mat)
             # Bug cu: saved_sl=0 -> need_rearm_sl=False -> khong re-arm du exchange khong co SL
+            # Su dung leverage thuc tu exchange; default=10 (tranh sl_dist qua lon khi leverage=1)
+            _pos_leverage = max(10.0, _fval(pos, "leverage", 10.0))
             if saved_sl <= 0 and exchange_sl <= 0 and entry > 0:
-                leverage = max(1.0, _fval(pos, "leverage", 1.0))
                 sl_roi   = config.TP_ROI_MIN * config.SL_TP_RATIO  # conservative: min TP * ratio
-                sl_dist  = sl_roi * entry / leverage
+                sl_dist  = sl_roi * entry / _pos_leverage
                 saved_sl = (entry + sl_dist) if side == "Sell" else (entry - sl_dist)
                 self._sl_price[symbol] = saved_sl
                 logger.warning(f"{symbol}: No saved/exchange SL — computed fallback SL={saved_sl:.6f} "
-                                f"(ROI={sl_roi*100:.0f}% / {leverage:.0f}x)")
+                                f"(ROI={sl_roi*100:.0f}% / {_pos_leverage:.0f}x)")
 
             if saved_tp <= 0 and exchange_tp <= 0 and entry > 0:
-                leverage = max(1.0, _fval(pos, "leverage", 1.0))
                 tp_roi   = config.TP_ROI_MIN
-                tp_dist  = tp_roi * entry / leverage
+                tp_dist  = tp_roi * entry / _pos_leverage
                 saved_tp = (entry - tp_dist) if side == "Sell" else (entry + tp_dist)
                 self._tp1_price[symbol] = saved_tp
                 logger.warning(f"{symbol}: No saved/exchange TP — computed fallback TP={saved_tp:.6f} "
-                                f"(ROI={tp_roi*100:.0f}% / {leverage:.0f}x)")
+                                f"(ROI={tp_roi*100:.0f}% / {_pos_leverage:.0f}x)")
 
             need_rearm_sl = saved_sl > 0 and exchange_sl <= 0
             need_rearm_tp = saved_tp > 0 and exchange_tp <= 0
@@ -369,7 +369,11 @@ class Executor:
                 except Exception as e:
                     logger.error(f"{symbol}: Failed to re-arm SL/TP: {e}")
 
+            # Dung saved value lam fallback neu exchange value = 0 (vua re-arm xong, pos stale)
             tp1_threshold = _fval(pos, "takeProfit")
+            if tp1_threshold <= 0:
+                tp1_threshold = self._tp1_price.get(symbol, 0.0) if not self._partial_closed.get(symbol, False) \
+                                else self._tp2_price.get(symbol, 0.0)
 
             if tp1_threshold <= 0:
                 if self.risk_mgr.should_close_position(pos, mark_price):

@@ -261,7 +261,26 @@ class BybitClient:
     def set_sl_tp(self, symbol: str, sl_price: float, tp_price: float, tick_size: float = 0.0):
         """Set CA HAI SL va TP tren position (position-level).
         tpslMode='Full' bat buoc khi set ca hai cung luc tren Bybit V5.
-        tick_size: truyen vao de round dung — neu =0 tu lay tu instrument cache."""
+        CRITICAL: tpslMode=Full voi chi 1 gia tri se XOA gia tri con lai.
+        -> Tu dong lay gia tri hien tai tu exchange neu caller truyen 0."""
+        # Auto-fetch missing value from exchange to avoid clearing it with tpslMode=Full
+        if sl_price <= 0 or tp_price <= 0:
+            try:
+                resp = self.session.get_positions(category="linear", symbol=symbol)
+                for p in resp["result"]["list"]:
+                    if _sf(p.get("size")) > 0:
+                        if sl_price <= 0:
+                            sl_price = _sf(p.get("stopLoss"))
+                        if tp_price <= 0:
+                            tp_price = _sf(p.get("takeProfit"))
+                        break
+            except Exception:
+                pass
+
+        if sl_price <= 0 and tp_price <= 0:
+            logger.warning(f"set_sl_tp {symbol}: ca SL va TP deu = 0 (kể cả exchange), skip")
+            return
+
         if tick_size <= 0:
             try:
                 info = self.get_instrument_info(symbol)
@@ -281,10 +300,6 @@ class BybitClient:
             params["stopLoss"] = self._tick_round(sl_price, tick_size)
         if tp_price > 0:
             params["takeProfit"] = self._tick_round(tp_price, tick_size)
-
-        if not params.get("stopLoss") and not params.get("takeProfit"):
-            logger.warning(f"set_sl_tp {symbol}: ca SL va TP deu = 0, skip")
-            return
 
         logger.info(f"set_sl_tp {symbol}: SL={params.get('stopLoss','0')} TP={params.get('takeProfit','0')} (tick={tick_size})")
         resp = self.session.set_trading_stop(**params)

@@ -88,11 +88,11 @@ class RiskManager:
         #   ROI = (price_dist / entry) * leverage
         #   price_dist = ROI * entry / leverage
         #
-        # TP ROI: scale theo potential [20%, 50%]
-        #   potential=0 -> TP ROI=20%, potential=1 -> TP ROI=50%
-        # SL ROI = 3 x TP ROI (luon gap 3 lan TP)
-        #   -> SL ROI range: [60%, 150%]
-        #   -> SL toi thieu 60% ROI (khi TP=20%), SL toi da 150% ROI (khi TP=50%)
+        # TP ROI: scale theo potential [12%, 50%]
+        #   potential=0 -> TP ROI=12%, potential=1 -> TP ROI=50%
+        # SL ROI = SL_TP_RATIO x TP ROI (hien tai 5x)
+        #   -> SL ROI range: [60%, 250%]
+        #   -> SL toi thieu 60% ROI (khi TP=12%), SL toi da 250% ROI (khi TP=50%)
         tp_roi  = config.TP_ROI_MIN + potential * (config.TP_ROI_MAX - config.TP_ROI_MIN)
         sl_roi  = tp_roi * config.SL_TP_RATIO   # SL = SL_TP_RATIO x TP
 

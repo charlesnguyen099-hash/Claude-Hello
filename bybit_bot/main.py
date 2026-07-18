@@ -150,8 +150,8 @@ class TradingBot:
         # btc_trend    = 15m trend direction (nhanh, bat flip som)
         # btc_trend_4h = 1h trend direction  (chac chan hon, xac nhan xu huong lon)
         try:
-            df_btc = self.client.get_klines("BTCUSDT", "1", 1500)
-            if not df_btc.empty and len(df_btc) >= 260:
+            df_btc = self.client.get_klines("BTCUSDT", "1", 1000)
+            if not df_btc.empty and len(df_btc) >= 605:  # EMA600 can it nhat 605 nen
                 # EMA(100/250) tren 1m ~ EMA(20/50) tren 5m — medium trend BTC
                 self.btc_trend    = self._trend_direction(df_btc, fast=100, slow=250)
                 # EMA(300/600) tren 1m ~ EMA(20/40) tren 15m — macro trend BTC

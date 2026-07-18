@@ -58,10 +58,15 @@ PARTIAL_CLOSE_TRIGGER = 0.75  # Dong 50% position tai 75% den TP1, de 50% con la
 # Hard cap SL/TP theo % gia — tranh SL/TP phi ly khi ATR qua lon (coin pump/dip)
 # SL toi da 4%: du rong de vuot qua spike tam thoi ma gia van co the quay dau
 # TP1 toi da 6%, TP2 toi da 10%: TP phai co the dat duoc trong dieu kien binh thuong
-SL_MAX_PCT   = 0.040   # 4%  — SL khong duoc rong hon 4%
-TP1_MAX_PCT  = 0.50    # 50% — TP toi da 50% tu entry
-TP2_MAX_PCT  = 0.50    # 50% — TP2 toi da 50% tu entry
-SL_MIN_PCT   = 0.60    # 60% — SL toi thieu 60% tu entry
+# SL/TP TINH THEO ROI% (% tren margin = loi/lo / von bo vao)
+# ROI = (price_dist / entry) * leverage
+# TP ROI: scale theo potential [20%, 50%] — lenh manh TP cao hon
+# SL ROI = 3 x TP ROI luon luon (SL gap 3 lan TP)
+#   -> SL range [60%, 150%] ROI, toi thieu 60% khi TP=20%
+TP_ROI_MIN  = 0.20   # TP toi thieu 20% ROI (khi lenh yeu)
+TP_ROI_MAX  = 0.50   # TP toi da 50% ROI (khi lenh manh)
+SL_TP_RATIO = 3.0    # SL luon gap 3 lan TP (SL ROI = 3 x TP ROI)
+TP2_SCALE   = 1.5    # TP2 = 1.5 x TP1 ROI (cho 50% con lai sau partial close)
 
 # --- Signal sensitivity -------------------------------------------------------
 MIN_SIGNAL_STRENGTH = 0.60   # Chi lay signal chat luong cao

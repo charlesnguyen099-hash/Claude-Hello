@@ -76,54 +76,36 @@ class RiskManager:
         potential = max(0.0, min(1.0, potential))
         scale_factor = 0.5 + potential * 2.0   # [0.5x, 2.5x]
 
-        # Phi round-trip (tinh tren entry price de co trong sl/tp calc)
-        fee_price = signal.entry_price * config.ROUND_TRIP_FEE
+        # Lay leverage truoc de tinh SL/TP theo ROI
+        exchange_max_lev = self.client.get_max_leverage(signal.symbol) if config.USE_MAX_LEVERAGE \
+                           else config.DEFAULT_LEVERAGE
+        leverage = min(config.MAX_LEVERAGE, exchange_max_lev)
+        leverage = max(leverage, 1)
 
-        # SL/TP — Swing-based voi ATR clamp
-        # Uu tien dat SL tai swing high/low 15m (co y nghia cau truc hon ATR thuan tuy)
-        # Clamp trong [1.5x, 3.0x] ATR: khong qua chat (noise hit) va khong qua rong (mat nhieu)
-        # TP1/TP2 tu dong scale theo sl_dist de giu RR
-        _atr = signal.atr
-        _swing_sl = getattr(signal, 'swing_sl', 0.0)
-        if _swing_sl > 0 and signal.entry_price > 0:
-            _swing_dist = abs(signal.entry_price - _swing_sl)
-            _sl_floor   = 1.5 * _atr  # toi thieu: khong chat hon 1.5x ATR
-            _sl_cap     = 3.0 * _atr  # toi da:    khong rong hon 3.0x ATR
-            sl_dist = max(_sl_floor, min(_sl_cap, _swing_dist)) + fee_price
-            logger.debug(
-                f"{signal.symbol}: swing SL dist={_swing_dist:.4f} "
-                f"clamped [{_sl_floor:.4f}, {_sl_cap:.4f}] -> {sl_dist:.4f}"
-            )
-        else:
-            sl_dist = config.SL_ATR_MULT * _atr + fee_price
+        entry = signal.entry_price
 
-        # Buoc 1: SL cap truoc — SL_MIN_PCT=60%, SL_MAX_PCT=4%
-        sl_dist = max(sl_dist, signal.entry_price * config.SL_MIN_PCT)
-        sl_dist = min(sl_dist, signal.entry_price * config.SL_MAX_PCT)
+        # SL/TP TINH THEO ROI (% tren margin), KHONG PHAI % GIA:
+        #   ROI = (price_dist / entry) * leverage
+        #   price_dist = ROI * entry / leverage
+        #
+        # TP ROI: scale theo potential [20%, 50%]
+        #   potential=0 -> TP ROI=20%, potential=1 -> TP ROI=50%
+        # SL ROI = 3 x TP ROI (luon gap 3 lan TP)
+        #   -> SL ROI range: [60%, 150%]
+        #   -> SL toi thieu 60% ROI (khi TP=20%), SL toi da 150% ROI (khi TP=50%)
+        tp_roi  = config.TP_ROI_MIN + potential * (config.TP_ROI_MAX - config.TP_ROI_MIN)
+        sl_roi  = tp_roi * config.SL_TP_RATIO   # SL = 3x TP luon luon
 
-        # Buoc 2: TP scale theo do tiem nang lenh
-        tp1_mult = config.TP1_ATR_MULT + potential * 1.5
-        tp2_mult = config.TP2_ATR_MULT + potential * 2.0
-        tp1_dist = tp1_mult * _atr - fee_price
-        tp2_dist = tp2_mult * _atr - fee_price
-        logger.debug(
-            f"{signal.symbol}: potential={potential:.2f} sl={sl_dist/signal.entry_price*100:.1f}% "
-            f"TP1={tp1_mult:.2f}xATR TP2={tp2_mult:.2f}xATR"
-        )
+        tp1_dist = tp_roi * entry / leverage
+        tp2_dist = tp_roi * config.TP2_SCALE * entry / leverage  # TP2 = TP1 * TP2_SCALE
+        sl_dist  = sl_roi * entry / leverage
 
-        # Buoc 3: RR enforce dua tren SL da cap
-        tp1_dist = max(tp1_dist, sl_dist * 1.5)
-        tp2_dist = max(tp2_dist, sl_dist * 2.5)
-
-        # Buoc 4 (CUOI CUNG — khong gi override duoc):
-        # TP toi da 50%, SL toi thieu 60% — absolute hard cap
-        tp1_dist = min(tp1_dist, signal.entry_price * config.TP1_MAX_PCT)
-        tp2_dist = min(tp2_dist, signal.entry_price * config.TP2_MAX_PCT)
+        fee_price = entry * config.ROUND_TRIP_FEE
 
         logger.info(
-            f"{signal.symbol}: SL={sl_dist/signal.entry_price*100:.2f}% "
-            f"TP1={tp1_dist/signal.entry_price*100:.2f}% "
-            f"TP2={tp2_dist/signal.entry_price*100:.2f}%"
+            f"{signal.symbol}: lev={leverage}x | "
+            f"TP_ROI={tp_roi*100:.0f}% SL_ROI={sl_roi*100:.0f}% (SL=3xTP) | "
+            f"tp1_dist={tp1_dist:.6f} sl_dist={sl_dist:.6f}"
         )
 
         # RISK-BASED POSITION SIZING:
@@ -162,13 +144,7 @@ class RiskManager:
 
         notional = qty * signal.entry_price
 
-        # Leverage: luon dung leverage cao nhat exchange cho phep (toi da MAX_LEVERAGE)
-        # Margin thap nhat = notional / leverage_max -> von bo vao it nhat, giu room
-        exchange_max_lev = self.client.get_max_leverage(signal.symbol) if config.USE_MAX_LEVERAGE \
-                           else config.DEFAULT_LEVERAGE
-        leverage = min(config.MAX_LEVERAGE, exchange_max_lev)
-        leverage = max(leverage, 1)
-
+        # leverage da tinh o tren (dung lai, khong goi API lan 2)
         capital_used = notional / leverage
 
         # Check lai $5 minimum SAU capital adjustment — capital cap co the day notional xuong duoi $5
@@ -195,24 +171,25 @@ class RiskManager:
         fee_usdt = notional * config.ROUND_TRIP_FEE
 
         d   = signal.direction
-        sl  = signal.entry_price - d * sl_dist
-        tp1 = signal.entry_price + d * tp1_dist
-        tp2 = signal.entry_price + d * tp2_dist
+        sl  = entry - d * sl_dist
+        tp1 = entry + d * tp1_dist
+        tp2 = entry + d * tp2_dist
 
-        sl_pct  = sl_dist  / signal.entry_price * 100
-        tp1_pct = tp1_dist / signal.entry_price * 100
-        tp2_pct = tp2_dist / signal.entry_price * 100
-
-        rr1 = tp1_pct / sl_pct if sl_pct > 0 else 0
-        rr2 = tp2_pct / sl_pct if sl_pct > 0 else 0
+        sl_roi_pct  = sl_roi  * 100
+        tp1_roi_pct = tp_roi  * 100
+        tp2_roi_pct = tp_roi * config.TP2_SCALE * 100
 
         logger.info(
             f"{signal.symbol}: {side} lev={leverage}x | consensus={consensus}({scale_factor}x) | "
             f"qty={qty} | notional={notional:.2f}$ | capital={capital_used:.2f}$ | "
             f"fee={fee_usdt:.4f}$ | "
-            f"SL=-{sl_pct:.2f}% | TP1=+{tp1_pct:.2f}% (RR={rr1:.2f}) | "
-            f"TP2=+{tp2_pct:.2f}% (RR={rr2:.2f})"
+            f"TP_ROI=+{tp1_roi_pct:.0f}% | SL_ROI=-{sl_roi_pct:.0f}% (SL=3xTP) | "
+            f"TP2_ROI=+{tp2_roi_pct:.0f}%"
         )
+
+        sl_pct  = sl_dist  / entry * 100
+        tp1_pct = tp1_dist / entry * 100
+        tp2_pct = tp2_dist / entry * 100
 
         return TradeParams(
             symbol=signal.symbol,

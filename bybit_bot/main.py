@@ -143,6 +143,7 @@ class TradingBot:
         if closed_by_exchange:
             for sym in closed_by_exchange:
                 self.executor.clear_position_state(sym)
+                self._last_analyzed.pop(sym, None)  # cho phep re-analyze ngay sau khi dong
                 logger.info(f"{sym}: position closed by exchange (SL/TP hit) — state cleared")
         self._prev_pos_symbols = pos_symbols
 
@@ -201,8 +202,9 @@ class TradingBot:
                     btc_eth_side_map=_pos_side_map,
                 )
                 if traded:
-                    # Reset cooldown ngay khi trade — cho phep re-enter neu co signal moi
-                    self._last_analyzed[symbol] = 0
+                    # Giu cooldown sau khi trade — tranh double-entry trong cung tick
+                    # (exchange chua ghi nhan vi the moi, tick tiep theo symbol chua co trong pos_symbols)
+                    self._last_analyzed[symbol] = time.time()
                     try:
                         open_positions = self.client.get_positions()
                         equity         = self.client.get_wallet_balance()
@@ -1379,6 +1381,25 @@ class TradingBot:
                     return _block(f"skip LONG - 5m Stochastic overbought K={_stoch_k:.1f}")
                 if best.direction == -1 and _stoch_k < 8 and not _macro_confirm:
                     return _block(f"skip SHORT - 5m Stochastic oversold K={_stoch_k:.1f}")
+
+        # [AEQ-11] Flat/ranging at top or bottom of 2h range: tranh Long khi gia flat o dinh (distribution)
+        # ONDO pattern: price flat 30+ min o top range -> distribution zone -> Long bi SL
+        # std < 0.15% cua mean = flat (price khong di chuyen dang ke trong 20 nen gan nhat)
+        if not is_reversal and not df_micro.empty and len(df_micro) >= 20:
+            _close20  = df_micro["close"].iloc[-20:]
+            _std20    = _close20.std()
+            _mean20   = _close20.mean()
+            if _mean20 > 0 and (_std20 / _mean20) < 0.0015:  # std < 0.15% = flat range
+                if best.direction == 1 and _m2h_pos > 0.50:
+                    return _block(
+                        f"skip LONG - flat at 2h top ({_m2h_pos:.0%}), "
+                        f"std={_std20/_mean20*100:.3f}% (distribution zone)"
+                    )
+                if best.direction == -1 and _m2h_pos < 0.50:
+                    return _block(
+                        f"skip SHORT - flat at 2h bottom ({_m2h_pos:.0%}), "
+                        f"std={_std20/_mean20*100:.3f}% (accumulation zone)"
+                    )
 
         # ══════════════════════════════════════════════════════════════════════
 

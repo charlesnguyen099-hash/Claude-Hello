@@ -230,6 +230,24 @@ class BybitClient:
         return self.place_order(symbol, close_side, qty, reduce_only=True)
 
     @retry()
+    def set_sl_tp(self, symbol: str, sl_price: float, tp_price: float):
+        """Set CA HAI SL va TP cung luc tren position (position-level, khong phai order-level).
+        Dung ngay sau khi market order fill — dam bao ca SL lan TP luon duoc set.
+        Reliable hon truong hop dat rieng le vi chi can 1 API call."""
+        params: dict = dict(
+            category="linear",
+            symbol=symbol,
+            slTriggerBy="MarkPrice",
+            tpTriggerBy="MarkPrice",
+            positionIdx=0,
+        )
+        if sl_price > 0:
+            params["stopLoss"] = str(round(sl_price, 6))
+        if tp_price > 0:
+            params["takeProfit"] = str(round(tp_price, 6))
+        self.session.set_trading_stop(**params)
+
+    @retry()
     def update_stop_loss(self, symbol: str, sl_price: float):
         """Cap nhat SL cho vi the dang mo (dung de doi SL ve break-even)."""
         try:
@@ -355,6 +373,20 @@ class BybitClient:
         except Exception as e:
             logger.debug(f"verify_position_sl {symbol}: {e}")
         return False, 0.0
+
+    def verify_position_tp_sl(self, symbol: str) -> tuple[bool, float, bool, float]:
+        """Xac nhan vi the co ca SL va TP dang hoat dong.
+        Return (has_sl, sl_price, has_tp, tp_price)."""
+        try:
+            resp = self.session.get_positions(category="linear", symbol=symbol)
+            for p in resp["result"]["list"]:
+                if _sf(p.get("size")) > 0:
+                    sl = _sf(p.get("stopLoss"))
+                    tp = _sf(p.get("takeProfit"))
+                    return sl > 0, sl, tp > 0, tp
+        except Exception as e:
+            logger.debug(f"verify_position_tp_sl {symbol}: {e}")
+        return False, 0.0, False, 0.0
 
     def get_today_pnl(self) -> float:
         """Tong realized PnL hom nay (UTC 00:00 den gio hien tai).

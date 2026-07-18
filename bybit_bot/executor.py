@@ -165,19 +165,21 @@ class Executor:
             sl_rounded  = self.client.round_to_tick(params.sl_price,  tick_size, ceil=_sl_ceil) if tick_size > 0 else round(params.sl_price,  6)
             tp1_rounded = self.client.round_to_tick(params.tp1_price, tick_size) if tick_size > 0 else round(params.tp1_price, 6)
 
-            # --- Market order: fill ngay, khong miss vi IOC bi cancel ---
+            # --- Market order: fill ngay (KHONG set SL/TP trong order) ---
+            # Ly do tach rieng: Bybit market order voi SL/TP params doi khi tao
+            # "order-level conditional orders" thay vi "position-level TP/SL"
+            # -> position field stopLoss/takeProfit van rong du lenh co SL/TP
+            # Giai phap: dat Market order truoc, sau do set SL+TP bang set_trading_stop
             order = self.client.place_order(
                 symbol=symbol,
                 side=params.side,
                 qty=params.qty,
                 order_type="Market",
-                sl=sl_rounded,
-                tp=tp1_rounded,
             )
 
             order_id = order.get("orderId", "")
 
-            # Update in-memory state sau khi xac nhan fill
+            # Update in-memory state
             self._partial_closed[symbol] = False
             self._breakeven_set[symbol]  = False
             self._sl_verified[symbol]    = False
@@ -188,14 +190,41 @@ class Executor:
             self._open_time[symbol]      = time.time()
             self._tick_size[symbol]      = tick_size
 
-            # --- Verify SL active sau fill ---
+            # --- Set SL + TP tren position (position-level) sau khi fill ---
+            # Doi 0.5s de Bybit xu ly fill truoc khi set TP/SL
             time.sleep(0.5)
-            has_sl, actual_sl = self.client.verify_position_sl(symbol)
-            if not has_sl:
+            sl_tp_ok = False
+            for _attempt in range(3):
+                try:
+                    self.client.set_sl_tp(symbol, sl_rounded, tp1_rounded)
+                    sl_tp_ok = True
+                    logger.info(
+                        f"{symbol}: SL={sl_rounded:.6f} TP1={tp1_rounded:.6f} set via set_trading_stop"
+                    )
+                    break
+                except Exception as e:
+                    logger.warning(
+                        f"{symbol}: set_sl_tp attempt {_attempt+1}/3 failed: "
+                        f"{str(e).encode('ascii','replace').decode()}"
+                    )
+                    time.sleep(0.5 * (2 ** _attempt))
+
+            # --- Verify SL + TP sau set ---
+            time.sleep(0.3)
+            has_sl, actual_sl, has_tp, actual_tp = self.client.verify_position_tp_sl(symbol)
+            if not has_sl or not has_tp:
                 logger.warning(
-                    f"{symbol}: SL missing after fill — force setting SL={sl_rounded:.6f}"
+                    f"{symbol}: SL/TP missing (has_sl={has_sl}, has_tp={has_tp}) — retry set_sl_tp"
                 )
-                self.client.update_stop_loss(symbol, sl_rounded)
+                try:
+                    _sl_fix = sl_rounded if not has_sl else 0.0
+                    _tp_fix = tp1_rounded if not has_tp else 0.0
+                    self.client.set_sl_tp(symbol, _sl_fix, _tp_fix)
+                    logger.info(f"{symbol}: SL/TP re-armed: SL={_sl_fix:.6f} TP={_tp_fix:.6f}")
+                except Exception as e2:
+                    logger.error(f"{symbol}: CRITICAL — cannot set SL/TP: {str(e2).encode('ascii','replace').decode()}")
+            else:
+                logger.info(f"{symbol}: Verified SL={actual_sl:.6f} TP={actual_tp:.6f} active on position")
             self._sl_verified[symbol] = True
 
             self.logger.log_trade({
@@ -294,20 +323,27 @@ class Executor:
                     except Exception:
                         self._tick_size[symbol] = 0.0
 
-            # --- Periodic SL health check ---
-            # Neu SL bi huy tren exchange (maintenance, loi API, v.v.), re-arm ngay
-            # Chi check cho cac vi the ma bot nay da mo (co _sl_price)
+            # --- Periodic SL + TP health check ---
+            # Neu SL hoac TP bi huy tren exchange (maintenance, loi API), re-arm ngay
             saved_sl = self._sl_price.get(symbol, 0.0)
-            if saved_sl > 0:
-                exchange_sl = _fval(pos, "stopLoss")
-                if exchange_sl <= 0:
-                    logger.warning(
-                        f"{symbol}: SL missing on exchange — re-arming SL={saved_sl:.6f}"
-                    )
-                    try:
-                        self.client.update_stop_loss(symbol, saved_sl)
-                    except Exception as e:
-                        logger.error(f"{symbol}: Failed to re-arm SL: {e}")
+            saved_tp = self._tp1_price.get(symbol, 0.0) if not self._partial_closed.get(symbol, False) \
+                       else self._tp2_price.get(symbol, 0.0)
+            exchange_sl = _fval(pos, "stopLoss")
+            exchange_tp = _fval(pos, "takeProfit")
+            need_rearm_sl = saved_sl > 0 and exchange_sl <= 0
+            need_rearm_tp = saved_tp > 0 and exchange_tp <= 0
+            if need_rearm_sl or need_rearm_tp:
+                _rearm_sl = saved_sl if need_rearm_sl else 0.0
+                _rearm_tp = saved_tp if need_rearm_tp else 0.0
+                logger.warning(
+                    f"{symbol}: SL/TP missing on exchange "
+                    f"(SL={'missing' if need_rearm_sl else 'ok'}, "
+                    f"TP={'missing' if need_rearm_tp else 'ok'}) — re-arming"
+                )
+                try:
+                    self.client.set_sl_tp(symbol, _rearm_sl, _rearm_tp)
+                except Exception as e:
+                    logger.error(f"{symbol}: Failed to re-arm SL/TP: {e}")
 
             tp1_threshold = _fval(pos, "takeProfit")
 

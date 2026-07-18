@@ -94,7 +94,7 @@ class RiskManager:
         #   -> SL ROI range: [60%, 150%]
         #   -> SL toi thieu 60% ROI (khi TP=20%), SL toi da 150% ROI (khi TP=50%)
         tp_roi  = config.TP_ROI_MIN + potential * (config.TP_ROI_MAX - config.TP_ROI_MIN)
-        sl_roi  = tp_roi * config.SL_TP_RATIO   # SL = 3x TP luon luon
+        sl_roi  = tp_roi * config.SL_TP_RATIO   # SL = SL_TP_RATIO x TP
 
         tp1_dist = tp_roi * entry / leverage
         tp2_dist = tp_roi * config.TP2_SCALE * entry / leverage  # TP2 = TP1 * TP2_SCALE
@@ -183,7 +183,7 @@ class RiskManager:
             f"{signal.symbol}: {side} lev={leverage}x | consensus={consensus}({scale_factor}x) | "
             f"qty={qty} | notional={notional:.2f}$ | capital={capital_used:.2f}$ | "
             f"fee={fee_usdt:.4f}$ | "
-            f"TP_ROI=+{tp1_roi_pct:.0f}% | SL_ROI=-{sl_roi_pct:.0f}% (SL=3xTP) | "
+            f"TP_ROI=+{tp1_roi_pct:.0f}% | SL_ROI=-{sl_roi_pct:.0f}% (SL={config.SL_TP_RATIO:.0f}xTP) | "
             f"TP2_ROI=+{tp2_roi_pct:.0f}%"
         )
 

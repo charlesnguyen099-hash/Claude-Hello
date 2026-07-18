@@ -154,12 +154,12 @@ class TradingBot:
         # btc_trend    = 15m trend direction (nhanh, bat flip som)
         # btc_trend_4h = 1h trend direction  (chac chan hon, xac nhan xu huong lon)
         try:
-            df_btc_15m = self.client.get_klines("BTCUSDT", config.TIMEFRAMES["trend"], 100)
-            df_btc_1h  = self.client.get_klines("BTCUSDT", config.TIMEFRAMES["macro"],  100)
-            if not df_btc_15m.empty and len(df_btc_15m) >= 50:
-                self.btc_trend = self._trend_direction(df_btc_15m)
-            if not df_btc_1h.empty and len(df_btc_1h) >= 50:
-                self.btc_trend_4h = self._trend_direction(df_btc_1h)
+            df_btc_fast = self.client.get_klines("BTCUSDT", config.TIMEFRAMES["trend"], 100)
+            df_btc_slow = self.client.get_klines("BTCUSDT", config.TIMEFRAMES["macro"],  100)
+            if not df_btc_fast.empty and len(df_btc_fast) >= 50:
+                self.btc_trend = self._trend_direction(df_btc_fast)
+            if not df_btc_slow.empty and len(df_btc_slow) >= 50:
+                self.btc_trend_4h = self._trend_direction(df_btc_slow)
         except Exception:
             pass
 
@@ -174,8 +174,8 @@ class TradingBot:
         # Dung time budget: xu ly lien tuc cho den het SCAN_BUDGET_SEC hoac het positions slot
         logger.info(
             f"[TICK] Scan {len(self.symbols)} trending coins (budget={config.SCAN_BUDGET_SEC}s) | "
-            f"BTC_1h={'UP' if self.btc_trend==1 else 'DOWN' if self.btc_trend==-1 else 'SIDE'} "
-            f"BTC_4h={'UP' if self.btc_trend_4h==1 else 'DOWN' if self.btc_trend_4h==-1 else 'SIDE'}"
+            f"BTC_5m={'UP' if self.btc_trend==1 else 'DOWN' if self.btc_trend==-1 else 'SIDE'} "
+            f"BTC_15m={'UP' if self.btc_trend_4h==1 else 'DOWN' if self.btc_trend_4h==-1 else 'SIDE'}"
         )
 
         _pos_side_map = {p["symbol"]: p.get("side", "") for p in open_positions}
@@ -476,11 +476,14 @@ class TradingBot:
         _is_gradual_uptrend   = False
         _is_gradual_downtrend = False
 
-        # signal=1m (500c, 1 API call), scalp=5m, trend=15m, macro=1h
-        # 500 nen 1m = ~8h — du cho moi indicator (EMA50 can 50, ADX can 14, v.v.)
+        # signal=1m (500c), scalp=5m, trend=5m (was 15m), macro=15m (was 1h)
+        # trend==scalp TF -> tai su dung df_scalp, tranh goi API 2 lan cung data
         df_signal = self.client.get_klines(symbol, config.TIMEFRAMES["signal"], config.CANDLE_LIMIT_SIGNAL)
         df_scalp  = self.client.get_klines(symbol, config.TIMEFRAMES["scalp"],  config.CANDLE_LIMIT_SCALP)
-        df_trend  = self.client.get_klines(symbol, config.TIMEFRAMES["trend"],  config.CANDLE_LIMIT_TREND)
+        if config.TIMEFRAMES["trend"] == config.TIMEFRAMES["scalp"]:
+            df_trend = df_scalp
+        else:
+            df_trend = self.client.get_klines(symbol, config.TIMEFRAMES["trend"], config.CANDLE_LIMIT_TREND)
         df_macro  = self.client.get_klines(symbol, config.TIMEFRAMES["macro"],  config.CANDLE_LIMIT_MACRO)
         df_micro  = df_signal   # alias: 1m data dung cho micro analysis (khong fetch them)
 
@@ -517,8 +520,7 @@ class TradingBot:
         if price > 0 and atr / price < _min_atr_pct:
             return False
 
-        # Dung 15m ADX thay vi 1m ADX: 1m ADX qua nhay, thuong < 18 vao buoi sang/
-        # Asian session du trend 15m+1h co that. 15m ADX on dinh hon, phan anh trend chuan xac.
+        # Dung trend-TF ADX (5m): 1m ADX qua nhay, 5m on dinh hon va nhanh hon 15m cu
         min_adx = config.MIN_ADX
         adx = compute_adx(df_trend).iloc[-1] if not df_trend.empty and len(df_trend) >= 20 else float("nan")
         if math.isnan(adx) or adx < min_adx:
@@ -526,15 +528,14 @@ class TradingBot:
             return False
 
         # 24h directional move filter: tranh chase sau khi coin da pump/dump > 20% trong 24h
-        # Dung df_trend (15m): 96 nen x 15m = 24h (chinh xac, khong bi anh huong boi doi sang 1m)
-        # df_signal la 1m: 96 nen 1m = 96 phut, khong dung cho 24h check
+        # Dung df_macro (15m): 96 nen x 15m = 24h (chinh xac du trend TF da doi sang 5m)
         _block_long_24h  = False
         _block_short_24h = False
         _change_24h = 0.0
-        if len(df_trend) >= 96:
-            _ref_24h = df_trend["close"].iloc[-96]
+        if len(df_macro) >= 96:
+            _ref_24h = df_macro["close"].iloc[-96]
             if _ref_24h > 0:
-                _change_24h = (df_trend["close"].iloc[-1] - _ref_24h) / _ref_24h * 100
+                _change_24h = (df_macro["close"].iloc[-1] - _ref_24h) / _ref_24h * 100
                 if abs(_change_24h) > 30:
                     logger.info(f"{symbol}: 24h change={_change_24h:.1f}% > 30% -> HARD SKIP (extreme move)")
                     return False
@@ -812,8 +813,11 @@ class TradingBot:
                 # 1m (df_signal) chi dung cho entry timing (spike, micro_trend, range checks)
                 # Chay tren 1m: EMA/MACD/Ichimoku/sustained_trend rat hiem fire -> 0 consensus
                 sig = strategy.generate_signal(df_trend, df_macro, df_macro)
-                # Fallback: thu 5m neu 15m khong co signal (VWAP skip: window 5m sai)
-                if sig.direction == 0 and len(df_scalp) >= 50 and strategy.name != "vwap_volume":
+                # Fallback: thu scalp TF neu trend TF khong co signal — chi khi 2 TF khac nhau
+                if (sig.direction == 0
+                        and config.TIMEFRAMES["scalp"] != config.TIMEFRAMES["trend"]
+                        and len(df_scalp) >= 50
+                        and strategy.name != "vwap_volume"):
                     sig = strategy.generate_signal(df_scalp, df_trend, df_macro)
                 if sig.direction != 0 and sig.strength >= config.MIN_SIGNAL_STRENGTH:
                     n_15m_valid += 1
@@ -1302,16 +1306,16 @@ class TradingBot:
                 if best.direction == -1 and _dn_wick / _lc_rng > 0.75:
                     return _block(f"skip SHORT - 1m wick rejection {_dn_wick/_lc_rng*100:.0f}%")
 
-        # [AEQ-4] Last 15m candle conflict — chi block khi CỰC MANH (1.5x ATR)
+        # [AEQ-4] Last trend-TF candle conflict — chi block khi CỰC MANH (1.5x ATR)
         # 0.8x ATR qua nhat: trong trending market, mot nen nguoc chiều vua phai la binh thuong
         # Nen nguoc chieu lon > 1.5x ATR moi la conflict that su (bearish engulfing khi muon long)
         if not df_trend.empty and len(df_trend) >= 3 and _atr_for_sl > 0 and not is_reversal:
             _c15      = df_trend.iloc[-2]
             _c15_body = _c15["close"] - _c15["open"]
             if best.direction == 1 and _c15_body < -1.5 * _atr_for_sl:
-                return _block(f"skip LONG - last 15m strongly bearish (body={_c15_body:.4f})")
+                return _block(f"skip LONG - last trend-TF candle strongly bearish (body={_c15_body:.4f})")
             if best.direction == -1 and _c15_body > 1.5 * _atr_for_sl:
-                return _block(f"skip SHORT - last 15m strongly bullish (body={_c15_body:.4f})")
+                return _block(f"skip SHORT - last trend-TF candle strongly bullish (body={_c15_body:.4f})")
 
         # [AEQ-6] Funding period
         _utc_now_f  = datetime.now(timezone.utc)

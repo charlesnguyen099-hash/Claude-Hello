@@ -15,23 +15,23 @@ SCAN_INTERVAL_SEC    = 30            # cap nhat danh sach trending moi 30s (giam
 SCAN_BUDGET_SEC      = 8.0           # xu ly coin trong toi da 8s moi tick
 
 # --- Multi-Timeframe Analysis -------------------------------------------------
-# 1m  x 2000 = ~33h  — MAIN signal (scalp entry, nhanh, nhieu lenh hon)
-# 5m  x 500  = ~42h  — 5m alignment check (tranh vao giua bounce)
-# 15m x 500  = 5 ngay — trend confirmation (thay 1h)
-# 1h  x 300  = 12 ngay — macro trend (thay 4h)
+# 1m  x 500  = ~8h   — MAIN signal + entry timing
+# 5m  x 200  = ~17h  — scalp alignment (tranh vao giua bounce)
+# 5m  x 200  = ~17h  — trend confirmation (reuse df_scalp khi cung TF)
+# 15m x 150  = ~37h  — macro trend (was 1h — qua cham, bo lo move 20-30 phut)
 #
-# Chuyen tu 15m/1h/4h sang 1m/5m/15m/1h: bat lenh nhanh hon, nhieu co hoi hon
-# ATR cho SL/TP tinh tu 15m (khong phai 1m) de tranh SL qua chat bi noise hit
+# Doi tu 15m/1h sang 5m/15m: bat lenh trong 15-30 phut thay vi can 1-3 gio cho EMA 1h flip
+# ATR cho swing SL tinh tu 5m trend TF (on dinh hon 1m, nhanh hon 15m)
 TIMEFRAMES = {
-    "signal": "1",     # 1m: MAIN signal (was 15m)
-    "scalp":  "5",     # 5m: alignment check
-    "trend":  "15",    # 15m: trend confirmation (was 1h)
-    "macro":  "60",    # 1h: macro trend (was 4h)
+    "signal": "1",     # 1m: entry timing + micro analysis
+    "scalp":  "5",     # 5m: scalp alignment check
+    "trend":  "5",     # 5m: strategy signal TF (was 15m — too slow, misses 20-30min moves)
+    "macro":  "15",    # 15m: trend confirmation (was 1h — too slow for futures)
 }
-CANDLE_LIMIT_SIGNAL = 500    # 500 x 1m = ~8h — 1 API call, du cho moi indicator (EMA50 can 50)
+CANDLE_LIMIT_SIGNAL = 500    # 500 x 1m = ~8h — du cho moi indicator (EMA50 can 50)
 CANDLE_LIMIT_SCALP  = 200    # 200 x 5m = ~17h
-CANDLE_LIMIT_TREND  = 200    # 200 x 15m = ~2 ngay
-CANDLE_LIMIT_MACRO  = 150    # 150 x 1h  = ~6 ngay
+CANDLE_LIMIT_TREND  = 200    # 200 x 5m = ~17h (reuse df_scalp khi trend==scalp TF)
+CANDLE_LIMIT_MACRO  = 150    # 150 x 15m = ~37h (96 x 15m = 24h cho daily change check)
 
 # --- Phi giao dich Bybit ------------------------------------------------------
 TAKER_FEE      = 0.00055

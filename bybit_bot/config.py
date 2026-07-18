@@ -55,8 +55,7 @@ MAX_CAPITAL_PCT    = 0.10   # Max 10% equity dung lam margin moi lenh
 # SL/TP sizing hien tai dung ROI-based (xem TP_ROI_MIN/MAX, SL_TP_RATIO ben duoi)
 ATR_PERIOD        = 14
 # SL_ATR_MULT / TP1_ATR_MULT / TP2_ATR_MULT: KHONG DUNG — da thay bang ROI-based sizing
-BREAKEVEN_TRIGGER = 0.60   # Doi SL ve breakeven tai 60% den TP1
-PARTIAL_CLOSE_TRIGGER = 0.75  # Dong 50% position tai 75% den TP1, de 50% con lai chay den TP2
+# Partial close va breakeven trail da bi xoa — 1 TP duy nhat, hit la dong toan bo
 
 # Hard cap SL/TP theo % gia — tranh SL/TP phi ly khi ATR qua lon (coin pump/dip)
 # SL toi da 4%: du rong de vuot qua spike tam thoi ma gia van co the quay dau
@@ -69,7 +68,6 @@ PARTIAL_CLOSE_TRIGGER = 0.75  # Dong 50% position tai 75% den TP1, de 50% con la
 TP_ROI_MIN  = 0.12   # TP toi thieu 12% ROI (khi lenh yeu) -> SL toi thieu 60% ROI (5x)
 TP_ROI_MAX  = 0.50   # TP toi da 50% ROI (khi lenh manh)
 SL_TP_RATIO = 5.0    # SL luon gap 5 lan TP (SL ROI = 5 x TP ROI)
-TP2_SCALE   = 1.5    # TP2 = 1.5 x TP1 ROI (cho 50% con lai sau partial close)
 
 # --- Signal sensitivity -------------------------------------------------------
 MIN_SIGNAL_STRENGTH = 0.60   # Chi lay signal chat luong cao

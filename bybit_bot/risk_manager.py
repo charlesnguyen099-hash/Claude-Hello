@@ -26,13 +26,11 @@ class TradeParams:
     leverage: int
     sl_price: float
     tp1_price: float
-    tp2_price: float
     notional_usdt: float
     fee_usdt: float
     capital_usdt: float
     sl_pct: float
     tp1_pct: float
-    tp2_pct: float
 
 
 class RiskManager:
@@ -116,23 +114,20 @@ class RiskManager:
                 f"→ TP_ROI={tp_roi*100:.0f}% SL_ROI={sl_roi*100:.0f}% (ratio={config.SL_TP_RATIO:.0f}:1 maintained)"
             )
 
-        tp1_dist = tp_roi * entry / leverage
-        tp2_dist = tp_roi * config.TP2_SCALE * entry / leverage  # TP2 = TP1 * TP2_SCALE
-        sl_dist  = sl_roi * entry / leverage
-
-        fee_price = entry * config.ROUND_TRIP_FEE
+        tp_dist = tp_roi * entry / leverage
+        sl_dist = sl_roi * entry / leverage
 
         logger.info(
             f"{signal.symbol}: lev={leverage}x | "
             f"TP_ROI={tp_roi*100:.0f}% SL_ROI={sl_roi*100:.0f}% (={sl_roi/tp_roi:.0f}xTP) | "
-            f"tp1_dist={tp1_dist:.6f} sl_dist={sl_dist:.6f}"
+            f"tp_dist={tp_dist:.6f} sl_dist={sl_dist:.6f}"
         )
 
         # RISK-BASED POSITION SIZING:
         # Muc tieu: neu SL hit thi mat dung RISK_PER_TRADE_PCT% equity (x scale_factor)
         # qty = risk_amount / sl_dist
         risk_amount = equity * config.RISK_PER_TRADE_PCT * scale_factor
-        qty_by_risk = risk_amount / sl_dist
+        qty_by_risk = risk_amount / (sl_dist + 1e-12)
 
         # Helper: round qty theo so chu so thap phan cua qty_step (tranh float artifact)
         _qty_decimals = len(str(qty_step).rstrip("0").split(".")[-1]) if "." in str(qty_step) else 0
@@ -190,26 +185,15 @@ class RiskManager:
 
         fee_usdt = notional * config.ROUND_TRIP_FEE
 
-        d   = signal.direction
-        sl  = entry - d * sl_dist
-        tp1 = entry + d * tp1_dist
-        tp2 = entry + d * tp2_dist
-
-        sl_roi_pct  = sl_roi  * 100
-        tp1_roi_pct = tp_roi  * 100
-        tp2_roi_pct = tp_roi * config.TP2_SCALE * 100
+        d  = signal.direction
+        sl = entry - d * sl_dist
+        tp = entry + d * tp_dist
 
         logger.info(
-            f"{signal.symbol}: {side} lev={leverage}x | consensus={consensus}({scale_factor}x) | "
+            f"{signal.symbol}: {side} lev={leverage}x | consensus={consensus}({scale_factor:.1f}x) | "
             f"qty={qty} | notional={notional:.2f}$ | capital={capital_used:.2f}$ | "
-            f"fee={fee_usdt:.4f}$ | "
-            f"TP_ROI=+{tp1_roi_pct:.0f}% | SL_ROI=-{sl_roi_pct:.0f}% (SL={config.SL_TP_RATIO:.0f}xTP) | "
-            f"TP2_ROI=+{tp2_roi_pct:.0f}%"
+            f"TP_ROI=+{tp_roi*100:.0f}% SL_ROI=-{sl_roi*100:.0f}% (SL={config.SL_TP_RATIO:.0f}xTP)"
         )
-
-        sl_pct  = sl_dist  / entry * 100
-        tp1_pct = tp1_dist / entry * 100
-        tp2_pct = tp2_dist / entry * 100
 
         return TradeParams(
             symbol=signal.symbol,
@@ -217,14 +201,12 @@ class RiskManager:
             qty=qty,
             leverage=leverage,
             sl_price=round(sl, 6),
-            tp1_price=round(tp1, 6),
-            tp2_price=round(tp2, 6),
+            tp1_price=round(tp, 6),
             notional_usdt=round(notional, 2),
             fee_usdt=round(fee_usdt, 6),
             capital_usdt=round(capital_used, 4),
-            sl_pct=round(sl_pct, 4),
-            tp1_pct=round(tp1_pct, 4),
-            tp2_pct=round(tp2_pct, 4),
+            sl_pct=round(sl_dist / entry * 100, 4),
+            tp1_pct=round(tp_dist / entry * 100, 4),
         )
 
     def should_close_position(self, position: dict, current_price: float) -> bool:

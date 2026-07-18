@@ -211,17 +211,19 @@ class BybitClient:
                 raise ValueError(f"place_order: limit_price={lp} invalid (<=0), abort")
             params["price"] = str(lp)
 
-        if sl or tp:
-            # tpslMode="Full" bat buoc de Bybit ap dung SL/TP len toan bo position
+        # Dung is not None thay vi truthy check — sl=0.0 la falsy nhung la gia hop le
+        if sl is not None or tp is not None:
             params["tpslMode"] = "Full"
-        if sl:
+        if sl is not None and sl > 0:
             sl_rounded = self.round_to_tick(sl, tick_size) if tick_size > 0 else round(sl, 6)
-            params["stopLoss"]    = str(sl_rounded)
-            params["slTriggerBy"] = "MarkPrice"
-        if tp:
+            if sl_rounded > 0:
+                params["stopLoss"]    = str(sl_rounded)
+                params["slTriggerBy"] = "MarkPrice"
+        if tp is not None and tp > 0:
             tp_rounded = self.round_to_tick(tp, tick_size) if tick_size > 0 else round(tp, 6)
-            params["takeProfit"]  = str(tp_rounded)
-            params["tpTriggerBy"] = "MarkPrice"
+            if tp_rounded > 0:
+                params["takeProfit"]  = str(tp_rounded)
+                params["tpTriggerBy"] = "MarkPrice"
 
         resp = self.session.place_order(**params)
         result = resp["result"]
@@ -301,11 +303,13 @@ class BybitClient:
         if tp_price > 0:
             params["takeProfit"] = self._tick_round(tp_price, tick_size)
 
-        logger.info(f"set_sl_tp {symbol}: SL={params.get('stopLoss','0')} TP={params.get('takeProfit','0')} (tick={tick_size})")
+        logger.info(f"set_sl_tp {symbol}: SL={params.get('stopLoss','(none)')} TP={params.get('takeProfit','(none)')} tick={tick_size}")
         resp = self.session.set_trading_stop(**params)
         ret_code = resp.get("retCode", -1)
         if ret_code != 0:
-            raise RuntimeError(f"set_trading_stop failed retCode={ret_code} msg={resp.get('retMsg')}")
+            msg = resp.get("retMsg", "")
+            logger.error(f"set_sl_tp {symbol} FAILED retCode={ret_code} msg={msg} params={params}")
+            raise RuntimeError(f"set_trading_stop failed retCode={ret_code} msg={msg}")
 
     def update_stop_loss(self, symbol: str, sl_price: float, tick_size: float = 0.0):
         """Cap nhat SL — lay TP hien tai tu exchange va goi set_sl_tp voi ca hai gia tri.

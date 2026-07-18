@@ -49,11 +49,19 @@ MAX_CAPITAL_PCT    = 0.10   # Max 10% equity dung lam margin moi lenh
 MAX_OPEN_POSITIONS = 10     # Max 10 positions — trade tat ca co hoi tot
 # SL/TP theo ATR — RR >= 1.3 sau phi (truoc: 1.5/1.5 = 1:1, sau phi am)
 ATR_PERIOD        = 14
-SL_ATR_MULT       = 1.5    # SL  = 1.5x ATR
-TP1_ATR_MULT      = 2.0    # TP1 = 2.0x ATR — rong hon, dam bao loi sau phi 0.11%
+SL_ATR_MULT       = 1.5    # SL  = 1.5x ATR (swing-based se dung high/low 5 nen 15m, clamp 1.5-3x ATR)
+TP1_ATR_MULT      = 2.0    # TP1 = 2.0x ATR — dam bao loi sau phi 0.11%
 TP2_ATR_MULT      = 3.5    # TP2 = 3.5x ATR — cho 50% con lai sau partial close
-BREAKEVEN_TRIGGER = 0.50   # Doi SL ve breakeven tai 50% den TP1 — 20% qua som, hay bi noise stop
+BREAKEVEN_TRIGGER = 0.50   # Doi SL ve breakeven tai 50% den TP1
 PARTIAL_CLOSE_TRIGGER = 0.75  # Dong 50% position tai 75% den TP1, de 50% con lai chay den TP2
+
+# Hard cap SL/TP theo % gia — tranh SL/TP phi ly khi ATR qua lon (coin pump/dip)
+# SL toi da 4%: du rong de vuot qua spike tam thoi ma gia van co the quay dau
+# TP1 toi da 6%, TP2 toi da 10%: TP phai co the dat duoc trong dieu kien binh thuong
+SL_MAX_PCT   = 0.040   # 4%  — SL khong duoc rong hon 4% du ATR the nao
+TP1_MAX_PCT  = 0.060   # 6%  — TP1 khong cao hon 6% (de dat duoc)
+TP2_MAX_PCT  = 0.100   # 10% — TP2 khong cao hon 10%
+SL_MIN_PCT   = 0.003   # 0.3% — SL toi thieu (tranh SL qua sat spread+phi bi hit ngay)
 
 # --- Signal sensitivity -------------------------------------------------------
 MIN_SIGNAL_STRENGTH = 0.60   # Chi lay signal chat luong cao

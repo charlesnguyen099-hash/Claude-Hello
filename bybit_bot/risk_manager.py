@@ -105,9 +105,19 @@ class RiskManager:
         tp1_dist = max(tp1_dist, sl_dist * 1.5)
         tp2_dist = max(tp2_dist, sl_dist * 2.5)
         # Dam bao SL/TP toi thieu tuyet doi — bao ve khi ATR qua nho
-        sl_dist  = max(sl_dist,  signal.entry_price * 0.002)
+        sl_dist  = max(sl_dist,  signal.entry_price * config.SL_MIN_PCT)   # toi thieu 0.3%
         tp1_dist = max(tp1_dist, signal.entry_price * 0.005)
         tp2_dist = max(tp2_dist, signal.entry_price * 0.010)
+
+        # Hard cap SL/TP theo % gia — tranh phi ly khi ATR qua lon (coin dang pump/dip manh)
+        # SL cap 4%: du rong de wick tam thoi khong hit SL, gia van co the quay dau
+        # TP cap 6%/10%: TP phai co the dat duoc trong dieu kien market binh thuong
+        sl_dist  = min(sl_dist,  signal.entry_price * config.SL_MAX_PCT)
+        tp1_dist = min(tp1_dist, signal.entry_price * config.TP1_MAX_PCT)
+        tp2_dist = min(tp2_dist, signal.entry_price * config.TP2_MAX_PCT)
+        # Re-enforce RR sau khi cap — neu SL bi cap xuong, TP phai giu RR >= 1.5
+        tp1_dist = max(tp1_dist, sl_dist * 1.5)
+        tp2_dist = max(tp2_dist, sl_dist * 2.5)
 
         # RISK-BASED POSITION SIZING:
         # Muc tieu: neu SL hit thi mat dung RISK_PER_TRADE_PCT% equity (x scale_factor)

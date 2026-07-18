@@ -202,16 +202,41 @@ class Executor:
                 logger.error(f"{symbol}: set_sl_tp layer2 FAILED: {err_msg}")
                 print(f"[ERROR] {symbol} set_sl_tp FAILED: {err_msg}", flush=True)
 
-            # --- Verify va re-arm neu van thieu (up to 5 attempts) ---
+            # --- Verify va re-arm neu van thieu HOAC SAI TY LE (up to 5 attempts) ---
             self._sl_verified[symbol] = False
             for _attempt in range(5):
                 time.sleep(1.0)
                 has_sl, actual_sl, has_tp, actual_tp = self.client.verify_position_tp_sl(symbol)
                 if has_sl and has_tp:
-                    logger.info(f"{symbol}: CONFIRMED SL={actual_sl} TP={actual_tp} active (attempt={_attempt+1})")
-                    print(f"[OK] {symbol} SL={actual_sl} TP={actual_tp} confirmed", flush=True)
-                    self._sl_verified[symbol] = True
-                    break
+                    # Kiem tra SL co dung ty le SL_TP_RATIO voi TP khong
+                    # Bybit doi khi clamp SL ve gia gan hon (do liq constraint, min distance, etc.)
+                    # → bot can phat hien va fix, tranh chap nhan SL sai
+                    _entry_ref = signal.entry_price
+                    _tp_dist   = abs(actual_tp - _entry_ref) if actual_tp > 0 and _entry_ref > 0 else 0
+                    _sl_dist   = abs(actual_sl - _entry_ref) if actual_sl > 0 and _entry_ref > 0 else 0
+                    _ratio_ok  = True
+                    if _tp_dist > 0 and _sl_dist > 0:
+                        _actual_ratio = _sl_dist / _tp_dist
+                        _expected     = config.SL_TP_RATIO
+                        # Cho phep sai so 15% (rounding tick size)
+                        if abs(_actual_ratio - _expected) / _expected > 0.15:
+                            _ratio_ok = False
+                            logger.warning(
+                                f"{symbol}: SL ratio WRONG ({_actual_ratio:.2f}×TP, expected {_expected}×) "
+                                f"actual_sl={actual_sl} sl_rounded={sl_rounded} — re-arm"
+                            )
+                            print(f"[FIX] {symbol} SL ratio {_actual_ratio:.2f}×TP (expected {_expected}×) — forcing correct SL={sl_rounded}", flush=True)
+                    if _ratio_ok:
+                        logger.info(f"{symbol}: CONFIRMED SL={actual_sl} TP={actual_tp} ratio={_sl_dist/(_tp_dist+1e-9):.1f}×TP (attempt={_attempt+1})")
+                        print(f"[OK] {symbol} SL={actual_sl} TP={actual_tp} confirmed", flush=True)
+                        self._sl_verified[symbol] = True
+                        break
+                    # SL sai ty le → force re-arm voi gia tri da tinh dung
+                    try:
+                        self.client.set_sl_tp(symbol, sl_rounded, tp1_rounded)
+                    except Exception as e2:
+                        logger.error(f"{symbol}: fix-ratio re-arm FAILED: {str(e2).encode('ascii','replace').decode()}")
+                    continue
                 err_detail = f"has_sl={has_sl}({actual_sl}), has_tp={has_tp}({actual_tp})"
                 logger.error(f"{symbol}: SL/TP MISSING attempt {_attempt+1}/5 ({err_detail}) — re-arm")
                 print(f"[CRITICAL] {symbol} SL/TP MISSING attempt {_attempt+1}/5: {err_detail}", flush=True)
@@ -350,6 +375,30 @@ class Executor:
                 self._tp1_price[symbol] = saved_tp
                 logger.warning(f"{symbol}: No saved/exchange TP — computed fallback TP={saved_tp:.6f} "
                                 f"(ROI={tp_roi*100:.0f}% / {_pos_leverage:.0f}x)")
+
+            # Kiem tra SL co dung ty le SL_TP_RATIO so voi TP khong (ca SL cu sai va SL bi clamp)
+            # Neu ty le sai qua 15% → fix bang cach tinh lai SL dung tu TP hien tai
+            _need_fix_ratio = False
+            if exchange_sl > 0 and exchange_tp > 0 and entry > 0:
+                _tp_dist_hc = abs(exchange_tp - entry)
+                _sl_dist_hc = abs(exchange_sl - entry)
+                if _tp_dist_hc > 0:
+                    _actual_ratio_hc = _sl_dist_hc / _tp_dist_hc
+                    if abs(_actual_ratio_hc - config.SL_TP_RATIO) / config.SL_TP_RATIO > 0.15:
+                        _need_fix_ratio = True
+                        _correct_sl_dist = _tp_dist_hc * config.SL_TP_RATIO
+                        _correct_sl = (entry + _correct_sl_dist) if side == "Sell" else (entry - _correct_sl_dist)
+                        logger.warning(
+                            f"{symbol}: HEALTH CHECK — SL ratio wrong ({_actual_ratio_hc:.2f}×TP, expected {config.SL_TP_RATIO}×) "
+                            f"SL={exchange_sl:.6f}→{_correct_sl:.6f} TP={exchange_tp:.6f}"
+                        )
+                        print(f"[FIX] {symbol} health-check: SL ratio {_actual_ratio_hc:.2f}×TP → fixing to {config.SL_TP_RATIO}×TP (SL={_correct_sl:.6f})", flush=True)
+                        try:
+                            self.client.set_sl_tp(symbol, _correct_sl, exchange_tp)
+                            self._sl_price[symbol] = _correct_sl
+                            saved_sl = _correct_sl
+                        except Exception as e:
+                            logger.error(f"{symbol}: fix-ratio health-check FAILED: {str(e).encode('ascii','replace').decode()}")
 
             need_rearm_sl = saved_sl > 0 and exchange_sl <= 0
             need_rearm_tp = saved_tp > 0 and exchange_tp <= 0

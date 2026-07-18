@@ -110,6 +110,7 @@ class TradingBot:
         if _today != self._equity_day_date:
             self._equity_day_date = _today
             logger.info(f"[DAILY] New day — equity: {equity:.2f} USDT")
+        _daily_pnl_pct = 0.0
         try:
             _today_realized_pnl = self.client.get_today_pnl()
             _daily_pnl_pct = _today_realized_pnl / equity if equity > 0 else 0
@@ -1357,10 +1358,10 @@ class TradingBot:
         # 85/15 qua chat: trong uptrend manh, stochastic bam sat 80-95 lien tuc
         # Chi block khi > 92 hoac < 8 (thuc su exhaustion), va macro KHONG confirm
         if not df_scalp.empty and len(df_scalp) >= 14:
-            _slo_k   = df_scalp["close"].iloc[-14:] - df_scalp["low"].iloc[-14:]
-            _slo_rng = df_scalp["high"].iloc[-14:].max() - df_scalp["low"].iloc[-14:].min()
+            _slo_low14 = df_scalp["low"].iloc[-14:].min()
+            _slo_rng   = df_scalp["high"].iloc[-14:].max() - _slo_low14
             if _slo_rng > 0:
-                _stoch_k      = (_slo_k.iloc[-1] / _slo_rng) * 100
+                _stoch_k      = ((df_scalp["close"].iloc[-1] - _slo_low14) / _slo_rng) * 100
                 _macro_confirm = (macro_trend == best.direction and macro_4h == best.direction)
                 if best.direction == 1 and _stoch_k > 92 and not _macro_confirm:
                     return _block(f"skip LONG - 5m Stochastic overbought K={_stoch_k:.1f}")

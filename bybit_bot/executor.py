@@ -202,25 +202,26 @@ class Executor:
                 logger.error(f"{symbol}: set_sl_tp layer2 FAILED: {err_msg}")
                 print(f"[ERROR] {symbol} set_sl_tp FAILED: {err_msg}", flush=True)
 
-            # --- Verify va re-arm neu van thieu ---
-            time.sleep(0.5)
-            has_sl, actual_sl, has_tp, actual_tp = self.client.verify_position_tp_sl(symbol)
-            if not has_sl or not has_tp:
+            # --- Verify va re-arm neu van thieu (up to 5 attempts) ---
+            self._sl_verified[symbol] = False
+            for _attempt in range(5):
+                time.sleep(1.0)
+                has_sl, actual_sl, has_tp, actual_tp = self.client.verify_position_tp_sl(symbol)
+                if has_sl and has_tp:
+                    logger.info(f"{symbol}: CONFIRMED SL={actual_sl} TP={actual_tp} active (attempt={_attempt+1})")
+                    print(f"[OK] {symbol} SL={actual_sl} TP={actual_tp} confirmed", flush=True)
+                    self._sl_verified[symbol] = True
+                    break
                 err_detail = f"has_sl={has_sl}({actual_sl}), has_tp={has_tp}({actual_tp})"
-                logger.error(f"{symbol}: SL/TP MISSING sau 2 layers ({err_detail}) — re-arm")
-                print(f"[CRITICAL] {symbol} SL/TP MISSING: {err_detail}", flush=True)
+                logger.error(f"{symbol}: SL/TP MISSING attempt {_attempt+1}/5 ({err_detail}) — re-arm")
+                print(f"[CRITICAL] {symbol} SL/TP MISSING attempt {_attempt+1}/5: {err_detail}", flush=True)
                 try:
                     self.client.set_sl_tp(symbol, sl_rounded, tp1_rounded)
-                    self._sl_verified[symbol] = True
                 except Exception as e2:
-                    err2 = str(e2).encode('ascii','replace').decode()
-                    logger.error(f"{symbol}: re-arm FAILED: {err2}")
-                    print(f"[CRITICAL] {symbol} re-arm FAILED: {err2}", flush=True)
-                    self._sl_verified[symbol] = False
-            else:
-                logger.info(f"{symbol}: CONFIRMED SL={actual_sl} TP={actual_tp} active")
-                print(f"[OK] {symbol} SL={actual_sl} TP={actual_tp} confirmed", flush=True)
-                self._sl_verified[symbol] = True
+                    logger.error(f"{symbol}: re-arm attempt {_attempt+1} FAILED: {str(e2).encode('ascii','replace').decode()}")
+            if not self._sl_verified[symbol]:
+                logger.error(f"{symbol}: SL/TP STILL MISSING after 5 attempts — position at risk!")
+                print(f"[CRITICAL] {symbol} SL/TP NOT SET after 5 attempts — MANUAL ACTION REQUIRED", flush=True)
 
             self.logger.log_trade({
                 "event":     "open",
@@ -329,6 +330,27 @@ class Executor:
                        else self._tp2_price.get(symbol, 0.0)
             exchange_sl = _fval(pos, "stopLoss")
             exchange_tp = _fval(pos, "takeProfit")
+
+            # Compute fallback SL/TP tu entry neu khong co saved value (bot restart sau khi SL/TP bi mat)
+            # Bug cu: saved_sl=0 -> need_rearm_sl=False -> khong re-arm du exchange khong co SL
+            if saved_sl <= 0 and exchange_sl <= 0 and entry > 0:
+                leverage = max(1.0, _fval(pos, "leverage", 1.0))
+                sl_roi   = config.TP_ROI_MIN * config.SL_TP_RATIO  # conservative: min TP * ratio
+                sl_dist  = sl_roi * entry / leverage
+                saved_sl = (entry + sl_dist) if side == "Sell" else (entry - sl_dist)
+                self._sl_price[symbol] = saved_sl
+                logger.warning(f"{symbol}: No saved/exchange SL — computed fallback SL={saved_sl:.6f} "
+                                f"(ROI={sl_roi*100:.0f}% / {leverage:.0f}x)")
+
+            if saved_tp <= 0 and exchange_tp <= 0 and entry > 0:
+                leverage = max(1.0, _fval(pos, "leverage", 1.0))
+                tp_roi   = config.TP_ROI_MIN
+                tp_dist  = tp_roi * entry / leverage
+                saved_tp = (entry - tp_dist) if side == "Sell" else (entry + tp_dist)
+                self._tp1_price[symbol] = saved_tp
+                logger.warning(f"{symbol}: No saved/exchange TP — computed fallback TP={saved_tp:.6f} "
+                                f"(ROI={tp_roi*100:.0f}% / {leverage:.0f}x)")
+
             need_rearm_sl = saved_sl > 0 and exchange_sl <= 0
             need_rearm_tp = saved_tp > 0 and exchange_tp <= 0
             if need_rearm_sl or need_rearm_tp:
@@ -340,10 +362,10 @@ class Executor:
                 try:
                     # LUON truyen CA HAI gia tri voi tpslMode=Full:
                     # neu chi truyen 1 gia tri, Bybit se XOA gia tri con lai (bug cu)
-                    # Dung exchange value cho gia tri dang ok, dung saved value cho gia tri bi mat
                     rearm_sl = saved_sl if need_rearm_sl else exchange_sl
                     rearm_tp = saved_tp if need_rearm_tp else exchange_tp
                     self.client.set_sl_tp(symbol, rearm_sl, rearm_tp)
+                    logger.info(f"{symbol}: Re-armed SL={rearm_sl:.6f} TP={rearm_tp:.6f}")
                 except Exception as e:
                     logger.error(f"{symbol}: Failed to re-arm SL/TP: {e}")
 

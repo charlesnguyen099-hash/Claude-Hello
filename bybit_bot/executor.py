@@ -30,6 +30,15 @@ import config
 logger = logging.getLogger(__name__)
 
 
+def _fval(d: dict, key: str, default: float = 0.0) -> float:
+    """Safe float parse — Bybit tra ve '' (chuoi rong) khi field khong co gia tri."""
+    v = d.get(key, default)
+    try:
+        return float(v) if v != "" else default
+    except (TypeError, ValueError):
+        return default
+
+
 class Executor:
     def __init__(self, client: BybitClient, risk_mgr: RiskManager, bot_logger: BotLogger):
         self.client    = client
@@ -69,10 +78,10 @@ class Executor:
             MIN_HOLD_SECONDS = 1800  # 30 phut = 2 nen 15m
             pos_pnl_pct = 0.0
             try:
-                notional = float(existing[0].get("positionValue", 1)) or 1
-                lev      = float(existing[0].get("leverage", 1)) or 1
+                notional = _fval(existing[0], "positionValue", 1) or 1
+                lev      = _fval(existing[0], "leverage", 1) or 1
                 margin   = notional / lev
-                pnl      = float(existing[0].get("unrealisedPnl", 0))
+                pnl      = _fval(existing[0], "unrealisedPnl")
                 pos_pnl_pct = pnl / margin if margin > 0 else 0
             except Exception:
                 pass
@@ -231,14 +240,14 @@ class Executor:
 
         for pos in open_positions:
             symbol     = pos["symbol"]
-            entry      = float(pos["avgPrice"])
-            mark_price = float(pos.get("markPrice", entry))
+            entry      = _fval(pos, "avgPrice")
+            mark_price = _fval(pos, "markPrice", entry)
             side       = pos["side"]
 
             # --- State restoration after restart ---
             # Neu bot restart, tat ca in-memory state bi reset. Phuc hoi tu du lieu exchange.
             if symbol not in self._sl_price:
-                exchange_sl = float(pos.get("stopLoss", 0))
+                exchange_sl = _fval(pos, "stopLoss")
                 if exchange_sl > 0:
                     self._sl_price[symbol] = exchange_sl
                     logger.info(f"{symbol}: Restored SL={exchange_sl:.6f} from exchange after restart")
@@ -262,7 +271,7 @@ class Executor:
                 # Restore _tp1_price: neu chua co (restart), lay tu exchange TP
                 # Logic: neu partial chua xay ra, exchange TP chinh la TP1
                 # (neu partial da xay ra, exchange TP la TP2 nhung ta khong biet — xem ben duoi)
-                exchange_tp = float(pos.get("takeProfit", 0))
+                exchange_tp = _fval(pos, "takeProfit")
                 if exchange_tp > 0 and symbol not in self._tp1_price:
                     # Gia su day la TP1 (neu partial chua xay ra)
                     self._tp1_price[symbol] = exchange_tp
@@ -290,7 +299,7 @@ class Executor:
             # Chi check cho cac vi the ma bot nay da mo (co _sl_price)
             saved_sl = self._sl_price.get(symbol, 0.0)
             if saved_sl > 0:
-                exchange_sl = float(pos.get("stopLoss", 0))
+                exchange_sl = _fval(pos, "stopLoss")
                 if exchange_sl <= 0:
                     logger.warning(
                         f"{symbol}: SL missing on exchange — re-arming SL={saved_sl:.6f}"
@@ -300,7 +309,7 @@ class Executor:
                     except Exception as e:
                         logger.error(f"{symbol}: Failed to re-arm SL: {e}")
 
-            tp1_threshold = float(pos.get("takeProfit", 0))
+            tp1_threshold = _fval(pos, "takeProfit")
 
             if tp1_threshold <= 0:
                 if self.risk_mgr.should_close_position(pos, mark_price):
@@ -342,7 +351,7 @@ class Executor:
                         _be_ceil = (side == "Sell")
                         be_price = self.client.round_to_tick(be_price_raw, ts, ceil=_be_ceil) if ts > 0 else round(be_price_raw, 6)
                         # Validate truoc khi gui: Bybit reject neu SL invalid
-                        mark = float(pos.get("markPrice", 0))
+                        mark = _fval(pos, "markPrice")
                         if mark > 0:
                             if side == "Buy" and be_price >= mark:
                                 logger.debug(f"{symbol}: BE SL {be_price:.6f} >= mark {mark:.6f} (LONG) — skip, wait")
@@ -408,7 +417,7 @@ class Executor:
                             be_price_raw = entry + fee_buffer if side == "Buy" else entry - fee_buffer
                             ts3 = self._tick_size.get(symbol, 0.0)
                             be_price = self.client.round_to_tick(be_price_raw, ts3) if ts3 > 0 else round(be_price_raw, 6)
-                            mark3 = float(pos.get("markPrice", 0))
+                            mark3 = _fval(pos, "markPrice")
                             if mark3 > 0:
                                 if side == "Buy" and be_price >= mark3:
                                     logger.debug(f"{symbol}: partial BE SL {be_price:.6f} >= mark {mark3:.6f} (LONG) — skip")
@@ -455,8 +464,8 @@ class Executor:
     def _close_position(self, position: dict):
         symbol = position["symbol"]
         side   = position["side"]
-        qty    = float(position["size"])
-        pnl    = float(position.get("unrealisedPnl", 0))
+        qty    = _fval(position, "size")
+        pnl    = _fval(position, "unrealisedPnl")
         try:
             self.client.close_position(symbol, side, qty)
             self.clear_position_state(symbol)

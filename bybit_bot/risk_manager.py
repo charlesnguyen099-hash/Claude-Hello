@@ -99,11 +99,12 @@ class RiskManager:
 
         tp1_dist = config.TP1_ATR_MULT * _atr - fee_price
         tp2_dist = config.TP2_ATR_MULT * _atr - fee_price
-        # TP1_ATR_MULT == SL_ATR_MULT nen tp1_dist < sl_dist (fee offset nguoc chieu)
-        # -> max dam bao TP1 >= SL distance -> RR >= 1
-        tp1_dist = max(tp1_dist, sl_dist)
-        tp2_dist = max(tp2_dist, sl_dist * 2.0)
-        # Dam bao SL/TP duong — tp1 min 0.5% de cover phi 0.11% va con co loi
+        # Enforce minimum RR 1.5: TP1 >= 1.5x SL distance
+        # Truoc day chi max(tp1, sl) = RR 1.0 — sau phi 0.11% tong bi am
+        # RR=1.5 dam bao: khi win rate >= 42% la co loi net sau phi
+        tp1_dist = max(tp1_dist, sl_dist * 1.5)
+        tp2_dist = max(tp2_dist, sl_dist * 2.5)
+        # Dam bao SL/TP toi thieu tuyet doi — bao ve khi ATR qua nho
         sl_dist  = max(sl_dist,  signal.entry_price * 0.002)
         tp1_dist = max(tp1_dist, signal.entry_price * 0.005)
         tp2_dist = max(tp2_dist, signal.entry_price * 0.010)

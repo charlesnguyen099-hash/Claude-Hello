@@ -549,6 +549,9 @@ class TradingBot:
         # RSI 1m qua nhay, oversold/overbought xuyen hien lien tuc trong noise binh thuong
         # RSI 15m on dinh hon, chi bat reversal that su
         rsi_now = compute_rsi(df_trend["close"]).iloc[-1] if not df_trend.empty and len(df_trend) >= 14 else 50.0
+        # Clamp RSI de tranh NaN/Inf anh huong den reversal logic
+        if not (0 <= rsi_now <= 100):
+            rsi_now = 50.0
 
         # Lay live mark price mot lan cho range position checks — tranh dung 15m close (stale up to 14m)
         # Tai day la diem dau tien co du context de goi API (sau spike filter da pass)
@@ -672,10 +675,12 @@ class TradingBot:
             if _close_15_ago > 0:
                 _net_move = (_micro_price - _close_15_ago) / _close_15_ago
                 # scalp_trend bypass: neu 5m xac nhan cung chieu -> la trend, khong phai spike
-                if _net_move < -0.008 * _sp and not _micro_spike_dump and scalp_trend != -1:
+                # Tang nguong 0.8% -> 1.5%: 0.8% qua nho, block het cac coin dang trend binh thuong
+                # 15 phut move 1.5% la spike/exhaustion, 0.8% la move thuong trong trend manh
+                if _net_move < -0.015 * _sp and not _micro_spike_dump and scalp_trend != -1:
                     _micro_spike_dump = True
                     logger.debug(f"{symbol}: cumulative net dump {_net_move*100:.1f}% in 15 candles -> dump flag")
-                elif _net_move > 0.008 * _sp and not _micro_spike_pump and scalp_trend != 1:
+                elif _net_move > 0.015 * _sp and not _micro_spike_pump and scalp_trend != 1:
                     _micro_spike_pump = True
                     logger.debug(f"{symbol}: cumulative net pump {_net_move*100:.1f}% in 15 candles -> pump flag")
 
@@ -792,9 +797,10 @@ class TradingBot:
                     return True
 
         # Xac dinh mode: REVERSAL hay MOMENTUM
-        # Nguong 35/65 dong bo voi sustained_trend va bollinger — bat duoc reversal som hon
-        is_reversal  = rsi_now < 35 or rsi_now > 65
-        reversal_dir = 1 if rsi_now < 35 else (-1 if rsi_now > 65 else 0)
+        # 35/65 qua nhat — RSI 35-50 la binh thuong trong downtrend, khong phai reversal point
+        # Dung 30/70: reversal chi khi RSI thuc su cuc doan (oversold/overbought ro rang)
+        is_reversal  = rsi_now < 30 or rsi_now > 70
+        reversal_dir = 1 if rsi_now < 30 else (-1 if rsi_now > 70 else 0)
 
         long_signals  = []
         short_signals = []
@@ -877,14 +883,16 @@ class TradingBot:
                         scalp_allows_short = True
                         scalp_allows_long  = True
                     else:
-                        # Altcoin: 5m phai CONFIRM cung chieu (khong chi "khong nguoc chieu")
-                        # SHORT chi ok khi 5m bearish (-1); neutral (0) = chua confirm -> skip
-                        # LONG  chi ok khi 5m bullish (+1); neutral (0) = chua confirm -> skip
-                        # Ngoai le: neu ca micro (1m) va 15m deu xac nhan -> cho phep neutral 5m
-                        _micro_short_ok = micro_down and macro_trend <= -1
-                        _micro_long_ok  = micro_up   and macro_trend >= 1
-                        scalp_allows_short = (scalp_trend == -1) or _micro_short_ok
-                        scalp_allows_long  = (scalp_trend ==  1) or _micro_long_ok
+                        # Altcoin: 5m uu tien confirm nhung co nhieu bypass de khong bo miss lenh tot
+                        # 1. 5m bearish/bullish xac nhan -> ok
+                        # 2. 1m + 15m cung chieu -> ok (early trend, 5m chua flip)
+                        # 3. Ca 15m VA 1h cung chieu -> ok (ca 2 TF lon xac nhan, 5m neutral chap nhan)
+                        _micro_short_ok  = micro_down and macro_trend <= -1
+                        _micro_long_ok   = micro_up   and macro_trend >= 1
+                        _both_tf_bear    = macro_trend <= -1 and macro_4h <= -1
+                        _both_tf_bull    = macro_trend >= 1  and macro_4h >= 1
+                        scalp_allows_short = (scalp_trend == -1) or _micro_short_ok or _both_tf_bear
+                        scalp_allows_long  = (scalp_trend ==  1) or _micro_long_ok  or _both_tf_bull
                     if sig.direction == 1 and long_ok and scalp_allows_long:
                         long_signals.append(sig)
                     elif sig.direction == -1 and short_ok and scalp_allows_short:
@@ -992,7 +1000,7 @@ class TradingBot:
                     if _atr_for_sl > 0:
                         best.atr = _atr_for_sl
                     names = "+".join(s.strategy_name for s in signals)
-                    rsi_label = f"RSI15m={rsi_now:.0f}({'OVERSOLD' if reversal_dir==1 else 'OVERBOUGHT'})"
+                    rsi_label = f"RSI15m={rsi_now:.0f}({'OVERSOLD<30' if reversal_dir==1 else 'OVERBOUGHT>70'})"
                     logger.info(
                         f"{symbol} [REVERSAL {rsi_label}] [{names}] -> "
                         f"{'LONG' if best.direction==1 else 'SHORT'} "
@@ -1011,12 +1019,13 @@ class TradingBot:
             long_signals  = [s for s in long_signals  if _long_ok_macro]
             short_signals = [s for s in short_signals if _short_ok_macro]
 
-        # RSI EXTREME GUARD: neu RSI 15m oversold (< 35) thi xoa short signals o MOMENTUM path
-        # Reversal path da xu ly o tren; neu reversal khong du consensus thi KHONG duoc short them vao oversold
-        # Tuong tu: RSI > 65 xoa long signals (khong long vao overbought)
-        if rsi_now < 35:
+        # RSI EXTREME GUARD: chi xoa signals khi RSI THUC SU cuc doan (25/75 thay vi 35/65)
+        # RSI 35 qua som — RSI 35-50 la binh thuong trong downtrend, khong phai oversold
+        # RSI < 25 moi la oversold that su (chi xay ra khi dump manh bat thuong)
+        # RSI > 75 moi la overbought that su
+        if rsi_now < 25:
             short_signals = []
-        elif rsi_now > 65:
+        elif rsi_now > 75:
             long_signals = []
 
         # BTC GLOBAL TREND FILTER — HARD BLOCK khi ca 1h VA 4h BTC cung chieu
@@ -1255,13 +1264,15 @@ class TradingBot:
                 if best.direction == -1 and _dn_wick / _lc_rng > 0.75:
                     return _block(f"skip SHORT - 1m wick rejection {_dn_wick/_lc_rng*100:.0f}%")
 
-        # [AEQ-4] Last 15m candle conflict
+        # [AEQ-4] Last 15m candle conflict — chi block khi CỰC MANH (1.5x ATR)
+        # 0.8x ATR qua nhat: trong trending market, mot nen nguoc chiều vua phai la binh thuong
+        # Nen nguoc chieu lon > 1.5x ATR moi la conflict that su (bearish engulfing khi muon long)
         if not df_trend.empty and len(df_trend) >= 3 and _atr_for_sl > 0 and not is_reversal:
             _c15      = df_trend.iloc[-2]
             _c15_body = _c15["close"] - _c15["open"]
-            if best.direction == 1 and _c15_body < -0.8 * _atr_for_sl:
+            if best.direction == 1 and _c15_body < -1.5 * _atr_for_sl:
                 return _block(f"skip LONG - last 15m strongly bearish (body={_c15_body:.4f})")
-            if best.direction == -1 and _c15_body > 0.8 * _atr_for_sl:
+            if best.direction == -1 and _c15_body > 1.5 * _atr_for_sl:
                 return _block(f"skip SHORT - last 15m strongly bullish (body={_c15_body:.4f})")
 
         # [AEQ-6] Funding period
@@ -1287,16 +1298,18 @@ class TradingBot:
             if _bd_p > 0 and _bd_r < _bd_p * 0.10:
                 return _block(f"skip - candle bodies near-zero {_bd_r:.4f} < 10% of {_bd_p:.4f}")
 
-        # [AEQ-10] Stochastic extreme on 5m
+        # [AEQ-10] Stochastic extreme on 5m — chi block khi CUC DOAN (92/8)
+        # 85/15 qua chat: trong uptrend manh, stochastic bam sat 80-95 lien tuc
+        # Chi block khi > 92 hoac < 8 (thuc su exhaustion), va macro KHONG confirm
         if not df_scalp.empty and len(df_scalp) >= 14:
             _slo_k   = df_scalp["close"].iloc[-14:] - df_scalp["low"].iloc[-14:]
             _slo_rng = df_scalp["high"].iloc[-14:].max() - df_scalp["low"].iloc[-14:].min()
             if _slo_rng > 0:
                 _stoch_k      = (_slo_k.iloc[-1] / _slo_rng) * 100
                 _macro_confirm = (macro_trend == best.direction and macro_4h == best.direction)
-                if best.direction == 1 and _stoch_k > 85 and not _macro_confirm:
+                if best.direction == 1 and _stoch_k > 92 and not _macro_confirm:
                     return _block(f"skip LONG - 5m Stochastic overbought K={_stoch_k:.1f}")
-                if best.direction == -1 and _stoch_k < 15 and not _macro_confirm:
+                if best.direction == -1 and _stoch_k < 8 and not _macro_confirm:
                     return _block(f"skip SHORT - 5m Stochastic oversold K={_stoch_k:.1f}")
 
         # ══════════════════════════════════════════════════════════════════════

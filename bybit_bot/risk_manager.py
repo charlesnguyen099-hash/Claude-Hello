@@ -97,11 +97,20 @@ class RiskManager:
         else:
             sl_dist = config.SL_ATR_MULT * _atr + fee_price
 
-        tp1_dist = config.TP1_ATR_MULT * _atr - fee_price
-        tp2_dist = config.TP2_ATR_MULT * _atr - fee_price
+        # TP scale theo do tiem nang lenh (consensus x strength):
+        # Lenh manh (7 strategies dong thuan, strength=1.0) -> TP xa hon (ambitious target)
+        # Lenh yeu (2 strategies, strength=0.5) -> TP gan hon (de dat duoc hon)
+        # TP1: [TP1_ATR_MULT, TP1_ATR_MULT + 1.5x] = [2.0, 3.5]x ATR theo potential
+        # TP2: [TP2_ATR_MULT, TP2_ATR_MULT + 2.0x] = [3.5, 5.5]x ATR theo potential
+        tp1_mult = config.TP1_ATR_MULT + potential * 1.5
+        tp2_mult = config.TP2_ATR_MULT + potential * 2.0
+        tp1_dist = tp1_mult * _atr - fee_price
+        tp2_dist = tp2_mult * _atr - fee_price
+        logger.debug(
+            f"{signal.symbol}: potential={potential:.2f} -> "
+            f"TP1={tp1_mult:.2f}xATR TP2={tp2_mult:.2f}xATR"
+        )
         # Enforce minimum RR 1.5: TP1 >= 1.5x SL distance
-        # Truoc day chi max(tp1, sl) = RR 1.0 — sau phi 0.11% tong bi am
-        # RR=1.5 dam bao: khi win rate >= 42% la co loi net sau phi
         tp1_dist = max(tp1_dist, sl_dist * 1.5)
         tp2_dist = max(tp2_dist, sl_dist * 2.5)
         # Dam bao SL/TP toi thieu tuyet doi — bao ve khi ATR qua nho

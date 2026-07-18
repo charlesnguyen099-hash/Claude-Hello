@@ -1,8 +1,8 @@
 """
 Trade Executor — thực thi lệnh và quản lý vị thế
-- Dat lenh Market (fill ngay, khong bi cancel) voi SL + TP1 (safety net tren san)
-- Level 1 (BREAKEVEN_TRIGGER=50%): chuyen SL ve break-even khi gia di 50% duong den TP1
-- Level 2 (PARTIAL_CLOSE_TRIGGER=75%): dong 50% vi the, cap nhat TP len TP2, xac nhan SL breakeven
+- Dat lenh Market (fill ngay, khong bi cancel), sau do set SL+TP bang set_trading_stop (position-level)
+- Level 1 (BREAKEVEN_TRIGGER=60%): lock SL TAI muc 60% TP1 (khong phai ve entry) — dam bao loi toi thieu 60% TP1
+- Level 2 (PARTIAL_CLOSE_TRIGGER=75%): dong 50% vi the, cap nhat TP len TP2, xac nhan SL lock 60%
 - Level 3: 50% con lai chay den TP2 voi zero downside risk (SL = breakeven)
 - Anti-whipsaw: khong force-close vi the < 30 phut vi signal dao chieu
 - Tu dong dong lenh khi signal dao chieu (sau 30 phut hoac PnL < -20% margin)
@@ -259,9 +259,9 @@ class Executor:
     def manage_open_positions(self, open_positions: list[dict]):
         """
         Quan ly vi the dang mo theo 3 muc:
-        1. BREAKEVEN_TRIGGER (50%): doi SL ve entry + phi khi gia di 50% duong den TP1
-        2. PARTIAL_CLOSE_TRIGGER (75%): dong 50% reduce-only, cap nhat TP len TP2, xac nhan breakeven SL
-        3. 50% con lai chay den TP2 voi zero downside risk (SL = breakeven)
+        1. BREAKEVEN_TRIGGER (60%): lock SL TAI muc 60% TP1 — dam bao loi toi thieu 60% TP1 du bi stop ra
+        2. PARTIAL_CLOSE_TRIGGER (75%): dong 50% reduce-only, cap nhat TP len TP2, xac nhan SL lock
+        3. 50% con lai chay den TP2 voi SL da lock 60% TP1 (khong mat von, chi mat 1 phan loi)
 
         Defensive: kiem tra SL con active khong, re-arm neu mat.
         """
@@ -371,40 +371,39 @@ class Executor:
             else:
                 dist_moved = entry - best_price
 
-            # --- Muc 1: Break-even SL tai BREAKEVEN_TRIGGER% (50%) duong den TP1 ---
+            # --- Muc 1: Lock SL tai BREAKEVEN_TRIGGER% (60%) duong den TP1 ---
+            # SL KHONG ve entry (hoa von) ma ve chinh muc 60% TP1
+            # Dam bao lenh da dat toi thieu 60% loi TP1 khi bi stop ra
             if not self._breakeven_set.get(symbol, False) and dist_to_tp1 > 0 and dist_moved > 0:
                 if dist_moved >= dist_to_tp1 * config.BREAKEVEN_TRIGGER:
                     try:
-                        fee_buffer = entry * config.ROUND_TRIP_FEE
-                        # LONG BE:  SL tai entry + fee (tren entry) — trigger khi price quay xuong qua entry
-                        # SHORT BE: SL tai entry - fee (duoi entry) — trigger khi price quay len qua entry
-                        #   Ly do: SHORT profit = entry - close - fees
-                        #   Hoa von: close = entry - fees -> SL = entry - fee_buffer
-                        #   Neu dat entry + fee (nhu Long): SL trigger khi price > entry -> DANG LO, khong phai hoa von
-                        be_price_raw = entry + fee_buffer if side == "Buy" else entry - fee_buffer
+                        lock_dist = dist_to_tp1 * config.BREAKEVEN_TRIGGER
+                        # LONG: SL lock tai entry + 60% TP1 dist
+                        # SHORT: SL lock tai entry - 60% TP1 dist
+                        be_price_raw = entry + lock_dist if side == "Buy" else entry - lock_dist
                         ts = self._tick_size.get(symbol, 0.0)
-                        # LONG BE floor ok (SL duoi entry); SHORT BE ceil (SL duoi entry nhung phai >= tick boundary)
                         _be_ceil = (side == "Sell")
                         be_price = self.client.round_to_tick(be_price_raw, ts, ceil=_be_ceil) if ts > 0 else round(be_price_raw, 6)
-                        # Validate truoc khi gui: Bybit reject neu SL invalid
+                        # Validate: SL phai o phia co loi so voi mark price hien tai
                         mark = _fval(pos, "markPrice")
                         if mark > 0:
                             if side == "Buy" and be_price >= mark:
-                                logger.debug(f"{symbol}: BE SL {be_price:.6f} >= mark {mark:.6f} (LONG) — skip, wait")
-                                raise ValueError("BE above mark for LONG — skip")
+                                logger.debug(f"{symbol}: Lock SL {be_price:.6f} >= mark {mark:.6f} (LONG) — wait")
+                                raise ValueError("lock SL above mark for LONG — skip")
                             if side == "Sell" and be_price <= mark:
-                                logger.debug(f"{symbol}: BE SL {be_price:.6f} <= mark {mark:.6f} (SHORT) — skip, wait")
-                                raise ValueError("BE below mark for SHORT — skip")
+                                logger.debug(f"{symbol}: Lock SL {be_price:.6f} <= mark {mark:.6f} (SHORT) — wait")
+                                raise ValueError("lock SL below mark for SHORT — skip")
                         self.client.update_stop_loss(symbol, be_price)
                         self._breakeven_set[symbol] = True
                         self._sl_price[symbol] = be_price
                         logger.info(
-                            f"{symbol}: Break-even SL -> {be_price:.6f} "
+                            f"{symbol}: SL locked at 60% TP1 -> {be_price:.6f} "
                             f"(moved {dist_moved:.4f}/{dist_to_tp1:.4f} = "
-                            f"{dist_moved/dist_to_tp1*100:.0f}% toward TP1)"
+                            f"{dist_moved/dist_to_tp1*100:.0f}% toward TP1, "
+                            f"guaranteed {config.BREAKEVEN_TRIGGER*100:.0f}% of TP1 profit)"
                         )
                     except Exception as e:
-                        logger.warning(f"{symbol}: Could not set break-even SL: {e}")
+                        logger.warning(f"{symbol}: Could not lock SL: {e}")
 
             # --- Muc 2: Partial close tai PARTIAL_CLOSE_TRIGGER% (75%) duong den TP1 ---
             # FIX: _partial_closed chi duoc set True SAU KHI close order thanh cong
@@ -445,30 +444,23 @@ class Executor:
                             # qty qua nho de chia doi — danh dau da partial (toan bo chay den TP2)
                             self._partial_closed[symbol] = True
 
-                        # Xac nhan breakeven SL neu chua set (tick-aligned)
-                        # LONG: SL tai entry + fee (tren entry)
-                        # SHORT: SL tai entry - fee (duoi entry, nhung TREN mark khi profitable)
+                        # Xac nhan lock SL tai 60% TP1 neu chua set
                         if not self._breakeven_set.get(symbol, False):
-                            fee_buffer = entry * config.ROUND_TRIP_FEE
-                            be_price_raw = entry + fee_buffer if side == "Buy" else entry - fee_buffer
+                            lock_dist2 = dist_to_tp1 * config.BREAKEVEN_TRIGGER
+                            be_price_raw2 = entry + lock_dist2 if side == "Buy" else entry - lock_dist2
                             ts3 = self._tick_size.get(symbol, 0.0)
-                            be_price = self.client.round_to_tick(be_price_raw, ts3) if ts3 > 0 else round(be_price_raw, 6)
+                            _be_ceil3 = (side == "Sell")
+                            be_price = self.client.round_to_tick(be_price_raw2, ts3, ceil=_be_ceil3) if ts3 > 0 else round(be_price_raw2, 6)
                             mark3 = _fval(pos, "markPrice")
+                            ok = True
                             if mark3 > 0:
-                                if side == "Buy" and be_price >= mark3:
-                                    logger.debug(f"{symbol}: partial BE SL {be_price:.6f} >= mark {mark3:.6f} (LONG) — skip")
-                                elif side == "Sell" and be_price <= mark3:
-                                    logger.debug(f"{symbol}: partial BE SL {be_price:.6f} <= mark {mark3:.6f} (SHORT) — skip")
-                                else:
-                                    self.client.update_stop_loss(symbol, be_price)
-                                    self._breakeven_set[symbol] = True
-                                    self._sl_price[symbol] = be_price
-                                    logger.info(f"{symbol}: Breakeven SL confirmed -> {be_price:.6f}")
-                            else:
+                                if (side == "Buy" and be_price >= mark3) or (side == "Sell" and be_price <= mark3):
+                                    ok = False
+                            if ok:
                                 self.client.update_stop_loss(symbol, be_price)
                                 self._breakeven_set[symbol] = True
                                 self._sl_price[symbol] = be_price
-                                logger.info(f"{symbol}: Breakeven SL confirmed -> {be_price:.6f}")
+                                logger.info(f"{symbol}: SL locked at 60% TP1 (partial close) -> {be_price:.6f}")
 
                     except Exception as e:
                         logger.warning(f"{symbol}: Could not execute partial close: {e}")

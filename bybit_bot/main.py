@@ -961,9 +961,24 @@ class TradingBot:
                 (reversal_dir == -1 and (_micro_spike_dump or _rev_1h_blocked))
             )
             if not reversal_spike_blocked:
+                # RSI slope check: reversal chi hop le khi RSI dang THUC SU dao chieu
+                # RSI < 30 nhung van dang giam = falling knife; phai tang 3 nen lien tiep moi vao
+                # RSI > 70 nhung van dang tang = dang pump; phai giam 3 nen lien tiep moi short
+                _rsi_series = compute_rsi(df_signal["close"])
+                _rsi_slope_ok = True
+                if len(_rsi_series) >= 5:
+                    _rsi_3ago = _rsi_series.iloc[-4]
+                    _rsi_now2 = _rsi_series.iloc[-1]
+                    if reversal_dir == 1 and _rsi_now2 < _rsi_3ago:
+                        _rsi_slope_ok = False
+                        logger.debug(f"{symbol}: reversal LONG blocked — RSI chua turn ({_rsi_now2:.1f} < {_rsi_3ago:.1f}, van giam)")
+                    elif reversal_dir == -1 and _rsi_now2 > _rsi_3ago:
+                        _rsi_slope_ok = False
+                        logger.debug(f"{symbol}: reversal SHORT blocked — RSI chua turn ({_rsi_now2:.1f} > {_rsi_3ago:.1f}, van tang)")
+
                 # Micro trend hard block: khong reversal khi 1m dang chay nguoc chieu manh
                 reversal_micro_ok = not (reversal_dir == 1 and micro_down) and not (reversal_dir == -1 and micro_up)
-                reversal_confirmed = reversal_micro_ok and (
+                reversal_confirmed = _rsi_slope_ok and reversal_micro_ok and (
                     (reversal_dir == 1  and short_term_up)   or
                     (reversal_dir == -1 and short_term_down)
                 ) and self._micro_entry_analysis(df_micro, reversal_dir, is_reversal=True)

@@ -70,8 +70,8 @@ class SupertrendStrategy(BaseStrategy):
         flipped_bear = direction.iloc[-2] ==  1 and direction.iloc[-1] == -1
         trend_strong = adx.iloc[-1] > self.adx_threshold
 
-        trend_1h = self._trend_direction(df_trend)   # 1h
-        macro_d  = self._trend_direction(df_macro)   # 4h
+        trend_1h = self._trend_direction(df_trend)   # EMA100/250 ~ medium trend
+        macro_d  = self._macro_direction(df_macro)   # EMA300/600 ~ macro trend
 
         # Dung OR: chi can 1h HOAC 4h xac nhan huong — bat flip som hon khi 1 TF da dao chieu
         if flipped_bull and trend_strong and (trend_1h >= 1 or macro_d >= 1):

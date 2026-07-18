@@ -62,8 +62,8 @@ class VWAPVolumeStrategy(BaseStrategy):
         # Khoảng cách giá so với VWAP (%)
         dist_pct  = (price - vwap_now) / vwap_now
 
-        trend_1h = self._trend_direction(df_trend)   # 1h
-        macro_d  = self._trend_direction(df_macro)   # 4h
+        trend_1h = self._trend_direction(df_trend)   # EMA100/250 ~ medium trend
+        macro_d  = self._macro_direction(df_macro)   # EMA300/600 ~ macro trend
 
         # Long: gia breakout VWAP (0.1% - 3%) + 1h HOAC 4h xac nhan uptrend
         if 0.001 < dist_pct < 0.03 and vol_ok and (trend_1h >= 1 or macro_d >= 1):

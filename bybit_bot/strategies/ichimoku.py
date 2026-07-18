@@ -46,8 +46,8 @@ class IchimokuStrategy(BaseStrategy):
         chikou_bullish = df["close"].iloc[-1] > df["close"].iloc[-26]
         chikou_bearish = df["close"].iloc[-1] < df["close"].iloc[-26]
 
-        trend_1h = self._trend_direction(df_trend)   # 1h
-        macro_d  = self._trend_direction(df_macro)   # 4h
+        trend_1h = self._trend_direction(df_trend)   # EMA100/250 ~ medium trend
+        macro_d  = self._macro_direction(df_macro)   # EMA300/600 ~ macro trend
 
         # Ichimoku da co TK cross + cloud + chikou xac nhan — chi can 1h HOAC 4h dong thuan
         if tk_cross_up and above_cloud and chikou_bullish and (trend_1h >= 1 or macro_d >= 1):

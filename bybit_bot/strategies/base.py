@@ -81,15 +81,23 @@ class BaseStrategy(ABC):
         """
         ...
 
-    def _trend_direction(self, df: pd.DataFrame) -> int:
-        """+1 up, -1 down, 0 sideways. Pass df_trend for 1h or df_macro for 4h."""
-        if len(df) < 50:
+    def _trend_direction(self, df: pd.DataFrame, fast: int = 100, slow: int = 250) -> int:
+        """+1 up, -1 down, 0 sideways.
+        Chay tren 1m data 2000 nen: EMA(100/250) tuong duong EMA(20/50) tren 5m.
+        EMA(20/50) cu qua ngan (20-50 phut) -> lag, fire khi move da xong -> Long o dinh / Short o day.
+        EMA(100/250) on dinh hon, xac nhan trend that su (1.7h / ~4h trend)."""
+        if len(df) < slow + 5:
             return 0
-        ema20 = compute_ema(df["close"], 20).iloc[-1]
-        ema50 = compute_ema(df["close"], 50).iloc[-1]
+        ema_f = compute_ema(df["close"], fast).iloc[-1]
+        ema_s = compute_ema(df["close"], slow).iloc[-1]
         price = df["close"].iloc[-1]
-        if price > ema20 > ema50:
+        if price > ema_f > ema_s:
             return 1
-        if price < ema20 < ema50:
+        if price < ema_f < ema_s:
             return -1
         return 0
+
+    def _macro_direction(self, df: pd.DataFrame) -> int:
+        """Macro trend tren 1m data: EMA(300/600) ~ EMA(20/40) tren 15m (~5h/~10h trend).
+        Dung cho df_macro de phan biet voi _trend_direction (medium trend)."""
+        return self._trend_direction(df, fast=300, slow=600)

@@ -30,8 +30,8 @@ class EMACrossoverStrategy(BaseStrategy):
         atr   = compute_atr(df, config.ATR_PERIOD).iloc[-1]
 
         price    = close.iloc[-1]
-        macro_d  = self._trend_direction(df_macro)   # 4h
-        trend_1h = self._trend_direction(df_trend)   # 1h
+        macro_d  = self._macro_direction(df_macro)   # EMA300/600 ~ macro trend
+        trend_1h = self._trend_direction(df_trend)   # EMA100/250 ~ medium trend
 
         # Trạng thái EMA hiện tại: fast > slow = bullish alignment
         ema_f_now = ema_f.iloc[-1]

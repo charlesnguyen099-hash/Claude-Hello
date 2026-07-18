@@ -371,39 +371,52 @@ class Executor:
             else:
                 dist_moved = entry - best_price
 
-            # --- Muc 1: Lock SL tai BREAKEVEN_TRIGGER% (60%) duong den TP1 ---
-            # SL KHONG ve entry (hoa von) ma ve chinh muc 60% TP1
-            # Dam bao lenh da dat toi thieu 60% loi TP1 khi bi stop ra
+            # --- Muc 1: Trail SL khi gia di BREAKEVEN_TRIGGER% (60%) duong den TP1 ---
+            # SL dich len nhung LUON duoi entry:
+            #   LONG : new_SL = entry - 60% * sl_goc_dist  (van duoi entry, chat hon)
+            #   SHORT: new_SL = entry + 60% * sl_goc_dist  (van tren entry, chat hon)
+            # Dam bao: neu gia quay dau sau khi trail, van mat toi da 60% buffer goc (khong mat hon)
             if not self._breakeven_set.get(symbol, False) and dist_to_tp1 > 0 and dist_moved > 0:
                 if dist_moved >= dist_to_tp1 * config.BREAKEVEN_TRIGGER:
                     try:
-                        lock_dist = dist_to_tp1 * config.BREAKEVEN_TRIGGER
-                        # LONG: SL lock tai entry + 60% TP1 dist
-                        # SHORT: SL lock tai entry - 60% TP1 dist
-                        be_price_raw = entry + lock_dist if side == "Buy" else entry - lock_dist
+                        # Tinh sl_goc_dist tu sl_price da luu
+                        saved_sl = self._sl_price.get(symbol, 0.0)
+                        if saved_sl <= 0:
+                            raise ValueError("no saved SL to trail from")
+                        sl_goc_dist = abs(entry - saved_sl)   # khoang cach SL goc tu entry
+                        # SL moi = entry - 60% * sl_goc_dist (LONG) / entry + 60% * sl_goc_dist (SHORT)
+                        # "it nhat 60%" = giu lai it nhat 60% buffer goc duoi entry
+                        lock_ratio = config.BREAKEVEN_TRIGGER   # 0.60
+                        if side == "Buy":
+                            be_price_raw = entry - lock_ratio * sl_goc_dist
+                        else:
+                            be_price_raw = entry + lock_ratio * sl_goc_dist
                         ts = self._tick_size.get(symbol, 0.0)
                         _be_ceil = (side == "Sell")
                         be_price = self.client.round_to_tick(be_price_raw, ts, ceil=_be_ceil) if ts > 0 else round(be_price_raw, 6)
-                        # Validate: SL phai o phia co loi so voi mark price hien tai
+                        # Validate: SL moi phai chat hon SL cu (dich ve phia entry)
+                        if side == "Buy" and be_price <= saved_sl:
+                            raise ValueError(f"trail SL {be_price:.6f} not tighter than original {saved_sl:.6f}")
+                        if side == "Sell" and be_price >= saved_sl:
+                            raise ValueError(f"trail SL {be_price:.6f} not tighter than original {saved_sl:.6f}")
+                        # Validate: SL phai o phia duoi/tren entry (van duoi entry voi LONG)
                         mark = _fval(pos, "markPrice")
                         if mark > 0:
                             if side == "Buy" and be_price >= mark:
-                                logger.debug(f"{symbol}: Lock SL {be_price:.6f} >= mark {mark:.6f} (LONG) — wait")
-                                raise ValueError("lock SL above mark for LONG — skip")
+                                raise ValueError(f"trail SL {be_price:.6f} >= mark {mark:.6f} LONG — wait")
                             if side == "Sell" and be_price <= mark:
-                                logger.debug(f"{symbol}: Lock SL {be_price:.6f} <= mark {mark:.6f} (SHORT) — wait")
-                                raise ValueError("lock SL below mark for SHORT — skip")
+                                raise ValueError(f"trail SL {be_price:.6f} <= mark {mark:.6f} SHORT — wait")
                         self.client.update_stop_loss(symbol, be_price)
                         self._breakeven_set[symbol] = True
                         self._sl_price[symbol] = be_price
                         logger.info(
-                            f"{symbol}: SL locked at 60% TP1 -> {be_price:.6f} "
-                            f"(moved {dist_moved:.4f}/{dist_to_tp1:.4f} = "
-                            f"{dist_moved/dist_to_tp1*100:.0f}% toward TP1, "
-                            f"guaranteed {config.BREAKEVEN_TRIGGER*100:.0f}% of TP1 profit)"
+                            f"{symbol}: SL trailed -> {be_price:.6f} "
+                            f"(entry={entry:.6f}, SL goc={saved_sl:.6f}, "
+                            f"giu {lock_ratio*100:.0f}% buffer goc duoi entry | "
+                            f"moved {dist_moved/dist_to_tp1*100:.0f}% toward TP1)"
                         )
                     except Exception as e:
-                        logger.warning(f"{symbol}: Could not lock SL: {e}")
+                        logger.warning(f"{symbol}: Could not trail SL: {e}")
 
             # --- Muc 2: Partial close tai PARTIAL_CLOSE_TRIGGER% (75%) duong den TP1 ---
             # FIX: _partial_closed chi duoc set True SAU KHI close order thanh cong
@@ -444,23 +457,29 @@ class Executor:
                             # qty qua nho de chia doi — danh dau da partial (toan bo chay den TP2)
                             self._partial_closed[symbol] = True
 
-                        # Xac nhan lock SL tai 60% TP1 neu chua set
+                        # Trail SL khi partial close (neu chua trail o Muc 1)
                         if not self._breakeven_set.get(symbol, False):
-                            lock_dist2 = dist_to_tp1 * config.BREAKEVEN_TRIGGER
-                            be_price_raw2 = entry + lock_dist2 if side == "Buy" else entry - lock_dist2
-                            ts3 = self._tick_size.get(symbol, 0.0)
-                            _be_ceil3 = (side == "Sell")
-                            be_price = self.client.round_to_tick(be_price_raw2, ts3, ceil=_be_ceil3) if ts3 > 0 else round(be_price_raw2, 6)
-                            mark3 = _fval(pos, "markPrice")
-                            ok = True
-                            if mark3 > 0:
-                                if (side == "Buy" and be_price >= mark3) or (side == "Sell" and be_price <= mark3):
-                                    ok = False
-                            if ok:
-                                self.client.update_stop_loss(symbol, be_price)
-                                self._breakeven_set[symbol] = True
-                                self._sl_price[symbol] = be_price
-                                logger.info(f"{symbol}: SL locked at 60% TP1 (partial close) -> {be_price:.6f}")
+                            saved_sl2 = self._sl_price.get(symbol, 0.0)
+                            if saved_sl2 > 0:
+                                sl_goc_dist2 = abs(entry - saved_sl2)
+                                lock_ratio2  = config.BREAKEVEN_TRIGGER
+                                if side == "Buy":
+                                    be_price_raw2 = entry - lock_ratio2 * sl_goc_dist2
+                                else:
+                                    be_price_raw2 = entry + lock_ratio2 * sl_goc_dist2
+                                ts3 = self._tick_size.get(symbol, 0.0)
+                                _be_ceil3 = (side == "Sell")
+                                be_price = self.client.round_to_tick(be_price_raw2, ts3, ceil=_be_ceil3) if ts3 > 0 else round(be_price_raw2, 6)
+                                mark3 = _fval(pos, "markPrice")
+                                ok = True
+                                if mark3 > 0:
+                                    if (side == "Buy" and be_price >= mark3) or (side == "Sell" and be_price <= mark3):
+                                        ok = False
+                                if ok:
+                                    self.client.update_stop_loss(symbol, be_price)
+                                    self._breakeven_set[symbol] = True
+                                    self._sl_price[symbol] = be_price
+                                    logger.info(f"{symbol}: SL trailed (partial) -> {be_price:.6f} ({lock_ratio2*100:.0f}% buffer duoi entry)")
 
                     except Exception as e:
                         logger.warning(f"{symbol}: Could not execute partial close: {e}")

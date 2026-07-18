@@ -66,15 +66,15 @@ class RiskManager:
         #
         # Cong thuc:
         #   potential = (consensus/7) * 0.6 + strength * 0.4   (trong so: consensus quan trong hon)
-        #   scale = 0.5 + potential * 2.0   -> range [0.5x, 2.5x]
-        #     potential=0.0 (consensus=1,strength=0): scale=0.5x  (lenh yeu, bet nho)
-        #     potential=0.5 (consensus=3-4,str~0.7): scale=1.5x  (lenh trung binh)
-        #     potential=1.0 (consensus=7,strength=1): scale=2.5x (lenh manh nhat, all-in)
+        #   scale = (0.5 + potential * 2.0) * 3.0   -> range [1.5x, 7.5x]
+        #     potential=0.0 (consensus=1,strength=0): scale=1.5x  (lenh yeu)
+        #     potential=0.5 (consensus=3-4,str~0.7): scale=4.5x  (lenh trung binh)
+        #     potential=1.0 (consensus=7,strength=1): scale=7.5x (lenh manh nhat)
         consensus = getattr(signal, 'consensus', 1)
         strength  = getattr(signal, 'strength',  0.5)
         potential = (consensus / 7) * 0.6 + strength * 0.4
         potential = max(0.0, min(1.0, potential))
-        scale_factor = 0.5 + potential * 2.0   # [0.5x, 2.5x]
+        scale_factor = (0.5 + potential * 2.0) * 3.0   # [1.5x, 7.5x] — 3x capital boost
 
         # Lay leverage truoc de tinh SL/TP theo ROI
         exchange_max_lev = self.client.get_max_leverage(signal.symbol) if config.USE_MAX_LEVERAGE \

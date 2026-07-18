@@ -1301,6 +1301,13 @@ class TradingBot:
 
         # ══════════════════════════════════════════════════════════════════════
 
+        # MOMENTUM GATE: neu consensus thap (== MIN_CONSENSUS = 2) thi phai qua micro_entry_analysis
+        # Khi chi co 2 strategies dong thuan, can them xac nhan timing entry tot de tranh lenh xau
+        # Tier1 bypass (supertrend + vwap_volume) va consensus cao hon (3+) khong can check them
+        if not _tier1_active and len(signals) <= config.MIN_CONSENSUS:
+            if not self._micro_entry_analysis(df_micro, best.direction, is_reversal=False):
+                return _block(f"skip - MOMENTUM low-consensus ({len(signals)}) micro_entry_analysis rejected")
+
         best.consensus = len(signals)
         best.symbol    = symbol
         # ATR override: dung 15m ATR cho SL/TP — 1m ATR qua nho (noise se hit SL lien tuc)

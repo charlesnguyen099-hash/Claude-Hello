@@ -50,16 +50,16 @@ MAX_OPEN_POSITIONS = 10     # Max 10 positions — trade tat ca co hoi tot
 # SL/TP theo ATR — RR >= 1.3 sau phi (truoc: 1.5/1.5 = 1:1, sau phi am)
 ATR_PERIOD        = 14
 SL_ATR_MULT       = 1.5    # SL  = 1.5x ATR
-TP1_ATR_MULT      = 1.5    # TP1 = 1.5x ATR — thuc te hon, exchange auto-close khi price reach
-TP2_ATR_MULT      = 3.0    # TP2 = 3.0x ATR — cho 50% con lai sau partial close
-BREAKEVEN_TRIGGER = 0.20   # Doi SL ve breakeven tai 20% den TP1 — du de tranh noise, set som de khong miss wick
+TP1_ATR_MULT      = 2.0    # TP1 = 2.0x ATR — rong hon, dam bao loi sau phi 0.11%
+TP2_ATR_MULT      = 3.5    # TP2 = 3.5x ATR — cho 50% con lai sau partial close
+BREAKEVEN_TRIGGER = 0.50   # Doi SL ve breakeven tai 50% den TP1 — 20% qua som, hay bi noise stop
 PARTIAL_CLOSE_TRIGGER = 0.75  # Dong 50% position tai 75% den TP1, de 50% con lai chay den TP2
 
 # --- Signal sensitivity -------------------------------------------------------
 MIN_SIGNAL_STRENGTH = 0.60   # Chi lay signal chat luong cao
-MIN_ADX             = 18     # ADX >= 18 cho 1m scalp (xu huong nho hon nhung co that)
-MIN_CONSENSUS          = 3   # 3/7 strategies dong thuan (4 qua cao cho 1m data)
-MIN_CONSENSUS_TRENDING = 3   # Dong bo voi MIN_CONSENSUS
+MIN_ADX             = 12     # ADX >= 12 cho 1m scalp — 18 qua cao, block het trong sideway/Asian session
+MIN_CONSENSUS          = 2   # 2/7 strategies dong thuan — 3 qua cao, hiem co 3 strategy 15m dong thuan
+MIN_CONSENSUS_TRENDING = 2   # Dong bo voi MIN_CONSENSUS
 MIN_ATR_PCT         = 0.0005 # 0.05% cho 1m (ATR 1m nho hon 15m, largecap BTC ~0.03-0.08%)
 TRADE_SIZE_MULT         = 1    # Khong dung nua — risk-based sizing thay the
 

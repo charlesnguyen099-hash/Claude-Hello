@@ -103,10 +103,10 @@ class RiskManager:
         # -> max dam bao TP1 >= SL distance -> RR >= 1
         tp1_dist = max(tp1_dist, sl_dist)
         tp2_dist = max(tp2_dist, sl_dist * 2.0)
-        # Dam bao SL/TP duong
+        # Dam bao SL/TP duong — tp1 min 0.5% de cover phi 0.11% va con co loi
         sl_dist  = max(sl_dist,  signal.entry_price * 0.002)
-        tp1_dist = max(tp1_dist, signal.entry_price * 0.003)
-        tp2_dist = max(tp2_dist, signal.entry_price * 0.006)
+        tp1_dist = max(tp1_dist, signal.entry_price * 0.005)
+        tp2_dist = max(tp2_dist, signal.entry_price * 0.010)
 
         # RISK-BASED POSITION SIZING:
         # Muc tieu: neu SL hit thi mat dung RISK_PER_TRADE_PCT% equity (x scale_factor)

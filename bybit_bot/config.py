@@ -52,7 +52,7 @@ ATR_PERIOD        = 14
 SL_ATR_MULT       = 1.5    # SL  = 1.5x ATR (swing-based se dung high/low 5 nen 15m, clamp 1.5-3x ATR)
 TP1_ATR_MULT      = 2.0    # TP1 = 2.0x ATR — dam bao loi sau phi 0.11%
 TP2_ATR_MULT      = 3.5    # TP2 = 3.5x ATR — cho 50% con lai sau partial close
-BREAKEVEN_TRIGGER = 0.50   # Doi SL ve breakeven tai 50% den TP1
+BREAKEVEN_TRIGGER = 0.60   # Doi SL ve breakeven tai 60% den TP1
 PARTIAL_CLOSE_TRIGGER = 0.75  # Dong 50% position tai 75% den TP1, de 50% con lai chay den TP2
 
 # Hard cap SL/TP theo % gia — tranh SL/TP phi ly khi ATR qua lon (coin pump/dip)

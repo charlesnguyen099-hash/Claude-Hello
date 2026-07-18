@@ -191,40 +191,31 @@ class Executor:
             self._tick_size[symbol]      = tick_size
 
             # --- Set SL + TP tren position (position-level) sau khi fill ---
-            # Doi 0.5s de Bybit xu ly fill truoc khi set TP/SL
-            time.sleep(0.5)
-            sl_tp_ok = False
-            for _attempt in range(3):
-                try:
-                    self.client.set_sl_tp(symbol, sl_rounded, tp1_rounded)
-                    sl_tp_ok = True
-                    logger.info(
-                        f"{symbol}: SL={sl_rounded:.6f} TP1={tp1_rounded:.6f} set via set_trading_stop"
-                    )
-                    break
-                except Exception as e:
-                    logger.warning(
-                        f"{symbol}: set_sl_tp attempt {_attempt+1}/3 failed: "
-                        f"{str(e).encode('ascii','replace').decode()}"
-                    )
-                    time.sleep(0.5 * (2 ** _attempt))
+            # Doi 1s de Bybit xu ly fill hoan toan
+            time.sleep(1.0)
+            try:
+                self.client.set_sl_tp(symbol, sl_rounded, tp1_rounded)
+            except Exception as e:
+                logger.error(
+                    f"{symbol}: CRITICAL — set_sl_tp that bai sau 5 retries: "
+                    f"{str(e).encode('ascii','replace').decode()}"
+                )
 
-            # --- Verify SL + TP sau set ---
-            time.sleep(0.3)
+            # --- Verify SL+TP sau set ---
+            time.sleep(0.5)
             has_sl, actual_sl, has_tp, actual_tp = self.client.verify_position_tp_sl(symbol)
             if not has_sl or not has_tp:
                 logger.warning(
-                    f"{symbol}: SL/TP missing (has_sl={has_sl}, has_tp={has_tp}) — retry set_sl_tp"
+                    f"{symbol}: SL/TP MISSING sau set (has_sl={has_sl}, has_tp={has_tp}) — force re-arm"
                 )
                 try:
                     _sl_fix = sl_rounded if not has_sl else 0.0
                     _tp_fix = tp1_rounded if not has_tp else 0.0
                     self.client.set_sl_tp(symbol, _sl_fix, _tp_fix)
-                    logger.info(f"{symbol}: SL/TP re-armed: SL={_sl_fix:.6f} TP={_tp_fix:.6f}")
                 except Exception as e2:
-                    logger.error(f"{symbol}: CRITICAL — cannot set SL/TP: {str(e2).encode('ascii','replace').decode()}")
+                    logger.error(f"{symbol}: CRITICAL — re-arm SL/TP that bai: {str(e2).encode('ascii','replace').decode()}")
             else:
-                logger.info(f"{symbol}: Verified SL={actual_sl:.6f} TP={actual_tp:.6f} active on position")
+                logger.info(f"{symbol}: CONFIRMED SL={actual_sl:.6f} TP={actual_tp:.6f} active")
             self._sl_verified[symbol] = True
 
             self.logger.log_trade({

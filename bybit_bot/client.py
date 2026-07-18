@@ -229,14 +229,14 @@ class BybitClient:
         close_side = "Sell" if side == "Buy" else "Buy"
         return self.place_order(symbol, close_side, qty, reduce_only=True)
 
-    @retry()
+    @retry(attempts=5, delay=1.0)
     def set_sl_tp(self, symbol: str, sl_price: float, tp_price: float):
-        """Set CA HAI SL va TP cung luc tren position (position-level, khong phai order-level).
-        Dung ngay sau khi market order fill — dam bao ca SL lan TP luon duoc set.
-        Reliable hon truong hop dat rieng le vi chi can 1 API call."""
+        """Set CA HAI SL va TP tren position (position-level).
+        tpslMode='Full' bat buoc khi set ca hai cung luc tren Bybit V5."""
         params: dict = dict(
             category="linear",
             symbol=symbol,
+            tpslMode="Full",
             slTriggerBy="MarkPrice",
             tpTriggerBy="MarkPrice",
             positionIdx=0,
@@ -245,35 +245,43 @@ class BybitClient:
             params["stopLoss"] = str(round(sl_price, 6))
         if tp_price > 0:
             params["takeProfit"] = str(round(tp_price, 6))
-        self.session.set_trading_stop(**params)
+        logger.info(f"set_sl_tp {symbol}: SL={sl_price:.6f} TP={tp_price:.6f}")
+        resp = self.session.set_trading_stop(**params)
+        ret_code = resp.get("retCode", -1)
+        if ret_code != 0:
+            raise RuntimeError(f"set_trading_stop failed retCode={ret_code} msg={resp.get('retMsg')}")
 
-    @retry()
+    @retry(attempts=5, delay=1.0)
     def update_stop_loss(self, symbol: str, sl_price: float):
-        """Cap nhat SL cho vi the dang mo (dung de doi SL ve break-even)."""
-        try:
-            self.session.set_trading_stop(
-                category="linear",
-                symbol=symbol,
-                stopLoss=str(round(sl_price, 6)),
-                slTriggerBy="MarkPrice",
-                positionIdx=0,
-            )
-        except Exception as e:
-            logger.warning("Update SL failed for %s: %s", symbol, str(e).encode("ascii", "replace").decode())
+        """Cap nhat SL cho vi the dang mo."""
+        resp = self.session.set_trading_stop(
+            category="linear",
+            symbol=symbol,
+            tpslMode="Full",
+            stopLoss=str(round(sl_price, 6)),
+            slTriggerBy="MarkPrice",
+            positionIdx=0,
+        )
+        ret_code = resp.get("retCode", -1)
+        if ret_code != 0:
+            raise RuntimeError(f"update_stop_loss {symbol} failed retCode={ret_code} msg={resp.get('retMsg')}")
+        logger.info(f"update_stop_loss {symbol}: SL={sl_price:.6f} OK")
 
-    @retry()
+    @retry(attempts=5, delay=1.0)
     def update_take_profit(self, symbol: str, tp_price: float):
         """Cap nhat TP cho vi the dang mo (dung de chuyen tu TP1 sang TP2)."""
-        try:
-            self.session.set_trading_stop(
-                category="linear",
-                symbol=symbol,
-                takeProfit=str(round(tp_price, 6)),
-                tpTriggerBy="MarkPrice",
-                positionIdx=0,
-            )
-        except Exception as e:
-            logger.warning("Update TP failed for %s: %s", symbol, str(e).encode("ascii", "replace").decode())
+        resp = self.session.set_trading_stop(
+            category="linear",
+            symbol=symbol,
+            tpslMode="Full",
+            takeProfit=str(round(tp_price, 6)),
+            tpTriggerBy="MarkPrice",
+            positionIdx=0,
+        )
+        ret_code = resp.get("retCode", -1)
+        if ret_code != 0:
+            raise RuntimeError(f"update_take_profit {symbol} failed retCode={ret_code} msg={resp.get('retMsg')}")
+        logger.info(f"update_take_profit {symbol}: TP={tp_price:.6f} OK")
 
     @retry()
     def get_instrument_info(self, symbol: str) -> dict:

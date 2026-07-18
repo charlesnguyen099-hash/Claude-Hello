@@ -19,6 +19,17 @@ logger = logging.getLogger(__name__)
 _instrument_cache: dict[str, dict] = {}
 
 
+def _sf(val, default: float = 0.0) -> float:
+    """Safe float: Bybit tra ve '' (empty string) cho field khong co gia tri.
+    float('') crash -> dung ham nay thay cho moi float(x.get(...)) tren Bybit data."""
+    if val is None or val == "":
+        return default
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return default
+
+
 def retry(attempts: int = 3, delay: float = 2.0):
     def decorator(fn):
         @wraps(fn)
@@ -138,14 +149,14 @@ class BybitClient:
         coins = resp["result"]["list"][0]["coin"]
         for c in coins:
             if c["coin"] == "USDT":
-                return float(c["equity"])
+                return _sf(c.get("equity", 0))
         return 0.0
 
     @retry()
     def get_positions(self) -> list[dict]:
         """Lấy tất cả vị thế đang mở."""
         resp = self.session.get_positions(category="linear", settleCoin="USDT")
-        return [p for p in resp["result"]["list"] if float(p["size"]) > 0]
+        return [p for p in resp["result"]["list"] if _sf(p.get("size")) > 0]
 
     # ── Trading ───────────────────────────────────────────────────────────────
 
@@ -259,7 +270,7 @@ class BybitClient:
         """Lấy leverage tối đa Bybit cho phép với symbol này."""
         try:
             info = self.get_instrument_info(symbol)
-            max_lev = int(float(info["leverageFilter"]["maxLeverage"]))
+            max_lev = int(_sf(info.get("leverageFilter", {}).get("maxLeverage", config.MAX_LEVERAGE), config.MAX_LEVERAGE))
             return min(max_lev, config.MAX_LEVERAGE)
         except Exception as e:
             logger.warning("Cannot get max leverage for %s: %s", symbol, str(e).encode("ascii", "replace").decode())
@@ -271,7 +282,7 @@ class BybitClient:
             resp = self.session.get_tickers(category="linear", symbol=symbol)
             items = resp["result"]["list"]
             if items:
-                return float(items[0].get("markPrice", 0))
+                return _sf(items[0].get("markPrice"))
         except Exception as e:
             logger.debug(f"get_current_price {symbol}: {e}")
         return 0.0
@@ -284,8 +295,8 @@ class BybitClient:
             bids = data.get("b", [])
             asks = data.get("a", [])
             if bids and asks:
-                bid = float(bids[0][0])
-                ask = float(asks[0][0])
+                bid = _sf(bids[0][0])
+                ask = _sf(asks[0][0])
                 if bid > 0 and ask > 0:
                     return bid, ask
         except Exception as e:
@@ -295,7 +306,7 @@ class BybitClient:
             resp  = self.session.get_tickers(category="linear", symbol=symbol)
             items = resp["result"]["list"]
             if items:
-                mark = float(items[0].get("markPrice", 0) or 0)
+                mark = _sf(items[0].get("markPrice"))
                 if mark > 0:
                     return mark * 0.9999, mark * 1.0001
         except Exception as e:
@@ -338,8 +349,8 @@ class BybitClient:
         try:
             resp = self.session.get_positions(category="linear", symbol=symbol)
             for p in resp["result"]["list"]:
-                if float(p.get("size", 0)) > 0:
-                    sl = float(p.get("stopLoss", 0))
+                if _sf(p.get("size")) > 0:
+                    sl = _sf(p.get("stopLoss"))
                     return sl > 0, sl
         except Exception as e:
             logger.debug(f"verify_position_sl {symbol}: {e}")
@@ -360,7 +371,7 @@ class BybitClient:
                 limit=200,
             )
             for item in resp["result"]["list"]:
-                total += float(item.get("closedPnl", 0))
+                total += _sf(item.get("closedPnl"))
         except Exception as e:
             logger.debug(f"get_today_pnl error: {e}")
         return total
@@ -377,7 +388,7 @@ class BybitClient:
             for item in resp["result"]["list"]:
                 sym = item.get("symbol", "")
                 if sym in symbols:
-                    pnl = float(item.get("closedPnl", 0))
+                    pnl = _sf(item.get("closedPnl"))
                     if sym not in result:  # lay lenh gan nhat
                         result[sym] = pnl
         except Exception as e:

@@ -19,7 +19,7 @@ from dataclasses import dataclass
 import pandas as pd
 
 import config
-from client import BybitClient
+from client import BybitClient, _sf
 
 logger = logging.getLogger(__name__)
 
@@ -60,11 +60,11 @@ class MarketScanner:
                 continue
 
             try:
-                vol     = float(t.get("turnover24h", 0))
-                raw_chg = float(t.get("price24hPcnt", 0)) * 100
-                price   = float(t.get("lastPrice", 0))
-                bid     = float(t.get("bid1Price", price * 0.999))
-                ask     = float(t.get("ask1Price", price * 1.001))
+                vol     = _sf(t.get("turnover24h"))
+                raw_chg = _sf(t.get("price24hPcnt")) * 100
+                price   = _sf(t.get("lastPrice"))
+                bid     = _sf(t.get("bid1Price")) or price * 0.999
+                ask     = _sf(t.get("ask1Price")) or price * 1.001
                 spread  = (ask - bid) / price * 100 if price > 0 else 99
 
                 vol_surge = vol / max(config.MIN_VOLUME_USDT_24H, 1)

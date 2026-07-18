@@ -386,7 +386,7 @@ class Executor:
                             logger.info(f"{symbol}: TP updated TP1={tp1_threshold:.4f} -> TP2={tp2:.6f}")
 
                         # Dong 50% vi the — align voi qty_step cua instrument
-                        pos_qty = float(pos["size"])
+                        pos_qty = _fval(pos, "size")
                         try:
                             info     = self.client.get_instrument_info(symbol)
                             qty_step = float(info["lotSizeFilter"]["qtyStep"])

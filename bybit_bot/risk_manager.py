@@ -96,15 +96,6 @@ class RiskManager:
         tp_roi  = config.TP_ROI_MIN + potential * (config.TP_ROI_MAX - config.TP_ROI_MIN)
         sl_roi  = tp_roi * config.SL_TP_RATIO   # SL = SL_TP_RATIO x TP
 
-        # CLAMP sl_roi: SL price phai o tren gia liquidation
-        # Liq price (Long) ≈ entry * (1 - 1/leverage) → sl_roi = 1.0 (100% ROI) = liq price
-        # Bybit tu choi bat ky SL nao tai hoac duoi liq price → KHONG BAO GIO set duoc SL
-        # Clamp sl_roi tai MAX_SL_ROI (80%) → SL luon cach liq it nhat 20% khoang cach entry-to-liq
-        MAX_SL_ROI = 0.80
-        if sl_roi > MAX_SL_ROI:
-            logger.debug(f"{signal.symbol}: sl_roi={sl_roi*100:.0f}% clamped to {MAX_SL_ROI*100:.0f}% (tranh SL duoi liq price)")
-            sl_roi = MAX_SL_ROI
-
         tp1_dist = tp_roi * entry / leverage
         tp2_dist = tp_roi * config.TP2_SCALE * entry / leverage  # TP2 = TP1 * TP2_SCALE
         sl_dist  = sl_roi * entry / leverage

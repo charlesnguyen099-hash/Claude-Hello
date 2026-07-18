@@ -224,7 +224,15 @@ class BybitClient:
             params["tpTriggerBy"] = "MarkPrice"
 
         resp = self.session.place_order(**params)
-        return resp["result"]
+        result = resp["result"]
+        if params.get("stopLoss") or params.get("takeProfit"):
+            r_sl = result.get("stopLoss", "")
+            r_tp = result.get("takeProfit", "")
+            logger.info(f"place_order {params['symbol']}: order filled SL={r_sl!r} TP={r_tp!r}")
+            if not r_sl and not r_tp:
+                logger.error(f"place_order {params['symbol']}: Bybit KHONG SET SL/TP trong order — retCode={resp.get('retCode')} msg={resp.get('retMsg')}")
+                print(f"[ERROR] place_order {params['symbol']}: Bybit DID NOT set SL/TP in order response", flush=True)
+        return result
 
     @retry()
     def close_position(self, symbol: str, side: str, qty: float) -> dict:

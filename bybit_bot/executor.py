@@ -198,25 +198,26 @@ class Executor:
             try:
                 self.client.set_sl_tp(symbol, sl_rounded, tp1_rounded)
             except Exception as e:
-                logger.warning(
-                    f"{symbol}: set_sl_tp layer2 that bai (layer1 van co hieu luc): "
-                    f"{str(e).encode('ascii','replace').decode()}"
-                )
+                err_msg = str(e).encode('ascii','replace').decode()
+                logger.error(f"{symbol}: set_sl_tp layer2 FAILED: {err_msg}")
+                print(f"[ERROR] {symbol} set_sl_tp FAILED: {err_msg}", flush=True)
 
             # --- Verify va re-arm neu van thieu ---
             time.sleep(0.5)
             has_sl, actual_sl, has_tp, actual_tp = self.client.verify_position_tp_sl(symbol)
             if not has_sl or not has_tp:
-                logger.warning(
-                    f"{symbol}: SL/TP MISSING sau 2 layers (has_sl={has_sl}, has_tp={has_tp}) — re-arm"
-                )
+                err_detail = f"has_sl={has_sl}({actual_sl}), has_tp={has_tp}({actual_tp})"
+                logger.error(f"{symbol}: SL/TP MISSING sau 2 layers ({err_detail}) — re-arm")
+                print(f"[CRITICAL] {symbol} SL/TP MISSING: {err_detail}", flush=True)
                 try:
-                    # Luon truyen CA HAI gia tri — tranh tpslMode=Full xoa cai con lai
                     self.client.set_sl_tp(symbol, sl_rounded, tp1_rounded)
                 except Exception as e2:
-                    logger.error(f"{symbol}: CRITICAL — re-arm SL/TP that bai: {str(e2).encode('ascii','replace').decode()}")
+                    err2 = str(e2).encode('ascii','replace').decode()
+                    logger.error(f"{symbol}: re-arm FAILED: {err2}")
+                    print(f"[CRITICAL] {symbol} re-arm FAILED: {err2}", flush=True)
             else:
-                logger.info(f"{symbol}: CONFIRMED SL={actual_sl:.6f} TP={actual_tp:.6f} active")
+                logger.info(f"{symbol}: CONFIRMED SL={actual_sl} TP={actual_tp} active")
+                print(f"[OK] {symbol} SL={actual_sl} TP={actual_tp} confirmed", flush=True)
             self._sl_verified[symbol] = True
 
             self.logger.log_trade({

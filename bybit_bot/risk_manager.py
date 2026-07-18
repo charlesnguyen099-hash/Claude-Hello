@@ -96,6 +96,26 @@ class RiskManager:
         tp_roi  = config.TP_ROI_MIN + potential * (config.TP_ROI_MAX - config.TP_ROI_MIN)
         sl_roi  = tp_roi * config.SL_TP_RATIO   # SL = SL_TP_RATIO x TP
 
+        # Clamp SL/TP de dam bao SL luon nam TREN gia thanh ly (liquidation price)
+        # Voi leverage cao (50-100x), sl_dist = 5*tp_dist co the xuong duoi liq price
+        # → Bybit tu dong cap SL lai → pha ty le 5:1
+        #
+        # liq_price (Long) ≈ entry * (1 - 1/L + maint_rate)
+        # sl phai > liq_price → sl_roi < (1 - maint_rate * L)
+        # Dung 0.5% maint rate (pho bien tren Bybit) + 10% buffer de tranh bi clamp
+        MAINT_RATE_EST = 0.005   # 0.5% maintenance margin (Bybit typical)
+        LIQ_BUFFER     = 0.10    # 10% safety buffer
+        max_sl_roi = max(0.20, (1.0 - MAINT_RATE_EST * leverage) * (1.0 - LIQ_BUFFER))
+        if sl_roi > max_sl_roi:
+            # Scale ca TP lan SL xuong de GIU TY LE 5:1 va SL khong bi Bybit clamp
+            liq_scale = max_sl_roi / sl_roi
+            tp_roi    = tp_roi * liq_scale
+            sl_roi    = max_sl_roi   # = tp_roi * SL_TP_RATIO (ty le van la 5:1)
+            logger.info(
+                f"{signal.symbol}: SL/TP scaled to fit liq constraint at {leverage}x "
+                f"→ TP_ROI={tp_roi*100:.0f}% SL_ROI={sl_roi*100:.0f}% (ratio={config.SL_TP_RATIO:.0f}:1 maintained)"
+            )
+
         tp1_dist = tp_roi * entry / leverage
         tp2_dist = tp_roi * config.TP2_SCALE * entry / leverage  # TP2 = TP1 * TP2_SCALE
         sl_dist  = sl_roi * entry / leverage
@@ -104,7 +124,7 @@ class RiskManager:
 
         logger.info(
             f"{signal.symbol}: lev={leverage}x | "
-            f"TP_ROI={tp_roi*100:.0f}% SL_ROI={sl_roi*100:.0f}% | "
+            f"TP_ROI={tp_roi*100:.0f}% SL_ROI={sl_roi*100:.0f}% (={sl_roi/tp_roi:.0f}xTP) | "
             f"tp1_dist={tp1_dist:.6f} sl_dist={sl_dist:.6f}"
         )
 

@@ -419,13 +419,26 @@ class TradingBot:
                 elif h5[-1] > h5[-3] and l5[-1] > l5[-3]:
                     score -= 1
 
-        # Factor 6: Range check — 100c (xu huong trung han) + 20c (local)
-        # HARD BLOCK chi khi cuc ki cuc doan (dang o top/bottom 10% of range)
-        # Nguong cu 75%/25% (100c) va 65%/35% (20c) qua chat — block het trend-following entries:
-        #   Trong downtrend, price luon o bottom 25% cua 100c -> ALL SHORT blocked
-        #   Trong uptrend, price luon o top 25% cua 100c -> ALL LONG blocked
-        # Muc 90%/10% chi block khi THUC SU da cham cuc (exhaustion zone)
-        # Ngoai le: is_reversal=True -> skip range block (reversal chinh xac la vao o cuc doan)
+        # Factor 6: Range check — 3 muc: 30c (30 phut), 100c (1.7h), 20c (local)
+        # Nguong du chat de tranh du dinh / du day trong momentum path
+        # is_reversal=True -> skip block (reversal vao chinh xac o cuc doan)
+        #
+        # 30-candle (30 phut): block LONG neu o top 70%, block SHORT neu o bottom 30%
+        _w30 = min(30, n)
+        if _w30 >= 15 and not is_reversal:
+            _h30 = high.iloc[-_w30:].max()
+            _l30 = low.iloc[-_w30:].min()
+            _r30 = _h30 - _l30
+            if _r30 > 0:
+                _p30 = (price - _l30) / _r30
+                if direction == 1 and _p30 > 0.70:
+                    logger.debug(f"micro_entry: BLOCK long — 30c range_pos={_p30:.2f} > 0.70 (du dinh 30 phut)")
+                    return False
+                if direction == -1 and _p30 < 0.30:
+                    logger.debug(f"micro_entry: BLOCK short — 30c range_pos={_p30:.2f} < 0.30 (du day 30 phut)")
+                    return False
+
+        # 100-candle (~1.7h): block LONG neu o top 75%, block SHORT neu o bottom 25%
         _range_window = min(100, n)
         if _range_window >= 20:
             high_rng = high.iloc[-_range_window:].max()
@@ -434,11 +447,11 @@ class TradingBot:
             if rng > 0:
                 range_pos = (price - low_rng) / rng
                 if not is_reversal:
-                    if direction == 1 and range_pos > 0.90:  # chi block khi o top 10% (tang tu 75%)
-                        logger.debug(f"micro_entry: HARD BLOCK long — 100c range_pos={range_pos:.2f} > 0.90")
+                    if direction == 1 and range_pos > 0.75:
+                        logger.debug(f"micro_entry: BLOCK long — 100c range_pos={range_pos:.2f} > 0.75")
                         return False
-                    if direction == -1 and range_pos < 0.10:  # chi block khi o bottom 10% (tang tu 25%)
-                        logger.debug(f"micro_entry: HARD BLOCK short — 100c range_pos={range_pos:.2f} < 0.10")
+                    if direction == -1 and range_pos < 0.25:
+                        logger.debug(f"micro_entry: BLOCK short — 100c range_pos={range_pos:.2f} < 0.25")
                         return False
                 # Bonus cho entry o vung an toan (range 30%-70%)
                 if direction == 1 and range_pos < 0.45:
@@ -446,8 +459,7 @@ class TradingBot:
                 elif direction == -1 and range_pos > 0.55:
                     score += 1
 
-        # 20-candle local range: chi block khi thuc su o cuc doan nho (top/bottom 15%)
-        # Nguong cu 65%/35% qua chat — block moi breakout DOWN (luon o bottom 20c sau breakdown)
+        # 20-candle local range: block LONG top 75%, block SHORT bottom 25%
         _local_window = min(20, n)
         if _local_window >= 10 and not is_reversal:
             local_high = high.iloc[-_local_window:].max()
@@ -455,8 +467,8 @@ class TradingBot:
             local_rng  = local_high - local_low
             if local_rng > 0:
                 local_pos = (price - local_low) / local_rng
-                if direction == 1 and local_pos > 0.88:  # tang tu 0.65 -> 0.88
-                    logger.debug(f"micro_entry: HARD BLOCK long — 20c local_pos={local_pos:.2f} > 0.88")
+                if direction == 1 and local_pos > 0.75:
+                    logger.debug(f"micro_entry: BLOCK long — 20c local_pos={local_pos:.2f} > 0.75")
                     return False
                 if direction == -1 and local_pos < 0.12:  # giam tu 0.35 -> 0.12
                     logger.debug(f"micro_entry: HARD BLOCK short — 20c local_pos={local_pos:.2f} < 0.12")
@@ -586,8 +598,8 @@ class TradingBot:
             h1_rng  = h1_high - h1_low
             if h1_rng > 0:
                 h1_pos = (_range_price - h1_low) / h1_rng
-                _h1_long_thresh  = 0.85 if (is_priority and macro_trend >= 1) else 0.75
-                _h1_short_thresh = 0.15 if (is_priority and macro_trend <= -1) else 0.25
+                _h1_long_thresh  = 0.70 if (is_priority and macro_trend >= 1) else 0.60
+                _h1_short_thresh = 0.30 if (is_priority and macro_trend <= -1) else 0.40
                 if h1_pos > _h1_long_thresh:
                     _h1_block_long = True
                     logger.debug(f"{symbol}: 5h range_pos={h1_pos:.2f} > {_h1_long_thresh} -> block LONG (5h top)")
@@ -607,8 +619,8 @@ class TradingBot:
             _m2h_rng  = _m2h_high - _m2h_low
             if _m2h_rng > 0:
                 _m2h_pos = (_range_price - _m2h_low) / _m2h_rng
-                _m2h_top_thresh = 0.88 if (is_priority and macro_trend >= 1) else 0.80
-                _m2h_bot_thresh = 0.12 if (is_priority and macro_trend <= -1) else 0.20
+                _m2h_top_thresh = 0.72 if (is_priority and macro_trend >= 1) else 0.65
+                _m2h_bot_thresh = 0.28 if (is_priority and macro_trend <= -1) else 0.35
                 if _m2h_pos < _m2h_bot_thresh:
                     _m2h_block_short = True
                     logger.debug(f"{symbol}: 2h 1m range_pos={_m2h_pos:.2f} < {_m2h_bot_thresh} -> block SHORT (2h bottom)")

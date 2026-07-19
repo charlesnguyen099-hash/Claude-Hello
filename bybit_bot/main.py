@@ -610,12 +610,18 @@ class TradingBot:
                 h1_pos = (_range_price - h1_low) / h1_rng
                 _h1_long_thresh  = 0.70 if (is_priority and macro_trend >= 1) else 0.60
                 _h1_short_thresh = 0.30 if (is_priority and macro_trend <= -1) else 0.40
+                _btc_bear_rng = self.btc_trend == -1 and self.btc_trend_4h == -1
+                _btc_bull_rng = self.btc_trend == 1  and self.btc_trend_4h == 1
                 if h1_pos > _h1_long_thresh:
-                    _h1_block_long = True
-                    logger.debug(f"{symbol}: 5h range_pos={h1_pos:.2f} > {_h1_long_thresh} -> block LONG (5h top)")
+                    # BTC strongly bull → LONG trong 5h range top vẫn ok (trend chuẩn)
+                    if not _btc_bull_rng:
+                        _h1_block_long = True
+                        logger.debug(f"{symbol}: 5h range_pos={h1_pos:.2f} > {_h1_long_thresh} -> block LONG (5h top)")
                 elif h1_pos < _h1_short_thresh:
-                    _h1_block_short = True
-                    logger.debug(f"{symbol}: 5h range_pos={h1_pos:.2f} < {_h1_short_thresh} -> block SHORT (5h bottom)")
+                    # BTC strongly bear → SHORT trong 5h range bottom vẫn ok (short bounce in downtrend)
+                    if not _btc_bear_rng:
+                        _h1_block_short = True
+                        logger.debug(f"{symbol}: 5h range_pos={h1_pos:.2f} < {_h1_short_thresh} -> block SHORT (5h bottom)")
 
         # 2h 1m range: block SHORT khi gia o bottom 20% cua range 120 nen 1m (2 gio)
         # Block LONG khi o top 80%
@@ -632,11 +638,15 @@ class TradingBot:
                 _m2h_top_thresh = 0.72 if (is_priority and macro_trend >= 1) else 0.65
                 _m2h_bot_thresh = 0.28 if (is_priority and macro_trend <= -1) else 0.35
                 if _m2h_pos < _m2h_bot_thresh:
-                    _m2h_block_short = True
-                    logger.debug(f"{symbol}: 2h 1m range_pos={_m2h_pos:.2f} < {_m2h_bot_thresh} -> block SHORT (2h bottom)")
+                    # BTC strongly bear → SHORT bounce dù ở đáy 2h vẫn ok
+                    if not _btc_bear_rng:
+                        _m2h_block_short = True
+                        logger.debug(f"{symbol}: 2h 1m range_pos={_m2h_pos:.2f} < {_m2h_bot_thresh} -> block SHORT (2h bottom)")
                 elif _m2h_pos > _m2h_top_thresh:
-                    _m2h_block_long = True
-                    logger.debug(f"{symbol}: 2h 1m range_pos={_m2h_pos:.2f} > {_m2h_top_thresh} -> block LONG (2h top)")
+                    # BTC strongly bull → LONG dù ở đỉnh 2h vẫn ok
+                    if not _btc_bull_rng:
+                        _m2h_block_long = True
+                        logger.debug(f"{symbol}: 2h 1m range_pos={_m2h_pos:.2f} > {_m2h_top_thresh} -> block LONG (2h top)")
 
         # Momentum confirmation (15m): it nhat 2/3 nen gan nhat cung chieu voi signal
         # 2-consecutive (c1 AND c2) qua chat: breakout candle c1=green, c2=red (consolidation) bi block
@@ -936,10 +946,10 @@ class TradingBot:
                         _micro_long_ok   = micro_up   and macro_trend >= 1
                         _both_tf_bear    = macro_trend <= -1 and macro_4h <= -1
                         _both_tf_bull    = macro_trend >= 1  and macro_4h >= 1
-                        # BTC strongly bear + coin macro bear → SHORT ok dù scalp bounce tạm
-                        # BTC strongly bull + coin macro bull → LONG ok dù scalp dip tạm
-                        _btc_bear_scalp_ok = btc_strongly_bear and (macro_trend <= -1 or macro_4h <= -1)
-                        _btc_bull_scalp_ok = btc_strongly_bull and (macro_trend >= 1  or macro_4h >= 1)
+                        # BTC strongly bear → SHORT ok dù scalp bounce tạm (coin chưa kịp flip)
+                        # BTC strongly bull → LONG ok dù scalp dip tạm
+                        _btc_bear_scalp_ok = btc_strongly_bear and not coin_independently_bull
+                        _btc_bull_scalp_ok = btc_strongly_bull and not coin_independently_bear
                         scalp_allows_short = (scalp_trend == -1) or _micro_short_ok or _both_tf_bear or _btc_bear_scalp_ok
                         scalp_allows_long  = (scalp_trend ==  1) or _micro_long_ok  or _both_tf_bull or _btc_bull_scalp_ok
                     if sig.direction == 1 and long_ok and scalp_allows_long:

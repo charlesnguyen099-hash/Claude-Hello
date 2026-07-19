@@ -126,15 +126,6 @@ class TradingBot:
             f"DayPnL={_daily_pnl_pct*100:+.2f}%"
         )
 
-        # B1 fix: enforce daily loss guard — stop opening new trades when day loss > threshold
-        if _daily_pnl_pct < -config.MAX_DAILY_LOSS_PCT:
-            logger.warning(
-                f"[DAILY LOSS GUARD] Day PnL={_daily_pnl_pct*100:+.2f}% < -{config.MAX_DAILY_LOSS_PCT*100:.0f}% — no new entries today"
-            )
-            if open_positions:
-                self.executor.manage_positions(open_positions)
-            return
-
         # Quan ly vi the dang mo
         if open_positions:
             self.executor.manage_positions(open_positions)

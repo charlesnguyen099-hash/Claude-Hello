@@ -807,7 +807,21 @@ class TradingBot:
                 # 2h 1m range block cho BREAKOUT — tranh short o day / long o dinh 2h
                 bo_m2h_ok = not (_m2h_block_short and bo_sig.direction == -1) and \
                             not (_m2h_block_long  and bo_sig.direction == 1)
-                if bo_ok and micro_ok and not is_spike and post_spike_ok and micro_spike_ok and bo_btc_ok and bo_h1_ok and bo_24h_ok and bo_trend_ok and bo_m2h_ok:
+                # 30c range check cho BREAKOUT — block short o day / long o dinh 30 nen gan nhat
+                bo_30c_ok = True
+                if not df_micro.empty and len(df_micro) >= 15:
+                    _bo_h30 = df_micro["high"].iloc[-30:].max()
+                    _bo_l30 = df_micro["low"].iloc[-30:].min()
+                    _bo_r30 = _bo_h30 - _bo_l30
+                    if _bo_r30 > 0:
+                        _bo_p30 = (_range_live_price - _bo_l30) / _bo_r30
+                        if bo_sig.direction == 1 and _bo_p30 > 0.75:
+                            bo_30c_ok = False
+                            logger.debug(f"{symbol} [BO] block LONG at 30c top ({_bo_p30*100:.0f}%)")
+                        if bo_sig.direction == -1 and _bo_p30 < 0.25:
+                            bo_30c_ok = False
+                            logger.debug(f"{symbol} [BO] block SHORT at 30c bottom ({_bo_p30*100:.0f}%)")
+                if bo_ok and micro_ok and not is_spike and post_spike_ok and micro_spike_ok and bo_btc_ok and bo_h1_ok and bo_24h_ok and bo_trend_ok and bo_m2h_ok and bo_30c_ok:
                     # micro_entry_analysis da xoa: BREAKOUT theo dinh nghia la break qua range
                     # -> range check trong _micro_entry_analysis se HARD BLOCK moi breakout hop le
                     # Da co: bo_h1_ok, bo_m2h_ok, bo_trend_ok, micro_ok thay the

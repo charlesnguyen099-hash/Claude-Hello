@@ -201,7 +201,8 @@ class TradingBot:
                         btc_eth_side_map=_pos_side_map,
                     )
                     if traded:
-                        self._last_analyzed[symbol] = time.time()
+                        # Hard cooldown 60s sau khi trade — khong cho re-enter bat ke top20 hay rest
+                        self._last_analyzed[symbol] = time.time() + (60 - min(cooldown, 60))
                         pos_symbols.add(symbol)
                         try:
                             open_positions = self.client.get_positions()
@@ -210,6 +211,8 @@ class TradingBot:
                             _pos_side_map  = {p["symbol"]: p.get("side", "") for p in open_positions}
                         except Exception:
                             pass
+                        # Giu lai symbol trong pos_symbols du exchange chua ghi nhan kip
+                        pos_symbols.add(symbol)
                         if equity <= 0:
                             return True
                 except Exception as e:

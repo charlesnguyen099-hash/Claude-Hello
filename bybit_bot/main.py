@@ -441,11 +441,11 @@ class TradingBot:
             _r30 = _h30 - _l30
             if _r30 > 0:
                 _p30 = (price - _l30) / _r30
-                if direction == 1 and _p30 > 0.70:
-                    logger.debug(f"micro_entry: BLOCK long — 30c range_pos={_p30:.2f} > 0.70 (du dinh 30 phut)")
+                if direction == 1 and _p30 > 0.85:
+                    logger.debug(f"micro_entry: BLOCK long — 30c range_pos={_p30:.2f} > 0.85 (du dinh 30 phut)")
                     return False
-                if direction == -1 and _p30 < 0.30:
-                    logger.debug(f"micro_entry: BLOCK short — 30c range_pos={_p30:.2f} < 0.30 (du day 30 phut)")
+                if direction == -1 and _p30 < 0.15:
+                    logger.debug(f"micro_entry: BLOCK short — 30c range_pos={_p30:.2f} < 0.15 (du day 30 phut)")
                     return False
 
         # 100-candle (~1.7h): block LONG neu o top 75%, block SHORT neu o bottom 25%
@@ -815,10 +815,10 @@ class TradingBot:
                     _bo_r30 = _bo_h30 - _bo_l30
                     if _bo_r30 > 0:
                         _bo_p30 = (_range_live_price - _bo_l30) / _bo_r30
-                        if bo_sig.direction == 1 and _bo_p30 > 0.75:
+                        if bo_sig.direction == 1 and _bo_p30 > 0.85:
                             bo_30c_ok = False
                             logger.debug(f"{symbol} [BO] block LONG at 30c top ({_bo_p30*100:.0f}%)")
-                        if bo_sig.direction == -1 and _bo_p30 < 0.25:
+                        if bo_sig.direction == -1 and _bo_p30 < 0.15:
                             bo_30c_ok = False
                             logger.debug(f"{symbol} [BO] block SHORT at 30c bottom ({_bo_p30*100:.0f}%)")
                 if bo_ok and micro_ok and not is_spike and post_spike_ok and micro_spike_ok and bo_btc_ok and bo_h1_ok and bo_24h_ok and bo_trend_ok and bo_m2h_ok and bo_30c_ok:

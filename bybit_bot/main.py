@@ -33,7 +33,7 @@ class TradingBot:
         logger.info("="*60)
         logger.info("Bybit Auto Trading Bot starting...")
         logger.info(f"Mode: {'TESTNET' if config.TESTNET else 'MAINNET (LIVE)'}")
-        logger.info(f"Scan budget per tick: {config.SCAN_BUDGET_SEC}s")
+        logger.info(f"Scan budget per tick: TOP{config.TOP20_COUNT}={config.SCAN_BUDGET_TOP20_SEC}s + REST={config.SCAN_BUDGET_REST_SEC}s")
         logger.info("Max positions: unlimited (limited by equity & market opportunity)")
         logger.info(f"Strategies: {[s.name for s in ALL_STRATEGIES]}")
         logger.info("="*60)
@@ -163,57 +163,68 @@ class TradingBot:
 
 
         # Xu ly TAT CA coin trending, coin score cao nhat truoc
-        # Dung time budget: xu ly lien tuc cho den het SCAN_BUDGET_SEC hoac het positions slot
+        # Dung time budget: uu tien top 20 truoc, phan con lai sau
         logger.info(
-            f"[TICK] Scan {len(self.symbols)} trending coins (budget={config.SCAN_BUDGET_SEC}s) | "
+            f"[TICK] Scan {len(self.symbols)} coins (top{config.TOP20_COUNT}+rest) | "
             f"open={len(open_positions)} | "
             f"BTC_1m(EMA100/250)={'UP' if self.btc_trend==1 else 'DOWN' if self.btc_trend==-1 else 'SIDE'} "
             f"BTC_1m(EMA300/600)={'UP' if self.btc_trend_4h==1 else 'DOWN' if self.btc_trend_4h==-1 else 'SIDE'}"
         )
 
+        _pos_side_map = {p["symbol"] for p in open_positions}
         _pos_side_map = {p["symbol"]: p.get("side", "") for p in open_positions}
-        _scan_start   = time.time()
-        _analyzed     = 0
         _now          = time.time()
 
-        for symbol in self.symbols:
-            # Dung khi het time budget
-            if time.time() - _scan_start > config.SCAN_BUDGET_SEC:
-                logger.info(f"[TICK] Scan budget hit after {_analyzed} coins")
-                break
+        # Tach top 20 va phan con lai
+        top20   = self.symbols[:config.TOP20_COUNT]
+        rest    = self.symbols[config.TOP20_COUNT:]
 
-            if symbol in pos_symbols:
-                continue
+        def _run_scan(symbols: list[str], cooldown: float, budget: float, label: str) -> tuple[bool, list, float]:
+            """Chay scan cho 1 nhom symbols. Tra ve (equity_exhausted, open_positions, equity)."""
+            nonlocal open_positions, equity, pos_symbols, _pos_side_map
+            _start    = time.time()
+            _analyzed = 0
+            for symbol in symbols:
+                if time.time() - _start > budget:
+                    logger.debug(f"[TICK] {label} budget hit after {_analyzed} coins")
+                    break
+                if symbol in pos_symbols:
+                    continue
+                _last = self._last_analyzed.get(symbol, 0)
+                if _now - _last < cooldown:
+                    continue
+                _analyzed += 1
+                self._last_analyzed[symbol] = _now
+                try:
+                    traded = self._process_symbol(
+                        symbol, equity, open_positions, is_priority=True,
+                        btc_eth_side_map=_pos_side_map,
+                    )
+                    if traded:
+                        self._last_analyzed[symbol] = time.time()
+                        pos_symbols.add(symbol)
+                        try:
+                            open_positions = self.client.get_positions()
+                            equity         = self.client.get_wallet_balance()
+                            pos_symbols    = {p["symbol"] for p in open_positions}
+                            _pos_side_map  = {p["symbol"]: p.get("side", "") for p in open_positions}
+                        except Exception:
+                            pass
+                        if equity <= 0:
+                            return True
+                except Exception as e:
+                    logger.warning(f"Error processing {symbol}: {str(e).encode('ascii','replace').decode()}")
+            logger.debug(f"[TICK] {label}: analyzed {_analyzed}/{len(symbols)} coins")
+            return False
 
-            # Cooldown: bo qua coin vua duoc analyze gan day (tranh re-check lien tuc)
-            _last = self._last_analyzed.get(symbol, 0)
-            if _now - _last < config.SYMBOL_COOLDOWN_SEC:
-                continue
+        # Pass 1: Top 20 — cooldown ngan, budget dai, uu tien cao nhat
+        if _run_scan(top20, config.TOP20_COOLDOWN_SEC, config.SCAN_BUDGET_TOP20_SEC, f"TOP{config.TOP20_COUNT}"):
+            logger.info("[TICK] Equity exhausted after TOP20 scan")
+            return
 
-            _analyzed += 1
-            self._last_analyzed[symbol] = _now
-            try:
-                traded = self._process_symbol(
-                    symbol, equity, open_positions, is_priority=True,
-                    btc_eth_side_map=_pos_side_map,
-                )
-                if traded:
-                    # Giu cooldown + add vao pos_symbols ngay lap tuc tranh double-entry
-                    # (exchange chua ghi nhan vi the moi, symbol chua co trong pos_symbols tu API)
-                    self._last_analyzed[symbol] = time.time()
-                    pos_symbols.add(symbol)  # block ngay, khong cho loop tiep tu o symbol nay
-                    try:
-                        open_positions = self.client.get_positions()
-                        equity         = self.client.get_wallet_balance()
-                        pos_symbols    = {p["symbol"] for p in open_positions}
-                        _pos_side_map  = {p["symbol"]: p.get("side", "") for p in open_positions}
-                    except Exception:
-                        pass
-                    if equity <= 0:
-                        logger.info("[TICK] Equity exhausted — skip new entries")
-                        break
-            except Exception as e:
-                logger.warning(f"Error processing {symbol}: {str(e).encode('ascii','replace').decode()}")
+        # Pass 2: Phan con lai — cooldown binh thuong
+        if _run_scan(rest, config.SYMBOL_COOLDOWN_SEC, config.SCAN_BUDGET_REST_SEC, "REST"):
+            logger.info("[TICK] Equity exhausted after REST scan")
 
     def _trend_direction(self, df, fast: int = 20, slow: int = 50) -> int:
         """+1 up, -1 down, 0 sideways.

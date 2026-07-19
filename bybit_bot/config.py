@@ -12,7 +12,6 @@ TESTNET    = os.getenv("BYBIT_TESTNET", "false").lower() == "true"
 # --- Market Scanner -----------------------------------------------------------
 MIN_VOLUME_USDT_24H  = 100_000       # min 100K USDT/24h — bat ca coin nho co trend dep
 SCAN_INTERVAL_SEC    = 30            # cap nhat danh sach trending moi 30s (giam API call)
-SCAN_BUDGET_SEC      = 20.0          # xu ly coin trong toi da 20s moi tick (~20-40 coins)
 
 # --- Multi-Timeframe Analysis -------------------------------------------------
 # 1m  x 500  = ~8h   — MAIN signal + entry timing
@@ -87,8 +86,12 @@ MAX_SPREAD_PCT_LARGE = 0.0005   # 0.05% cho BTC/ETH
 MAX_SPREAD_PCT_ALT   = 0.0015   # 0.15% cho altcoin
 
 # --- Execution ----------------------------------------------------------------
-LOOP_INTERVAL_SEC    = 1    # minimum pause giua cac tick (rate limit only)
-SYMBOL_COOLDOWN_SEC  = 30   # khong re-analyze cung coin trong 30s (bat lenh nhanh hon)
+LOOP_INTERVAL_SEC      = 1    # minimum pause giua cac tick (rate limit only)
+SYMBOL_COOLDOWN_SEC    = 30   # cooldown cho coin thuong
+TOP20_COOLDOWN_SEC     = 5    # top 20 trending: re-analyze moi 5s (gan nhu moi tick)
+TOP20_COUNT            = 20   # so coin top duoc uu tien cao
+SCAN_BUDGET_TOP20_SEC  = 30.0 # budget rieng cho top 20 (truoc)
+SCAN_BUDGET_REST_SEC   = 15.0 # budget cho phan con lai
 
 # --- Logging ------------------------------------------------------------------
 LOG_FILE        = "trading_bot.log"

@@ -971,18 +971,16 @@ class TradingBot:
                     if is_priority and sig.direction == 1 and not long_ok:
                         if micro_up and scalp_trend == 1:
                             long_ok = True
-                    # Micro-only entry: chi khi CA 2 TF deu khong oppose (khong co conflict)
-                    # macro_trend=-1 + macro_4h=1 = conflict -> KHONG bypass
-                    # macro_trend=0  + macro_4h=0 = sideways -> KHONG bypass (khong ro trend)
-                    # macro_trend=0  + macro_4h=1 da duoc bat boi long_ok tren (sum=1)
-                    # Micro bypass chi dung cho truong hop: ca 2 TF sideways (0,0) nhung 1m+5m ro chieu
+                    # Micro-only entry: bat early trend khi ca 2 TF sideways (0,0) nhung 1m+5m ro chieu
+                    # Dieu kien: ca 2 TF phai khong bearish/bullish (khong co conflict hoac downtrend)
+                    # scalp >= 0: 5m neutral hoac cung chieu deu ok (early trend 5m chua flip)
                     if is_priority and sig.direction == 1 and not long_ok:
                         _macro_neither_bear = macro_trend >= 0 and macro_4h >= 0
-                        if micro_up and scalp_trend == 1 and _macro_neither_bear:
+                        if micro_up and scalp_trend >= 0 and _macro_neither_bear:
                             long_ok = True
                     if is_priority and sig.direction == -1 and not short_ok:
                         _macro_neither_bull = macro_trend <= 0 and macro_4h <= 0
-                        if micro_down and scalp_trend == -1 and _macro_neither_bull:
+                        if micro_down and scalp_trend <= 0 and _macro_neither_bull:
                             short_ok = True
                     # 5m alignment pre-filter: khong dem signal khi 5m nguoc chieu (ALTCOIN ONLY)
                     # BTC/ETH (largecap): 5m corrections trong 1h trend la BINH THUONG (buy dip / sell bounce)

@@ -37,6 +37,7 @@ class Executor:
         self._open_time:  dict[str, float] = {}
         self._tick_size:  dict[str, float] = {}
         self._executing:  set               = set()  # symbols dang trong qua trinh execute (lock)
+        self._open_symbols: set             = set()  # symbols co open position theo executor (guard stale list)
 
     def execute_signal(
         self,
@@ -67,6 +68,14 @@ class Executor:
         open_positions: list[dict],
         is_priority: bool = False,
     ):
+        # Guard stale open_positions list: neu executor biet co position, khong mo them
+        if symbol in self._open_symbols:
+            existing_check = [p for p in open_positions if p["symbol"] == symbol]
+            if not existing_check:
+                # open_positions stale — executor cache noi co position, tin cache
+                logger.warning(f"{symbol}: SKIP — executor cache shows open position (open_positions may be stale)")
+                return
+
         existing = [p for p in open_positions if p["symbol"] == symbol]
         if existing:
             pos_side    = existing[0]["side"]
@@ -151,6 +160,7 @@ class Executor:
             self._tp_price[symbol]  = tp_rounded
             self._open_time[symbol] = time.time()
             self._tick_size[symbol] = tick_size
+            self._open_symbols.add(symbol)
 
             # Layer 2: set_trading_stop backup sau khi fill
             time.sleep(1.0)
@@ -316,6 +326,8 @@ class Executor:
     def manage_positions(self, open_positions: list[dict]):
         """Health check: re-arm SL/TP neu mat, fix SL sai ty le, emergency close."""
         active_symbols = {p["symbol"] for p in open_positions}
+        # Sync open_symbols cache voi thuc te exchange
+        self._open_symbols = active_symbols.copy()
 
         for pos in open_positions:
             symbol     = pos["symbol"]
@@ -430,6 +442,7 @@ class Executor:
         self._sl_price.pop(symbol, None)
         self._tp_price.pop(symbol, None)
         self._open_time.pop(symbol, None)
+        self._open_symbols.discard(symbol)
         self._tick_size.pop(symbol, None)
 
     def _close_position(self, position: dict):

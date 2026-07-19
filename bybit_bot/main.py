@@ -457,11 +457,11 @@ class TradingBot:
             if rng > 0:
                 range_pos = (price - low_rng) / rng
                 if not is_reversal:
-                    if direction == 1 and range_pos > 0.75:
-                        logger.debug(f"micro_entry: BLOCK long — 100c range_pos={range_pos:.2f} > 0.75")
+                    if direction == 1 and range_pos > 0.80:
+                        logger.debug(f"micro_entry: BLOCK long — 100c range_pos={range_pos:.2f} > 0.80")
                         return False
-                    if direction == -1 and range_pos < 0.25:
-                        logger.debug(f"micro_entry: BLOCK short — 100c range_pos={range_pos:.2f} < 0.25")
+                    if direction == -1 and range_pos < 0.20:
+                        logger.debug(f"micro_entry: BLOCK short — 100c range_pos={range_pos:.2f} < 0.20")
                         return False
                 # Bonus cho entry o vung an toan (range 30%-70%)
                 if direction == 1 and range_pos < 0.45:
@@ -477,11 +477,11 @@ class TradingBot:
             local_rng  = local_high - local_low
             if local_rng > 0:
                 local_pos = (price - local_low) / local_rng
-                if direction == 1 and local_pos > 0.75:
-                    logger.debug(f"micro_entry: BLOCK long — 20c local_pos={local_pos:.2f} > 0.75")
+                if direction == 1 and local_pos > 0.80:
+                    logger.debug(f"micro_entry: BLOCK long — 20c local_pos={local_pos:.2f} > 0.80")
                     return False
-                if direction == -1 and local_pos < 0.12:  # giam tu 0.35 -> 0.12
-                    logger.debug(f"micro_entry: HARD BLOCK short — 20c local_pos={local_pos:.2f} < 0.12")
+                if direction == -1 and local_pos < 0.15:
+                    logger.debug(f"micro_entry: BLOCK short — 20c local_pos={local_pos:.2f} < 0.15")
                     return False
 
         # Factor 7: Momentum deceleration — nen gan day nho manh so voi nen truoc
@@ -1374,29 +1374,8 @@ class TradingBot:
             if best.direction == -1 and _net_15m_body > 1.5 * _atr_for_sl:
                 return _block(f"skip SHORT - 15m net body strongly bullish ({_net_15m_body:.4f})")
 
-        # [AEQ-5a] Candle color: it nhat 2/3 nen 1m gan nhat phai cung chieu
-        # Tranh Long khi nen toan do (downtrend ro rang) nhu DOOD
-        # Ngoai le: is_reversal — reversal chinh xac la vao nguoc mau nen (day/dinh)
-        if not is_reversal and not df_micro.empty and len(df_micro) >= 4:
-            _c3 = df_micro.iloc[-3:]
-            _green = (_c3["close"] > _c3["open"]).sum()
-            _red   = (_c3["close"] < _c3["open"]).sum()
-            if best.direction == 1 and _green < 2:
-                return _block(f"skip LONG - chi {_green}/3 nen xanh gan nhat (candle color bearish)")
-            if best.direction == -1 and _red < 2:
-                return _block(f"skip SHORT - chi {_red}/3 nen do gan nhat (candle color bullish)")
-
-        # [AEQ-5b] EMA(20) slope: EMA20 phai doc cung chieu signal trong 5 nen gan nhat
-        # Tranh vao Long khi EMA20 dang doc xuong (downtrend ro rang)
-        # Ngoai le: is_reversal
-        if not is_reversal and not df_micro.empty and len(df_micro) >= 25:
-            _ema20 = compute_ema(df_micro["close"], 20)
-            _ema20_now  = _ema20.iloc[-1]
-            _ema20_5ago = _ema20.iloc[-6]
-            if best.direction == 1 and _ema20_now < _ema20_5ago:
-                return _block(f"skip LONG - EMA20 doc xuong ({_ema20_now:.6f} < {_ema20_5ago:.6f})")
-            if best.direction == -1 and _ema20_now > _ema20_5ago:
-                return _block(f"skip SHORT - EMA20 doc len ({_ema20_now:.6f} > {_ema20_5ago:.6f})")
+        # [AEQ-5a] Candle color: da xoa — qua chat, xu ly boi _micro_entry_analysis score
+        # [AEQ-5b] EMA20 slope: da xoa — duplicate voi micro_up/down check
 
         # [AEQ-6] Funding period
         _utc_now_f  = datetime.now(timezone.utc)

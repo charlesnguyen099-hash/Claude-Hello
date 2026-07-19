@@ -941,13 +941,14 @@ class TradingBot:
                     elif sig.direction == -1:
                         short_signals.append(sig)
                 else:
-                    # Yeu cau it nhat 1 TF (1h hoac 4h) xac nhan trend — tranh trade trong double-sideways
-                    # sum >= 1: it nhat 1 trong 2 TF la uptrend -> long ok
-                    # sum <= -1: it nhat 1 trong 2 TF la downtrend -> short ok
-                    # sum = 0 (0+0 hoac 1+(-1) conflict): block het — khong trade MOMENTUM
-                    # Chi can 1 trong 2 TF xac nhan — sum=0 (1h+4h conflict) van ok neu 1h confirm
-                    long_ok  = macro_trend >= 1 or macro_4h >= 1
-                    short_ok = macro_trend <= -1 or macro_4h <= -1
+                    # Yeu cau TONG 2 TF phai net positive/negative:
+                    # macro_trend + macro_4h >= 1: it nhat 1 TF up va TF kia khong bearish
+                    # macro_trend=-1 + macro_4h=1 = 0 → CONFLICT → khong trade (USUSDT pattern)
+                    # macro_trend=0  + macro_4h=1 = 1 → ok (long-term up, short-term sideways)
+                    # macro_trend=1  + macro_4h=0 = 1 → ok (medium-term up, long-term sideways)
+                    # macro_trend=1  + macro_4h=1 = 2 → manh nhat
+                    long_ok  = (macro_trend + macro_4h) >= 1
+                    short_ok = (macro_trend + macro_4h) <= -1
                     # BTC strongly bear → SHORT tất cả coin không có xu hướng độc lập UP
                     # BTC strongly bull → LONG tất cả coin không có xu hướng độc lập DOWN
                     # BTC fast bounce (EMA20/50 UP) → LONG ok dù mid/macro BTC còn DOWN
@@ -970,16 +971,18 @@ class TradingBot:
                     if is_priority and sig.direction == 1 and not long_ok:
                         if micro_up and scalp_trend == 1:
                             long_ok = True
-                    # Micro-only entry: ap dung cho TAT CA coin trending (is_priority)
-                    # Neu 15m/1h chua flip nhung 1m ro rang va 5m neutral/cung chieu -> vao som
-                    # Khong ap dung khi macro ca 2 TF deu nguoc chieu (risk qua cao)
+                    # Micro-only entry: chi khi CA 2 TF deu khong oppose (khong co conflict)
+                    # macro_trend=-1 + macro_4h=1 = conflict -> KHONG bypass
+                    # macro_trend=0  + macro_4h=0 = sideways -> KHONG bypass (khong ro trend)
+                    # macro_trend=0  + macro_4h=1 da duoc bat boi long_ok tren (sum=1)
+                    # Micro bypass chi dung cho truong hop: ca 2 TF sideways (0,0) nhung 1m+5m ro chieu
                     if is_priority and sig.direction == 1 and not long_ok:
-                        _macro_not_strongly_bear = not (macro_trend == -1 and macro_4h == -1)
-                        if micro_up and scalp_trend >= 0 and _macro_not_strongly_bear:
+                        _macro_neither_bear = macro_trend >= 0 and macro_4h >= 0
+                        if micro_up and scalp_trend == 1 and _macro_neither_bear:
                             long_ok = True
                     if is_priority and sig.direction == -1 and not short_ok:
-                        _macro_not_strongly_bull = not (macro_trend == 1 and macro_4h == 1)
-                        if micro_down and scalp_trend <= 0 and _macro_not_strongly_bull:
+                        _macro_neither_bull = macro_trend <= 0 and macro_4h <= 0
+                        if micro_down and scalp_trend == -1 and _macro_neither_bull:
                             short_ok = True
                     # 5m alignment pre-filter: khong dem signal khi 5m nguoc chieu (ALTCOIN ONLY)
                     # BTC/ETH (largecap): 5m corrections trong 1h trend la BINH THUONG (buy dip / sell bounce)

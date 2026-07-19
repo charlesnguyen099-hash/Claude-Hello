@@ -865,8 +865,8 @@ class TradingBot:
         # Define BTC alignment flags BEFORE strategy loop (B2 fix: these were only defined
         # inside the else-block at the bottom, causing NameError silently caught per-strategy)
         if symbol not in ("BTCUSDT", "ETHUSDT"):
-            btc_strongly_bull = (btc_trend == 1  and btc_trend_4h == 1)
-            btc_strongly_bear = (btc_trend == -1 and btc_trend_4h == -1)
+            btc_strongly_bull = (self.btc_trend == 1  and self.btc_trend_4h == 1)
+            btc_strongly_bear = (self.btc_trend == -1 and self.btc_trend_4h == -1)
             coin_independently_bull = (macro_trend == 1  and macro_4h == 1)
             coin_independently_bear = (macro_trend == -1 and macro_4h == -1)
         else:

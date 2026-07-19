@@ -672,6 +672,7 @@ class TradingBot:
         # Ca 2 cung xuat hien -> thi truong loan, skip tat ca
         _micro_spike_dump = False
         _micro_spike_pump = False
+        _dual_spike       = False
         _live_check_price = 0.0
         _micro_price = df_micro["close"].iloc[-1] if not df_micro.empty else 0.0
 
@@ -696,10 +697,10 @@ class TradingBot:
             # SOXL/NEAR/HYPE/SNDK: gia tang 0.7-1.8% trong candle dang hinh thanh -> block LONG
             # Forming candle body check da xoa: body % block entry dung luc momentum manh nhat
             # 1.5x ATR spike check (ben tren) du de bat candle bat thuong that su
+            # Dual spike: GIU CA 2 FLAG — ranging market = block moi momentum entry
+            # (truoc day xoa flag de "let consensus decide" — nhung consensus khong loc duoc ranging)
             if _micro_spike_dump and _micro_spike_pump:
-                logger.debug(f"{symbol}: 1m spike ca 2 chieu (ranging) — flags cleared, let consensus decide")
-                _micro_spike_dump = False
-                _micro_spike_pump = False
+                logger.debug(f"{symbol}: dual spike (ranging 1m) — keep both flags, block all momentum")
             # Cumulative net move: 15-candle lookback, 0.8% threshold
             # Bat ca dump bat dau tu 15 phut truoc (truoc chi bat 10 phut)
             _close_15_ago = df_micro["close"].iloc[-15]
@@ -749,10 +750,8 @@ class TradingBot:
             # Chi giu lai 15c cumulative (da check phia tren) va forming candle
             _live_check_price = _range_live_price if _range_live_price > 0 else _micro_price
 
-            # Dual spike (ca pump va dump trong 30c) = ranging/choppy -> skip REVERSAL nhung KHONG block momentum
-            # Macro trend + consensus se tu loc momentum trong ranging market
-            if _micro_spike_dump and _micro_spike_pump:
-                logger.debug(f"{symbol}: dual spike flag (ranging 1m) — skip reversal path only")
+            # Ghi nhan trang thai dual spike sau khi tat ca flags da duoc tinh
+            _dual_spike = _micro_spike_dump and _micro_spike_pump
 
         # macro_trend / macro_4h / _atr_for_sl da tinh TRUOC range blocks (tren)
 
@@ -1233,6 +1232,10 @@ class TradingBot:
                     return _block(f"skip SHORT - 5-bar volume pressure BUY {_buy_ratio*100:.0f}%")
                 if best.direction == 1 and _buy_ratio <= 0.25:
                     return _block(f"skip LONG - 5-bar volume pressure SELL {(1-_buy_ratio)*100:.0f}%")
+
+        # Dual spike (ranging market): block tat ca momentum entry
+        if _dual_spike:
+            return _block("skip - dual spike (ranging 1m choppy market), no momentum entry")
 
         # 1m spike filter
         if _micro_spike_pump and best.direction == 1:

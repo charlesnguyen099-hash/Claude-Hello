@@ -895,6 +895,13 @@ class TradingBot:
                     # Chi can 1 trong 2 TF xac nhan — sum=0 (1h+4h conflict) van ok neu 1h confirm
                     long_ok  = macro_trend >= 1 or macro_4h >= 1
                     short_ok = macro_trend <= -1 or macro_4h <= -1
+                    # BTC strongly bear → SHORT tất cả coin không có xu hướng độc lập UP
+                    # BTC strongly bull → LONG tất cả coin không có xu hướng độc lập DOWN
+                    # (EMA coin chưa kịp flip nhưng BTC đã xác định xu hướng rõ → trade theo BTC)
+                    if btc_strongly_bear and not coin_independently_bull:
+                        short_ok = True
+                    if btc_strongly_bull and not coin_independently_bear:
+                        long_ok = True
                     # Early trend entry: cho phep SHORT/LONG khi 1m + 5m da confirm du 15m chua flip
                     if is_priority and sig.direction == -1 and not short_ok:
                         if micro_down and scalp_trend == -1:

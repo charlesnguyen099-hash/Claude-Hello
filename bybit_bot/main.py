@@ -75,9 +75,9 @@ class TradingBot:
                 if positions_now:
                     time.sleep(1)
                     try:
-                        self.executor.manage_open_positions(self.client.get_positions())
+                        self.executor.manage_positions(self.client.get_positions())
                     except Exception as _e:
-                        logger.error(f"manage_open_positions error: {str(_e).encode('ascii','replace').decode()}")
+                        logger.error(f"manage_positions error: {str(_e).encode('ascii','replace').decode()}")
             except Exception as _e:
                 logger.error(f"get_positions error (inter-tick): {str(_e).encode('ascii','replace').decode()}")
 
@@ -127,7 +127,7 @@ class TradingBot:
 
         # Quan ly vi the dang mo
         if open_positions:
-            self.executor.manage_open_positions(open_positions)
+            self.executor.manage_positions(open_positions)
             # Refresh lai sau khi manage — co the co lenh vua dong (SL/TP hit)
             # De bot co the re-enter ngay trong cung tick nay
             try:

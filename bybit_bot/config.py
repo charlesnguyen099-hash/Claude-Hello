@@ -87,11 +87,11 @@ MAX_SPREAD_PCT_ALT   = 0.0015   # 0.15% cho altcoin
 
 # --- Execution ----------------------------------------------------------------
 LOOP_INTERVAL_SEC      = 1    # minimum pause giua cac tick (rate limit only)
-SYMBOL_COOLDOWN_SEC    = 30   # cooldown cho coin thuong
+SYMBOL_COOLDOWN_SEC    = 10   # cooldown cho coin thuong (giam tu 30s -> 10s)
 TOP20_COOLDOWN_SEC     = 5    # top 20 trending: re-analyze moi 5s (gan nhu moi tick)
 TOP20_COUNT            = 20   # so coin top duoc uu tien cao
-SCAN_BUDGET_TOP20_SEC  = 30.0 # budget rieng cho top 20 (truoc)
-SCAN_BUDGET_REST_SEC   = 15.0 # budget cho phan con lai
+SCAN_BUDGET_TOP20_SEC  = 25.0 # budget rieng cho top 20 (truoc)
+SCAN_BUDGET_REST_SEC   = 25.0 # budget cho phan con lai (tang tu 15s -> 25s)
 
 # --- Logging ------------------------------------------------------------------
 LOG_FILE        = "trading_bot.log"

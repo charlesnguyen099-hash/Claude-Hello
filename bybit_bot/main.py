@@ -1071,8 +1071,8 @@ class TradingBot:
             # Yeu cau them consensus cao hon (xu ly o phan consensus ben duoi)
             # OR: neu 1 trong 2 TF da xac nhan xu huong doc lap la du
             # Vi du: MNTUSDT co 15m bullish du 1h chua flip -> van cho phep LONG vs BTC bear
-            coin_independently_bear = (macro_trend == -1 or macro_4h == -1)
-            coin_independently_bull = (macro_trend ==  1 or macro_4h ==  1)
+            coin_independently_bear = (macro_trend == -1 and macro_4h == -1)
+            coin_independently_bull = (macro_trend ==  1 and macro_4h ==  1)
 
             # Hard block: BTC strongly opposes AND coin khong co xu huong doc lap
             # Chi block khi coin CUNG CHIEU voi BTC move (khong co divergence)
@@ -1088,8 +1088,8 @@ class TradingBot:
         # BTC alignment flags cho consensus adjustment
         btc_strongly_bull = (btc_trend == 1  and btc_trend_4h == 1)   if symbol != "BTCUSDT" else False
         btc_strongly_bear = (btc_trend == -1 and btc_trend_4h == -1)  if symbol != "BTCUSDT" else False
-        coin_independently_bear = (macro_trend == -1 or macro_4h == -1)
-        coin_independently_bull = (macro_trend ==  1 or macro_4h ==  1)
+        coin_independently_bear = (macro_trend == -1 and macro_4h == -1)
+        coin_independently_bull = (macro_trend ==  1 and macro_4h ==  1)
 
         # Soft penalty cho non-priority khi BTC 1 TF nguoc (chua confirm 2/2)
         btc_opposes_long  = (btc_trend == -1 and symbol != "BTCUSDT" and not is_priority and btc_trend_4h != -1)

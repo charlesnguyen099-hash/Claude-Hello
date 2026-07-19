@@ -1406,9 +1406,12 @@ class TradingBot:
         if not self._micro_entry_analysis(df_micro, best.direction, is_reversal=False):
             return _block(f"skip - MOMENTUM micro_entry_analysis rejected (consensus={len(signals)})")
 
-        # [AEQ-PUMP] Live price vs 5-candle average: neu gia dang DANG pump/dump (chua ngung)
-        # Tranh Short vao giua pump dang chay (GWEI: gia tang 1.3% vs avg, Short bi SL ngay)
-        # Tranh Long vao giua dump dang chay (nguoc lai)
+        # [AEQ-PUMP] Live price vs 5-candle average: tranh đu đỉnh / đu đáy
+        # Block 4 truong hop:
+        #   1. SHORT vao giua pump dang chay (SHORT qua som)
+        #   2. LONG vao giua dump dang chay (LONG qua som)
+        #   3. LONG khi gia DA pump roi (đu đỉnh — PHAUSDT pattern)
+        #   4. SHORT khi gia DA dump roi (đu đáy)
         # Nguong: _sp-scale -> largecap 0.15%, altcoin 0.3% — scaled by volatility class
         if _range_live_price > 0 and not df_micro.empty and len(df_micro) >= 6:
             _avg_5c = df_micro["close"].iloc[-6:-1].mean()
@@ -1424,6 +1427,17 @@ class TradingBot:
                     return _block(
                         f"skip LONG - live {_live_move_pct*100:.2f}% below 5c avg "
                         f"(gia dang dump, Long qua som)"
+                    )
+                # Block du dinh / du day: gia da di xa roi moi vao theo
+                if best.direction == 1 and _live_move_pct > _pump_thresh:
+                    return _block(
+                        f"skip LONG - live {_live_move_pct*100:.2f}% above 5c avg "
+                        f"(gia da pump, Long du dinh)"
+                    )
+                if best.direction == -1 and _live_move_pct < -_pump_thresh:
+                    return _block(
+                        f"skip SHORT - live {_live_move_pct*100:.2f}% below 5c avg "
+                        f"(gia da dump, Short du day)"
                     )
 
         best.consensus = len(signals)

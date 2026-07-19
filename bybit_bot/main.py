@@ -1452,7 +1452,7 @@ class TradingBot:
             _avg_5c = df_micro["close"].iloc[-6:-1].mean()
             if _avg_5c > 0:
                 _live_move_pct = (_range_live_price - _avg_5c) / _avg_5c
-                _pump_thresh = 0.003 * _sp   # 0.15% largecap, 0.225% midcap, 0.3% altcoin
+                _pump_thresh = 0.008 * _sp   # 0.4% largecap, 0.6% midcap, 0.8% altcoin
                 if best.direction == -1 and _live_move_pct > _pump_thresh:
                     return _block(
                         f"skip SHORT - live {_live_move_pct*100:.2f}% above 5c avg "

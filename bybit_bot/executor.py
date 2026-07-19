@@ -82,20 +82,11 @@ class Executor:
             else:
                 held_seconds = time.time() - self._open_time.get(symbol, time.time())
 
-            pos_pnl_pct = 0.0
-            try:
-                notional    = _fval(existing[0], "positionValue", 1) or 1
-                lev         = _fval(existing[0], "leverage", 1) or 1
-                margin      = notional / lev
-                pnl         = _fval(existing[0], "unrealisedPnl")
-                pos_pnl_pct = pnl / margin if margin > 0 else 0
-            except Exception:
-                pass
-
-            if held_seconds < 1800 and pos_pnl_pct > -0.20:
+            # B8 fix: PnL condition (> -0.20) was unreachable because min SL ROI = 60%,
+            # so position always closes via SL before PnL hits -20%. Time-only check.
+            if held_seconds < 300:
                 logger.info(
-                    f"{symbol}: Signal reversal — SKIP (held={held_seconds:.0f}s < 1800s, "
-                    f"PnL={pos_pnl_pct*100:.1f}%)"
+                    f"{symbol}: Signal reversal — SKIP (held={held_seconds:.0f}s < 300s)"
                 )
                 return
 

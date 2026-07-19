@@ -126,6 +126,15 @@ class TradingBot:
             f"DayPnL={_daily_pnl_pct*100:+.2f}%"
         )
 
+        # B1 fix: enforce daily loss guard — stop opening new trades when day loss > threshold
+        if _daily_pnl_pct < -config.MAX_DAILY_LOSS_PCT:
+            logger.warning(
+                f"[DAILY LOSS GUARD] Day PnL={_daily_pnl_pct*100:+.2f}% < -{config.MAX_DAILY_LOSS_PCT*100:.0f}% — no new entries today"
+            )
+            if open_positions:
+                self.executor.manage_positions(open_positions)
+            return
+
         # Quan ly vi the dang mo
         if open_positions:
             self.executor.manage_positions(open_positions)
@@ -488,35 +497,6 @@ class TradingBot:
                     logger.debug(f"micro_entry: BLOCK short — 20c local_pos={local_pos:.2f} < 0.15")
                     return False
 
-        # Factor 6b: Local downtrend/uptrend block (dead cat bounce / dead cat dump)
-        # Pattern: gia dang trong local downtrend (close < close 10 nen truoc)
-        #   VA dang o top 68% cua 30c range (bounce chua vuot qua duoc dinh)
-        #   → block LONG momentum (day cat bounce vao LONG = rui ro cao)
-        # Symmetric cho SHORT: local uptrend + o bottom 32% cua 30c range → block SHORT
-        # KHONG ap dung cho reversal (reversal duoc phep vao o cuc doan)
-        if not is_reversal and n >= 15:
-            _close_now  = close.iloc[-1]
-            _close_10b  = close.iloc[-11]   # close 10 nen truoc
-            _local_down = _close_now < _close_10b   # downtrend local
-            _local_up   = _close_now > _close_10b   # uptrend local
-            _w30_h = high.iloc[-30:].max() if n >= 30 else high.iloc[-n:].max()
-            _w30_l = low.iloc[-30:].min()  if n >= 30 else low.iloc[-n:].min()
-            _w30_r = _w30_h - _w30_l
-            if _w30_r > 0:
-                _w30_p = (price - _w30_l) / _w30_r
-                if direction == 1 and _local_down and _w30_p > 0.68:
-                    logger.debug(
-                        f"micro_entry: BLOCK long — local downtrend (close {_close_now:.6f} < {_close_10b:.6f} 10c ago) "
-                        f"+ 30c range_pos={_w30_p:.2f} > 0.68 (dead cat bounce)"
-                    )
-                    return False
-                if direction == -1 and _local_up and _w30_p < 0.32:
-                    logger.debug(
-                        f"micro_entry: BLOCK short — local uptrend (close {_close_now:.6f} > {_close_10b:.6f} 10c ago) "
-                        f"+ 30c range_pos={_w30_p:.2f} < 0.32 (dead cat dump)"
-                    )
-                    return False
-
         # Factor 7: Momentum deceleration — nen gan day nho manh so voi nen truoc
         # Tranh vao lenh khi momentum dang kiet suc (sap dao chieu)
         if n >= 8:
@@ -635,6 +615,9 @@ class TradingBot:
         _h1_block_long  = False
         _h1_block_short = False
         _W5H = 300   # 300 x 1m = 5h window
+        # B3 fix: define before 2h block which uses these regardless of 5h data length
+        _btc_bear_rng = self.btc_trend == -1 and self.btc_trend_4h == -1
+        _btc_bull_rng = self.btc_trend == 1  and self.btc_trend_4h == 1
         if not df_signal.empty and len(df_signal) >= _W5H:
             h1_high = df_signal["high"].iloc[-_W5H:].max()
             h1_low  = df_signal["low"].iloc[-_W5H:].min()
@@ -643,8 +626,6 @@ class TradingBot:
                 h1_pos = (_range_price - h1_low) / h1_rng
                 _h1_long_thresh  = 0.70 if (is_priority and macro_trend >= 1) else 0.60
                 _h1_short_thresh = 0.30 if (is_priority and macro_trend <= -1) else 0.40
-                _btc_bear_rng = self.btc_trend == -1 and self.btc_trend_4h == -1
-                _btc_bull_rng = self.btc_trend == 1  and self.btc_trend_4h == 1
                 if h1_pos > _h1_long_thresh:
                     # BTC strongly bull → LONG trong 5h range top vẫn ok (trend chuẩn)
                     if not _btc_bull_rng:
@@ -889,6 +870,19 @@ class TradingBot:
 
         long_signals  = []
         short_signals = []
+
+        # Define BTC alignment flags BEFORE strategy loop (B2 fix: these were only defined
+        # inside the else-block at the bottom, causing NameError silently caught per-strategy)
+        if symbol not in ("BTCUSDT", "ETHUSDT"):
+            btc_strongly_bull = (btc_trend == 1  and btc_trend_4h == 1)
+            btc_strongly_bear = (btc_trend == -1 and btc_trend_4h == -1)
+            coin_independently_bull = (macro_trend == 1  and macro_4h == 1)
+            coin_independently_bear = (macro_trend == -1 and macro_4h == -1)
+        else:
+            btc_strongly_bull = False
+            btc_strongly_bear = False
+            coin_independently_bull = False
+            coin_independently_bear = False
 
         n_15m_valid = 0  # so strategies co signal hop le
         for strategy in ALL_STRATEGIES:

@@ -53,6 +53,7 @@ class TradingBot:
         self.btc_trend: int = 0      # EMA(100/250) tren 1m ~ medium trend (~1.5h)
         self.btc_trend_4h: int = 0   # EMA(300/600) tren 1m ~ macro trend (~5h, ten giu nguyen de tranh refactor lon)
         self.btc_trend_fast: int = 0 # EMA(20/50) tren 1m ~ short-term trend (~20min) — bat bounce/dip BTC nhanh
+        self.df_btc = None           # BTC 1m data cho correlation check
         # Daily loss guard
         self._equity_day_date: str = ""
         # Per-symbol cooldown: tranh re-analyze cung coin trong SYMBOL_COOLDOWN_SEC
@@ -161,6 +162,7 @@ class TradingBot:
         try:
             df_btc = self.client.get_klines("BTCUSDT", "1", 1000)
             if not df_btc.empty and len(df_btc) >= 605:  # EMA600 can it nhat 605 nen
+                self.df_btc = df_btc
                 # EMA(20/50) tren 1m ~ ~20min/50min trend — nhanh, bat bounce/dip BTC
                 self.btc_trend_fast = self._trend_direction(df_btc, fast=20, slow=50)
                 # EMA(100/250) tren 1m ~ EMA(20/50) tren 5m — medium trend BTC
@@ -257,6 +259,24 @@ class TradingBot:
         if price < ema_f < ema_s:
             return -1
         return 0
+
+    def _btc_correlated(self, df_coin, lookback: int = 100, threshold: float = 0.5) -> bool:
+        """True neu coin co rolling correlation voi BTC >= threshold (neo theo BTC).
+        False = coin chay doc lap, bo qua BTC filter."""
+        if self.df_btc is None or df_coin is None or df_coin.empty:
+            return True  # khong co data → assume correlated (an toan hon)
+        n = min(lookback, len(df_coin), len(self.df_btc))
+        if n < 30:
+            return True
+        coin_ret = df_coin["close"].iloc[-n:].pct_change().dropna()
+        btc_ret  = self.df_btc["close"].iloc[-n:].pct_change().dropna()
+        min_len  = min(len(coin_ret), len(btc_ret))
+        if min_len < 20:
+            return True
+        corr = coin_ret.iloc[-min_len:].corr(btc_ret.iloc[-min_len:])
+        if corr != corr:  # NaN
+            return True
+        return abs(corr) >= threshold
 
     def _micro_trend(self, df) -> int:
         """
@@ -601,6 +621,11 @@ class TradingBot:
         # ATR: dung ATR(50) tren 1m thay vi ATR(14) — on dinh hon, it bi anh huong boi spike
         _atr_for_sl = compute_atr(df_signal, 50).iloc[-1] if not df_signal.empty and len(df_signal) >= 50 else 0.0
 
+        # BTC correlation: coin chay theo BTC thi ap dung BTC filter, khong thi phan tich doc lap
+        # BTCUSDT/ETHUSDT luon correlated (dung filter rieng). Stock token da bi skip truoc.
+        _btc_filter_on = symbol in ("BTCUSDT", "ETHUSDT") or self._btc_correlated(df_signal)
+        logger.debug(f"{symbol}: btc_correlated={_btc_filter_on}")
+
         # Range block ~5h: 300 nen 1m = 300 phut = 5h (tuong duong 20 nen 15m cu)
         # Priority coins trong confirmed trend duoc phep entry o top/bottom hon (85/15 thay vi 75/25)
         _h1_block_long  = False
@@ -862,9 +887,9 @@ class TradingBot:
         long_signals  = []
         short_signals = []
 
-        # Define BTC alignment flags BEFORE strategy loop (B2 fix: these were only defined
-        # inside the else-block at the bottom, causing NameError silently caught per-strategy)
-        if symbol not in ("BTCUSDT", "ETHUSDT"):
+        # Define BTC alignment flags BEFORE strategy loop
+        # Chi ap dung BTC filter cho coin correlated voi BTC
+        if symbol not in ("BTCUSDT", "ETHUSDT") and _btc_filter_on:
             btc_strongly_bull = (self.btc_trend == 1  and self.btc_trend_4h == 1)
             btc_strongly_bear = (self.btc_trend == -1 and self.btc_trend_4h == -1)
             coin_independently_bull = (macro_trend == 1  and macro_4h == 1)
@@ -1167,38 +1192,39 @@ class TradingBot:
                 logger.debug("ETHUSDT: clear LONG — ETH 1h AND 4h both DOWN")
         else:
             # Altcoin: phan tich BTC alignment de quyet dinh hard/soft block
+            # Chi ap dung neu coin correlated voi BTC
+            if _btc_filter_on:
+                btc_strongly_bull = (btc_trend == 1  and btc_trend_4h == 1)
+                btc_strongly_bear = (btc_trend == -1 and btc_trend_4h == -1)
+                coin_independently_bear = (macro_trend == -1 and macro_4h == -1)
+                coin_independently_bull = (macro_trend ==  1 and macro_4h ==  1)
+                btc_fast_bounce = (btc_trend_fast == 1)
+                btc_fast_dump   = (btc_trend_fast == -1)
+                if btc_strongly_bull and not is_reversal and not coin_independently_bear and not btc_fast_dump:
+                    short_signals = []
+                    logger.debug(f"{symbol}: BTC mid+macro BULLISH (fast not dumping), coin not independently bearish -> block SHORT")
+                if btc_strongly_bear and not is_reversal and not coin_independently_bull and not btc_fast_bounce:
+                    long_signals = []
+                    logger.debug(f"{symbol}: BTC mid+macro BEARISH (fast not bouncing), coin not independently bullish -> block LONG")
+            else:
+                # Coin doc lap: khong ap dung BTC hard block, phan tich theo indicator rieng
+                btc_strongly_bull = False
+                btc_strongly_bear = False
+                coin_independently_bull = False
+                coin_independently_bear = False
+                logger.debug(f"{symbol}: BTC uncorrelated -> skip BTC hard block, analyze independently")
+
+        # BTC alignment flags cho consensus adjustment — chi dung neu coin correlated
+        if _btc_filter_on and symbol != "BTCUSDT":
             btc_strongly_bull = (btc_trend == 1  and btc_trend_4h == 1)
             btc_strongly_bear = (btc_trend == -1 and btc_trend_4h == -1)
-
-            # Coin co xu huong doc lap nguoc BTC (ca 1h VA 4h cua chinh coin do)
-            # Vi du: BTC bull nhung coin rieng dang bearish 1h+4h -> co the cho phep short
-            # Yeu cau them consensus cao hon (xu ly o phan consensus ben duoi)
-            # OR: neu 1 trong 2 TF da xac nhan xu huong doc lap la du
-            # Vi du: MNTUSDT co 15m bullish du 1h chua flip -> van cho phep LONG vs BTC bear
             coin_independently_bear = (macro_trend == -1 and macro_4h == -1)
             coin_independently_bull = (macro_trend ==  1 and macro_4h ==  1)
-
-            # Hard block: BTC strongly opposes AND coin khong co xu huong doc lap
-            # Chi block khi coin CUNG CHIEU voi BTC move (khong co divergence)
-            # Cho phep coin co xu huong doc lap (coin_independently_bull/bear) di nguoc BTC
-            # Ngoai le fast-trend: neu BTC dang dao chieu ngan han thi cho phep di theo huong do
-            btc_fast_bounce = (btc_trend_fast == 1)   # BTC short-term up du macro van DOWN
-            btc_fast_dump   = (btc_trend_fast == -1)  # BTC short-term down du macro van UP
-            # Block SHORT altcoin khi BTC mid+macro bull, TRU KHI fast da dump (bat dau dao chieu xuat)
-            if btc_strongly_bull and not is_reversal and not coin_independently_bear and not btc_fast_dump:
-                short_signals = []
-                logger.debug(f"{symbol}: BTC mid+macro BULLISH (fast not dumping), coin not independently bearish -> block SHORT")
-            # Block LONG altcoin khi BTC mid+macro bear, TRU KHI fast da bounce (bat dau dao chieu len)
-            if btc_strongly_bear and not is_reversal and not coin_independently_bull and not btc_fast_bounce:
-                long_signals = []
-                logger.debug(f"{symbol}: BTC mid+macro BEARISH (fast not bouncing), coin not independently bullish -> block LONG")
-            # Neu coin doc lap nguoc BTC: van cho phep nhung can consensus cao hon (xu ly o phan duoi)
-
-        # BTC alignment flags cho consensus adjustment
-        btc_strongly_bull = (btc_trend == 1  and btc_trend_4h == 1)   if symbol != "BTCUSDT" else False
-        btc_strongly_bear = (btc_trend == -1 and btc_trend_4h == -1)  if symbol != "BTCUSDT" else False
-        coin_independently_bear = (macro_trend == -1 and macro_4h == -1)
-        coin_independently_bull = (macro_trend ==  1 and macro_4h ==  1)
+        else:
+            btc_strongly_bull = False
+            btc_strongly_bear = False
+            coin_independently_bear = False
+            coin_independently_bull = False
 
         # Soft penalty cho non-priority khi BTC 1 TF nguoc (chua confirm 2/2)
         btc_opposes_long  = (btc_trend == -1 and symbol != "BTCUSDT" and not is_priority and btc_trend_4h != -1)

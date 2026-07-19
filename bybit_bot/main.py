@@ -929,8 +929,12 @@ class TradingBot:
                         _micro_long_ok   = micro_up   and macro_trend >= 1
                         _both_tf_bear    = macro_trend <= -1 and macro_4h <= -1
                         _both_tf_bull    = macro_trend >= 1  and macro_4h >= 1
-                        scalp_allows_short = (scalp_trend == -1) or _micro_short_ok or _both_tf_bear
-                        scalp_allows_long  = (scalp_trend ==  1) or _micro_long_ok  or _both_tf_bull
+                        # BTC strongly bear + coin macro bear → SHORT ok dù scalp bounce tạm
+                        # BTC strongly bull + coin macro bull → LONG ok dù scalp dip tạm
+                        _btc_bear_scalp_ok = btc_strongly_bear and (macro_trend <= -1 or macro_4h <= -1)
+                        _btc_bull_scalp_ok = btc_strongly_bull and (macro_trend >= 1  or macro_4h >= 1)
+                        scalp_allows_short = (scalp_trend == -1) or _micro_short_ok or _both_tf_bear or _btc_bear_scalp_ok
+                        scalp_allows_long  = (scalp_trend ==  1) or _micro_long_ok  or _both_tf_bull or _btc_bull_scalp_ok
                     if sig.direction == 1 and long_ok and scalp_allows_long:
                         long_signals.append(sig)
                     elif sig.direction == -1 and short_ok and scalp_allows_short:
@@ -1282,13 +1286,18 @@ class TradingBot:
         #   Ngoại lệ: macro STRONG (cả 15m VÀ 1h cùng chiều) → pullback entry trong trend
         #   → Cho phép Long khi 1m đang nghỉ (neutral) nếu macro rõ ràng UP
 
-        # --- Cấp 1: HARD BLOCK (không ngoại lệ) ---
-        if best.direction == 1 and micro_down:    # micro == -1
+        # --- Cấp 1: HARD BLOCK (có ngoại lệ BTC/macro alignment) ---
+        # Ngoai le: BTC strongly bear + coin macro bear → SHORT trong micro bounce = ban dinh bounce hợp lệ
+        # Ngoai le: BTC strongly bull + coin macro bull → LONG trong micro dip = mua day pullback hop le
+        _btc_bear_short_ok = btc_strongly_bear and (macro_trend <= -1 or macro_4h <= -1)
+        _btc_bull_long_ok  = btc_strongly_bull and (macro_trend >= 1  or macro_4h >= 1)
+
+        if best.direction == 1 and micro_down and not _btc_bull_long_ok:
             return _block(
                 f"HARD BLOCK LONG — 1m BEARISH (micro=-1, gia dang giam) "
                 f"| 5m={scalp_trend} 15m={macro_trend} 1h={macro_4h}"
             )
-        if best.direction == -1 and micro_up:     # micro == 1
+        if best.direction == -1 and micro_up and not _btc_bear_short_ok:
             return _block(
                 f"HARD BLOCK SHORT — 1m BULLISH (micro=+1, gia dang tang) "
                 f"| 5m={scalp_trend} 15m={macro_trend} 1h={macro_4h}"
@@ -1302,12 +1311,12 @@ class TradingBot:
         _has_st_short = (micro == -1 or scalp_trend == -1)
 
         if not is_reversal:
-            if best.direction == 1 and not _has_st_long and not _strong_macro_bull:
+            if best.direction == 1 and not _has_st_long and not _strong_macro_bull and not _btc_bull_long_ok:
                 return _block(
                     f"skip LONG — khong co TF ngan han xac nhan va macro khong manh "
                     f"(1m={micro}, 5m={scalp_trend}, 15m={macro_trend}, 1h={macro_4h})"
                 )
-            if best.direction == -1 and not _has_st_short and not _strong_macro_bear:
+            if best.direction == -1 and not _has_st_short and not _strong_macro_bear and not _btc_bear_short_ok:
                 return _block(
                     f"skip SHORT — khong co TF ngan han xac nhan va macro khong manh "
                     f"(1m={micro}, 5m={scalp_trend}, 15m={macro_trend}, 1h={macro_4h})"

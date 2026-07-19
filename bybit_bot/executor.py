@@ -36,6 +36,7 @@ class Executor:
         self._tp_price:   dict[str, float] = {}   # TP de re-arm
         self._open_time:  dict[str, float] = {}
         self._tick_size:  dict[str, float] = {}
+        self._executing:  set               = set()  # symbols dang trong qua trinh execute (lock)
 
     def execute_signal(
         self,
@@ -48,6 +49,24 @@ class Executor:
         if signal.direction == 0:
             return
 
+        # Execution lock: tuyet doi khong cho 2 luong chay cung luc cho 1 symbol
+        if symbol in self._executing:
+            logger.warning(f"{symbol}: execute_signal already in progress — skip duplicate call")
+            return
+        self._executing.add(symbol)
+        try:
+            self._execute_signal_inner(symbol, signal, equity, open_positions, is_priority)
+        finally:
+            self._executing.discard(symbol)
+
+    def _execute_signal_inner(
+        self,
+        symbol: str,
+        signal: Signal,
+        equity: float,
+        open_positions: list[dict],
+        is_priority: bool = False,
+    ):
         existing = [p for p in open_positions if p["symbol"] == symbol]
         if existing:
             pos_side    = existing[0]["side"]

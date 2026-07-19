@@ -37,6 +37,9 @@ def retry(attempts: int = 3, delay: float = 2.0):
             for i in range(attempts):
                 try:
                     return fn(*args, **kwargs)
+                except ValueError:
+                    # ValueError = gia/tham so khong hop le — retry cung khong giai quyet duoc
+                    raise
                 except Exception as e:
                     if i == attempts - 1:
                         raise
@@ -317,6 +320,8 @@ class BybitClient:
             return
 
         logger.info(f"set_sl_tp {symbol}: SL={params.get('stopLoss','(none)')} TP={params.get('takeProfit','(none)')} tick={tick_size}")
+        # ErrCode -> no retry: gia khong hop le, retry cung that bai
+        _NO_RETRY_CODES = {110084, 110085, 110043, 10001}
         try:
             resp = self.session.set_trading_stop(**params)
         except Exception as e:
@@ -329,8 +334,12 @@ class BybitClient:
         ret_code = resp.get("retCode", -1)
         if ret_code != 0:
             msg = resp.get("retMsg", "")
-            logger.error(f"set_sl_tp {symbol} FAILED retCode={ret_code} msg={msg} params={params}")
-            raise RuntimeError(f"set_trading_stop failed retCode={ret_code} msg={msg}")
+            logger.error(f"set_sl_tp {symbol} FAILED retCode={ret_code} msg={msg} SL={params.get('stopLoss')} TP={params.get('takeProfit')}")
+            print(f"[SL/TP ERROR] {symbol} retCode={ret_code} {msg}", flush=True)
+            if ret_code in _NO_RETRY_CODES:
+                # Gia sai huong hoac invalid — retry cung khong co ich, raise de caller xu ly
+                raise ValueError(f"set_trading_stop price invalid retCode={ret_code}: {msg}")
+            raise RuntimeError(f"set_trading_stop failed retCode={ret_code}: {msg}")
 
     def update_stop_loss(self, symbol: str, sl_price: float, tick_size: float = 0.0):
         """Cap nhat SL — lay TP hien tai tu exchange va goi set_sl_tp voi ca hai gia tri.

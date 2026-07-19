@@ -169,6 +169,7 @@ class Executor:
                 logger.error(f"{symbol}: set_sl_tp layer2 FAILED: {str(e).encode('ascii','replace').decode()}")
 
             # Layer 3: Verify va re-arm (up to 5 attempts)
+            _sl_tp_confirmed = False
             for _attempt in range(5):
                 time.sleep(1.0)
                 has_sl, actual_sl, has_tp, actual_tp = self.client.verify_position_tp_sl(symbol)
@@ -189,6 +190,7 @@ class Executor:
                     if _ratio_ok:
                         logger.info(f"{symbol}: CONFIRMED SL={actual_sl} TP={actual_tp} (attempt={_attempt+1})")
                         print(f"[OK] {symbol} SL={actual_sl} TP={actual_tp} confirmed", flush=True)
+                        _sl_tp_confirmed = True
                         break
                     try:
                         self.client.set_sl_tp(symbol, sl_rounded, tp_rounded)
@@ -201,6 +203,21 @@ class Executor:
                     self.client.set_sl_tp(symbol, sl_rounded, tp_rounded)
                 except Exception as e2:
                     logger.error(f"{symbol}: re-arm FAILED: {str(e2).encode('ascii','replace').decode()}")
+
+            # Last resort: neu tat ca 5 attempt deu that bai, thu lai voi gia hien tai
+            # Truong hop xay ra khi gia di chuyen qua SL/TP goc trong luc dat lenh
+            if not _sl_tp_confirmed:
+                logger.error(f"{symbol}: SL/TP not confirmed after 5 attempts — trying fresh prices or closing")
+                print(f"[CRITICAL] {symbol}: SL/TP UNSET after 5 tries — emergency recovery", flush=True)
+                _recovered = self._recover_sl_tp(
+                    symbol=symbol,
+                    side=params.side,
+                    entry=signal.entry_price,
+                    leverage=params.leverage,
+                    orig_sl=sl_rounded,
+                    orig_tp=tp_rounded,
+                    tick_size=tick_size,
+                )
 
             self.logger.log_trade({
                 "event":    "open",
@@ -221,6 +238,89 @@ class Executor:
 
         except Exception as e:
             logger.error(f"{symbol}: _enter_trade error: {str(e).encode('ascii','replace').decode()}")
+
+    def _recover_sl_tp(
+        self,
+        symbol: str,
+        side: str,
+        entry: float,
+        leverage: int,
+        orig_sl: float,
+        orig_tp: float,
+        tick_size: float,
+    ) -> bool:
+        """Last-resort SL/TP recovery khi gia di chuyen sau khi dat lenh.
+        Thu dat gia goc, neu khong duoc thi tinh lai tu gia hien tai.
+        Neu khong the dat ca hai → dong lenh ngay (khong co SL = rui ro khong kiem soat duoc)."""
+        try:
+            bid, ask = self.client.get_bid_ask(symbol)
+            mark = (bid + ask) / 2.0 if bid > 0 and ask > 0 else 0.0
+        except Exception:
+            mark = 0.0
+
+        _dir = 1 if side == "Buy" else -1
+
+        # Kiem tra xem gia co cross qua SL/TP goc chua
+        # Long: SL phai < mark, TP phai > mark
+        # Short: SL phai > mark, TP phai < mark
+        orig_sl_valid = mark <= 0 or (_dir == 1 and orig_sl < mark) or (_dir == -1 and orig_sl > mark)
+        orig_tp_valid = mark <= 0 or (_dir == 1 and orig_tp > mark) or (_dir == -1 and orig_tp < mark)
+
+        if orig_sl_valid and orig_tp_valid:
+            # Gia hop le — thu dat lai lan cuoi
+            try:
+                self.client.set_sl_tp(symbol, orig_sl, orig_tp, tick_size=tick_size)
+                time.sleep(0.5)
+                has_sl, _, has_tp, _ = self.client.verify_position_tp_sl(symbol)
+                if has_sl and has_tp:
+                    logger.info(f"{symbol}: Recovery OK with original SL={orig_sl} TP={orig_tp}")
+                    print(f"[RECOVERED] {symbol} SL/TP set OK on last try", flush=True)
+                    return True
+            except Exception as e:
+                logger.error(f"{symbol}: Recovery attempt FAILED: {str(e).encode('ascii','replace').decode()}")
+
+        # Gia goc khong hop le hoac thu lai van that bai → tinh lai tu gia hien tai
+        if mark > 0 and entry > 0:
+            lev = max(leverage, 1)
+            tp_roi = config.TP_ROI_MIN
+            sl_roi = tp_roi * config.SL_TP_RATIO
+            tp_dist = tp_roi * entry / lev
+            sl_dist = sl_roi * entry / lev
+            fresh_sl = entry - _dir * sl_dist
+            fresh_tp = entry + _dir * tp_dist
+
+            fresh_sl_valid = (_dir == 1 and fresh_sl < mark) or (_dir == -1 and fresh_sl > mark)
+            fresh_tp_valid = (_dir == 1 and fresh_tp > mark) or (_dir == -1 and fresh_tp < mark)
+
+            if fresh_sl_valid and fresh_tp_valid:
+                _sl_c = tick_size > 0 and side == "Sell"
+                fresh_sl_r = self.client.round_to_tick(fresh_sl, tick_size, ceil=_sl_c) if tick_size > 0 else round(fresh_sl, 6)
+                fresh_tp_r = self.client.round_to_tick(fresh_tp, tick_size) if tick_size > 0 else round(fresh_tp, 6)
+                try:
+                    self.client.set_sl_tp(symbol, fresh_sl_r, fresh_tp_r, tick_size=tick_size)
+                    time.sleep(0.5)
+                    has_sl, _, has_tp, _ = self.client.verify_position_tp_sl(symbol)
+                    if has_sl and has_tp:
+                        self._sl_price[symbol] = fresh_sl_r
+                        self._tp_price[symbol] = fresh_tp_r
+                        logger.info(f"{symbol}: Recovery OK with fresh SL={fresh_sl_r} TP={fresh_tp_r} (mark={mark:.6f})")
+                        print(f"[RECOVERED] {symbol} fresh SL={fresh_sl_r} TP={fresh_tp_r}", flush=True)
+                        return True
+                except Exception as e:
+                    logger.error(f"{symbol}: Fresh SL/TP FAILED: {str(e).encode('ascii','replace').decode()}")
+
+        # Khong the dat SL/TP → dong lenh ngay de tranh rui ro khong kiem soat
+        logger.error(f"{symbol}: Cannot set SL/TP → EMERGENCY CLOSE to protect account")
+        print(f"[EMERGENCY] {symbol}: SL/TP unset — closing position for safety", flush=True)
+        try:
+            positions = self.client.get_positions()
+            for pos in positions:
+                if pos["symbol"] == symbol:
+                    self._close_position(pos)
+                    return False
+        except Exception as e:
+            logger.error(f"{symbol}: Emergency close FAILED: {str(e).encode('ascii','replace').decode()}")
+        return False
 
     def manage_positions(self, open_positions: list[dict]):
         """Health check: re-arm SL/TP neu mat, fix SL sai ty le, emergency close."""
@@ -304,11 +404,27 @@ class Executor:
                     f"{symbol}: SL/TP missing (SL={'miss' if need_rearm_sl else 'ok'}, "
                     f"TP={'miss' if need_rearm_tp else 'ok'}) — re-arming"
                 )
+                rearm_ok = False
                 try:
                     self.client.set_sl_tp(symbol, rearm_sl, rearm_tp)
                     logger.info(f"{symbol}: Re-armed SL={rearm_sl:.6f} TP={rearm_tp:.6f}")
+                    rearm_ok = True
                 except Exception as e:
                     logger.error(f"{symbol}: re-arm FAILED: {str(e).encode('ascii','replace').decode()}")
+
+                if not rearm_ok:
+                    # Gia co the di chuyen qua SL/TP goc → thu recover hoac close
+                    _hc_tick = self._tick_size.get(symbol, 0.0)
+                    _hc_lev  = max(int(_pos_lev), 1)
+                    self._recover_sl_tp(
+                        symbol=symbol,
+                        side=side,
+                        entry=entry,
+                        leverage=_hc_lev,
+                        orig_sl=rearm_sl,
+                        orig_tp=rearm_tp,
+                        tick_size=_hc_tick,
+                    )
 
             # Emergency close: chi khi loss > 80% margin va SL exchange bi miss
             if self.risk_mgr.should_close_position(pos, mark_price):

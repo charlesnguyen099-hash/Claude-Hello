@@ -904,12 +904,14 @@ class TradingBot:
                 _s12_rng = _s12_hi - _s12_lo
                 if _s12_rng > 0:
                     _s12_pos = (_range_price - _s12_lo) / _s12_rng
-                    if reversal_dir == 1 and _s12_pos > 0.60:
+                    # LONG reversal chi hop le o bottom 1h (< 40%)
+                    # SHORT reversal chi hop le o top 1h (> 60%)
+                    if reversal_dir == 1 and _s12_pos > 0.40:
                         _rev_1h_blocked = True
-                        logger.debug(f"{symbol}: reversal LONG blocked — 1h range_pos={_s12_pos:.2f} > 0.60 (not near bottom)")
-                    elif reversal_dir == -1 and _s12_pos < 0.40:
+                        logger.debug(f"{symbol}: reversal LONG blocked — 1h range_pos={_s12_pos:.2f} > 0.40 (not near 1h bottom)")
+                    elif reversal_dir == -1 and _s12_pos < 0.60:
                         _rev_1h_blocked = True
-                        logger.debug(f"{symbol}: reversal SHORT blocked — 1h range_pos={_s12_pos:.2f} < 0.40 (not near top)")
+                        logger.debug(f"{symbol}: reversal SHORT blocked — 1h range_pos={_s12_pos:.2f} < 0.60 (not near 1h top)")
 
             # 30c 1m range: check gia co phai da bounce/dump TRUOC KHI entry hay chua
             # SNDKUSDT pattern: RSI < 35 (chua recover) nhung price da bounce 89% tu day 30c (1513->1535)
@@ -936,28 +938,31 @@ class TradingBot:
                             f"(price already dumped, reversal stale)"
                         )
 
-            # 2h extreme block cho REVERSAL: tranh reversal LONG o dinh 2h / SHORT o day 2h
-            # SKHYUSDT pattern: RSI < 35 nhung price da o top 85% of 2h range -> bad long reversal
-            # MUUSDT pattern: RSI > 65 nhung price da o bottom 15% of 2h range -> bad short reversal
-            # Nguong 85%/15% ketat hon momentum (80%/20%) vi reversal can price THUC SU o cuc doan chinh xac
+            # 2h extreme block cho REVERSAL:
+            # LONG reversal hop le o BOTTOM 2h (< 35%) — tranh LONG khi price o mid/top 2h
+            # SHORT reversal hop le o TOP 2h (> 65%) — tranh SHORT khi price o mid/bottom 2h
+            # (Bo logic cu block LONG o dinh va SHORT o day — nguoc chieu reversal)
             if not _rev_1h_blocked:
-                if reversal_dir == 1 and _m2h_pos > 0.85:
+                if reversal_dir == 1 and _m2h_pos > 0.50:
                     _rev_1h_blocked = True
                     logger.debug(
-                        f"{symbol}: reversal LONG blocked — 2h range_pos={_m2h_pos:.2f} > 0.85 "
-                        f"(price at 2h top, dangerous reversal long)"
+                        f"{symbol}: reversal LONG blocked — 2h range_pos={_m2h_pos:.2f} > 0.50 "
+                        f"(price not at 2h bottom, reversal long invalid)"
                     )
-                elif reversal_dir == -1 and _m2h_pos < 0.15:
+                elif reversal_dir == -1 and _m2h_pos < 0.50:
                     _rev_1h_blocked = True
                     logger.debug(
-                        f"{symbol}: reversal SHORT blocked — 2h range_pos={_m2h_pos:.2f} < 0.15 "
-                        f"(price at 2h bottom, dangerous reversal short)"
+                        f"{symbol}: reversal SHORT blocked — 2h range_pos={_m2h_pos:.2f} < 0.50 "
+                        f"(price not at 2h top, reversal short invalid)"
                     )
 
-            # Direction-aware spike: long sau pump spike va short sau dump spike deu nguy hiem
+            # Reversal spike block:
+            # - LONG sau dump spike la NGUY HIEM (falling knife) -> block
+            # - SHORT sau pump spike la HOP LE (ban dinh) -> KHONG block
+            # - Chi block spike CUNG CHIEU voi reversal (falling knife / dead cat)
             reversal_spike_blocked = (
-                (reversal_dir == 1  and (_micro_spike_pump or _rev_1h_blocked)) or
-                (reversal_dir == -1 and (_micro_spike_dump or _rev_1h_blocked))
+                (reversal_dir == 1  and (_micro_spike_dump or _rev_1h_blocked)) or
+                (reversal_dir == -1 and (_micro_spike_pump or _rev_1h_blocked))
             )
             if not reversal_spike_blocked:
                 # RSI slope check: reversal chi hop le khi RSI dang THUC SU dao chieu
@@ -975,9 +980,10 @@ class TradingBot:
                         _rsi_slope_ok = False
                         logger.debug(f"{symbol}: reversal SHORT blocked — RSI chua turn ({_rsi_now2:.1f} > {_rsi_3ago:.1f}, van tang)")
 
-                # Micro trend hard block: khong reversal khi 1m dang chay nguoc chieu manh
-                reversal_micro_ok = not (reversal_dir == 1 and micro_down) and not (reversal_dir == -1 and micro_up)
-                reversal_confirmed = _rsi_slope_ok and reversal_micro_ok and (
+                # reversal_micro_ok da xoa: o DINH micro_up=True, o DAY micro_down=True
+                # => block reversal SHORT o dinh va LONG o day — nguoc y muon
+                # Thay vao: chi can RSI slope turn + short_term confirm la du
+                reversal_confirmed = _rsi_slope_ok and (
                     (reversal_dir == 1  and short_term_up)   or
                     (reversal_dir == -1 and short_term_down)
                 ) and self._micro_entry_analysis(df_micro, reversal_dir, is_reversal=True)

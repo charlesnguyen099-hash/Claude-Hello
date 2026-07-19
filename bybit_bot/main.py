@@ -143,8 +143,15 @@ class TradingBot:
         if closed_by_exchange:
             for sym in closed_by_exchange:
                 self.executor.clear_position_state(sym)
-                self._last_analyzed.pop(sym, None)  # cho phep re-analyze ngay sau khi dong
-                logger.info(f"{sym}: position closed by exchange (SL/TP hit) — state cleared")
+                # Chi xoa cooldown neu da du 30s ke tu lan trade cuoi
+                # Tranh truong hop exchange cham ghi nhan lenh moi -> bi coi la "closed" -> double entry
+                _last_trade = self._last_analyzed.get(sym, 0)
+                _age = time.time() - _last_trade
+                if _age > 30:
+                    self._last_analyzed.pop(sym, None)
+                    logger.info(f"{sym}: position closed by exchange (SL/TP hit) — cooldown cleared, re-entry allowed")
+                else:
+                    logger.info(f"{sym}: position closed by exchange — keeping cooldown ({_age:.0f}s < 30s, guard against stale API)")
         self._prev_pos_symbols = pos_symbols
 
         # Cap nhat BTC global trend TRUOC cap check — tranh BTC trend stale khi at max positions

@@ -52,6 +52,7 @@ class TradingBot:
         # BTC global trend: +1 uptrend, -1 downtrend, 0 sideways (cap nhat moi tick)
         self.btc_trend: int = 0      # EMA(100/250) tren 1m ~ medium trend (~1.5h)
         self.btc_trend_4h: int = 0   # EMA(300/600) tren 1m ~ macro trend (~5h, ten giu nguyen de tranh refactor lon)
+        self.btc_trend_fast: int = 0 # EMA(20/50) tren 1m ~ short-term trend (~20min) — bat bounce/dip BTC nhanh
         # Daily loss guard
         self._equity_day_date: str = ""
         # Per-symbol cooldown: tranh re-analyze cung coin trong SYMBOL_COOLDOWN_SEC
@@ -160,6 +161,8 @@ class TradingBot:
         try:
             df_btc = self.client.get_klines("BTCUSDT", "1", 1000)
             if not df_btc.empty and len(df_btc) >= 605:  # EMA600 can it nhat 605 nen
+                # EMA(20/50) tren 1m ~ ~20min/50min trend — nhanh, bat bounce/dip BTC
+                self.btc_trend_fast = self._trend_direction(df_btc, fast=20, slow=50)
                 # EMA(100/250) tren 1m ~ EMA(20/50) tren 5m — medium trend BTC
                 self.btc_trend    = self._trend_direction(df_btc, fast=100, slow=250)
                 # EMA(300/600) tren 1m ~ EMA(20/40) tren 15m — macro trend BTC
@@ -174,8 +177,9 @@ class TradingBot:
         logger.info(
             f"[TICK] Scan {len(self.symbols)} coins (top{config.TOP20_COUNT}+rest) | "
             f"open={len(open_positions)} | "
-            f"BTC_1m(EMA100/250)={'UP' if self.btc_trend==1 else 'DOWN' if self.btc_trend==-1 else 'SIDE'} "
-            f"BTC_1m(EMA300/600)={'UP' if self.btc_trend_4h==1 else 'DOWN' if self.btc_trend_4h==-1 else 'SIDE'}"
+            f"BTC_fast={'UP' if self.btc_trend_fast==1 else 'DOWN' if self.btc_trend_fast==-1 else 'SIDE'} "
+            f"BTC_mid={'UP' if self.btc_trend==1 else 'DOWN' if self.btc_trend==-1 else 'SIDE'} "
+            f"BTC_macro={'UP' if self.btc_trend_4h==1 else 'DOWN' if self.btc_trend_4h==-1 else 'SIDE'}"
         )
 
         _pos_side_map = {p["symbol"] for p in open_positions}
@@ -907,11 +911,19 @@ class TradingBot:
                     short_ok = macro_trend <= -1 or macro_4h <= -1
                     # BTC strongly bear → SHORT tất cả coin không có xu hướng độc lập UP
                     # BTC strongly bull → LONG tất cả coin không có xu hướng độc lập DOWN
+                    # BTC fast bounce (EMA20/50 UP) → LONG ok dù mid/macro BTC còn DOWN
                     # (EMA coin chưa kịp flip nhưng BTC đã xác định xu hướng rõ → trade theo BTC)
+                    _btc_fast_bounce_ok = (self.btc_trend_fast == 1)
+                    _btc_fast_dump_ok   = (self.btc_trend_fast == -1)
                     if btc_strongly_bear and not coin_independently_bull:
                         short_ok = True
                     if btc_strongly_bull and not coin_independently_bear:
                         long_ok = True
+                    # Fast bounce: cho phep LONG ngay ca khi BTC macro/mid dang DOWN
+                    if _btc_fast_bounce_ok and not coin_independently_bear:
+                        long_ok = True
+                    if _btc_fast_dump_ok and not coin_independently_bull:
+                        short_ok = True
                     # Early trend entry: cho phep SHORT/LONG khi 1m + 5m da confirm du 15m chua flip
                     if is_priority and sig.direction == -1 and not short_ok:
                         if micro_down and scalp_trend == -1:
@@ -948,10 +960,13 @@ class TradingBot:
                         _both_tf_bull    = macro_trend >= 1  and macro_4h >= 1
                         # BTC strongly bear → SHORT ok dù scalp bounce tạm (coin chưa kịp flip)
                         # BTC strongly bull → LONG ok dù scalp dip tạm
-                        _btc_bear_scalp_ok = btc_strongly_bear and not coin_independently_bull
-                        _btc_bull_scalp_ok = btc_strongly_bull and not coin_independently_bear
-                        scalp_allows_short = (scalp_trend == -1) or _micro_short_ok or _both_tf_bear or _btc_bear_scalp_ok
-                        scalp_allows_long  = (scalp_trend ==  1) or _micro_long_ok  or _both_tf_bull or _btc_bull_scalp_ok
+                        # BTC fast bounce/dump → bypass scalp filter theo hướng ngan han
+                        _btc_bear_scalp_ok   = btc_strongly_bear and not coin_independently_bull
+                        _btc_bull_scalp_ok   = btc_strongly_bull and not coin_independently_bear
+                        _btc_fast_long_scalp = _btc_fast_bounce_ok and not coin_independently_bear
+                        _btc_fast_short_scalp = _btc_fast_dump_ok and not coin_independently_bull
+                        scalp_allows_short = (scalp_trend == -1) or _micro_short_ok or _both_tf_bear or _btc_bear_scalp_ok or _btc_fast_short_scalp
+                        scalp_allows_long  = (scalp_trend ==  1) or _micro_long_ok  or _both_tf_bull or _btc_bull_scalp_ok or _btc_fast_long_scalp
                     if sig.direction == 1 and long_ok and scalp_allows_long:
                         long_signals.append(sig)
                     elif sig.direction == -1 and short_ok and scalp_allows_short:
@@ -1117,16 +1132,19 @@ class TradingBot:
         btc_trend    = self.btc_trend
         btc_trend_4h = self.btc_trend_4h
 
+        btc_trend_fast = self.btc_trend_fast  # EMA(20/50) 1m ~20min trend — bat bounce/dip nhanh
+
         if symbol == "BTCUSDT":
             # BTC: block SHORT chi khi CA 1h VA 4h deu bullish (BOTH)
-            # Dung AND thay OR: cho phep short khi 1h da dao chieu du 4h chua flip
-            # 4h EMA50 mat hang ngay moi flip -> AND cho phep bat early downtrend
+            # Ngoai le: btc_trend_fast == -1 → short-term dang dao chieu → cho phep SHORT som
             if btc_trend == 1 and btc_trend_4h == 1:
                 short_signals = []
-                logger.debug("BTCUSDT: clear SHORT — BTC 1h AND 4h both UP")
-            if btc_trend == -1 and btc_trend_4h == -1:
+                logger.debug("BTCUSDT: clear SHORT — BTC mid AND macro both UP")
+            # Block LONG chi khi ca medium VA macro deu DOWN VA fast cung DOWN
+            # Neu fast == 1 (BTC dang bounce ngan han) → cho phep LONG bat bounce
+            if btc_trend == -1 and btc_trend_4h == -1 and btc_trend_fast != 1:
                 long_signals = []
-                logger.debug("BTCUSDT: clear LONG — BTC 1h AND 4h both DOWN")
+                logger.debug("BTCUSDT: clear LONG — BTC mid AND macro both DOWN (fast also not UP)")
         elif symbol == "ETHUSDT":
             if macro_trend == 1 and macro_4h == 1:
                 short_signals = []
@@ -1150,12 +1168,15 @@ class TradingBot:
             # Hard block: BTC strongly opposes AND coin khong co xu huong doc lap
             # Chi block khi coin CUNG CHIEU voi BTC move (khong co divergence)
             # Cho phep coin co xu huong doc lap (coin_independently_bull/bear) di nguoc BTC
+            # Ngoai le them: btc_trend_fast == 1 → BTC dang bounce ngan han → cho phep LONG theo bounce
             if btc_strongly_bull and not is_reversal and not coin_independently_bear:
                 short_signals = []
-                logger.debug(f"{symbol}: BTC 1h+4h BULLISH, coin not independently bearish -> block SHORT")
-            if btc_strongly_bear and not is_reversal and not coin_independently_bull:
+                logger.debug(f"{symbol}: BTC mid+macro BULLISH, coin not independently bearish -> block SHORT")
+            btc_fast_bounce = (btc_trend_fast == 1)   # BTC short-term up du macro van DOWN
+            btc_fast_dump   = (btc_trend_fast == -1)  # BTC short-term down du macro van UP
+            if btc_strongly_bear and not is_reversal and not coin_independently_bull and not btc_fast_bounce:
                 long_signals = []
-                logger.debug(f"{symbol}: BTC 1h+4h BEARISH, coin not independently bullish -> block LONG")
+                logger.debug(f"{symbol}: BTC mid+macro BEARISH (fast not bouncing), coin not independently bullish -> block LONG")
             # Neu coin doc lap nguoc BTC: van cho phep nhung can consensus cao hon (xu ly o phan duoi)
 
         # BTC alignment flags cho consensus adjustment

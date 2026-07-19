@@ -1135,16 +1135,15 @@ class TradingBot:
         btc_trend_fast = self.btc_trend_fast  # EMA(20/50) 1m ~20min trend — bat bounce/dip nhanh
 
         if symbol == "BTCUSDT":
-            # BTC: block SHORT chi khi CA 1h VA 4h deu bullish (BOTH)
-            # Ngoai le: btc_trend_fast == -1 → short-term dang dao chieu → cho phep SHORT som
-            if btc_trend == 1 and btc_trend_4h == 1:
+            # BTCUSDT: symmetric fast-trend exception cho ca LONG va SHORT
+            # Block SHORT khi mid+macro UP, NHUNG cho phep SHORT neu fast da flip DOWN (dang dump ngan han)
+            if btc_trend == 1 and btc_trend_4h == 1 and btc_trend_fast != -1:
                 short_signals = []
-                logger.debug("BTCUSDT: clear SHORT — BTC mid AND macro both UP")
-            # Block LONG chi khi ca medium VA macro deu DOWN VA fast cung DOWN
-            # Neu fast == 1 (BTC dang bounce ngan han) → cho phep LONG bat bounce
+                logger.debug("BTCUSDT: clear SHORT — BTC mid+macro UP, fast not dumping")
+            # Block LONG khi mid+macro DOWN, NHUNG cho phep LONG neu fast da flip UP (dang bounce ngan han)
             if btc_trend == -1 and btc_trend_4h == -1 and btc_trend_fast != 1:
                 long_signals = []
-                logger.debug("BTCUSDT: clear LONG — BTC mid AND macro both DOWN (fast also not UP)")
+                logger.debug("BTCUSDT: clear LONG — BTC mid+macro DOWN, fast not bouncing")
         elif symbol == "ETHUSDT":
             if macro_trend == 1 and macro_4h == 1:
                 short_signals = []
@@ -1168,12 +1167,14 @@ class TradingBot:
             # Hard block: BTC strongly opposes AND coin khong co xu huong doc lap
             # Chi block khi coin CUNG CHIEU voi BTC move (khong co divergence)
             # Cho phep coin co xu huong doc lap (coin_independently_bull/bear) di nguoc BTC
-            # Ngoai le them: btc_trend_fast == 1 → BTC dang bounce ngan han → cho phep LONG theo bounce
-            if btc_strongly_bull and not is_reversal and not coin_independently_bear:
-                short_signals = []
-                logger.debug(f"{symbol}: BTC mid+macro BULLISH, coin not independently bearish -> block SHORT")
+            # Ngoai le fast-trend: neu BTC dang dao chieu ngan han thi cho phep di theo huong do
             btc_fast_bounce = (btc_trend_fast == 1)   # BTC short-term up du macro van DOWN
             btc_fast_dump   = (btc_trend_fast == -1)  # BTC short-term down du macro van UP
+            # Block SHORT altcoin khi BTC mid+macro bull, TRU KHI fast da dump (bat dau dao chieu xuat)
+            if btc_strongly_bull and not is_reversal and not coin_independently_bear and not btc_fast_dump:
+                short_signals = []
+                logger.debug(f"{symbol}: BTC mid+macro BULLISH (fast not dumping), coin not independently bearish -> block SHORT")
+            # Block LONG altcoin khi BTC mid+macro bear, TRU KHI fast da bounce (bat dau dao chieu len)
             if btc_strongly_bear and not is_reversal and not coin_independently_bull and not btc_fast_bounce:
                 long_signals = []
                 logger.debug(f"{symbol}: BTC mid+macro BEARISH (fast not bouncing), coin not independently bullish -> block LONG")

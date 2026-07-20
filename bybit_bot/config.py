@@ -90,8 +90,8 @@ LOOP_INTERVAL_SEC      = 1    # minimum pause giua cac tick (rate limit only)
 SYMBOL_COOLDOWN_SEC    = 10   # cooldown cho coin thuong (giam tu 30s -> 10s)
 TOP20_COOLDOWN_SEC     = 5    # top 20 trending: re-analyze moi 5s (gan nhu moi tick)
 TOP20_COUNT            = 20   # so coin top duoc uu tien cao
-SCAN_BUDGET_TOP20_SEC  = 25.0 # budget rieng cho top 20 (truoc)
-SCAN_BUDGET_REST_SEC   = 25.0 # budget cho phan con lai (tang tu 15s -> 25s)
+SCAN_BUDGET_TOP20_SEC  = 120.0 # budget rieng cho top 20 (tang de khong bi cat som khi nhieu trade)
+SCAN_BUDGET_REST_SEC   = 120.0 # budget cho phan con lai (tang de scan duoc nhieu coin hon)
 
 # --- Logging ------------------------------------------------------------------
 LOG_FILE        = "trading_bot.log"

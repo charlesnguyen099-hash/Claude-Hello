@@ -192,14 +192,18 @@ class TradingBot:
         top20   = self.symbols[:config.TOP20_COUNT]
         rest    = self.symbols[config.TOP20_COUNT:]
 
-        def _run_scan(symbols: list[str], cooldown: float, budget: float, label: str) -> tuple[bool, list, float]:
-            """Chay scan cho 1 nhom symbols. Tra ve (equity_exhausted, open_positions, equity)."""
+        def _run_scan(symbols: list[str], cooldown: float, budget: float, label: str) -> bool:
+            """Chay scan cho 1 nhom symbols. Tra ve equity_exhausted."""
             nonlocal open_positions, equity, pos_symbols, _pos_side_map
-            _start    = time.time()
-            _analyzed = 0
+            _start          = time.time()
+            _exec_overhead  = 0.0   # tong thoi gian execute trade + refresh state — khong tinh vao budget
+            _analyzed       = 0
+            _traded         = 0
             for symbol in symbols:
-                if time.time() - _start > budget:
-                    logger.debug(f"[TICK] {label} budget hit after {_analyzed} coins")
+                # Budget chi tinh thoi gian SCAN/ANALYSIS, khong tinh thoi gian execute trade
+                _scan_elapsed = (time.time() - _start) - _exec_overhead
+                if _scan_elapsed > budget:
+                    logger.debug(f"[TICK] {label} budget hit after {_analyzed} analyzed, {_traded} traded")
                     break
                 if symbol in pos_symbols:
                     continue
@@ -214,9 +218,11 @@ class TradingBot:
                         btc_eth_side_map=_pos_side_map,
                     )
                     if traded:
+                        _traded += 1
                         # Hard cooldown 60s sau khi trade — khong cho re-enter bat ke top20 hay rest
                         self._last_analyzed[symbol] = time.time() + (60 - min(cooldown, 60))
                         pos_symbols.add(symbol)
+                        _t0 = time.time()
                         try:
                             open_positions = self.client.get_positions()
                             equity         = self.client.get_wallet_balance()
@@ -224,13 +230,14 @@ class TradingBot:
                             _pos_side_map  = {p["symbol"]: p.get("side", "") for p in open_positions}
                         except Exception:
                             pass
+                        _exec_overhead += time.time() - _t0
                         # Giu lai symbol trong pos_symbols du exchange chua ghi nhan kip
                         pos_symbols.add(symbol)
                         if equity <= 0:
                             return True
                 except Exception as e:
                     logger.warning(f"Error processing {symbol}: {str(e).encode('ascii','replace').decode()}")
-            logger.debug(f"[TICK] {label}: analyzed {_analyzed}/{len(symbols)} coins")
+            logger.debug(f"[TICK] {label}: analyzed {_analyzed}/{len(symbols)} coins, traded {_traded}")
             return False
 
         # Pass 1: Top 20 — cooldown ngan, budget dai, uu tien cao nhat

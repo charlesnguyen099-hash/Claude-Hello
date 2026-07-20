@@ -146,15 +146,35 @@ class Executor:
             tp_rounded = self.client.round_to_tick(params.tp1_price, tick_size) if tick_size > 0 else round(params.tp1_price, 6)
 
             # Layer 1: Market order voi SL+TP
-            order = self.client.place_order(
-                symbol=symbol,
-                side=params.side,
-                qty=params.qty,
-                order_type="Market",
-                sl=sl_rounded,
-                tp=tp_rounded,
-                tick_size=tick_size,
-            )
+            _order_placed = False
+            try:
+                order = self.client.place_order(
+                    symbol=symbol,
+                    side=params.side,
+                    qty=params.qty,
+                    order_type="Market",
+                    sl=sl_rounded,
+                    tp=tp_rounded,
+                    tick_size=tick_size,
+                )
+                _order_placed = True
+            except Exception as _place_err:
+                # place_order co the raise sau khi Bybit da chap nhan lenh (response parse fail / timeout)
+                # Kiem tra exchange xem co position thuc su mo khong
+                logger.warning(f"{symbol}: place_order raised {_place_err!r} — checking exchange for position")
+                time.sleep(1.5)
+                try:
+                    _positions = self.client.get_positions()
+                    _found = [p for p in _positions if p["symbol"] == symbol and _fval(p, "size") > 0]
+                    if _found:
+                        logger.warning(f"{symbol}: Position confirmed on exchange despite place_order error — proceeding to set SL/TP")
+                        _order_placed = True
+                    else:
+                        logger.error(f"{symbol}: place_order failed and no position found — abort")
+                        return
+                except Exception as _check_err:
+                    logger.error(f"{symbol}: place_order failed + position check failed ({_check_err!r}) — abort")
+                    return
 
             self._sl_price[symbol]  = sl_rounded
             self._tp_price[symbol]  = tp_rounded

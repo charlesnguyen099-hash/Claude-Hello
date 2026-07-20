@@ -813,9 +813,6 @@ class TradingBot:
                 # 15m spike block
                 post_spike_ok = not (bo_sig.direction == -1 and spike_was_dump and scalp_trend != -1) and \
                                 not (bo_sig.direction == 1  and spike_was_pump and scalp_trend != 1)
-                # 1m micro spike direction-aware (dong bo voi momentum path)
-                micro_spike_ok = not (_micro_spike_pump and bo_sig.direction == 1) and \
-                                 not (_micro_spike_dump and bo_sig.direction == -1)
                 # BTC global trend filter cho BREAKOUT — dong bo voi momentum path
                 _bo_btc_1h = self.btc_trend
                 _bo_btc_4h = self.btc_trend_4h
@@ -847,23 +844,16 @@ class TradingBot:
                     (is_priority and bo_sig.direction == 1  and micro_up   and _bo_macro_not_both_contra_long) or
                     (is_priority and bo_sig.direction == -1 and micro_down and _bo_macro_not_both_contra_short)
                 )
-                # 2h 1m range block cho BREAKOUT — tranh short o day / long o dinh 2h
-                bo_m2h_ok = not (_m2h_block_short and bo_sig.direction == -1) and \
-                            not (_m2h_block_long  and bo_sig.direction == 1)
-                # 30c range check cho BREAKOUT — block short o day / long o dinh 30 nen gan nhat
+                # BREAKOUT theo dinh nghia la break khoi 2h/30c range top/bottom
+                # -> KHONG ap dung 2h va 30c range block cho BREAKOUT (chung se block chinh xac diem breakout)
+                # Chi giu 5h range block (macro overextension, dai han hon)
+                bo_m2h_ok = True
                 bo_30c_ok = True
-                if not df_micro.empty and len(df_micro) >= 15:
-                    _bo_h30 = df_micro["high"].iloc[-30:].max()
-                    _bo_l30 = df_micro["low"].iloc[-30:].min()
-                    _bo_r30 = _bo_h30 - _bo_l30
-                    if _bo_r30 > 0:
-                        _bo_p30 = (_range_live_price - _bo_l30) / _bo_r30
-                        if bo_sig.direction == 1 and _bo_p30 > 0.85:
-                            bo_30c_ok = False
-                            logger.debug(f"{symbol} [BO] block LONG at 30c top ({_bo_p30*100:.0f}%)")
-                        if bo_sig.direction == -1 and _bo_p30 < 0.15:
-                            bo_30c_ok = False
-                            logger.debug(f"{symbol} [BO] block SHORT at 30c bottom ({_bo_p30*100:.0f}%)")
+                # Spike trong confirmed trend = sustained move, khong phai isolated spike
+                _bo_pump_in_trend = micro_up and (_is_gradual_uptrend or scalp_trend == 1)
+                _bo_dump_in_trend = micro_down and (_is_gradual_downtrend or scalp_trend == -1)
+                micro_spike_ok = not (_micro_spike_pump and bo_sig.direction == 1 and not _bo_pump_in_trend) and \
+                                 not (_micro_spike_dump and bo_sig.direction == -1 and not _bo_dump_in_trend)
                 if bo_ok and micro_ok and not is_spike and post_spike_ok and micro_spike_ok and bo_btc_ok and bo_h1_ok and bo_24h_ok and bo_trend_ok and bo_m2h_ok and bo_30c_ok:
                     # micro_entry_analysis da xoa: BREAKOUT theo dinh nghia la break qua range
                     # -> range check trong _micro_entry_analysis se HARD BLOCK moi breakout hop le
@@ -1371,11 +1361,14 @@ class TradingBot:
         if _dual_spike:
             return _block("skip - dual spike (ranging 1m choppy market), no momentum entry")
 
-        # 1m spike filter
-        if _micro_spike_pump and best.direction == 1:
-            return _block("skip - 1m pump spike, no long")
-        if _micro_spike_dump and best.direction == -1:
-            return _block("skip - 1m dump spike, no short")
+        # 1m spike filter — cho phep khi spike la phan cua confirmed uptrend/downtrend
+        # Spike trong trend = sustained move (BTC pump 1%+ trong uptrend), khong phai isolated spike
+        _pump_spike_in_trend = micro_up and (_is_gradual_uptrend or scalp_trend == 1)
+        _dump_spike_in_trend = micro_down and (_is_gradual_downtrend or scalp_trend == -1)
+        if _micro_spike_pump and best.direction == 1 and not _pump_spike_in_trend:
+            return _block("skip - 1m pump spike (not in confirmed uptrend), no long")
+        if _micro_spike_dump and best.direction == -1 and not _dump_spike_in_trend:
+            return _block("skip - 1m dump spike (not in confirmed downtrend), no short")
 
         # 1h range block
         if _h1_block_long and best.direction == 1:
@@ -1589,12 +1582,15 @@ class TradingBot:
                         f"(gia dang dump, Long qua som)"
                     )
                 # Block du dinh / du day: gia da di xa roi moi vao theo
-                if best.direction == 1 and _live_move_pct > _pump_thresh:
+                # Ngoai le: dang trong confirmed trend (micro_up + gradual/scalp) -> la trade theo trend, khong phai du dinh
+                _long_in_trend  = micro_up   and (_is_gradual_uptrend   or scalp_trend == 1)
+                _short_in_trend = micro_down and (_is_gradual_downtrend or scalp_trend == -1)
+                if best.direction == 1 and _live_move_pct > _pump_thresh and not _long_in_trend:
                     return _block(
                         f"skip LONG - live {_live_move_pct*100:.2f}% above 5c avg "
                         f"(gia da pump, Long du dinh)"
                     )
-                if best.direction == -1 and _live_move_pct < -_pump_thresh:
+                if best.direction == -1 and _live_move_pct < -_pump_thresh and not _short_in_trend:
                     return _block(
                         f"skip SHORT - live {_live_move_pct*100:.2f}% below 5c avg "
                         f"(gia da dump, Short du day)"

@@ -886,6 +886,23 @@ class TradingBot:
         # Dung 30/70: reversal chi khi RSI thuc su cuc doan (oversold/overbought ro rang)
         is_reversal  = rsi_now < 30 or rsi_now > 70
         reversal_dir = 1 if rsi_now < 30 else (-1 if rsi_now > 70 else 0)
+        _is_range_rev = False  # triggered by 2h range extreme, not RSI
+
+        # Range-extreme reversal: gia o day/dinh 2h range + micro momentum bat dau xoay chieu
+        # BTC co the giam 0.85% ma RSI chi ve 35-40 (khong du RSI<30) nhung van la day range
+        # → bat lenh LONG o day, SHORT o dinh ma khong can RSI extreme
+        # Dieu kien: _m2h_pos < 0.18 (bot 18%) hoac > 0.82 (top 82%), micro da xoay chieu
+        if not is_reversal:
+            if _m2h_pos < 0.18 and micro_up and scalp_trend >= 0:
+                _is_range_rev = True
+                is_reversal   = True
+                reversal_dir  = 1
+                logger.debug(f"{symbol}: range-extreme LONG trigger — 2h pos={_m2h_pos:.2f} < 0.18, micro_up")
+            elif _m2h_pos > 0.82 and micro_down and scalp_trend <= 0:
+                _is_range_rev = True
+                is_reversal   = True
+                reversal_dir  = -1
+                logger.debug(f"{symbol}: range-extreme SHORT trigger — 2h pos={_m2h_pos:.2f} > 0.82, micro_down")
 
         long_signals  = []
         short_signals = []
@@ -1084,10 +1101,10 @@ class TradingBot:
             # Reversal spike block:
             # - LONG sau dump spike la NGUY HIEM (falling knife) -> block
             # - SHORT sau pump spike la HOP LE (ban dinh) -> KHONG block
-            # - Chi block spike CUNG CHIEU voi reversal (falling knife / dead cat)
+            # - Range reversal: dump spike TAO RA day range → LONG van ok (spike = diem dao chieu)
             reversal_spike_blocked = (
-                (reversal_dir == 1  and (_micro_spike_dump or _rev_1h_blocked)) or
-                (reversal_dir == -1 and (_micro_spike_pump or _rev_1h_blocked))
+                (reversal_dir == 1  and ((_micro_spike_dump and not _is_range_rev) or _rev_1h_blocked)) or
+                (reversal_dir == -1 and ((_micro_spike_pump and not _is_range_rev) or _rev_1h_blocked))
             )
             if not reversal_spike_blocked:
                 # RSI slope check: reversal chi hop le khi RSI dang THUC SU dao chieu
@@ -1120,6 +1137,9 @@ class TradingBot:
                     (reversal_dir == -1 and macro_trend ==  1 and macro_4h ==  1)
                 )
                 reversal_min = reversal_base + (1 if reversal_deep_opposed else 0)
+                # Range reversal: vi tri 2h extreme la xac nhan manh → giam yeu cau 1 signal
+                if _is_range_rev:
+                    reversal_min = max(2, reversal_min - 1)
                 if reversal_deep_opposed:
                     logger.debug(
                         f"{symbol}: reversal deep-trend guard +1 consensus "

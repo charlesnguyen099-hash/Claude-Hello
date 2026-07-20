@@ -850,8 +850,8 @@ class TradingBot:
                 bo_m2h_ok = True
                 bo_30c_ok = True
                 # Spike trong confirmed trend = sustained move, khong phai isolated spike
-                _bo_pump_in_trend = micro_up and (_is_gradual_uptrend or scalp_trend == 1)
-                _bo_dump_in_trend = micro_down and (_is_gradual_downtrend or scalp_trend == -1)
+                _bo_pump_in_trend = micro_up and (_is_gradual_uptrend or (scalp_trend == 1 and macro_trend == 1))
+                _bo_dump_in_trend = micro_down and (_is_gradual_downtrend or (scalp_trend == -1 and macro_trend == -1))
                 micro_spike_ok = not (_micro_spike_pump and bo_sig.direction == 1 and not _bo_pump_in_trend) and \
                                  not (_micro_spike_dump and bo_sig.direction == -1 and not _bo_dump_in_trend)
                 if bo_ok and micro_ok and not is_spike and post_spike_ok and micro_spike_ok and bo_btc_ok and bo_h1_ok and bo_24h_ok and bo_trend_ok and bo_m2h_ok and bo_30c_ok:
@@ -1363,8 +1363,10 @@ class TradingBot:
 
         # 1m spike filter — cho phep khi spike la phan cua confirmed uptrend/downtrend
         # Spike trong trend = sustained move (BTC pump 1%+ trong uptrend), khong phai isolated spike
-        _pump_spike_in_trend = micro_up and (_is_gradual_uptrend or scalp_trend == 1)
-        _dump_spike_in_trend = micro_down and (_is_gradual_downtrend or scalp_trend == -1)
+        # QUAN TRONG: scalp_trend==1 don doc KHONG du — no co the bi push boi chinh cai spike do.
+        # Phai co THEM macro_trend==1 (15m EMA) xac nhan trend ton tai truoc spike.
+        _pump_spike_in_trend = micro_up and (_is_gradual_uptrend or (scalp_trend == 1 and macro_trend == 1))
+        _dump_spike_in_trend = micro_down and (_is_gradual_downtrend or (scalp_trend == -1 and macro_trend == -1))
         if _micro_spike_pump and best.direction == 1 and not _pump_spike_in_trend:
             return _block("skip - 1m pump spike (not in confirmed uptrend), no long")
         if _micro_spike_dump and best.direction == -1 and not _dump_spike_in_trend:
@@ -1577,6 +1579,27 @@ class TradingBot:
                         f"std={_std20/_mean20*100:.3f}% (accumulation zone)"
                     )
 
+        # [AEQ-12] 30-candle baseline pump/dump check — LRCUSDT/NBISUSDT pattern
+        # Khi gia da tang X% khoi baseline 30 nen (spike) nhung KHONG co gradual uptrend ben vung
+        # → day la isolated spike, khong phai trend → block LONG (va nguoc lai cho SHORT)
+        # Ngoai le: _is_gradual_uptrend = co >= 18/30 nen xanh = trend that su, khong phai spike
+        if not df_micro.empty and len(df_micro) >= 35 and _range_live_price > 0 and not is_reversal:
+            _baseline_30 = df_micro["close"].iloc[-30:].mean()
+            if _baseline_30 > 0:
+                _move_from_base = (_range_live_price - _baseline_30) / _baseline_30
+                # Nguong: 1.5% cho largecap (gia on dinh hon), 1.0% cho altcoin (bien dong hon)
+                _base_thresh = 0.015 if _sp >= 1.0 else 0.010
+                if best.direction == 1 and _move_from_base > _base_thresh and not _is_gradual_uptrend:
+                    return _block(
+                        f"skip LONG - {_move_from_base*100:.1f}% above 30c baseline "
+                        f"(isolated spike, no sustained uptrend)"
+                    )
+                if best.direction == -1 and _move_from_base < -_base_thresh and not _is_gradual_downtrend:
+                    return _block(
+                        f"skip SHORT - {-_move_from_base*100:.1f}% below 30c baseline "
+                        f"(isolated dump, no sustained downtrend)"
+                    )
+
         # ══════════════════════════════════════════════════════════════════════
 
         # MOMENTUM GATE: LUON goi micro_entry_analysis cho tat ca momentum trade
@@ -1611,9 +1634,9 @@ class TradingBot:
                         f"(gia dang dump, Long qua som)"
                     )
                 # Block du dinh / du day: gia da di xa roi moi vao theo
-                # Ngoai le: dang trong confirmed trend (micro_up + gradual/scalp) -> la trade theo trend, khong phai du dinh
-                _long_in_trend  = micro_up   and (_is_gradual_uptrend   or scalp_trend == 1)
-                _short_in_trend = micro_down and (_is_gradual_downtrend or scalp_trend == -1)
+                # Ngoai le: dang trong confirmed trend — can ca scalp VA macro (15m) de tranh spike bypass
+                _long_in_trend  = micro_up   and (_is_gradual_uptrend   or (scalp_trend == 1  and macro_trend == 1))
+                _short_in_trend = micro_down and (_is_gradual_downtrend or (scalp_trend == -1 and macro_trend == -1))
                 if best.direction == 1 and _live_move_pct > _pump_thresh and not _long_in_trend:
                     return _block(
                         f"skip LONG - live {_live_move_pct*100:.2f}% above 5c avg "

@@ -226,7 +226,7 @@ class BybitClient:
             tp_rounded = self.round_to_tick(tp, tick_size) if tick_size > 0 else round(tp, 6)
             if tp_rounded > 0:
                 params["takeProfit"]  = str(tp_rounded)
-                params["tpTriggerBy"] = "MarkPrice"
+                params["tpTriggerBy"] = "LastPrice"
 
         resp = self.session.place_order(**params)
         result = resp["result"]
@@ -298,7 +298,7 @@ class BybitClient:
             symbol=symbol,
             tpslMode="Full",
             slTriggerBy="MarkPrice",
-            tpTriggerBy="MarkPrice",
+            tpTriggerBy="LastPrice",
             positionIdx=0,
         )
         if sl_price > 0:

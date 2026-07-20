@@ -65,7 +65,7 @@ ATR_PERIOD        = 14
 # SL ROI = SL_TP_RATIO x TP ROI (hien tai 5x)
 #   -> SL range [60%, 250%] ROI — toi thieu -60% ROI
 TP_ROI_MIN  = 0.12   # TP toi thieu 12% ROI (khi lenh yeu) -> SL toi thieu 60% ROI (5x)
-TP_ROI_MAX  = 0.50   # TP toi da 50% ROI (khi lenh manh)
+TP_ROI_MAX  = 0.30   # TP toi da 30% ROI (khi lenh manh) — chot loi som, khong de qua xa
 SL_TP_RATIO = 5.0    # SL luon gap 5 lan TP (SL ROI = 5 x TP ROI)
 
 # --- Signal sensitivity -------------------------------------------------------

@@ -121,7 +121,10 @@ class MarketScanner:
 
         # Sap xep giam dan theo trending_score — tat ca coin, khong cat gioi han
         sorted_df = df.sort_values("trending_score", ascending=False)
-        self.trending_symbols = sorted_df["symbol"].tolist()
+        # BTC và ETH luôn được scan trước (dù momentum 24h thấp, chúng drive toàn thị trường)
+        _pinned = [s for s in ("BTCUSDT", "ETHUSDT") if s in sorted_df["symbol"].values]
+        _rest   = [s for s in sorted_df["symbol"].tolist() if s not in _pinned]
+        self.trending_symbols = _pinned + _rest
         self.volume_map = dict(zip(df["symbol"], df["volume_usdt_24h"]))
 
         top5_info = ", ".join(

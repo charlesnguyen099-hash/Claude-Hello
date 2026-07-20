@@ -114,6 +114,20 @@ class RiskManager:
                 f"→ TP_ROI={tp_roi*100:.0f}% SL_ROI={sl_roi*100:.0f}% (ratio={config.SL_TP_RATIO:.0f}:1 maintained)"
             )
 
+        # Fee break-even check: TP phai LON HON phi giao dich + buffer toi thieu
+        # Phi round-trip tinh theo % margin = ROUND_TRIP_FEE * leverage
+        # Vi du 100x: phi = 0.11% * 100 = 11% margin. TP_ROI < 11% = lo dam bao du TP hit chinh xac
+        _fee_as_roi    = config.ROUND_TRIP_FEE * leverage   # phi tinh theo % margin
+        _min_net_roi   = 0.05                               # buffer toi thieu 5% margin sau phi
+        _min_tp_needed = _fee_as_roi + _min_net_roi
+        if tp_roi < _min_tp_needed:
+            logger.warning(
+                f"{signal.symbol}: SKIP — TP_ROI={tp_roi*100:.0f}% < fee_breakeven "
+                f"(fee={_fee_as_roi*100:.0f}% + buffer=5% = {_min_tp_needed*100:.0f}%) at {leverage}x "
+                f"→ guaranteed loss even on TP hit"
+            )
+            return None
+
         tp_dist = tp_roi * entry / leverage
         sl_dist = sl_roi * entry / leverage
 

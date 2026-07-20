@@ -985,10 +985,14 @@ class TradingBot:
                         short_ok = True
                     if btc_strongly_bull and not coin_independently_bear and _coin_leans_bull:
                         long_ok = True
-                    # Fast bounce: cho phep LONG ngay ca khi BTC macro/mid dang DOWN
-                    if _btc_fast_bounce_ok and not coin_independently_bear and _coin_leans_bull:
+                    # Fast bounce: cho phep LONG/SHORT theo BTC fast move
+                    # Coin lean cung chieu: ok (coin da co xu huong)
+                    # Coin flat (0,0): chi ok neu 5m DA confirm cung chieu (scalp_trend == ±1)
+                    _btc_fast_coin_ok_bull = _coin_leans_bull or (scalp_trend == 1  and not coin_independently_bear)
+                    _btc_fast_coin_ok_bear = _coin_leans_bear or (scalp_trend == -1 and not coin_independently_bull)
+                    if _btc_fast_bounce_ok and not coin_independently_bear and _btc_fast_coin_ok_bull:
                         long_ok = True
-                    if _btc_fast_dump_ok and not coin_independently_bull and _coin_leans_bear:
+                    if _btc_fast_dump_ok and not coin_independently_bull and _btc_fast_coin_ok_bear:
                         short_ok = True
                     # Early trend entry: cho phep SHORT/LONG khi 1m + 5m da confirm du 15m chua flip
                     if is_priority and sig.direction == -1 and not short_ok:
@@ -1029,8 +1033,8 @@ class TradingBot:
                         # BTC fast bounce/dump → bypass scalp filter theo hướng ngan han
                         _btc_bear_scalp_ok    = btc_strongly_bear and not coin_independently_bull and _coin_leans_bear
                         _btc_bull_scalp_ok    = btc_strongly_bull and not coin_independently_bear and _coin_leans_bull
-                        _btc_fast_long_scalp  = _btc_fast_bounce_ok and not coin_independently_bear and _coin_leans_bull
-                        _btc_fast_short_scalp = _btc_fast_dump_ok  and not coin_independently_bull and _coin_leans_bear
+                        _btc_fast_long_scalp  = _btc_fast_bounce_ok and not coin_independently_bear and _btc_fast_coin_ok_bull
+                        _btc_fast_short_scalp = _btc_fast_dump_ok  and not coin_independently_bull and _btc_fast_coin_ok_bear
                         scalp_allows_short = (scalp_trend == -1) or _micro_short_ok or _both_tf_bear or _btc_bear_scalp_ok or _btc_fast_short_scalp
                         scalp_allows_long  = (scalp_trend ==  1) or _micro_long_ok  or _both_tf_bull or _btc_bull_scalp_ok or _btc_fast_long_scalp
                     if sig.direction == 1 and long_ok and scalp_allows_long:
@@ -1303,11 +1307,14 @@ class TradingBot:
         # Neu conflict (1 long + 1 short): KHONG skip toan bo — van cho consensus check chay
         # [FIX] Tier1 bypass phai ton trong macro_4h alignment — tranh bypass trong reversal mode
         # khi signals vao tu reversal branch (khong co macro check)
+        # Tier1 bypass: 2/2 strategies tier1 dong thuan
+        # (0,0) flat coin: cho phep bypass neu KHONG co TF nao ngược chiều (macro_trend >= 0 AND macro_4h >= 0)
+        # Tranh bypass khi co TF dang chong lai (vd: -1,1 hoac 1,-1 = conflict)
         tier1_bypass_long  = (is_priority and tier1_long >= 2 and tier1_short == 0
-                              and (macro_trend + macro_4h) >= 1  # it nhat 1 timeframe xac nhan uptrend
+                              and macro_trend >= 0 and macro_4h >= 0  # khong TF nao bearish
                               and not btc_strongly_bear)
         tier1_bypass_short = (is_priority and tier1_short >= 2 and tier1_long == 0
-                              and (macro_trend + macro_4h) <= -1  # it nhat 1 timeframe xac nhan downtrend
+                              and macro_trend <= 0 and macro_4h <= 0  # khong TF nao bullish
                               and not btc_strongly_bull)
 
         _tier1_active = False

@@ -1401,11 +1401,37 @@ class TradingBot:
         _btc_bear_short_ok = btc_strongly_bear and (macro_trend <= -1 or macro_4h <= -1)
         _btc_bull_long_ok  = btc_strongly_bull and (macro_trend >= 1  or macro_4h >= 1)
 
+        # PUMP EXHAUSTION SHORT: khi LONG bi HARD BLOCK vi micro_down,
+        # nhung gia vua pump (o phan tren 2h range) → flip sang SHORT thay vi bo qua.
+        # Day la "trade short va trade tre hon mot chut" — micro_down = xac nhan reversal bat dau.
+        _pump_exhaustion_flip = False
         if best.direction == 1 and micro_down and not _btc_bull_long_ok:
-            return _block(
-                f"HARD BLOCK LONG — 1m BEARISH (micro=-1, gia dang giam) "
-                f"| 5m={scalp_trend} 15m={macro_trend} 1h={macro_4h}"
+            _pump_exh_30 = 0.0
+            if not df_micro.empty and len(df_micro) >= 30:
+                _p30  = df_micro["close"].iloc[-30]
+                _pnow = df_micro["close"].iloc[-1]
+                _pump_exh_30 = (_pnow - _p30) / _p30 if _p30 > 0 else 0.0
+            _can_pump_exh_short = (
+                _pump_exh_30 > 0.005        # +0.5% trong 30 nen = co pump xay ra truoc do
+                and _m2h_pos > 0.55         # price o nua tren cua 2h range (vung dinh)
+                and not _is_gradual_uptrend # khong phai uptrend lien tuc (do la continuation)
+                and not (macro_trend == 1 and macro_4h == 1)  # khong co macro bull manh
+                and len(signals) >= 2       # consensus >= 2
             )
+            if _can_pump_exh_short:
+                best.direction = -1
+                _pump_exhaustion_flip = True
+                logger.info(
+                    f"{symbol}: PUMP-EXHAUSTION flip LONG→SHORT | "
+                    f"pump30={_pump_exh_30*100:.1f}% m2h={_m2h_pos:.0%} "
+                    f"is_gradual_up={_is_gradual_uptrend} scalp={scalp_trend}"
+                )
+                # Do NOT return — continue with direction=-1
+            else:
+                return _block(
+                    f"HARD BLOCK LONG — 1m BEARISH (micro=-1, gia dang giam) "
+                    f"| 5m={scalp_trend} 15m={macro_trend} 1h={macro_4h}"
+                )
         if best.direction == -1 and micro_up and not _btc_bear_short_ok:
             return _block(
                 f"HARD BLOCK SHORT — 1m BULLISH (micro=+1, gia dang tang) "
@@ -1572,10 +1598,13 @@ class TradingBot:
                 _live_move_pct = (_range_live_price - _avg_5c) / _avg_5c
                 _pump_thresh = 0.008 if _sp < 1.0 else 0.010   # 0.8% largecap+midcap, 1.0% altcoin
                 if best.direction == -1 and _live_move_pct > _pump_thresh:
-                    return _block(
-                        f"skip SHORT - live {_live_move_pct*100:.2f}% above 5c avg "
-                        f"(gia dang pump, Short qua som)"
-                    )
+                    # Ngoai le: pump exhaustion flip — gia dang cao la dung (vua pump xong)
+                    # micro_down da xac nhan reversal bat dau → SHORT o day la hop le
+                    if not _pump_exhaustion_flip:
+                        return _block(
+                            f"skip SHORT - live {_live_move_pct*100:.2f}% above 5c avg "
+                            f"(gia dang pump, Short qua som)"
+                        )
                 if best.direction == 1 and _live_move_pct < -_pump_thresh:
                     return _block(
                         f"skip LONG - live {_live_move_pct*100:.2f}% below 5c avg "

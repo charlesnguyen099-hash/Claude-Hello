@@ -178,7 +178,7 @@ class BybitClient:
             else:
                 raise
 
-    @retry()
+    @retry(attempts=1)
     def place_order(
         self,
         symbol: str,

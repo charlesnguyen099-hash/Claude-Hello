@@ -668,15 +668,11 @@ class TradingBot:
                 _m2h_top_thresh = 0.72 if (is_priority and macro_trend >= 1) else 0.65
                 _m2h_bot_thresh = 0.28 if (is_priority and macro_trend <= -1) else 0.35
                 if _m2h_pos < _m2h_bot_thresh:
-                    # BTC strongly bear → SHORT bounce dù ở đáy 2h vẫn ok
-                    if not _btc_bear_rng:
-                        _m2h_block_short = True
-                        logger.debug(f"{symbol}: 2h 1m range_pos={_m2h_pos:.2f} < {_m2h_bot_thresh} -> block SHORT (2h bottom)")
+                    _m2h_block_short = True
+                    logger.debug(f"{symbol}: 2h 1m range_pos={_m2h_pos:.2f} < {_m2h_bot_thresh} -> block SHORT (2h bottom)")
                 elif _m2h_pos > _m2h_top_thresh:
-                    # BTC strongly bull → LONG dù ở đỉnh 2h vẫn ok
-                    if not _btc_bull_rng:
-                        _m2h_block_long = True
-                        logger.debug(f"{symbol}: 2h 1m range_pos={_m2h_pos:.2f} > {_m2h_top_thresh} -> block LONG (2h top)")
+                    _m2h_block_long = True
+                    logger.debug(f"{symbol}: 2h 1m range_pos={_m2h_pos:.2f} > {_m2h_top_thresh} -> block LONG (2h top)")
 
         # Momentum confirmation (15m): it nhat 2/3 nen gan nhat cung chieu voi signal
         # 2-consecutive (c1 AND c2) qua chat: breakout candle c1=green, c2=red (consolidation) bi block

@@ -975,14 +975,20 @@ class TradingBot:
                     # (EMA coin chưa kịp flip nhưng BTC đã xác định xu hướng rõ → trade theo BTC)
                     _btc_fast_bounce_ok = (self.btc_trend_fast == 1)
                     _btc_fast_dump_ok   = (self.btc_trend_fast == -1)
-                    if btc_strongly_bear and not coin_independently_bull:
+                    # BTC signal chi CONFIRM them cho coin da lean cung chieu — KHONG tao signal tu so khong
+                    # Coin flat (0,0): BTC bearish KHONG du de short — coin phai tu no lean bearish truoc
+                    # _coin_leans_bear: it nhat 1 TF bearish va TF kia khong bullish (sum <= -1)
+                    # _coin_leans_bull: it nhat 1 TF bullish va TF kia khong bearish  (sum >= 1)
+                    _coin_leans_bear = (macro_trend + macro_4h) <= -1
+                    _coin_leans_bull = (macro_trend + macro_4h) >= 1
+                    if btc_strongly_bear and not coin_independently_bull and _coin_leans_bear:
                         short_ok = True
-                    if btc_strongly_bull and not coin_independently_bear:
+                    if btc_strongly_bull and not coin_independently_bear and _coin_leans_bull:
                         long_ok = True
                     # Fast bounce: cho phep LONG ngay ca khi BTC macro/mid dang DOWN
-                    if _btc_fast_bounce_ok and not coin_independently_bear:
+                    if _btc_fast_bounce_ok and not coin_independently_bear and _coin_leans_bull:
                         long_ok = True
-                    if _btc_fast_dump_ok and not coin_independently_bull:
+                    if _btc_fast_dump_ok and not coin_independently_bull and _coin_leans_bear:
                         short_ok = True
                     # Early trend entry: cho phep SHORT/LONG khi 1m + 5m da confirm du 15m chua flip
                     if is_priority and sig.direction == -1 and not short_ok:
@@ -1021,10 +1027,10 @@ class TradingBot:
                         # BTC strongly bear → SHORT ok dù scalp bounce tạm (coin chưa kịp flip)
                         # BTC strongly bull → LONG ok dù scalp dip tạm
                         # BTC fast bounce/dump → bypass scalp filter theo hướng ngan han
-                        _btc_bear_scalp_ok   = btc_strongly_bear and not coin_independently_bull
-                        _btc_bull_scalp_ok   = btc_strongly_bull and not coin_independently_bear
-                        _btc_fast_long_scalp = _btc_fast_bounce_ok and not coin_independently_bear
-                        _btc_fast_short_scalp = _btc_fast_dump_ok and not coin_independently_bull
+                        _btc_bear_scalp_ok    = btc_strongly_bear and not coin_independently_bull and _coin_leans_bear
+                        _btc_bull_scalp_ok    = btc_strongly_bull and not coin_independently_bear and _coin_leans_bull
+                        _btc_fast_long_scalp  = _btc_fast_bounce_ok and not coin_independently_bear and _coin_leans_bull
+                        _btc_fast_short_scalp = _btc_fast_dump_ok  and not coin_independently_bull and _coin_leans_bear
                         scalp_allows_short = (scalp_trend == -1) or _micro_short_ok or _both_tf_bear or _btc_bear_scalp_ok or _btc_fast_short_scalp
                         scalp_allows_long  = (scalp_trend ==  1) or _micro_long_ok  or _both_tf_bull or _btc_bull_scalp_ok or _btc_fast_long_scalp
                     if sig.direction == 1 and long_ok and scalp_allows_long:

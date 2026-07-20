@@ -429,34 +429,6 @@ class Executor:
                         tick_size=_hc_tick,
                     )
 
-            # Breakeven SL: sau khi position da co loi du thoi gian, di chuyen SL ve entry
-            # → tranh truong hop gia dao chieu dot ngot sau nhieu gio ngang (SIREN pattern)
-            # Dieu kien: open >= 1h VA gia da di >= 25% ve phia TP
-            _held_secs = time.time() - self._open_time.get(symbol, time.time())
-            _cur_sl    = exchange_sl if exchange_sl > 0 else saved_sl
-            if _held_secs >= 3600 and entry > 0 and _cur_sl > 0 and saved_tp > 0:
-                _tp_dist     = abs(saved_tp - entry)
-                _price_dist  = (entry - mark_price) if side == "Sell" else (mark_price - entry)
-                _tp_progress = _price_dist / _tp_dist if _tp_dist > 0 else 0
-                if _tp_progress >= 0.25:
-                    _tick = self._tick_size.get(symbol, 0.0)
-                    _be_sl = self.client.round_to_tick(entry, _tick) if _tick > 0 else entry
-                    # Chi move neu SL hien tai con o phia lo (xa hon entry so voi breakeven)
-                    _sl_still_at_loss = (side == "Sell" and _cur_sl > _be_sl) or \
-                                        (side == "Buy"  and _cur_sl < _be_sl)
-                    if _sl_still_at_loss:
-                        try:
-                            _tp_to_keep = exchange_tp if exchange_tp > 0 else saved_tp
-                            self.client.set_sl_tp(symbol, _be_sl, _tp_to_keep)
-                            self._sl_price[symbol] = _be_sl
-                            logger.info(
-                                f"{symbol}: Breakeven SL → {_be_sl:.6f} "
-                                f"(held={_held_secs/3600:.1f}h, tp_progress={_tp_progress*100:.0f}%, "
-                                f"SL {_cur_sl:.6f}→{_be_sl:.6f})"
-                            )
-                        except Exception as e:
-                            logger.error(f"{symbol}: breakeven SL FAILED: {str(e).encode('ascii','replace').decode()}")
-
             # Emergency close: chi khi loss > 80% margin va SL exchange bi miss
             if self.risk_mgr.should_close_position(pos, mark_price):
                 logger.warning(f"{symbol}: Emergency close — excessive loss")

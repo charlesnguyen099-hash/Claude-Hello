@@ -365,6 +365,14 @@ class Executor:
                 if exchange_tp > 0:
                     self._tp_price[symbol] = exchange_tp
                     logger.info(f"{symbol}: Restored TP={exchange_tp:.6f} from exchange")
+                # Re-set SL/TP neu co du ca hai: dam bao trigger type = LastPrice (fix lech cu MarkPrice)
+                if exchange_sl > 0 and exchange_tp > 0:
+                    try:
+                        _rt_tick = self._tick_size.get(symbol, 0.0)
+                        self.client.set_sl_tp(symbol, exchange_sl, exchange_tp, tick_size=_rt_tick)
+                        logger.info(f"{symbol}: Re-applied SL/TP with LastPrice trigger on restore")
+                    except Exception as _re:
+                        logger.warning(f"{symbol}: Re-apply SL/TP on restore failed: {_re!r}")
                 created_ms = int(pos.get("createdTime", 0))
                 if created_ms > 0:
                     self._open_time[symbol] = created_ms / 1000

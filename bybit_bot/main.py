@@ -859,10 +859,12 @@ class TradingBot:
                         _bo_at_peak   = (_range_live_price / _bo_high_10c) >= 0.97
                         _bo_at_trough = (_range_live_price / _bo_low_10c)  <= 1.03
                         _bo_ext_thresh = 0.006   # 0.6% flat cho tat ca coin
-                        if bo_sig.direction == 1 and _bo_at_peak and _bo_ext_up > _bo_ext_thresh:
+                        _bo_grad_up = _is_gradual_uptrend   and scalp_trend == 1
+                        _bo_grad_dn = _is_gradual_downtrend and scalp_trend == -1
+                        if bo_sig.direction == 1 and _bo_at_peak and _bo_ext_up > _bo_ext_thresh and not _bo_grad_up:
                             bo_aeq12_ok = False
                             logger.debug(f"{symbol} [BREAKOUT] AEQ-12 block LONG: {_bo_ext_up*100:.1f}% above 30c low at 10c peak")
-                        if bo_sig.direction == -1 and _bo_at_trough and _bo_ext_down > _bo_ext_thresh:
+                        if bo_sig.direction == -1 and _bo_at_trough and _bo_ext_down > _bo_ext_thresh and not _bo_grad_dn:
                             bo_aeq12_ok = False
                             logger.debug(f"{symbol} [BREAKOUT] AEQ-12 block SHORT: {_bo_ext_down*100:.1f}% below 30c high at 10c trough")
                 # AEQ-MULTIHR cho BREAKOUT: old 4h peak/trough — price o dinh pump nhieu gio
@@ -1445,9 +1447,13 @@ class TradingBot:
             return _block("skip - price at 1h range bottom (<25%), block SHORT")
 
         # 2h range block
-        if _m2h_block_short and best.direction == -1:
+        # Exception: gradual trend (>=18/30 nen cung chieu) + scalp xac nhan → day/dinh 2h la DIEM BO QUA
+        # BTC tang lien tuc 25 phut tao ra dinh 2h moi = gradual uptrend, khong phai pump da can kiet
+        _m2h_grad_bypass_long  = _is_gradual_uptrend   and scalp_trend == 1  and macro_trend == 1
+        _m2h_grad_bypass_short = _is_gradual_downtrend and scalp_trend == -1 and macro_trend == -1
+        if _m2h_block_short and best.direction == -1 and not _m2h_grad_bypass_short:
             return _block("skip - price at 2h range bottom (<20%), block SHORT")
-        if _m2h_block_long and best.direction == 1:
+        if _m2h_block_long and best.direction == 1 and not _m2h_grad_bypass_long:
             return _block("skip - price at 2h range top (>80%), block LONG")
 
         # ══ SHORT-TERM TREND CONFIRMATION — 3 CẤP ĐỘ ══════════════════════════
@@ -1671,13 +1677,19 @@ class TradingBot:
                 _at_10c_peak   = (_range_live_price / _high_10c) >= 0.97
                 _at_10c_trough = (_range_live_price / _low_10c)  <= 1.03
                 _ext_thresh = 0.006   # 0.6% flat cho tat ca coin
+                # Exception: gradual trend = gia tang DAN (>=18/30 nen xanh), KHONG phai spike dot ngot
+                # BTC pattern: tang lien tuc 25 phut, moi nen xanh nho → gradual uptrend → cho phep LONG
+                # Spike: 1-3 nen tang vot len dinh trong it phut → phai block
+                # Dieu kien bypass: gradual trend PHAI duoc xac nhan boi scalp_trend (5m) cung chieu
+                _aeq12_bypass_long  = _is_gradual_uptrend   and scalp_trend == 1
+                _aeq12_bypass_short = _is_gradual_downtrend and scalp_trend == -1
 
-                if best.direction == 1 and _at_10c_peak and _ext_up > _ext_thresh:
+                if best.direction == 1 and _at_10c_peak and _ext_up > _ext_thresh and not _aeq12_bypass_long:
                     return _block(
                         f"skip LONG - {_ext_up*100:.1f}% above 30c low, at 10c peak "
                         f"(scalp={scalp_trend} m15={macro_trend} m4h={macro_4h}) — đu đỉnh"
                     )
-                if best.direction == -1 and _at_10c_trough and _ext_down > _ext_thresh:
+                if best.direction == -1 and _at_10c_trough and _ext_down > _ext_thresh and not _aeq12_bypass_short:
                     return _block(
                         f"skip SHORT - {_ext_down*100:.1f}% below 30c high, at 10c trough "
                         f"(scalp={scalp_trend} m15={macro_trend} m4h={macro_4h}) — đu đáy"

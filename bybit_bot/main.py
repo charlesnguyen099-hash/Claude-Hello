@@ -858,15 +858,24 @@ class TradingBot:
                         _bo_ext_down = (_bo_high_30c - _range_live_price) / _bo_high_30c
                         _bo_at_peak   = (_range_live_price / _bo_high_10c) >= 0.97
                         _bo_at_trough = (_range_live_price / _bo_low_10c)  <= 1.03
-                        _bo_ext_thresh = 0.010 * _sp
+                        _bo_ext_thresh_fresh = 0.006 * _sp   # 0.3% BTC/ETH, 0.45% mid, 0.6% alt
+                        _bo_ext_thresh_old   = 0.010 * _sp   # 0.5% BTC/ETH, 0.75% mid, 1.0% alt
                         _bo_fresh_top    = _bo_at_peak   and (df_micro["high"].iloc[-3:].max() >= _bo_high_10c * 0.999)
                         _bo_fresh_bottom = _bo_at_trough and (df_micro["low"].iloc[-3:].min()  <= _bo_low_10c  * 1.001)
-                        if bo_sig.direction == 1 and _bo_ext_up > _bo_ext_thresh and _bo_fresh_top:
-                            bo_aeq12_ok = False
-                            logger.debug(f"{symbol} [BREAKOUT] AEQ-12 block LONG: fresh spike top {_bo_ext_up*100:.1f}% above 30c low")
-                        if bo_sig.direction == -1 and _bo_ext_down > _bo_ext_thresh and _bo_fresh_bottom:
-                            bo_aeq12_ok = False
-                            logger.debug(f"{symbol} [BREAKOUT] AEQ-12 block SHORT: fresh spike bottom {_bo_ext_down*100:.1f}% below 30c high")
+                        if bo_sig.direction == 1 and _bo_at_peak:
+                            if _bo_fresh_top and _bo_ext_up > _bo_ext_thresh_fresh:
+                                bo_aeq12_ok = False
+                                logger.debug(f"{symbol} [BREAKOUT] AEQ-12 block LONG: fresh spike top {_bo_ext_up*100:.1f}% above 30c low")
+                            elif not _bo_fresh_top and _bo_ext_up > _bo_ext_thresh_old:
+                                bo_aeq12_ok = False
+                                logger.debug(f"{symbol} [BREAKOUT] AEQ-12 block LONG: old peak {_bo_ext_up*100:.1f}% above 30c low")
+                        if bo_sig.direction == -1 and _bo_at_trough:
+                            if _bo_fresh_bottom and _bo_ext_down > _bo_ext_thresh_fresh:
+                                bo_aeq12_ok = False
+                                logger.debug(f"{symbol} [BREAKOUT] AEQ-12 block SHORT: fresh spike bottom {_bo_ext_down*100:.1f}% below 30c high")
+                            elif not _bo_fresh_bottom and _bo_ext_down > _bo_ext_thresh_old:
+                                bo_aeq12_ok = False
+                                logger.debug(f"{symbol} [BREAKOUT] AEQ-12 block SHORT: old trough {_bo_ext_down*100:.1f}% below 30c high")
                 # AEQ-MULTIHR cho BREAKOUT: old 4h peak/trough — price o dinh pump nhieu gio
                 bo_aeq_mh_ok = True
                 if not df_micro.empty and len(df_micro) >= 120 and _range_live_price > 0:
@@ -1649,30 +1658,40 @@ class TradingBot:
                 # "At peak" = within 3% of recent 10c high (not buying a dip, buying the spike top)
                 _at_10c_peak   = (_range_live_price / _high_10c) >= 0.97
                 _at_10c_trough = (_range_live_price / _low_10c)  <= 1.03
-                # Threshold theo volatility class: altcoin bien dong hon nen nguong cao hon
-                _ext_thresh = 0.010 * _sp   # 0.5% largecap, 0.75% midcap, 1.0% altcoin
-                # Exception: phai co FULL TREND (scalp + macro + macro_4h) moi bypass
-                # scalp_trend==1 don doc KHONG du — no co the bi push boi spike ngay
-                # macro_4h phai DUONG (==1), khong phai neutral (0) — neutral = chua co trend dai han
+                # Threshold: fresh spike dung nguong thap hon (nhay hon) vi spike nho van la spike
+                # Non-fresh (price dang o vung dinh cu): dung nguong cao hon tranh over-block trend
+                _ext_thresh_fresh = 0.006 * _sp   # 0.3% BTC/ETH, 0.45% midcap, 0.6% altcoin
+                _ext_thresh_old   = 0.010 * _sp   # 0.5% BTC/ETH, 0.75% midcap, 1.0% altcoin
+                # Exception: phai co FULL TREND (scalp + macro + macro_4h) moi bypass non-fresh
                 _full_up_trend = (scalp_trend == 1  and macro_trend == 1  and macro_4h == 1)
                 _full_dn_trend = (scalp_trend == -1 and macro_trend == -1 and macro_4h == -1)
                 # Fresh spike: dinh/day 10c duoc tao ra boi 1-3 nen gan nhat
-                # → spike tuoi, gia dang o dinh ngay sau khi pump → LUON block du trend co align
                 _fresh_spike_top    = _at_10c_peak   and (df_micro["high"].iloc[-3:].max() >= _high_10c * 0.999)
                 _fresh_spike_bottom = _at_10c_trough and (df_micro["low"].iloc[-3:].min()  <= _low_10c  * 1.001)
 
-                if best.direction == 1 and _ext_up > _ext_thresh and _at_10c_peak:
-                    # Block neu: spike tuoi (bat ky trend) HOAC khong co full trend
-                    if _fresh_spike_top or not _full_up_trend:
+                if best.direction == 1 and _at_10c_peak:
+                    # Fresh spike: nguong 0.6% (bat SHIB 0.72% spike)
+                    if _fresh_spike_top and _ext_up > _ext_thresh_fresh:
                         return _block(
-                            f"skip LONG - {_ext_up*100:.1f}% above 30c low, at 10c peak "
-                            f"fresh={_fresh_spike_top} (scalp={scalp_trend} m15={macro_trend} m4h={macro_4h}) — đu đỉnh"
+                            f"skip LONG - {_ext_up*100:.1f}% above 30c low, fresh spike top "
+                            f"(scalp={scalp_trend} m15={macro_trend} m4h={macro_4h}) — đu đỉnh"
                         )
-                if best.direction == -1 and _ext_down > _ext_thresh and _at_10c_trough:
-                    if _fresh_spike_bottom or not _full_dn_trend:
+                    # Non-fresh peak: nguong 1.0%, cho qua neu full trend
+                    if not _fresh_spike_top and _ext_up > _ext_thresh_old and not _full_up_trend:
                         return _block(
-                            f"skip SHORT - {_ext_down*100:.1f}% below 30c high, at 10c trough "
-                            f"fresh={_fresh_spike_bottom} (scalp={scalp_trend} m15={macro_trend} m4h={macro_4h}) — đu đáy"
+                            f"skip LONG - {_ext_up*100:.1f}% above 30c low, at 10c peak (old) "
+                            f"(scalp={scalp_trend} m15={macro_trend} m4h={macro_4h}) — đu đỉnh"
+                        )
+                if best.direction == -1 and _at_10c_trough:
+                    if _fresh_spike_bottom and _ext_down > _ext_thresh_fresh:
+                        return _block(
+                            f"skip SHORT - {_ext_down*100:.1f}% below 30c high, fresh spike bottom "
+                            f"(scalp={scalp_trend} m15={macro_trend} m4h={macro_4h}) — đu đáy"
+                        )
+                    if not _fresh_spike_bottom and _ext_down > _ext_thresh_old and not _full_dn_trend:
+                        return _block(
+                            f"skip SHORT - {_ext_down*100:.1f}% below 30c high, at 10c trough (old) "
+                            f"(scalp={scalp_trend} m15={macro_trend} m4h={macro_4h}) — đu đáy"
                         )
 
         # ── AEQ-MULTIHR: Multi-hour range check (240c ≈ 4h on 1m data) ─────────

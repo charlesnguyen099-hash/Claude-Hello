@@ -91,7 +91,11 @@ class RiskManager:
         # SL ROI = SL_TP_RATIO x TP ROI (hien tai 5x)
         #   -> SL ROI range: [60%, 250%]
         #   -> SL toi thieu 60% ROI (khi TP=12%), SL toi da 250% ROI (khi TP=50%)
-        tp_roi  = config.TP_ROI_MIN + potential * (config.TP_ROI_MAX - config.TP_ROI_MIN)
+        _tp_roi_override = getattr(signal, 'tp_roi_override', 0.0)
+        if _tp_roi_override > 0:
+            tp_roi = _tp_roi_override
+        else:
+            tp_roi = config.TP_ROI_MIN + potential * (config.TP_ROI_MAX - config.TP_ROI_MIN)
         sl_roi  = tp_roi * config.SL_TP_RATIO   # SL = SL_TP_RATIO x TP
 
         # Clamp SL/TP de dam bao SL luon nam TREN gia thanh ly (liquidation price)

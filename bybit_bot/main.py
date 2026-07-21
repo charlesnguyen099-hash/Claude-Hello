@@ -1252,12 +1252,20 @@ class TradingBot:
                     # ATR override: dung 15m ATR cho SL/TP (1m ATR qua nho)
                     if _atr_for_sl > 0:
                         best.atr = _atr_for_sl
+                    # TP size cho reversal: _is_range_rev (2h extreme) → medium TP
+                    # RSI-based reversal: depends on how extreme the RSI is
+                    if _is_range_rev:
+                        best.tp_roi_override = 0.12  # 12% ROI — range reversal, medium
+                    elif rsi_now < 20 or rsi_now > 80:
+                        best.tp_roi_override = 0.0   # RSI cuc doan manh → TP lon (potential scaling)
+                    else:
+                        best.tp_roi_override = 0.12  # RSI vua du → TP trung binh
                     names = "+".join(s.strategy_name for s in signals)
                     rsi_label = f"RSI15m={rsi_now:.0f}({'OVERSOLD<30' if reversal_dir==1 else 'OVERBOUGHT>70'})"
                     logger.info(
                         f"{symbol} [REVERSAL {rsi_label}] [{names}] -> "
                         f"{'LONG' if best.direction==1 else 'SHORT'} "
-                        f"strength={best.strength:.2f} | {best.reason}"
+                        f"strength={best.strength:.2f} TP_override={best.tp_roi_override*100:.0f}% | {best.reason}"
                     )
                     self.executor.execute_signal(symbol, best, equity, open_positions, is_priority=is_priority)
                     return True
@@ -1911,16 +1919,62 @@ class TradingBot:
 
         best.consensus = len(signals)
         best.symbol    = symbol
-        # ATR override: dung 15m ATR cho SL/TP — 1m ATR qua nho (noise se hit SL lien tuc)
+        # ATR override: dung 15m ATF cho SL/TP — 1m ATR qua nho (noise se hit SL lien tuc)
         if _atr_for_sl > 0:
             best.atr = _atr_for_sl
 
+        # DYNAMIC TP theo kich thuoc dinh/day:
+        # Short-term extrema (dinh/day ngan han, co the tao dinh/day moi):
+        #   → TP nho: du bu phi san + loi nho → dong lenh nhanh, bat lenh tiep theo
+        # Major extrema (dinh/day lon cua 2h/4h range):
+        #   → TP binh thuong/lon
+        #
+        # Fee break-even: ROUND_TRIP_FEE × leverage = % roi tren margin
+        # Leverage tra ve tu get_max_leverage (se goi lai trong compute_trade)
+        # De don gian, uoc tinh leverage = 50x → fee_roi ≈ 5.5%, safe TP = fee + 5% = ~10%
+        # Voi leverage thap hon (20x), fee_roi = 2.2% → safe TP = 7-8%
+        # → Dung 8% ROI lam TP nho (an toan voi moi leverage tu 10x tro len)
+        _tp_small  = 0.08   # 8% ROI — TP nho cho short-term extrema
+        _tp_medium = 0.15   # 15% ROI — TP trung binh
+        _tp_large  = 0.0    # 0 = dung potential scaling binh thuong (12-50%)
+
+        # Xac dinh kich thuoc extrema tu cac bien da tinh truoc do
+        # _ex_near_peak/_ex_near_trough: da xac dinh trong AEQ-EXTREMA block
+        # _m2h_pos: vi tri trong 2h range
+        # _ext_up_mh/_ext_down_mh: % tu day/dinh 4h (da tinh trong AEQ-MULTIHR)
+        _is_major_peak   = False
+        _is_major_trough = False
+        try:
+            _is_major_peak   = _m2h_pos > 0.75 or (_ext_up_mh   > 0.02 and _at_mh_peak)
+            _is_major_trough = _m2h_pos < 0.25 or (_ext_down_mh  > 0.02 and _at_mh_trough)
+        except Exception:
+            pass  # bien chua duoc tinh (phan AEQ-MULTIHR chua chay)
+
+        _is_short_term_extrema = False
+        try:
+            _is_short_term_extrema = (_ex_near_peak and best.direction == -1) or \
+                                     (_ex_near_trough and best.direction == 1)
+        except Exception:
+            pass
+
+        if _is_short_term_extrema and not _is_major_peak and not _is_major_trough:
+            best.tp_roi_override = _tp_small
+            logger.info(f"{symbol}: short-term extrema → TP={_tp_small*100:.0f}% ROI (small, fast)")
+        elif _is_major_peak or _is_major_trough:
+            best.tp_roi_override = 0.0  # dung scaling binh thuong (lon)
+            logger.info(f"{symbol}: major extrema → TP scaled by potential (large)")
+        elif _pump_exhaustion_flip or _dump_exhaustion_flip:
+            best.tp_roi_override = _tp_medium
+            logger.info(f"{symbol}: exhaustion flip → TP={_tp_medium*100:.0f}% ROI (medium)")
+        # else: default potential scaling
+
         names = "+".join(s.strategy_name for s in signals)
+        _tp_log = f" TP_override={best.tp_roi_override*100:.0f}%" if best.tp_roi_override > 0 else ""
 
         logger.info(
             f"{symbol} [{names}] consensus={len(signals)} -> "
             f"{'LONG' if best.direction==1 else 'SHORT'} "
-            f"strength={best.strength:.2f} | {best.reason}"
+            f"strength={best.strength:.2f}{_tp_log} | {best.reason}"
         )
 
         self.executor.execute_signal(symbol, best, equity, open_positions, is_priority=is_priority)

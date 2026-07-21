@@ -22,6 +22,7 @@ class Signal:
     symbol: str = ""
     consensus: int = 1      # So strategies dong thuan cung chieu
     swing_sl: float = 0.0   # Swing high/low 15m lam SL reference (0 = dung ATR thuan tuy)
+    tp_roi_override: float = 0.0  # != 0 → dung truc tiep lam TP ROI (bo qua potential scaling)
 
 
 def compute_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:

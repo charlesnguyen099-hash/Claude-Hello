@@ -31,11 +31,17 @@ def setup_logging():
     root.setLevel(level)
 
     # Console — force UTF-8 tren Windows CMD (tranh UnicodeEncodeError voi ky tu dac biet)
+    # reconfigure() co the fail tren Python 3.13 Windows → dung io.TextIOWrapper tren buffer
+    import io
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        _con_stream = sys.stdout
     except Exception:
-        pass
-    ch = logging.StreamHandler(sys.stdout)
+        try:
+            _con_stream = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace", line_buffering=True)
+        except Exception:
+            _con_stream = sys.stdout
+    ch = logging.StreamHandler(_con_stream)
     ch.setFormatter(fmt)
     root.addHandler(ch)
 

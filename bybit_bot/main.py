@@ -1630,6 +1630,41 @@ class TradingBot:
                             f"fresh={_fresh_spike_bottom} (scalp={scalp_trend} m15={macro_trend} m4h={macro_4h}) — đu đáy"
                         )
 
+        # ── AEQ-MULTIHR: Multi-hour range check (240c ≈ 4h on 1m data) ─────────
+        # AEQ-12 chi nhin 30c (~30 phut) — khong phat hien "dang o dinh cua pump nhieu gio"
+        # SUI pattern: pump len 0.7739 luc 11:00, bot van LONG tai 0.769 luc 13:53 (sau 3h)
+        # Fix: neu gia dang gan dinh 240c VA dinh do duoc tao ra > 10 candles truoc
+        #      → dang o vung dinh (khong phai fresh breakout) → block LONG / block SHORT
+        # Khong co _full_up_trend exception: du trend align, vao LONG sat dinh 4h = timing xau
+        if (not df_micro.empty and len(df_micro) >= 120 and _range_live_price > 0
+                and not is_reversal):
+            _n_mh     = min(240, len(df_micro))
+            _high_mh  = df_micro["high"].iloc[-_n_mh:].max()
+            _low_mh   = df_micro["low"].iloc[-_n_mh:].min()
+            if _high_mh > 0 and _low_mh > 0 and _high_mh > _low_mh:
+                _ext_up_mh   = (_range_live_price - _low_mh) / _low_mh
+                _ext_down_mh = (_high_mh - _range_live_price) / _high_mh
+                # "At peak": within 2.5% BELOW 4h high, but NOT above it (would be breakout)
+                _at_mh_peak   = 0.975 <= (_range_live_price / _high_mh) <= 1.005
+                _at_mh_trough = 0.995 <= (_range_live_price / _low_mh)  <= 1.025
+                _mh_thresh = 0.015 * _sp   # 0.75% BTC/ETH, 1.125% midcap, 1.5% altcoin
+                # Peak/trough "old" = made > 10 candles ago → not a fresh current breakout
+                _mh_peak_idx   = int(df_micro["high"].iloc[-_n_mh:].values.argmax())
+                _mh_trough_idx = int(df_micro["low"].iloc[-_n_mh:].values.argmin())
+                _mh_peak_is_old   = _mh_peak_idx   < (_n_mh - 10)
+                _mh_trough_is_old = _mh_trough_idx < (_n_mh - 10)
+
+                if best.direction == 1 and _ext_up_mh > _mh_thresh and _at_mh_peak and _mh_peak_is_old:
+                    return _block(
+                        f"skip LONG - at {_n_mh}c peak ({_ext_up_mh*100:.1f}% above {_n_mh}c low, "
+                        f"peak {_n_mh - _mh_peak_idx}c ago) — đu đỉnh multi-hour"
+                    )
+                if best.direction == -1 and _ext_down_mh > _mh_thresh and _at_mh_trough and _mh_trough_is_old:
+                    return _block(
+                        f"skip SHORT - at {_n_mh}c trough ({_ext_down_mh*100:.1f}% below {_n_mh}c high, "
+                        f"trough {_n_mh - _mh_trough_idx}c ago) — đu đáy multi-hour"
+                    )
+
         # ══════════════════════════════════════════════════════════════════════
 
         # MOMENTUM GATE: LUON goi micro_entry_analysis cho tat ca momentum trade

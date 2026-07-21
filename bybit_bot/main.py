@@ -858,7 +858,7 @@ class TradingBot:
                         _bo_ext_down = (_bo_high_30c - _range_live_price) / _bo_high_30c
                         _bo_at_peak   = (_range_live_price / _bo_high_10c) >= 0.97
                         _bo_at_trough = (_range_live_price / _bo_low_10c)  <= 1.03
-                        _bo_ext_thresh = 0.006 * _sp   # 0.3% BTC/ETH, 0.45% mid, 0.6% alt
+                        _bo_ext_thresh = 0.006   # 0.6% flat cho tat ca coin
                         if bo_sig.direction == 1 and _bo_at_peak and _bo_ext_up > _bo_ext_thresh:
                             bo_aeq12_ok = False
                             logger.debug(f"{symbol} [BREAKOUT] AEQ-12 block LONG: {_bo_ext_up*100:.1f}% above 30c low at 10c peak")
@@ -1647,7 +1647,7 @@ class TradingBot:
                 # "At peak" = within 3% of recent 10c high (not buying a dip, buying the spike top)
                 _at_10c_peak   = (_range_live_price / _high_10c) >= 0.97
                 _at_10c_trough = (_range_live_price / _low_10c)  <= 1.03
-                _ext_thresh = 0.006 * _sp   # 0.3% BTC/ETH, 0.45% midcap, 0.6% altcoin
+                _ext_thresh = 0.006   # 0.6% flat cho tat ca coin
 
                 if best.direction == 1 and _at_10c_peak and _ext_up > _ext_thresh:
                     return _block(

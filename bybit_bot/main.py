@@ -753,8 +753,15 @@ class TradingBot:
             _30c_o = df_micro["open"].iloc[-30:].values
             _n_grn = sum(1 for i in range(30) if _30c_c[i] > _30c_o[i])
             _n_red = sum(1 for i in range(30) if _30c_c[i] < _30c_o[i])
-            _is_gradual_uptrend   = _n_grn >= 18
-            _is_gradual_downtrend = _n_red >= 18
+            # Gradual = nhieu nen nho cung chieu, KHONG phai spike lon dot ngot
+            # Neu co nen nao > 3x average body → day la spike/pump, KHONG phai gradual
+            # ZEC pump 1.4% trong 10 phut: co nen spike lon → _no_spike_30 = False → gradual = False
+            _30c_bodies = abs(_30c_c - _30c_o)
+            _avg_body_30 = _30c_bodies.mean()
+            _max_body_30 = _30c_bodies.max()
+            _no_spike_30 = (_max_body_30 < _avg_body_30 * 3.0) if _avg_body_30 > 0 else True
+            _is_gradual_uptrend   = _n_grn >= 18 and _no_spike_30
+            _is_gradual_downtrend = _n_red >= 18 and _no_spike_30
 
         if not df_micro.empty and len(df_micro) >= 15:
             _micro_atr    = compute_atr(df_micro).iloc[-1]
@@ -886,8 +893,8 @@ class TradingBot:
                         _bo_at_peak   = (_range_live_price / _bo_high_10c) >= 0.97
                         _bo_at_trough = (_range_live_price / _bo_low_10c)  <= 1.03
                         _bo_ext_thresh = 0.006   # 0.6% flat cho tat ca coin
-                        _bo_grad_up = _is_gradual_uptrend   and scalp_trend == 1
-                        _bo_grad_dn = _is_gradual_downtrend and scalp_trend == -1
+                        _bo_grad_up = _is_gradual_uptrend   and scalp_trend == 1 and macro_trend == 1
+                        _bo_grad_dn = _is_gradual_downtrend and scalp_trend == -1 and macro_trend == -1
                         if bo_sig.direction == 1 and _bo_at_peak and _bo_ext_up > _bo_ext_thresh and not _bo_grad_up:
                             bo_aeq12_ok = False
                             logger.debug(f"{symbol} [BREAKOUT] AEQ-12 block LONG: {_bo_ext_up*100:.1f}% above 30c low at 10c peak")
@@ -1760,8 +1767,12 @@ class TradingBot:
                 # BTC pattern: tang lien tuc 25 phut, moi nen xanh nho → gradual uptrend → cho phep LONG
                 # Spike: 1-3 nen tang vot len dinh trong it phut → phai block
                 # Dieu kien bypass: gradual trend PHAI duoc xac nhan boi scalp_trend (5m) cung chieu
-                _aeq12_bypass_long  = _is_gradual_uptrend   and scalp_trend == 1
-                _aeq12_bypass_short = _is_gradual_downtrend and scalp_trend == -1
+                # AEQ-12 bypass: phai co CA 3 dieu kien: gradual (khong spike) + 5m + 15m confirm
+                # Truoc day chi can scalp_trend → ZEC spike 1.4% bypass duoc → LONG o dinh
+                # Gio phai them macro_trend == 1: EMA100/250 tren 1m can nhieu gio moi flip
+                # → spike 10p KHONG the co macro_trend=1 → bypass KHONG hoat dong voi spike
+                _aeq12_bypass_long  = _is_gradual_uptrend   and scalp_trend == 1 and macro_trend == 1
+                _aeq12_bypass_short = _is_gradual_downtrend and scalp_trend == -1 and macro_trend == -1
 
                 if best.direction == 1 and _at_10c_peak and _ext_up > _ext_thresh and not _aeq12_bypass_long:
                     # Flip LONG→SHORT: o dinh ngắn hạn (30c spike), SHORT có xác suất cao

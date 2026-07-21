@@ -1436,6 +1436,10 @@ class TradingBot:
                 logger.debug(f"{symbol}: {reason}")
             return False
 
+        # True khi flip direction tai extrema/range extreme (peak/trough)
+        # Dung de bypass micro_entry_analysis va AEQ-PUMP sau khi da quyet dinh flip
+        _direction_flipped = False
+
         # BTC/ETH CORRELATION BLOCK: block neu pair kia da co position CUNG CHIEU
         # BTC va ETH correlated manh -> ca 2 cung SHORT = double loss khi bounce
         # Cho phep nguoc chieu (BTC long + ETH short = hedging, khac strategy)
@@ -1475,11 +1479,18 @@ class TradingBot:
         if _micro_spike_dump and best.direction == -1 and not _dump_spike_in_trend:
             return _block("skip - 1m dump spike (not in confirmed downtrend), no short")
 
-        # 1h range block
+        # 1h range block (5h range extreme) → flip direction thay vi block
+        # Dinh/day 5h range = vi tri cuoi xu huong lon → dao chieu, TP trung binh (co the tao dinh/day moi)
         if _h1_block_long and best.direction == 1:
-            return _block("skip - price at 1h range top (>75%), block LONG")
+            best.direction = -1
+            best.tp_roi_override = 0.15  # 15% ROI: dinh 5h tuong doi lon, TP medium
+            _direction_flipped = True
+            logger.info(f"{symbol}: 5h range flip LONG→SHORT at 5h top, TP=15%")
         if _h1_block_short and best.direction == -1:
-            return _block("skip - price at 1h range bottom (<25%), block SHORT")
+            best.direction = 1
+            best.tp_roi_override = 0.15
+            _direction_flipped = True
+            logger.info(f"{symbol}: 5h range flip SHORT→LONG at 5h bottom, TP=15%")
 
         # 2h range block
         # Exception: gradual trend (>=18/30 nen cung chieu) + scalp xac nhan → day/dinh 2h la DIEM BO QUA
@@ -1487,9 +1498,17 @@ class TradingBot:
         _m2h_grad_bypass_long  = _is_gradual_uptrend   and scalp_trend == 1  and macro_trend == 1
         _m2h_grad_bypass_short = _is_gradual_downtrend and scalp_trend == -1 and macro_trend == -1
         if _m2h_block_short and best.direction == -1 and not _m2h_grad_bypass_short:
-            return _block("skip - price at 2h range bottom (<20%), block SHORT")
+            # Day 2h range: flip SHORT→LONG, TP 12% (day lon, co the tao day moi nhung TP nho du co loi)
+            best.direction = 1
+            best.tp_roi_override = 0.12
+            _direction_flipped = True
+            logger.info(f"{symbol}: 2h range flip SHORT→LONG at 2h bottom ({_m2h_pos:.0%}), TP=12%")
         if _m2h_block_long and best.direction == 1 and not _m2h_grad_bypass_long:
-            return _block("skip - price at 2h range top (>80%), block LONG")
+            # Dinh 2h range: flip LONG→SHORT, TP 12% (dinh lon, co the tao dinh moi nhung TP nho du co loi)
+            best.direction = -1
+            best.tp_roi_override = 0.12
+            _direction_flipped = True
+            logger.info(f"{symbol}: 2h range flip LONG→SHORT at 2h top ({_m2h_pos:.0%}), TP=12%")
 
         # ══ SHORT-TERM TREND CONFIRMATION — 3 CẤP ĐỘ ══════════════════════════
         #
@@ -1745,14 +1764,23 @@ class TradingBot:
                 _aeq12_bypass_short = _is_gradual_downtrend and scalp_trend == -1
 
                 if best.direction == 1 and _at_10c_peak and _ext_up > _ext_thresh and not _aeq12_bypass_long:
-                    return _block(
-                        f"skip LONG - {_ext_up*100:.1f}% above 30c low, at 10c peak "
-                        f"(scalp={scalp_trend} m15={macro_trend} m4h={macro_4h}) — đu đỉnh"
+                    # Flip LONG→SHORT: o dinh ngắn hạn (30c spike), SHORT có xác suất cao
+                    # Dang o dinh ngắn hạn — co the tao dinh moi, nhung SHORT voi TP nho de khong lo
+                    best.direction = -1
+                    best.tp_roi_override = 0.08  # 8% ROI: dinh ngan han, chot nhanh
+                    _direction_flipped = True
+                    logger.info(
+                        f"{symbol}: AEQ-12 flip LONG→SHORT at 10c peak "
+                        f"({_ext_up*100:.1f}% above 30c low, scalp={scalp_trend}), TP=8%"
                     )
                 if best.direction == -1 and _at_10c_trough and _ext_down > _ext_thresh and not _aeq12_bypass_short:
-                    return _block(
-                        f"skip SHORT - {_ext_down*100:.1f}% below 30c high, at 10c trough "
-                        f"(scalp={scalp_trend} m15={macro_trend} m4h={macro_4h}) — đu đáy"
+                    # Flip SHORT→LONG: o day ngắn hạn (30c dump), LONG có xác suất cao
+                    best.direction = 1
+                    best.tp_roi_override = 0.08  # 8% ROI: day ngan han, chot nhanh
+                    _direction_flipped = True
+                    logger.info(
+                        f"{symbol}: AEQ-12 flip SHORT→LONG at 10c trough "
+                        f"({_ext_down*100:.1f}% below 30c high, scalp={scalp_trend}), TP=8%"
                     )
 
         # [AEQ-EXTREMA] Local peak/trough detection tren 1m — chinh xac hon AEQ-12 don gian
@@ -1781,7 +1809,14 @@ class TradingBot:
                         f"(peak {_ex_since_peak}c ago)"
                     )
                 elif _ex_from_trough > 0.008:
-                    return _block(f"skip LONG — at local 1m peak ({_ex_since_peak}c ago), +{_ex_from_trough*100:.2f}%")
+                    # scalp bullish nhung van o dinh local: flip LONG→SHORT voi TP nho
+                    best.direction = -1
+                    best.tp_roi_override = 0.08
+                    _direction_flipped = True
+                    logger.info(
+                        f"{symbol}: EXTREMA flip LONG→SHORT (scalp=up but at peak {_ex_since_peak}c ago, "
+                        f"+{_ex_from_trough*100:.2f}%), TP=8%"
+                    )
 
             elif _ex_near_trough and best.direction == -1 and not _aeq12_bypass_short:
                 # Gia gan day local 1m, signal muon SHORT → co kha nang LONG tot hon
@@ -1794,7 +1829,14 @@ class TradingBot:
                         f"(trough {_ex_since_trough}c ago)"
                     )
                 elif _ex_from_peak > 0.008:
-                    return _block(f"skip SHORT — at local 1m trough ({_ex_since_trough}c ago), -{_ex_from_peak*100:.2f}%")
+                    # scalp bearish nhung van o day local: flip SHORT→LONG voi TP nho
+                    best.direction = 1
+                    best.tp_roi_override = 0.08
+                    _direction_flipped = True
+                    logger.info(
+                        f"{symbol}: EXTREMA flip SHORT→LONG (scalp=down but at trough {_ex_since_trough}c ago, "
+                        f"-{_ex_from_peak*100:.2f}%), TP=8%"
+                    )
 
         # ── AEQ-MULTIHR: Multi-hour range check (240c ≈ 4h on 1m data) ─────────
         # AEQ-12 chi nhin 30c (~30 phut) — khong phat hien "dang o dinh cua pump nhieu gio"
@@ -1821,14 +1863,22 @@ class TradingBot:
                 _mh_trough_is_old = _mh_trough_idx < (_n_mh - 10)
 
                 if best.direction == 1 and _ext_up_mh > _mh_thresh and _at_mh_peak and _mh_peak_is_old:
-                    return _block(
-                        f"skip LONG - at {_n_mh}c peak ({_ext_up_mh*100:.1f}% above {_n_mh}c low, "
-                        f"peak {_n_mh - _mh_peak_idx}c ago) — đu đỉnh multi-hour"
+                    # Dinh lon 4h (major peak): flip LONG→SHORT voi TP lon (dao chieu lon)
+                    best.direction = -1
+                    best.tp_roi_override = 0.0  # 0 = large TP via potential scaling (dinh lon = TP lon)
+                    _direction_flipped = True
+                    logger.info(
+                        f"{symbol}: MULTIHR flip LONG→SHORT at {_n_mh}c major peak "
+                        f"({_ext_up_mh*100:.1f}% above {_n_mh}c low, {_n_mh-_mh_peak_idx}c ago), TP=large"
                     )
-                if best.direction == -1 and _ext_down_mh > _mh_thresh and _at_mh_trough and _mh_trough_is_old:
-                    return _block(
-                        f"skip SHORT - at {_n_mh}c trough ({_ext_down_mh*100:.1f}% below {_n_mh}c high, "
-                        f"trough {_n_mh - _mh_trough_idx}c ago) — đu đáy multi-hour"
+                elif best.direction == -1 and _ext_down_mh > _mh_thresh and _at_mh_trough and _mh_trough_is_old:
+                    # Day lon 4h (major trough): flip SHORT→LONG voi TP lon
+                    best.direction = 1
+                    best.tp_roi_override = 0.0  # large TP
+                    _direction_flipped = True
+                    logger.info(
+                        f"{symbol}: MULTIHR flip SHORT→LONG at {_n_mh}c major trough "
+                        f"({_ext_down_mh*100:.1f}% below {_n_mh}c high, {_n_mh-_mh_trough_idx}c ago), TP=large"
                     )
 
         # [AEQ-VOL] Volume pressure: xac nhan momentum con du fuel hay da can kiet
@@ -1852,21 +1902,29 @@ class TradingBot:
                 _vol_now  = df_micro["volume"].iloc[-20:].mean()
                 _vol_weak = _vol_now < _vol_base * 0.70  # recent vol < 70% baseline
 
-                # LONG: neu price o top 2h range (>60%) ma sellers dang chiem uu
+                # LONG: neu price o top 2h range (>60%) ma sellers dang chiem uu → flip SHORT
+                # Volume xac nhan sellers → SHORT voi TP nho (co the tao dinh moi nhung SHORT co loi)
                 if best.direction == 1 and _m2h_pos > 0.60:
                     _thresh = 0.45 if _vol_weak else 0.38
                     if _buy_press < _thresh:
-                        return _block(
-                            f"skip LONG - buy_pressure={_buy_press:.0%} < {_thresh:.0%} "
-                            f"at 2h top {_m2h_pos:.0%} (vol_weak={_vol_weak}) — volume khong confirm"
+                        best.direction = -1
+                        best.tp_roi_override = 0.08  # 8% ROI: volume ko manh, uncertain
+                        _direction_flipped = True
+                        logger.info(
+                            f"{symbol}: AEQ-VOL flip LONG→SHORT: buy_pressure={_buy_press:.0%} < {_thresh:.0%} "
+                            f"at 2h top {_m2h_pos:.0%} (vol_weak={_vol_weak}), TP=8%"
                         )
-                # SHORT: neu price o bot 2h range (<40%) ma buyers dang chiem uu
+                # SHORT: neu price o bot 2h range (<40%) ma buyers dang chiem uu → flip LONG
+                # Volume xac nhan buyers → LONG voi TP nho
                 if best.direction == -1 and _m2h_pos < 0.40:
                     _thresh = 0.55 if _vol_weak else 0.62
                     if _buy_press > _thresh:
-                        return _block(
-                            f"skip SHORT - buy_pressure={_buy_press:.0%} > {_thresh:.0%} "
-                            f"at 2h bot {_m2h_pos:.0%} (vol_weak={_vol_weak}) — volume khong confirm"
+                        best.direction = 1
+                        best.tp_roi_override = 0.08  # 8% ROI
+                        _direction_flipped = True
+                        logger.info(
+                            f"{symbol}: AEQ-VOL flip SHORT→LONG: buy_pressure={_buy_press:.0%} > {_thresh:.0%} "
+                            f"at 2h bot {_m2h_pos:.0%} (vol_weak={_vol_weak}), TP=8%"
                         )
 
         # ══════════════════════════════════════════════════════════════════════
@@ -1874,8 +1932,11 @@ class TradingBot:
         # MOMENTUM GATE: LUON goi micro_entry_analysis cho tat ca momentum trade
         # Tranh vao lenh khi 1m dang di nguoc chieu (JASMY Long trong downtrend, v.v.)
         # Tier1 bypass KHONG duoc mien kieu tra nay — timing xau van la timing xau du consensus cao
-        if not self._micro_entry_analysis(df_micro, best.direction, is_reversal=False):
-            return _block(f"skip - MOMENTUM micro_entry_analysis rejected (consensus={len(signals)})")
+        # Direction flip (tai extrema/range): bypass gate — da co range/extrema analysis lam timing
+        # Flip entry la counter-trend, micro_entry_analysis se reject do EMA/momentum nguoc chieu
+        if not _direction_flipped:
+            if not self._micro_entry_analysis(df_micro, best.direction, is_reversal=False):
+                return _block(f"skip - MOMENTUM micro_entry_analysis rejected (consensus={len(signals)})")
 
         # [AEQ-PUMP] Live price vs 5-candle average: tranh đu đỉnh / đu đáy
         # Block 4 truong hop:
@@ -1890,28 +1951,30 @@ class TradingBot:
                 _live_move_pct = (_range_live_price - _avg_5c) / _avg_5c
                 _pump_thresh = 0.008 if _sp < 1.0 else 0.010   # 0.8% largecap+midcap, 1.0% altcoin
                 if best.direction == -1 and _live_move_pct > _pump_thresh:
-                    # Ngoai le: pump exhaustion flip — gia dang cao la dung (vua pump xong)
-                    # micro_down da xac nhan reversal bat dau → SHORT o day la hop le
-                    if not _pump_exhaustion_flip:
+                    # Ngoai le: pump exhaustion flip hoac direction flip tai extrema
+                    # Direction flip tai dinh: gia dang cao = dung dieu kien SHORT → khong block
+                    if not _pump_exhaustion_flip and not _direction_flipped:
                         return _block(
                             f"skip SHORT - live {_live_move_pct*100:.2f}% above 5c avg "
                             f"(gia dang pump, Short qua som)"
                         )
                 if best.direction == 1 and _live_move_pct < -_pump_thresh:
-                    return _block(
-                        f"skip LONG - live {_live_move_pct*100:.2f}% below 5c avg "
-                        f"(gia dang dump, Long qua som)"
-                    )
+                    # Direction flip tai day: gia dang thap = dung dieu kien LONG → khong block
+                    if not _direction_flipped:
+                        return _block(
+                            f"skip LONG - live {_live_move_pct*100:.2f}% below 5c avg "
+                            f"(gia dang dump, Long qua som)"
+                        )
                 # Block du dinh / du day: gia da di xa roi moi vao theo
                 # Ngoai le: dang trong confirmed trend — can ca scalp VA macro (15m) de tranh spike bypass
                 _long_in_trend  = micro_up   and (_is_gradual_uptrend   or (scalp_trend == 1  and macro_trend == 1))
                 _short_in_trend = micro_down and (_is_gradual_downtrend or (scalp_trend == -1 and macro_trend == -1))
-                if best.direction == 1 and _live_move_pct > _pump_thresh and not _long_in_trend:
+                if best.direction == 1 and _live_move_pct > _pump_thresh and not _long_in_trend and not _direction_flipped:
                     return _block(
                         f"skip LONG - live {_live_move_pct*100:.2f}% above 5c avg "
                         f"(gia da pump, Long du dinh)"
                     )
-                if best.direction == -1 and _live_move_pct < -_pump_thresh and not _short_in_trend:
+                if best.direction == -1 and _live_move_pct < -_pump_thresh and not _short_in_trend and not _direction_flipped:
                     return _block(
                         f"skip SHORT - live {_live_move_pct*100:.2f}% below 5c avg "
                         f"(gia da dump, Short du day)"
@@ -1957,16 +2020,20 @@ class TradingBot:
         except Exception:
             pass
 
-        if _is_short_term_extrema and not _is_major_peak and not _is_major_trough:
-            best.tp_roi_override = _tp_small
-            logger.info(f"{symbol}: short-term extrema → TP={_tp_small*100:.0f}% ROI (small, fast)")
-        elif _is_major_peak or _is_major_trough:
-            best.tp_roi_override = 0.0  # dung scaling binh thuong (lon)
-            logger.info(f"{symbol}: major extrema → TP scaled by potential (large)")
-        elif _pump_exhaustion_flip or _dump_exhaustion_flip:
-            best.tp_roi_override = _tp_medium
-            logger.info(f"{symbol}: exhaustion flip → TP={_tp_medium*100:.0f}% ROI (medium)")
-        # else: default potential scaling
+        # Dynamic TP chi ap dung cho trade KHONG phai direction flip
+        # Direction flip da set tp_roi_override rieng tai diem flip — khong override lai
+        # (AEQ-12=8%, 2h range=12%, 5h range=15%, MULTIHR=large, AEQ-VOL=8%, EXTREMA=8%)
+        if not _direction_flipped:
+            if _is_short_term_extrema and not _is_major_peak and not _is_major_trough:
+                best.tp_roi_override = _tp_small
+                logger.info(f"{symbol}: short-term extrema → TP={_tp_small*100:.0f}% ROI (small, fast)")
+            elif _is_major_peak or _is_major_trough:
+                best.tp_roi_override = 0.0  # dung scaling binh thuong (lon)
+                logger.info(f"{symbol}: major extrema → TP scaled by potential (large)")
+            elif _pump_exhaustion_flip or _dump_exhaustion_flip:
+                best.tp_roi_override = _tp_medium
+                logger.info(f"{symbol}: exhaustion flip → TP={_tp_medium*100:.0f}% ROI (medium)")
+            # else: default potential scaling
 
         names = "+".join(s.strategy_name for s in signals)
         _tp_log = f" TP_override={best.tp_roi_override*100:.0f}%" if best.tp_roi_override > 0 else ""

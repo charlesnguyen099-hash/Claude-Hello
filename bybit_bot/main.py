@@ -1608,8 +1608,9 @@ class TradingBot:
                 _ext_thresh = 0.010 * _sp   # 0.5% largecap, 0.75% midcap, 1.0% altcoin
                 # Exception: phai co FULL TREND (scalp + macro + macro_4h) moi bypass
                 # scalp_trend==1 don doc KHONG du — no co the bi push boi spike ngay
-                _full_up_trend = (scalp_trend == 1  and macro_trend == 1  and macro_4h >= 0)
-                _full_dn_trend = (scalp_trend == -1 and macro_trend == -1 and macro_4h <= 0)
+                # macro_4h phai DUONG (==1), khong phai neutral (0) — neutral = chua co trend dai han
+                _full_up_trend = (scalp_trend == 1  and macro_trend == 1  and macro_4h == 1)
+                _full_dn_trend = (scalp_trend == -1 and macro_trend == -1 and macro_4h == -1)
 
                 if best.direction == 1 and _ext_up > _ext_thresh and _at_10c_peak and not _full_up_trend:
                     return _block(

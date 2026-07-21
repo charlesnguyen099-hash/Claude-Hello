@@ -1590,10 +1590,10 @@ class TradingBot:
         #   3. KHONG co full multi-TF trend (5m + 15m + 1h deu phai bullish)
         #
         # Exception: ca 3 TF (scalp/macro/macro_4h) phai cung chieu = trend that su, ton tai truoc pump
-        # Exception BREAKOUT: lenh BREAKOUT by definition enter o dinh range moi → mien AEQ-12
+        # BREAKOUT ap dung cung rule nhu cac strategy khac — single-candle spike van bi block
         _is_breakout_signal = any(s.strategy_name == "breakout" for s in signals)
         if (not df_micro.empty and len(df_micro) >= 15 and _range_live_price > 0
-                and not is_reversal and not _is_breakout_signal):
+                and not is_reversal):
             _low_30c  = df_micro["low"].iloc[-30:].min()  if len(df_micro) >= 30 else df_micro["low"].min()
             _high_30c = df_micro["high"].iloc[-30:].max() if len(df_micro) >= 30 else df_micro["high"].max()
             _high_10c = df_micro["high"].iloc[-10:].max()

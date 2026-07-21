@@ -1579,25 +1579,47 @@ class TradingBot:
                         f"std={_std20/_mean20*100:.3f}% (accumulation zone)"
                     )
 
-        # [AEQ-12] 30-candle baseline pump/dump check — LRCUSDT/NBISUSDT pattern
-        # Khi gia da tang X% khoi baseline 30 nen (spike) nhung KHONG co gradual uptrend ben vung
-        # → day la isolated spike, khong phai trend → block LONG (va nguoc lai cho SHORT)
-        # Ngoai le: _is_gradual_uptrend = co >= 18/30 nen xanh = trend that su, khong phai spike
-        if not df_micro.empty and len(df_micro) >= 35 and _range_live_price > 0 and not is_reversal:
-            _baseline_30 = df_micro["close"].iloc[-30:].mean()
-            if _baseline_30 > 0:
-                _move_from_base = (_range_live_price - _baseline_30) / _baseline_30
-                # Nguong: 1.5% cho largecap (gia on dinh hon), 1.0% cho altcoin (bien dong hon)
-                _base_thresh = 0.015 if _sp >= 1.0 else 0.010
-                if best.direction == 1 and _move_from_base > _base_thresh and not _is_gradual_uptrend:
+        # [AEQ-12] Pump-top / dump-bottom prevention (đu đỉnh / đu đáy toàn diện)
+        #
+        # Bug cu (da xoa): dung 30c MEAN lam baseline → mean bi keo len boi chinh cai pump
+        # → _move_from_mean nho → khong trigger. Phai dung 30c LOW.
+        #
+        # 3 dieu kien CUNG XAY RA de block:
+        #   1. Gia da tang X% khoi 30c LOW (co pump xay ra)
+        #   2. Gia dang sat dinh 10c gan nhat (at the peak, not a pullback entry)
+        #   3. KHONG co full multi-TF trend (5m + 15m + 1h deu phai bullish)
+        #
+        # Exception: ca 3 TF (scalp/macro/macro_4h) phai cung chieu = trend that su, ton tai truoc pump
+        # Exception BREAKOUT: lenh BREAKOUT by definition enter o dinh range moi → mien AEQ-12
+        _is_breakout_signal = any(s.strategy_name == "breakout" for s in signals)
+        if (not df_micro.empty and len(df_micro) >= 15 and _range_live_price > 0
+                and not is_reversal and not _is_breakout_signal):
+            _low_30c  = df_micro["low"].iloc[-30:].min()  if len(df_micro) >= 30 else df_micro["low"].min()
+            _high_30c = df_micro["high"].iloc[-30:].max() if len(df_micro) >= 30 else df_micro["high"].max()
+            _high_10c = df_micro["high"].iloc[-10:].max()
+            _low_10c  = df_micro["low"].iloc[-10:].min()
+            if _low_30c > 0 and _high_30c > 0 and _high_10c > 0 and _low_10c > 0:
+                _ext_up   = (_range_live_price - _low_30c)  / _low_30c   # % above 30c low
+                _ext_down = (_high_30c - _range_live_price) / _high_30c  # % below 30c high
+                # "At peak" = within 3% of recent 10c high (not buying a dip, buying the spike top)
+                _at_10c_peak   = (_range_live_price / _high_10c) >= 0.97
+                _at_10c_trough = (_range_live_price / _low_10c)  <= 1.03
+                # Threshold theo volatility class: altcoin bien dong hon nen nguong cao hon
+                _ext_thresh = 0.010 * _sp   # 0.5% largecap, 0.75% midcap, 1.0% altcoin
+                # Exception: phai co FULL TREND (scalp + macro + macro_4h) moi bypass
+                # scalp_trend==1 don doc KHONG du — no co the bi push boi spike ngay
+                _full_up_trend = (scalp_trend == 1  and macro_trend == 1  and macro_4h >= 0)
+                _full_dn_trend = (scalp_trend == -1 and macro_trend == -1 and macro_4h <= 0)
+
+                if best.direction == 1 and _ext_up > _ext_thresh and _at_10c_peak and not _full_up_trend:
                     return _block(
-                        f"skip LONG - {_move_from_base*100:.1f}% above 30c baseline "
-                        f"(isolated spike, no sustained uptrend)"
+                        f"skip LONG - {_ext_up*100:.1f}% above 30c low, at 10c peak "
+                        f"(scalp={scalp_trend} m15={macro_trend} m4h={macro_4h}) — đu đỉnh"
                     )
-                if best.direction == -1 and _move_from_base < -_base_thresh and not _is_gradual_downtrend:
+                if best.direction == -1 and _ext_down > _ext_thresh and _at_10c_trough and not _full_dn_trend:
                     return _block(
-                        f"skip SHORT - {-_move_from_base*100:.1f}% below 30c baseline "
-                        f"(isolated dump, no sustained downtrend)"
+                        f"skip SHORT - {_ext_down*100:.1f}% below 30c high, at 10c trough "
+                        f"(scalp={scalp_trend} m15={macro_trend} m4h={macro_4h}) — đu đáy"
                     )
 
         # ══════════════════════════════════════════════════════════════════════

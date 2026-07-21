@@ -372,6 +372,33 @@ class TradingBot:
             return -1
         return 0
 
+    def _find_local_extrema(self, df, window: int = 5):
+        """
+        Tim local peaks va troughs tren 1m data.
+        peak:   high[i] la cao nhat trong [i-window .. i+window]
+        trough: low[i]  la thap nhat trong [i-window .. i+window]
+        Tra ve: (peaks_idx, troughs_idx, last_peak_price, last_trough_price,
+                 candles_since_peak, candles_since_trough)
+        """
+        if df is None or df.empty or len(df) < window * 2 + 1:
+            return [], [], 0.0, 0.0, 999, 999
+        highs = df["high"].values
+        lows  = df["low"].values
+        n = len(highs)
+        peaks, troughs = [], []
+        for i in range(window, n - window):
+            if highs[i] == max(highs[i-window:i+window+1]):
+                peaks.append(i)
+            if lows[i] == min(lows[i-window:i+window+1]):
+                troughs.append(i)
+        last_peak_idx    = peaks[-1]   if peaks   else 0
+        last_trough_idx  = troughs[-1] if troughs else 0
+        last_peak_price  = highs[last_peak_idx]  if peaks   else highs.max()
+        last_trough_price = lows[last_trough_idx] if troughs else lows.min()
+        candles_since_peak   = n - 1 - last_peak_idx
+        candles_since_trough = n - 1 - last_trough_idx
+        return peaks, troughs, last_peak_price, last_trough_price, candles_since_peak, candles_since_trough
+
     def _micro_entry_analysis(self, df_micro, direction: int, is_reversal: bool = False) -> bool:
         """
         Phan tich toan bo 1m candles de xac dinh timing entry.
@@ -1506,11 +1533,36 @@ class TradingBot:
                     f"HARD BLOCK LONG — 1m BEARISH (micro=-1, gia dang giam) "
                     f"| 5m={scalp_trend} 15m={macro_trend} 1h={macro_4h}"
                 )
+        # DUMP EXHAUSTION LONG: doi xung voi pump_exhaustion_flip
+        # Khi SHORT bi HARD BLOCK vi micro_up nhung gia vua dump xuong day → flip sang LONG
+        _dump_exhaustion_flip = False
         if best.direction == -1 and micro_up and not _btc_bear_short_ok:
-            return _block(
-                f"HARD BLOCK SHORT — 1m BULLISH (micro=+1, gia dang tang) "
-                f"| 5m={scalp_trend} 15m={macro_trend} 1h={macro_4h}"
+            _dump_exh_30 = 0.0
+            if not df_micro.empty and len(df_micro) >= 30:
+                _p30d  = df_micro["close"].iloc[-30]
+                _pnowd = df_micro["close"].iloc[-1]
+                _dump_exh_30 = (_p30d - _pnowd) / _p30d if _p30d > 0 else 0.0
+            _can_dump_exh_long = (
+                _dump_exh_30 > 0.005         # da dump > 0.5% trong 30 nen
+                and _m2h_pos < 0.45          # price o nua duoi cua 2h range (vung day)
+                and not _is_gradual_downtrend
+                and not (macro_trend == -1 and macro_4h == -1)
+                and len(signals) >= 2
             )
+            if _can_dump_exh_long:
+                best.direction = 1
+                _dump_exhaustion_flip = True
+                logger.info(
+                    f"{symbol}: DUMP-EXHAUSTION flip SHORT→LONG | "
+                    f"dump30={_dump_exh_30*100:.1f}% m2h={_m2h_pos:.0%} scalp={scalp_trend}"
+                )
+            else:
+                return _block(
+                    f"HARD BLOCK SHORT — 1m BULLISH (micro=+1, gia dang tang) "
+                    f"| 5m={scalp_trend} 15m={macro_trend} 1h={macro_4h}"
+                )
+        elif best.direction == -1 and micro_up and _btc_bear_short_ok:
+            pass  # BTC bear context: SHORT khi micro bounce la hop le
 
         # --- Cấp 2-3: SOFT BLOCK khi không có TF ngắn nào xác nhận ---
         # Macro STRONG = cả 15m VÀ 1h cùng chiều → pullback entry ok
@@ -1694,6 +1746,47 @@ class TradingBot:
                         f"skip SHORT - {_ext_down*100:.1f}% below 30c high, at 10c trough "
                         f"(scalp={scalp_trend} m15={macro_trend} m4h={macro_4h}) — đu đáy"
                     )
+
+        # [AEQ-EXTREMA] Local peak/trough detection tren 1m — chinh xac hon AEQ-12 don gian
+        # Tim local extrema trong 60 nen gan nhat, xac dinh price dang o dinh hay day that su
+        # Flip direction neu signal nguoc chieu extrema: peak + LONG → SHORT, trough + SHORT → LONG
+        if not is_reversal and not df_micro.empty and len(df_micro) >= 15:
+            _ex_window = 4  # window 4 nen moi ben = 9 nen tong de xac dinh peak/trough
+            _ex_lookback = min(60, len(df_micro))
+            df_ex = df_micro.iloc[-_ex_lookback:]
+            _, _, _ex_peak_p, _ex_trough_p, _ex_since_peak, _ex_since_trough = \
+                self._find_local_extrema(df_ex, window=_ex_window)
+            _ex_price = _range_live_price if _range_live_price > 0 else df_micro["close"].iloc[-1]
+            # "Near peak": within 1% of last local peak, peak made 3-30 candles ago (not too fresh, not too old)
+            _ex_near_peak   = (_ex_price >= _ex_peak_p * 0.990) and (3 <= _ex_since_peak <= 30)
+            _ex_near_trough = (_ex_price <= _ex_trough_p * 1.010) and (3 <= _ex_since_trough <= 30)
+
+            if _ex_near_peak and best.direction == 1 and not _aeq12_bypass_long:
+                # Gia gan dinh local 1m, signal muon LONG → co kha nang SHORT tot hon
+                # Flip neu: price da tang du (>0.5% tu 10c low) va scalp khong phai bullish manh
+                _ex_from_trough = (_ex_price - _ex_trough_p) / _ex_trough_p if _ex_trough_p > 0 else 0
+                if _ex_from_trough > 0.005 and scalp_trend != 1:
+                    best.direction = -1
+                    logger.info(
+                        f"{symbol}: EXTREMA flip LONG→SHORT at local 1m peak "
+                        f"price={_ex_price:.6f} peak={_ex_peak_p:.6f} +{_ex_from_trough*100:.2f}% "
+                        f"(peak {_ex_since_peak}c ago)"
+                    )
+                elif _ex_from_trough > 0.008:
+                    return _block(f"skip LONG — at local 1m peak ({_ex_since_peak}c ago), +{_ex_from_trough*100:.2f}%")
+
+            elif _ex_near_trough and best.direction == -1 and not _aeq12_bypass_short:
+                # Gia gan day local 1m, signal muon SHORT → co kha nang LONG tot hon
+                _ex_from_peak = (_ex_peak_p - _ex_price) / _ex_peak_p if _ex_peak_p > 0 else 0
+                if _ex_from_peak > 0.005 and scalp_trend != -1:
+                    best.direction = 1
+                    logger.info(
+                        f"{symbol}: EXTREMA flip SHORT→LONG at local 1m trough "
+                        f"price={_ex_price:.6f} trough={_ex_trough_p:.6f} -{_ex_from_peak*100:.2f}% "
+                        f"(trough {_ex_since_trough}c ago)"
+                    )
+                elif _ex_from_peak > 0.008:
+                    return _block(f"skip SHORT — at local 1m trough ({_ex_since_trough}c ago), -{_ex_from_peak*100:.2f}%")
 
         # ── AEQ-MULTIHR: Multi-hour range check (240c ≈ 4h on 1m data) ─────────
         # AEQ-12 chi nhin 30c (~30 phut) — khong phat hien "dang o dinh cua pump nhieu gio"

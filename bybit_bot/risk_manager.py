@@ -137,12 +137,6 @@ class RiskManager:
             f"tp_dist={tp_dist:.6f} sl_dist={sl_dist:.6f}"
         )
 
-        # RISK-BASED POSITION SIZING:
-        # Muc tieu: neu SL hit thi mat dung RISK_PER_TRADE_PCT% equity (x scale_factor)
-        # qty = risk_amount / sl_dist
-        risk_amount = equity * config.RISK_PER_TRADE_PCT * scale_factor
-        qty_by_risk = risk_amount / (sl_dist + 1e-12)
-
         # Helper: round qty theo so chu so thap phan cua qty_step (tranh float artifact)
         _qty_decimals = len(str(qty_step).rstrip("0").split(".")[-1]) if "." in str(qty_step) else 0
 
@@ -152,50 +146,50 @@ class RiskManager:
         def _ceil_qty(q: float) -> float:
             return round(math.ceil(q / qty_step) * qty_step, _qty_decimals)
 
-        # Round xuong de khong over-risk
-        qty = _round_qty(qty_by_risk)
+        # MIN-QTY BASED POSITION SIZING:
+        # Qty = min_qty * base_mult * consensus_boost
+        # base_mult: 10x-15x min_qty (theo consensus), consensus_boost: 1.0-2.0x (theo strength)
+        # Neu equity khong du → ha dan multiplier xuong cho den khi vua von
+        # Muc dich: size lon hon, bat duoc profit on dinh, khong phu thuoc % equity (qua nho)
+        #
+        #   base_mult: consensus=1 → 10x, consensus=7 → 15x (scale tuyen tinh)
+        #   consensus_boost: strength=0 → 1.0x, strength=1 → 2.0x
+        #   final_mult = base_mult * consensus_boost → range [10x, 30x]
+        base_mult = 10 + int((consensus / 7) * 5)   # 10 → 15 theo consensus
+        base_mult = max(10, min(15, base_mult))
+        consensus_boost = 1.0 + strength             # 1.0 → 2.0 theo strength
+        final_mult = base_mult * consensus_boost     # 10x → 30x
 
-        # Neu risk-based qty < min_qty (exchange minimum), cap qty tai min_qty
-        if qty < min_qty:
-            qty = min_qty
-            actual_risk = qty * sl_dist
-            if actual_risk > risk_amount * 10:
-                logger.warning(
-                    f"{signal.symbol}: min_qty risk too high — "
-                    f"actual_risk={actual_risk:.4f} > 10x intended={risk_amount:.4f} -> skip"
-                )
-                return None
-
-        # Dam bao notional >= $5 (Bybit minimum)
         MIN_NOTIONAL = 5.0
-        if qty * signal.entry_price < MIN_NOTIONAL:
-            qty = _ceil_qty(MIN_NOTIONAL / signal.entry_price)
 
-        notional = qty * signal.entry_price
+        # Thu lan luot tu final_mult xuong den 1x (min_qty), chon mult vua equity
+        qty = 0.0
+        _used_mult = 0.0
+        for _try_mult in [final_mult, final_mult * 0.7, final_mult * 0.5,
+                          base_mult, 10.0, 7.0, 5.0, 3.0, 1.5, 1.0]:
+            _q = _round_qty(min_qty * _try_mult)
+            if _q < min_qty:
+                _q = min_qty
+            _notional_try = _q * signal.entry_price
+            _cap_try      = _notional_try / leverage
+            if _cap_try <= equity and _notional_try >= MIN_NOTIONAL:
+                qty = _q
+                _used_mult = _try_mult
+                break
 
-        # leverage da tinh o tren (dung lai, khong goi API lan 2)
-        capital_used = notional / leverage
-
-        # Check lai $5 minimum SAU capital adjustment — capital cap co the day notional xuong duoi $5
-        # Neu van thieu $5: thu dung min qty de dat notional=$5, mien la margin can thiet <= equity
-        # (voi max leverage, $5 notional chi can $5/lev margin — hoan toan kha thi voi tai khoan nho)
-        if notional < MIN_NOTIONAL:
-            min_qty_for_notional = _ceil_qty(MIN_NOTIONAL / signal.entry_price)
-            min_margin_needed = (min_qty_for_notional * signal.entry_price) / leverage
-            if min_margin_needed <= equity:
-                qty = min_qty_for_notional
-                notional = qty * signal.entry_price
-                capital_used = notional / leverage
-                logger.info(
-                    f"{signal.symbol}: min-notional override — notional={notional:.2f}$ "
-                    f"margin={capital_used:.4f}$ lev={leverage}x"
-                )
+        if qty <= 0:
+            # Last resort: min_qty neu notional >= $5, margin <= equity
+            _q = _ceil_qty(MIN_NOTIONAL / signal.entry_price)
+            _q = max(_q, min_qty)
+            if _q * signal.entry_price / leverage <= equity:
+                qty = _q
+                _used_mult = qty / min_qty
             else:
-                logger.warning(
-                    f"{signal.symbol}: notional={notional:.2f}$ < $5, margin needed={min_margin_needed:.4f}$ "
-                    f"> equity={equity:.2f}$ -> skip"
-                )
+                logger.warning(f"{signal.symbol}: even min_qty notional exceeds equity={equity:.2f}$ -> skip")
                 return None
+
+        notional    = qty * signal.entry_price
+        capital_used = notional / leverage
 
         fee_usdt = notional * config.ROUND_TRIP_FEE
 
@@ -204,7 +198,8 @@ class RiskManager:
         tp = entry + d * tp_dist
 
         logger.info(
-            f"{signal.symbol}: {side} lev={leverage}x | consensus={consensus}({scale_factor:.1f}x) | "
+            f"{signal.symbol}: {side} lev={leverage}x | consensus={consensus} str={strength:.2f} | "
+            f"mult={_used_mult:.1f}x({base_mult}base×{consensus_boost:.1f}boost) | "
             f"qty={qty} | notional={notional:.2f}$ | capital={capital_used:.2f}$ | "
             f"TP_ROI=+{tp_roi*100:.0f}% SL_ROI=-{sl_roi*100:.0f}% (SL={config.SL_TP_RATIO:.0f}xTP)"
         )

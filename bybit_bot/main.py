@@ -650,13 +650,13 @@ class TradingBot:
                 _h1_long_thresh  = 0.70 if (is_priority and macro_trend >= 1) else 0.60
                 _h1_short_thresh = 0.30 if (is_priority and macro_trend <= -1) else 0.40
                 if h1_pos > _h1_long_thresh:
-                    # BTC strongly bull → LONG trong 5h range top vẫn ok (trend chuẩn)
-                    if not _btc_bull_rng:
+                    # BTC bull chi bypass o vung giua (60-85%), extreme top (>85%) luon block
+                    if not _btc_bull_rng or h1_pos > 0.85:
                         _h1_block_long = True
                         logger.debug(f"{symbol}: 5h range_pos={h1_pos:.2f} > {_h1_long_thresh} -> block LONG (5h top)")
                 elif h1_pos < _h1_short_thresh:
-                    # BTC strongly bear → SHORT trong 5h range bottom vẫn ok (short bounce in downtrend)
-                    if not _btc_bear_rng:
+                    # BTC bear chi bypass o vung giua (15-40%), extreme bottom (<15%) luon block
+                    if not _btc_bear_rng or h1_pos < 0.15:
                         _h1_block_short = True
                         logger.debug(f"{symbol}: 5h range_pos={h1_pos:.2f} < {_h1_short_thresh} -> block SHORT (5h bottom)")
 
@@ -844,6 +844,51 @@ class TradingBot:
                     (is_priority and bo_sig.direction == 1  and micro_up   and _bo_macro_not_both_contra_long) or
                     (is_priority and bo_sig.direction == -1 and micro_down and _bo_macro_not_both_contra_short)
                 )
+                # AEQ-12 cho BREAKOUT: fresh spike top/bottom — spike don le khong phai breakout that
+                # BREAKOUT that: gia tang dan, break qua resistance co tich luy
+                # Spike gia: 1-3 nen tang dot ngot len dinh → KHONG phai breakout → block
+                bo_aeq12_ok = True
+                if not df_micro.empty and len(df_micro) >= 15 and _range_live_price > 0:
+                    _bo_low_30c  = df_micro["low"].iloc[-30:].min()  if len(df_micro) >= 30 else df_micro["low"].min()
+                    _bo_high_30c = df_micro["high"].iloc[-30:].max() if len(df_micro) >= 30 else df_micro["high"].max()
+                    _bo_high_10c = df_micro["high"].iloc[-10:].max()
+                    _bo_low_10c  = df_micro["low"].iloc[-10:].min()
+                    if _bo_low_30c > 0 and _bo_high_10c > 0 and _bo_high_30c > 0 and _bo_low_10c > 0:
+                        _bo_ext_up   = (_range_live_price - _bo_low_30c) / _bo_low_30c
+                        _bo_ext_down = (_bo_high_30c - _range_live_price) / _bo_high_30c
+                        _bo_at_peak   = (_range_live_price / _bo_high_10c) >= 0.97
+                        _bo_at_trough = (_range_live_price / _bo_low_10c)  <= 1.03
+                        _bo_ext_thresh = 0.010 * _sp
+                        _bo_fresh_top    = _bo_at_peak   and (df_micro["high"].iloc[-3:].max() >= _bo_high_10c * 0.999)
+                        _bo_fresh_bottom = _bo_at_trough and (df_micro["low"].iloc[-3:].min()  <= _bo_low_10c  * 1.001)
+                        if bo_sig.direction == 1 and _bo_ext_up > _bo_ext_thresh and _bo_fresh_top:
+                            bo_aeq12_ok = False
+                            logger.debug(f"{symbol} [BREAKOUT] AEQ-12 block LONG: fresh spike top {_bo_ext_up*100:.1f}% above 30c low")
+                        if bo_sig.direction == -1 and _bo_ext_down > _bo_ext_thresh and _bo_fresh_bottom:
+                            bo_aeq12_ok = False
+                            logger.debug(f"{symbol} [BREAKOUT] AEQ-12 block SHORT: fresh spike bottom {_bo_ext_down*100:.1f}% below 30c high")
+                # AEQ-MULTIHR cho BREAKOUT: old 4h peak/trough — price o dinh pump nhieu gio
+                bo_aeq_mh_ok = True
+                if not df_micro.empty and len(df_micro) >= 120 and _range_live_price > 0:
+                    _bo_n_mh    = min(240, len(df_micro))
+                    _bo_high_mh = df_micro["high"].iloc[-_bo_n_mh:].max()
+                    _bo_low_mh  = df_micro["low"].iloc[-_bo_n_mh:].min()
+                    if _bo_high_mh > 0 and _bo_low_mh > 0 and _bo_high_mh > _bo_low_mh:
+                        _bo_ext_up_mh   = (_range_live_price - _bo_low_mh)  / _bo_low_mh
+                        _bo_ext_down_mh = (_bo_high_mh - _range_live_price) / _bo_high_mh
+                        _bo_at_mh_peak   = 0.975 <= (_range_live_price / _bo_high_mh) <= 1.005
+                        _bo_at_mh_trough = 0.995 <= (_range_live_price / _bo_low_mh)  <= 1.025
+                        _bo_mh_thresh    = 0.015 * _sp
+                        _bo_mh_peak_idx   = int(df_micro["high"].iloc[-_bo_n_mh:].values.argmax())
+                        _bo_mh_trough_idx = int(df_micro["low"].iloc[-_bo_n_mh:].values.argmin())
+                        _bo_peak_old   = _bo_mh_peak_idx   < (_bo_n_mh - 10)
+                        _bo_trough_old = _bo_mh_trough_idx < (_bo_n_mh - 10)
+                        if bo_sig.direction == 1 and _bo_ext_up_mh > _bo_mh_thresh and _bo_at_mh_peak and _bo_peak_old:
+                            bo_aeq_mh_ok = False
+                            logger.debug(f"{symbol} [BREAKOUT] AEQ-MULTIHR block LONG: at {_bo_n_mh}c peak {_bo_ext_up_mh*100:.1f}%")
+                        if bo_sig.direction == -1 and _bo_ext_down_mh > _bo_mh_thresh and _bo_at_mh_trough and _bo_trough_old:
+                            bo_aeq_mh_ok = False
+                            logger.debug(f"{symbol} [BREAKOUT] AEQ-MULTIHR block SHORT: at {_bo_n_mh}c trough {_bo_ext_down_mh*100:.1f}%")
                 # BREAKOUT theo dinh nghia la break khoi 2h/30c range top/bottom
                 # -> KHONG ap dung 2h va 30c range block cho BREAKOUT (chung se block chinh xac diem breakout)
                 # Chi giu 5h range block (macro overextension, dai han hon)
@@ -854,7 +899,7 @@ class TradingBot:
                 _bo_dump_in_trend = micro_down and (_is_gradual_downtrend or (scalp_trend == -1 and macro_trend == -1))
                 micro_spike_ok = not (_micro_spike_pump and bo_sig.direction == 1 and not _bo_pump_in_trend) and \
                                  not (_micro_spike_dump and bo_sig.direction == -1 and not _bo_dump_in_trend)
-                if bo_ok and micro_ok and not is_spike and post_spike_ok and micro_spike_ok and bo_btc_ok and bo_h1_ok and bo_24h_ok and bo_trend_ok and bo_m2h_ok and bo_30c_ok:
+                if bo_ok and micro_ok and not is_spike and post_spike_ok and micro_spike_ok and bo_btc_ok and bo_h1_ok and bo_24h_ok and bo_trend_ok and bo_m2h_ok and bo_30c_ok and bo_aeq12_ok and bo_aeq_mh_ok:
                     # micro_entry_analysis da xoa: BREAKOUT theo dinh nghia la break qua range
                     # -> range check trong _micro_entry_analysis se HARD BLOCK moi breakout hop le
                     # Da co: bo_h1_ok, bo_m2h_ok, bo_trend_ok, micro_ok thay the

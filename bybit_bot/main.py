@@ -897,7 +897,30 @@ class TradingBot:
                 _bo_dump_in_trend = micro_down and (_is_gradual_downtrend or (scalp_trend == -1 and macro_trend == -1))
                 micro_spike_ok = not (_micro_spike_pump and bo_sig.direction == 1 and not _bo_pump_in_trend) and \
                                  not (_micro_spike_dump and bo_sig.direction == -1 and not _bo_dump_in_trend)
-                if bo_ok and micro_ok and not is_spike and post_spike_ok and micro_spike_ok and bo_btc_ok and bo_h1_ok and bo_24h_ok and bo_trend_ok and bo_m2h_ok and bo_30c_ok and bo_aeq12_ok and bo_aeq_mh_ok:
+                # [AEQ-VOL] BREAKOUT: volume pressure check — same logic as momentum path
+                bo_vol_ok = True
+                if not df_micro.empty and len(df_micro) >= 30:
+                    _bo_vn = min(20, len(df_micro))
+                    _bo_df_vs = df_micro.iloc[-_bo_vn:]
+                    _bo_buy_vol  = _bo_df_vs.loc[_bo_df_vs["close"] > _bo_df_vs["open"], "volume"].sum()
+                    _bo_sell_vol = _bo_df_vs.loc[_bo_df_vs["close"] < _bo_df_vs["open"], "volume"].sum()
+                    _bo_tot = _bo_buy_vol + _bo_sell_vol
+                    if _bo_tot > 0:
+                        _bo_buy_press = _bo_buy_vol / _bo_tot
+                        _bo_vol_base  = df_micro["volume"].iloc[-50:-20].mean() if len(df_micro) >= 50 else df_micro["volume"].mean()
+                        _bo_vol_now   = df_micro["volume"].iloc[-20:].mean()
+                        _bo_vol_weak  = _bo_vol_now < _bo_vol_base * 0.70
+                        if bo_sig.direction == 1 and _m2h_pos > 0.60:
+                            _bo_thresh = 0.45 if _bo_vol_weak else 0.38
+                            if _bo_buy_press < _bo_thresh:
+                                bo_vol_ok = False
+                                logger.debug(f"{symbol} [BREAKOUT] AEQ-VOL block LONG: buy_pressure={_bo_buy_press:.0%} at 2h top {_m2h_pos:.0%}")
+                        if bo_sig.direction == -1 and _m2h_pos < 0.40:
+                            _bo_thresh = 0.55 if _bo_vol_weak else 0.62
+                            if _bo_buy_press > _bo_thresh:
+                                bo_vol_ok = False
+                                logger.debug(f"{symbol} [BREAKOUT] AEQ-VOL block SHORT: buy_pressure={_bo_buy_press:.0%} at 2h bot {_m2h_pos:.0%}")
+                if bo_ok and micro_ok and not is_spike and post_spike_ok and micro_spike_ok and bo_btc_ok and bo_h1_ok and bo_24h_ok and bo_trend_ok and bo_m2h_ok and bo_30c_ok and bo_aeq12_ok and bo_aeq_mh_ok and bo_vol_ok:
                     # micro_entry_analysis da xoa: BREAKOUT theo dinh nghia la break qua range
                     # -> range check trong _micro_entry_analysis se HARD BLOCK moi breakout hop le
                     # Da co: bo_h1_ok, bo_m2h_ok, bo_trend_ok, micro_ok thay the
@@ -1694,6 +1717,44 @@ class TradingBot:
                         f"skip SHORT - at {_n_mh}c trough ({_ext_down_mh*100:.1f}% below {_n_mh}c high, "
                         f"trough {_n_mh - _mh_trough_idx}c ago) — đu đáy multi-hour"
                     )
+
+        # [AEQ-VOL] Volume pressure: xac nhan momentum con du fuel hay da can kiet
+        # Neu gia o dinh/day nhung volume khong confirm → exhaustion → block
+        # Logic:
+        #   buy_pressure  = buy_vol / (buy_vol + sell_vol) tren 20 nen 1m gan nhat
+        #   vol_declining = vol 20c gan nhat < 70% vol 30c truoc do (fuel dang can)
+        # LONG block: price o top 60% range 2h MA buy_pressure < 0.40 (sellers chiem uu)
+        # SHORT block: price o bot 40% range 2h MA buy_pressure > 0.60 (buyers chiem uu)
+        # Tang cu khi ca 2: o extreme VA volume declining → nguong that chat hon (0.45/0.55)
+        if not is_reversal and not df_micro.empty and len(df_micro) >= 30:
+            _vn = min(20, len(df_micro))
+            _df_vs = df_micro.iloc[-_vn:]
+            _buy_vol  = _df_vs.loc[_df_vs["close"] > _df_vs["open"], "volume"].sum()
+            _sell_vol = _df_vs.loc[_df_vs["close"] < _df_vs["open"], "volume"].sum()
+            _tot_vol  = _buy_vol + _sell_vol
+            if _tot_vol > 0:
+                _buy_press = _buy_vol / _tot_vol
+                # Vol trend: recent 20c vs prior 30c
+                _vol_base = df_micro["volume"].iloc[-50:-20].mean() if len(df_micro) >= 50 else df_micro["volume"].mean()
+                _vol_now  = df_micro["volume"].iloc[-20:].mean()
+                _vol_weak = _vol_now < _vol_base * 0.70  # recent vol < 70% baseline
+
+                # LONG: neu price o top 2h range (>60%) ma sellers dang chiem uu
+                if best.direction == 1 and _m2h_pos > 0.60:
+                    _thresh = 0.45 if _vol_weak else 0.38
+                    if _buy_press < _thresh:
+                        return _block(
+                            f"skip LONG - buy_pressure={_buy_press:.0%} < {_thresh:.0%} "
+                            f"at 2h top {_m2h_pos:.0%} (vol_weak={_vol_weak}) — volume khong confirm"
+                        )
+                # SHORT: neu price o bot 2h range (<40%) ma buyers dang chiem uu
+                if best.direction == -1 and _m2h_pos < 0.40:
+                    _thresh = 0.55 if _vol_weak else 0.62
+                    if _buy_press > _thresh:
+                        return _block(
+                            f"skip SHORT - buy_pressure={_buy_press:.0%} > {_thresh:.0%} "
+                            f"at 2h bot {_m2h_pos:.0%} (vol_weak={_vol_weak}) — volume khong confirm"
+                        )
 
         # ══════════════════════════════════════════════════════════════════════
 

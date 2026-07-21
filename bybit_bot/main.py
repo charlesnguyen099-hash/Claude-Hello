@@ -1611,17 +1611,24 @@ class TradingBot:
                 # macro_4h phai DUONG (==1), khong phai neutral (0) — neutral = chua co trend dai han
                 _full_up_trend = (scalp_trend == 1  and macro_trend == 1  and macro_4h == 1)
                 _full_dn_trend = (scalp_trend == -1 and macro_trend == -1 and macro_4h == -1)
+                # Fresh spike: dinh/day 10c duoc tao ra boi 1-3 nen gan nhat
+                # → spike tuoi, gia dang o dinh ngay sau khi pump → LUON block du trend co align
+                _fresh_spike_top    = _at_10c_peak   and (df_micro["high"].iloc[-3:].max() >= _high_10c * 0.999)
+                _fresh_spike_bottom = _at_10c_trough and (df_micro["low"].iloc[-3:].min()  <= _low_10c  * 1.001)
 
-                if best.direction == 1 and _ext_up > _ext_thresh and _at_10c_peak and not _full_up_trend:
-                    return _block(
-                        f"skip LONG - {_ext_up*100:.1f}% above 30c low, at 10c peak "
-                        f"(scalp={scalp_trend} m15={macro_trend} m4h={macro_4h}) — đu đỉnh"
-                    )
-                if best.direction == -1 and _ext_down > _ext_thresh and _at_10c_trough and not _full_dn_trend:
-                    return _block(
-                        f"skip SHORT - {_ext_down*100:.1f}% below 30c high, at 10c trough "
-                        f"(scalp={scalp_trend} m15={macro_trend} m4h={macro_4h}) — đu đáy"
-                    )
+                if best.direction == 1 and _ext_up > _ext_thresh and _at_10c_peak:
+                    # Block neu: spike tuoi (bat ky trend) HOAC khong co full trend
+                    if _fresh_spike_top or not _full_up_trend:
+                        return _block(
+                            f"skip LONG - {_ext_up*100:.1f}% above 30c low, at 10c peak "
+                            f"fresh={_fresh_spike_top} (scalp={scalp_trend} m15={macro_trend} m4h={macro_4h}) — đu đỉnh"
+                        )
+                if best.direction == -1 and _ext_down > _ext_thresh and _at_10c_trough:
+                    if _fresh_spike_bottom or not _full_dn_trend:
+                        return _block(
+                            f"skip SHORT - {_ext_down*100:.1f}% below 30c high, at 10c trough "
+                            f"fresh={_fresh_spike_bottom} (scalp={scalp_trend} m15={macro_trend} m4h={macro_4h}) — đu đáy"
+                        )
 
         # ══════════════════════════════════════════════════════════════════════
 

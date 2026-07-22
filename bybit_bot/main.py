@@ -22,7 +22,7 @@ from executor import Executor
 from risk_manager import RiskManager
 from scanner import MarketScanner
 from strategies import ALL_STRATEGIES, BREAKOUT_STRATEGY
-from strategies.base import compute_ema, compute_atr, compute_rsi, compute_adx
+from strategies.base import Signal, compute_ema, compute_atr, compute_rsi, compute_adx
 
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -825,6 +825,66 @@ class TradingBot:
                 _post_trough_rise_short = True
                 logger.debug(f"{symbol}: post-trough-rise — {_ppd_rise*100:.1f}% above 60c low ({_ppd_lo_age}c ago) spike_dump={_spike_dump_60c}")
 
+        # ══ EMERGING TREND DETECTOR — HBAR pattern fix ═══════════════════════════
+        # HBAR loss -23%: gia tao day 2h (0.07069) roi di len BEN VUNG (nen xanh lien
+        # tiep, higher lows, reclaim MA) nhung rise moi 0.66% < nguong ppd 1.0% → khong
+        # co bao ve → flip "at 10c peak" LONG→SHORT ngay CHAN uptrend moi → nguoc trend.
+        # Nhan dien TREND DANG HINH THANH bang CAU TRUC gia (khong chi dua % move):
+        #   1. Day/dinh 60c co tuoi >= 8 nen (khong phai bounce 1-2 nen)
+        #   2. Da di 0.5%-2.5% (*_sp) tu day/dinh — co move that su NHUNG van con SOM
+        #   3. Gia reclaim EMA21 VA EMA50 1m (cau truc gia da doi phe)
+        #   4. EMA9 vs EMA21 cung chieu (momentum ngan han xac nhan)
+        #   5. Higher lows / lower highs (10c vs 10c truoc) — di chuyen bac thang
+        #   6. >= 7/12 nen cung chieu (gradual — khong phai 1 spike don le)
+        # Khi detect: (a) moi flip/block NGUOC chieu trend nay bi chan,
+        #             (b) signal nguoc chieu bi flip THEO trend (EMERGING override),
+        #             (c) scenario engine tu tao entry theo trend neu strategies im lang
+        _emerging_uptrend   = False
+        _emerging_downtrend = False
+        if not df_micro.empty and len(df_micro) >= 60:
+            _emg_close = df_micro["close"]
+            _emg_ema9  = _emg_close.ewm(span=9,  adjust=False).mean().iloc[-1]
+            _emg_ema21 = _emg_close.ewm(span=21, adjust=False).mean().iloc[-1]
+            _emg_ema50 = _emg_close.ewm(span=50, adjust=False).mean().iloc[-1]
+            _emg_price = _range_live_price if _range_live_price > 0 else _emg_close.iloc[-1]
+            _emg_low_recent  = df_micro["low"].iloc[-10:].min()
+            _emg_low_prior   = df_micro["low"].iloc[-20:-10].min()
+            _emg_high_recent = df_micro["high"].iloc[-10:].max()
+            _emg_high_prior  = df_micro["high"].iloc[-20:-10].max()
+            _emg_12c = df_micro.iloc[-12:]
+            _emg_grn = int((_emg_12c["close"] > _emg_12c["open"]).sum())
+            _emg_red = int((_emg_12c["close"] < _emg_12c["open"]).sum())
+
+            _emerging_uptrend = (
+                _ppd_lo_age >= 8
+                and 0.005 * _sp <= _ppd_rise <= 0.025 * _sp
+                and _emg_price > _emg_ema21 and _emg_price > _emg_ema50
+                and _emg_ema9 > _emg_ema21
+                and _emg_low_recent >= _emg_low_prior
+                and _emg_grn >= 7
+                and not _spike_pump_60c
+            )
+            _emerging_downtrend = (
+                _ppd_hi_age >= 8
+                and 0.005 * _sp <= _ppd_drop <= 0.025 * _sp
+                and _emg_price < _emg_ema21 and _emg_price < _emg_ema50
+                and _emg_ema9 < _emg_ema21
+                and _emg_high_recent <= _emg_high_prior
+                and _emg_red >= 7
+                and not _spike_dump_60c
+            )
+            if _emerging_uptrend:
+                logger.debug(f"{symbol}: EMERGING UPTREND — +{_ppd_rise*100:.2f}% tu day 60c ({_ppd_lo_age}c), higher lows, EMA9>21, price>EMA50")
+            if _emerging_downtrend:
+                logger.debug(f"{symbol}: EMERGING DOWNTREND — -{_ppd_drop*100:.2f}% tu dinh 60c ({_ppd_hi_age}c), lower highs, EMA9<21, price<EMA50")
+
+            # Cau truc emerging PHU NHAN ket luan post-peak/trough nguoc chieu:
+            # da reclaim EMA + higher lows = khong con "sustained decline" (va nguoc lai)
+            if _emerging_uptrend and _post_peak_decline_long:
+                _post_peak_decline_long = False
+            if _emerging_downtrend and _post_trough_rise_short:
+                _post_trough_rise_short = False
+
         if not df_micro.empty and len(df_micro) >= 15:
             _micro_atr    = compute_atr(df_micro).iloc[-1]
             _micro_bodies = (df_micro["close"].iloc[-15:].values - df_micro["open"].iloc[-15:].values)
@@ -1518,7 +1578,9 @@ class TradingBot:
                               and macro_trend <= 0 and macro_4h <= 0  # khong TF nao bullish
                               and not btc_strongly_bull)
 
-        _tier1_active = False
+        _tier1_active   = False
+        _scenario_entry = False   # entry tu SCENARIO ENGINE (khong qua strategy consensus)
+        _scenario_name  = ""
         if tier1_bypass_long:
             signals = long_signals
             _tier1_active = True
@@ -1532,7 +1594,90 @@ class TradingBot:
         elif len(short_signals) >= required_short:
             signals = short_signals
         else:
-            return False
+            # ══ SCENARIO ENGINE — bat lenh tiem nang khi strategies im lang ══════
+            # Strategies (EMA/RSI-based) co lag co huu — nhieu setup tiem nang RO RANG
+            # tren cau truc gia khong duoc strategy nao bao (HBAR: uptrend moi tu day
+            # nhung EMA dai van bearish → 0 signal → miss lenh win). Danh gia truc tiep
+            # cac kich ban xac suat cao; MOI kich ban tu chua timing + position analysis:
+            #   S1/S2 EMERGING TREND: trend moi hinh thanh tu day/dinh (HBAR = S1 LONG)
+            #   S3/S4 BREAKOUT: pha vo 2h range + volume xac nhan, chua chay xa (khong chase)
+            #   S5/S6 PULLBACK: hoi ve vung EMA21-50 trong trend da xac nhan roi resume
+            #   S7/S8 RANGE EXTREME: cham day/dinh 2h range du rong → mean revert ve giua
+            _sc_dir      = 0
+            _sc_strength = 0.0
+            _sc_tp       = 0.0
+            _sc_name     = ""
+            if not df_micro.empty and len(df_micro) >= 120:
+                _sc_close  = df_micro["close"]
+                _sc_price  = _range_live_price if _range_live_price > 0 else _sc_close.iloc[-1]
+                _sc_last_green = _sc_close.iloc[-1] > df_micro["open"].iloc[-1]
+                _sc_last_red   = _sc_close.iloc[-1] < df_micro["open"].iloc[-1]
+                _sc_hi_prior = df_micro["high"].iloc[-120:-3].max()   # range TRUOC 3 nen: break phai MOI
+                _sc_lo_prior = df_micro["low"].iloc[-120:-3].min()
+                _sc_hi_full  = df_micro["high"].iloc[-120:].max()
+                _sc_lo_full  = df_micro["low"].iloc[-120:].min()
+                _sc_rng      = _sc_hi_full - _sc_lo_full
+                _sc_pos      = (_sc_price - _sc_lo_full) / _sc_rng if _sc_rng > 0 else 0.5
+                _sc_rng_pct  = _sc_rng / _sc_lo_full if _sc_lo_full > 0 else 0.0
+                _sc_vol3     = df_micro["volume"].iloc[-3:].mean()
+                _sc_vol30    = df_micro["volume"].iloc[-30:-3].mean()
+                _sc_vol_surge = (_sc_vol3 / _sc_vol30) if _sc_vol30 > 0 else 0.0
+                _sc_bod5_pct = 0.0
+                if _sc_price > 0:
+                    _sc_bod5_pct = float(abs(df_micro["close"].iloc[-5:].values
+                                             - df_micro["open"].iloc[-5:].values).max()) / _sc_price
+
+                # S1/S2 — EMERGING TREND (uu tien cao nhat — chinh la HBAR pattern)
+                if _emerging_uptrend and not _block_long_24h:
+                    _sc_dir, _sc_strength, _sc_tp, _sc_name = 1, 0.62, 0.0, "sc_emerging_up"
+                elif _emerging_downtrend and not _block_short_24h:
+                    _sc_dir, _sc_strength, _sc_tp, _sc_name = -1, 0.62, 0.0, "sc_emerging_down"
+                # S3/S4 — BREAKOUT 2h range + volume >= 1.5x, break 0.1-0.7% (khong chase),
+                # khong co nen spike > 2%*_sp trong 5c, macro lon khong chong lai
+                elif (_sc_hi_prior > 0 and _sc_hi_prior * 1.001 < _sc_price < _sc_hi_prior * 1.007
+                      and _sc_vol_surge >= 1.5 and _sc_bod5_pct <= 0.020 * _sp
+                      and macro_4h >= 0 and not _block_long_24h and _sc_last_green):
+                    _sc_dir, _sc_strength, _sc_tp, _sc_name = 1, 0.65, 0.0, "sc_breakout_up"
+                elif (_sc_lo_prior > 0 and _sc_lo_prior * 0.993 < _sc_price < _sc_lo_prior * 0.999
+                      and _sc_vol_surge >= 1.5 and _sc_bod5_pct <= 0.020 * _sp
+                      and macro_4h <= 0 and not _block_short_24h and _sc_last_red):
+                    _sc_dir, _sc_strength, _sc_tp, _sc_name = -1, 0.65, 0.0, "sc_breakout_down"
+                # S5/S6 — PULLBACK CONTINUATION: trend da xac nhan, gia hoi ve vung
+                # EMA21-EMA50 1m roi co nen resume; RSI trung tinh (khong extreme)
+                elif ((macro_trend == 1 and macro_4h >= 0) or (_is_gradual_uptrend and scalp_trend == 1)) \
+                        and _emg_ema50 > 0 and _emg_ema50 * 0.999 <= _sc_price <= _emg_ema21 * 1.0015 \
+                        and _sc_last_green and 35 <= rsi_now <= 65 and not _block_long_24h:
+                    _sc_dir, _sc_strength, _sc_tp, _sc_name = 1, 0.60, 0.0, "sc_pullback_up"
+                elif ((macro_trend == -1 and macro_4h <= 0) or (_is_gradual_downtrend and scalp_trend == -1)) \
+                        and _emg_ema21 > 0 and _emg_ema21 * 0.9985 <= _sc_price <= _emg_ema50 * 1.001 \
+                        and _sc_last_red and 35 <= rsi_now <= 65 and not _block_short_24h:
+                    _sc_dir, _sc_strength, _sc_tp, _sc_name = -1, 0.60, 0.0, "sc_pullback_down"
+                # S7/S8 — RANGE EXTREME mean-revert: range du rong (>=1.2%*_sp),
+                # gia cham day/dinh (<=12% / >=88%), khong co trend manh/emerging NGUOC chieu,
+                # nen cuoi xac nhan quay dau. TP nho — an giua range roi thoat
+                elif (_sc_rng_pct >= 0.012 * _sp and _sc_pos <= 0.12
+                      and not _strong_trend_dn and not _emerging_downtrend
+                      and _sc_last_green and not _block_long_24h):
+                    _sc_dir, _sc_strength, _sc_tp, _sc_name = 1, 0.58, 0.12, "sc_range_bottom"
+                elif (_sc_rng_pct >= 0.012 * _sp and _sc_pos >= 0.88
+                      and not _strong_trend_up and not _emerging_uptrend
+                      and _sc_last_red and not _block_short_24h):
+                    _sc_dir, _sc_strength, _sc_tp, _sc_name = -1, 0.58, 0.12, "sc_range_top"
+
+            if _sc_dir == 0:
+                return False
+            _scenario_entry = True
+            _scenario_name  = _sc_name
+            signals = [Signal(
+                direction=_sc_dir, strength=_sc_strength, strategy_name=_sc_name,
+                entry_price=(_range_live_price if _range_live_price > 0 else price),
+                atr=atr, reason=f"scenario:{_sc_name}", symbol=symbol,
+                tp_roi_override=_sc_tp,
+            )]
+            logger.info(
+                f"{symbol}: [SCENARIO] {_sc_name} → {'LONG' if _sc_dir == 1 else 'SHORT'} "
+                f"(strategies im lang, cau truc gia tu xac nhan)"
+            )
 
         best = max(signals, key=lambda s: s.strength)
 
@@ -1580,21 +1725,28 @@ class TradingBot:
         # Spike trong trend = sustained move (BTC pump 1%+ trong uptrend), khong phai isolated spike
         # QUAN TRONG: scalp_trend==1 don doc KHONG du — no co the bi push boi chinh cai spike do.
         # Phai co THEM macro_trend==1 (15m EMA) xac nhan trend ton tai truoc spike.
-        _pump_spike_in_trend = micro_up and (_is_gradual_uptrend or (scalp_trend == 1 and macro_trend == 1))
-        _dump_spike_in_trend = micro_down and (_is_gradual_downtrend or (scalp_trend == -1 and macro_trend == -1))
-        if _micro_spike_pump and best.direction == 1 and not _pump_spike_in_trend:
+        _pump_spike_in_trend = micro_up and (_is_gradual_uptrend or _emerging_uptrend
+                                             or (scalp_trend == 1 and macro_trend == 1))
+        _dump_spike_in_trend = micro_down and (_is_gradual_downtrend or _emerging_downtrend
+                                               or (scalp_trend == -1 and macro_trend == -1))
+        # Breakout scenario: nen breakout > 1.5x ATR la BINH THUONG (da co volume + close
+        # tren range confirm) — khong block nhu isolated spike
+        if (_micro_spike_pump and best.direction == 1 and not _pump_spike_in_trend
+                and _scenario_name != "sc_breakout_up"):
             return _block("skip - 1m pump spike (not in confirmed uptrend), no long")
-        if _micro_spike_dump and best.direction == -1 and not _dump_spike_in_trend:
+        if (_micro_spike_dump and best.direction == -1 and not _dump_spike_in_trend
+                and _scenario_name != "sc_breakout_down"):
             return _block("skip - 1m dump spike (not in confirmed downtrend), no short")
 
         # 1h range block (5h range extreme) → flip direction thay vi block
         # Dinh/day 5h range = vi tri cuoi xu huong lon → dao chieu, TP trung binh (co the tao dinh/day moi)
-        if _h1_block_long and best.direction == 1:
+        # Emerging trend/scenario: gia len dinh 5h TRONG uptrend moi = breakout, KHONG flip nguoc
+        if _h1_block_long and best.direction == 1 and not _emerging_uptrend and not _scenario_entry:
             best.direction = -1
             best.tp_roi_override = 0.15  # 15% ROI: dinh 5h tuong doi lon, TP medium
             _direction_flipped = True
             logger.info(f"{symbol}: 5h range flip LONG→SHORT at 5h top, TP=15%")
-        if _h1_block_short and best.direction == -1:
+        if _h1_block_short and best.direction == -1 and not _emerging_downtrend and not _scenario_entry:
             best.direction = 1
             best.tp_roi_override = 0.15
             _direction_flipped = True
@@ -1603,8 +1755,12 @@ class TradingBot:
         # 2h range block
         # Exception: gradual trend (>=18/30 nen cung chieu) + scalp xac nhan → day/dinh 2h la DIEM BO QUA
         # BTC tang lien tuc 25 phut tao ra dinh 2h moi = gradual uptrend, khong phai pump da can kiet
-        _m2h_grad_bypass_long  = _is_gradual_uptrend   and scalp_trend == 1  and macro_trend == 1
-        _m2h_grad_bypass_short = _is_gradual_downtrend and scalp_trend == -1 and macro_trend == -1
+        # Emerging trend: uptrend moi day gia len dinh 2h = trend dang chay, khong flip nguoc
+        # Scenario entry: da tu phan tich vi tri (breakout tren dinh la chu dich) — khong flip
+        _m2h_grad_bypass_long  = (_is_gradual_uptrend   and scalp_trend == 1  and macro_trend == 1) \
+                                 or _emerging_uptrend or _scenario_entry
+        _m2h_grad_bypass_short = (_is_gradual_downtrend and scalp_trend == -1 and macro_trend == -1) \
+                                 or _emerging_downtrend or _scenario_entry
         if _m2h_block_short and best.direction == -1 and not _m2h_grad_bypass_short:
             # Day 2h range: flip SHORT→LONG, TP 12% (day lon, co the tao day moi nhung TP nho du co loi)
             best.direction = 1
@@ -1622,8 +1778,10 @@ class TradingBot:
         # MAGMAUSDT pattern: EMA con bullish nhung coin da giam 1%+ trong 40+ phut → LONG = sai chieu
         # FLIP thay vi block: gia dang giam sustained sau dinh → SHORT la lenh dung chieu
         # (nguyen tac: khong bo lenh tiem nang, doi chieu de trade theo trend thuc te)
-        if not _direction_flipped:
-            if best.direction == 1 and _post_peak_decline_long:
+        # Guard vi tri 2h range: KHONG short khi gia DA o day range (<30%) — short day la muon;
+        # tuong tu KHONG long khi gia da o dinh range (>70%). Scenario entry tu phan tich — bo qua.
+        if not _direction_flipped and not _scenario_entry:
+            if best.direction == 1 and _post_peak_decline_long and _m2h_pos > 0.30:
                 best.direction = -1
                 best.tp_roi_override = 0.10
                 _direction_flipped = True
@@ -1631,13 +1789,40 @@ class TradingBot:
                     f"{symbol}: POST-PEAK flip LONG→SHORT — {_ppd_drop*100:.1f}% below 60c high "
                     f"({_ppd_hi_age}c ago, EMA lag) scalp={scalp_trend}, TP=10%"
                 )
-            elif best.direction == -1 and _post_trough_rise_short:
+            elif best.direction == -1 and _post_trough_rise_short and _m2h_pos < 0.70:
                 best.direction = 1
                 best.tp_roi_override = 0.10
                 _direction_flipped = True
                 logger.info(
                     f"{symbol}: POST-TROUGH flip SHORT→LONG — {_ppd_rise*100:.1f}% above 60c low "
                     f"({_ppd_lo_age}c ago, EMA lag) scalp={scalp_trend}, TP=10%"
+                )
+
+        # ══ EMERGING TREND OVERRIDE — HBAR fix ═══════════════════════════════════
+        # Signal NGUOC chieu voi trend dang hinh thanh → flip THEO trend:
+        #   SHORT khi uptrend moi bat dau = ban ngay chan song len (HBAR -23%) → doi thanh LONG
+        #   LONG khi downtrend moi bat dau = mua ngay chan song xuong → doi thanh SHORT
+        # 24h exhausted (da pump/dump >20%): khong flip theo — block han de khong chase
+        if not _direction_flipped and not _scenario_entry:
+            if best.direction == -1 and _emerging_uptrend:
+                if _block_long_24h:
+                    return _block("skip SHORT - emerging uptrend (khong flip: 24h pump exhausted)")
+                best.direction = 1
+                best.tp_roi_override = 0.12
+                _direction_flipped = True
+                logger.info(
+                    f"{symbol}: EMERGING-UP flip SHORT→LONG — trend moi tu day 60c "
+                    f"(+{_ppd_rise*100:.1f}%, {_ppd_lo_age}c, higher lows + reclaim EMA), TP=12%"
+                )
+            elif best.direction == 1 and _emerging_downtrend:
+                if _block_short_24h:
+                    return _block("skip LONG - emerging downtrend (khong flip: 24h dump exhausted)")
+                best.direction = -1
+                best.tp_roi_override = 0.12
+                _direction_flipped = True
+                logger.info(
+                    f"{symbol}: EMERGING-DOWN flip LONG→SHORT — trend moi tu dinh 60c "
+                    f"(-{_ppd_drop*100:.1f}%, {_ppd_hi_age}c, lower highs + mat EMA), TP=12%"
                 )
 
         # ══ SHORT-TERM TREND CONFIRMATION — 3 CẤP ĐỘ ══════════════════════════
@@ -1662,8 +1847,12 @@ class TradingBot:
         # PUMP EXHAUSTION SHORT: khi LONG bi HARD BLOCK vi micro_down,
         # nhung gia vua pump (o phan tren 2h range) → flip sang SHORT thay vi bo qua.
         # Day la "trade short va trade tre hon mot chut" — micro_down = xac nhan reversal bat dau.
+        # Lenh DA flip / scenario entry: khong ap dung hard block + khong flip lan 2
+        # (double-flip bug: POST-TROUGH flip SHORT→LONG roi PUMP-EXH flip lai LONG→SHORT
+        #  = quay ve chieu ma phan tich truoc do da ket luan la SAI)
         _pump_exhaustion_flip = False
-        if best.direction == 1 and micro_down and not _btc_bull_long_ok:
+        if (best.direction == 1 and micro_down and not _btc_bull_long_ok
+                and not _direction_flipped and not _scenario_entry):
             _pump_exh_30 = 0.0
             if not df_micro.empty and len(df_micro) >= 30:
                 _p30  = df_micro["close"].iloc[-30]
@@ -1693,7 +1882,8 @@ class TradingBot:
         # DUMP EXHAUSTION LONG: doi xung voi pump_exhaustion_flip
         # Khi SHORT bi HARD BLOCK vi micro_up nhung gia vua dump xuong day → flip sang LONG
         _dump_exhaustion_flip = False
-        if best.direction == -1 and micro_up and not _btc_bear_short_ok:
+        if (best.direction == -1 and micro_up and not _btc_bear_short_ok
+                and not _direction_flipped and not _scenario_entry):
             _dump_exh_30 = 0.0
             if not df_micro.empty and len(df_micro) >= 30:
                 _p30d  = df_micro["close"].iloc[-30]
@@ -1731,7 +1921,8 @@ class TradingBot:
         _has_st_long  = (micro == 1  or scalp_trend == 1)
         _has_st_short = (micro == -1 or scalp_trend == -1)
 
-        if not is_reversal:
+        # Flip/scenario: da co phan tich cau truc rieng — khong doi hoi TF confirm (EMA lag)
+        if not is_reversal and not _direction_flipped and not _scenario_entry:
             if best.direction == 1 and not _has_st_long and not _strong_macro_bull and not _partial_macro_bull and not _btc_bull_long_ok:
                 return _block(
                     f"skip LONG — khong co TF ngan han xac nhan va macro khong manh "
@@ -1842,9 +2033,14 @@ class TradingBot:
             if _slo_rng > 0:
                 _stoch_k      = ((df_scalp["close"].iloc[-1] - _slo_low14) / _slo_rng) * 100
                 _macro_confirm = (macro_trend == best.direction and macro_4h == best.direction)
-                if best.direction == 1 and _stoch_k > 92 and not _macro_confirm:
+                # Emerging trend / breakout scenario: gia di len tu day 8+ nen → stoch(14)
+                # luon > 92 (dinh nghia cua rise) — block o day se giet chinh HBAR pattern.
+                # Emerging/breakout da co cau truc xac nhan (higher lows, volume) — bo qua stoch
+                _stoch_bypass_long  = _emerging_uptrend   or _scenario_name in ("sc_breakout_up", "sc_emerging_up")
+                _stoch_bypass_short = _emerging_downtrend or _scenario_name in ("sc_breakout_down", "sc_emerging_down")
+                if best.direction == 1 and _stoch_k > 92 and not _macro_confirm and not _stoch_bypass_long:
                     return _block(f"skip LONG - 5m Stochastic overbought K={_stoch_k:.1f}")
-                if best.direction == -1 and _stoch_k < 8 and not _macro_confirm:
+                if best.direction == -1 and _stoch_k < 8 and not _macro_confirm and not _stoch_bypass_short:
                     return _block(f"skip SHORT - 5m Stochastic oversold K={_stoch_k:.1f}")
 
         # [AEQ-11] Flat/ranging at top or bottom of 2h range: tranh Long khi gia flat o dinh (distribution)
@@ -1859,7 +2055,7 @@ class TradingBot:
             _std20    = _close20.std()
             _mean20   = _close20.mean()
             if _mean20 > 0 and (_std20 / _mean20) < 0.0015:  # std < 0.15% = flat range
-                if best.direction == 1 and _m2h_pos > 0.50:
+                if best.direction == 1 and _m2h_pos > 0.50 and not _scenario_entry:
                     if _m2h_pos >= 0.80 and not _direction_flipped:
                         best.direction = -1
                         best.tp_roi_override = 0.10
@@ -1873,7 +2069,7 @@ class TradingBot:
                             f"skip LONG - flat at 2h top ({_m2h_pos:.0%}), "
                             f"std={_std20/_mean20*100:.3f}% (distribution zone)"
                         )
-                elif best.direction == -1 and _m2h_pos < 0.50:
+                elif best.direction == -1 and _m2h_pos < 0.50 and not _scenario_entry:
                     if _m2h_pos <= 0.20 and not _direction_flipped:
                         best.direction = 1
                         best.tp_roi_override = 0.10
@@ -1934,7 +2130,10 @@ class TradingBot:
                 else:
                     _vol_exhausted = False
 
-                if best.direction == 1 and _at_10c_peak and _ext_up > _ext_thresh:
+                # Emerging uptrend: "10c peak" chi la buoc tien cua trend moi (HBAR) — KHONG flip SHORT
+                # _direction_flipped/_scenario_entry: da flip/da phan tich — khong flip lan 2 (double-flip bug)
+                if (best.direction == 1 and _at_10c_peak and _ext_up > _ext_thresh
+                        and not _direction_flipped and not _scenario_entry and not _emerging_uptrend):
                     # Bypass chi hop le neu KHONG co volume exhaustion tai dinh
                     _bypass_ok = _aeq12_bypass_long and not _vol_exhausted
                     if not _bypass_ok:
@@ -1945,7 +2144,8 @@ class TradingBot:
                             f"{symbol}: AEQ-12 flip LONG→SHORT at 10c peak "
                             f"({_ext_up*100:.1f}% above 30c low, scalp={scalp_trend}, vol_exhausted={_vol_exhausted}), TP=8%"
                         )
-                if best.direction == -1 and _at_10c_trough and _ext_down > _ext_thresh:
+                if (best.direction == -1 and _at_10c_trough and _ext_down > _ext_thresh
+                        and not _direction_flipped and not _scenario_entry and not _emerging_downtrend):
                     # Bypass chi hop le neu KHONG co volume exhaustion tai day
                     _bypass_ok = _aeq12_bypass_short and not _vol_exhausted
                     if not _bypass_ok:
@@ -1971,7 +2171,8 @@ class TradingBot:
             _ex_near_peak   = (_ex_price >= _ex_peak_p * 0.990) and (3 <= _ex_since_peak <= 30)
             _ex_near_trough = (_ex_price <= _ex_trough_p * 1.010) and (3 <= _ex_since_trough <= 30)
 
-            if _ex_near_peak and best.direction == 1 and not _aeq12_bypass_long:
+            if (_ex_near_peak and best.direction == 1 and not _aeq12_bypass_long
+                    and not _direction_flipped and not _scenario_entry and not _emerging_uptrend):
                 # Gia gan dinh local 1m, signal muon LONG → co kha nang SHORT tot hon
                 # Flip neu: price da tang du (>0.5% tu 10c low) va scalp khong phai bullish manh
                 _ex_from_trough = (_ex_price - _ex_trough_p) / _ex_trough_p if _ex_trough_p > 0 else 0
@@ -1994,7 +2195,8 @@ class TradingBot:
                         f"+{_ex_from_trough*100:.2f}%), TP=8%"
                     )
 
-            elif _ex_near_trough and best.direction == -1 and not _aeq12_bypass_short:
+            elif (_ex_near_trough and best.direction == -1 and not _aeq12_bypass_short
+                    and not _direction_flipped and not _scenario_entry and not _emerging_downtrend):
                 # Gia gan day local 1m, signal muon SHORT → co kha nang LONG tot hon
                 _ex_from_peak = (_ex_peak_p - _ex_price) / _ex_peak_p if _ex_peak_p > 0 else 0
                 if _ex_from_peak > 0.005 and scalp_trend != -1:
@@ -2040,7 +2242,9 @@ class TradingBot:
                 _mh_peak_is_old   = _mh_peak_idx   < (_n_mh - 10)
                 _mh_trough_is_old = _mh_trough_idx < (_n_mh - 10)
 
-                if best.direction == 1 and _ext_up_mh > _mh_thresh and _at_mh_peak and _mh_peak_is_old:
+                # Guards: khong flip lenh DA flip/scenario (double-flip), khong flip nguoc emerging trend
+                if (best.direction == 1 and _ext_up_mh > _mh_thresh and _at_mh_peak and _mh_peak_is_old
+                        and not _direction_flipped and not _scenario_entry and not _emerging_uptrend):
                     # Dinh lon 4h (major peak): flip LONG→SHORT voi TP lon (dao chieu lon)
                     best.direction = -1
                     best.tp_roi_override = 0.0  # 0 = large TP via potential scaling (dinh lon = TP lon)
@@ -2049,7 +2253,8 @@ class TradingBot:
                         f"{symbol}: MULTIHR flip LONG→SHORT at {_n_mh}c major peak "
                         f"({_ext_up_mh*100:.1f}% above {_n_mh}c low, {_n_mh-_mh_peak_idx}c ago), TP=large"
                     )
-                elif best.direction == -1 and _ext_down_mh > _mh_thresh and _at_mh_trough and _mh_trough_is_old:
+                elif (best.direction == -1 and _ext_down_mh > _mh_thresh and _at_mh_trough and _mh_trough_is_old
+                        and not _direction_flipped and not _scenario_entry and not _emerging_downtrend):
                     # Day lon 4h (major trough): flip SHORT→LONG voi TP lon
                     best.direction = 1
                     best.tp_roi_override = 0.0  # large TP
@@ -2082,7 +2287,10 @@ class TradingBot:
 
                 # LONG: neu price o top 2h range (>60%) ma sellers dang chiem uu → flip SHORT
                 # Volume xac nhan sellers → SHORT voi TP nho (co the tao dinh moi nhung SHORT co loi)
-                if best.direction == 1 and _m2h_pos > 0.60:
+                # Guards: khong flip lenh da flip/scenario; khong flip nguoc EMERGING uptrend
+                # (HBAR: gia len tu day → pos vuot 0.60 som → flip nguoc = ban chan song len)
+                if (best.direction == 1 and _m2h_pos > 0.60
+                        and not _direction_flipped and not _scenario_entry and not _emerging_uptrend):
                     _thresh = 0.45 if _vol_weak else 0.38
                     if _buy_press < _thresh:
                         best.direction = -1
@@ -2094,7 +2302,8 @@ class TradingBot:
                         )
                 # SHORT: neu price o bot 2h range (<40%) ma buyers dang chiem uu → flip LONG
                 # Volume xac nhan buyers → LONG voi TP nho
-                if best.direction == -1 and _m2h_pos < 0.40:
+                if (best.direction == -1 and _m2h_pos < 0.40
+                        and not _direction_flipped and not _scenario_entry and not _emerging_downtrend):
                     _thresh = 0.55 if _vol_weak else 0.62
                     if _buy_press > _thresh:
                         best.direction = 1
@@ -2114,7 +2323,8 @@ class TradingBot:
         # Flip entry la counter-trend, micro_entry_analysis se reject do EMA/momentum nguoc chieu
         _strong_trend = (best.direction == 1 and _strong_trend_up) or (best.direction == -1 and _strong_trend_dn)
 
-        if not _direction_flipped:
+        # Scenario entry: kich ban da tu chua timing analysis (resume candle, break+volume, ...)
+        if not _direction_flipped and not _scenario_entry:
             if not self._micro_entry_analysis(df_micro, best.direction, is_reversal=False, strong_trend=_strong_trend):
                 return _block(f"skip - MOMENTUM micro_entry_analysis rejected (consensus={len(signals)})")
 
@@ -2131,30 +2341,34 @@ class TradingBot:
                 _live_move_pct = (_range_live_price - _avg_5c) / _avg_5c
                 _pump_thresh = 0.008 if _sp < 1.0 else 0.010   # 0.8% largecap+midcap, 1.0% altcoin
                 if best.direction == -1 and _live_move_pct > _pump_thresh:
-                    # Ngoai le: pump exhaustion flip hoac direction flip tai extrema
+                    # Ngoai le: pump exhaustion flip hoac direction flip tai extrema hoac scenario
                     # Direction flip tai dinh: gia dang cao = dung dieu kien SHORT → khong block
-                    if not _pump_exhaustion_flip and not _direction_flipped:
+                    if not _pump_exhaustion_flip and not _direction_flipped and not _scenario_entry:
                         return _block(
                             f"skip SHORT - live {_live_move_pct*100:.2f}% above 5c avg "
                             f"(gia dang pump, Short qua som)"
                         )
                 if best.direction == 1 and _live_move_pct < -_pump_thresh:
                     # Direction flip tai day: gia dang thap = dung dieu kien LONG → khong block
-                    if not _direction_flipped:
+                    if not _direction_flipped and not _scenario_entry:
                         return _block(
                             f"skip LONG - live {_live_move_pct*100:.2f}% below 5c avg "
                             f"(gia dang dump, Long qua som)"
                         )
                 # Block du dinh / du day: gia da di xa roi moi vao theo
-                # Ngoai le: dang trong confirmed trend — can ca scalp VA macro (15m) de tranh spike bypass
-                _long_in_trend  = micro_up   and (_is_gradual_uptrend   or (scalp_trend == 1  and macro_trend == 1))
-                _short_in_trend = micro_down and (_is_gradual_downtrend or (scalp_trend == -1 and macro_trend == -1))
-                if best.direction == 1 and _live_move_pct > _pump_thresh and not _long_in_trend and not _direction_flipped:
+                # Ngoai le: dang trong confirmed trend HOAC emerging trend (trend moi — HBAR)
+                _long_in_trend  = micro_up   and (_is_gradual_uptrend   or _emerging_uptrend
+                                                  or (scalp_trend == 1  and macro_trend == 1))
+                _short_in_trend = micro_down and (_is_gradual_downtrend or _emerging_downtrend
+                                                  or (scalp_trend == -1 and macro_trend == -1))
+                if (best.direction == 1 and _live_move_pct > _pump_thresh and not _long_in_trend
+                        and not _direction_flipped and not _scenario_entry):
                     return _block(
                         f"skip LONG - live {_live_move_pct*100:.2f}% above 5c avg "
                         f"(gia da pump, Long du dinh)"
                     )
-                if best.direction == -1 and _live_move_pct < -_pump_thresh and not _short_in_trend and not _direction_flipped:
+                if (best.direction == -1 and _live_move_pct < -_pump_thresh and not _short_in_trend
+                        and not _direction_flipped and not _scenario_entry):
                     return _block(
                         f"skip SHORT - live {_live_move_pct*100:.2f}% below 5c avg "
                         f"(gia da dump, Short du day)"
@@ -2200,10 +2414,11 @@ class TradingBot:
         except Exception:
             pass
 
-        # Dynamic TP chi ap dung cho trade KHONG phai direction flip
+        # Dynamic TP chi ap dung cho trade KHONG phai direction flip / scenario entry
         # Direction flip da set tp_roi_override rieng tai diem flip — khong override lai
+        # Scenario entry da chon TP theo kich ban (range extreme=12%, con lai=potential scaling)
         # (AEQ-12=8%, 2h range=12%, 5h range=15%, MULTIHR=large, AEQ-VOL=8%, EXTREMA=8%)
-        if not _direction_flipped:
+        if not _direction_flipped and not _scenario_entry:
             if _is_short_term_extrema and not _is_major_peak and not _is_major_trough:
                 best.tp_roi_override = _tp_small
                 logger.info(f"{symbol}: short-term extrema → TP={_tp_small*100:.0f}% ROI (small, fast)")

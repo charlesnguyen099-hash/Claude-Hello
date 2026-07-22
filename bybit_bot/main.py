@@ -1131,8 +1131,13 @@ class TradingBot:
                         _btc_bull_scalp_ok    = btc_strongly_bull and not coin_independently_bear and _coin_leans_bull
                         _btc_fast_long_scalp  = _btc_fast_bounce_ok and not coin_independently_bear and _btc_fast_coin_ok_bull
                         _btc_fast_short_scalp = _btc_fast_dump_ok  and not coin_independently_bull and _btc_fast_coin_ok_bear
-                        scalp_allows_short = (scalp_trend == -1) or _micro_short_ok or _both_tf_bear or _btc_bear_scalp_ok or _btc_fast_short_scalp
-                        scalp_allows_long  = (scalp_trend ==  1) or _micro_long_ok  or _both_tf_bull or _btc_bull_scalp_ok or _btc_fast_long_scalp
+                        # Micro-only bypass: khi long_ok/short_ok duoc set boi micro-only path
+                        # (ca 2 TF sideways nhung 1m+5m confirm) thi scalp_allows phai nhat quan
+                        # Bug cu: long_ok=True nhung scalp_allows_long=False vi scalp_trend=0, macro=0
+                        _micro_only_long  = is_priority and micro_up   and macro_trend >= 0 and macro_4h >= 0 and scalp_trend >= 0
+                        _micro_only_short = is_priority and micro_down and macro_trend <= 0 and macro_4h <= 0 and scalp_trend <= 0
+                        scalp_allows_short = (scalp_trend == -1) or _micro_short_ok or _both_tf_bear or _btc_bear_scalp_ok or _btc_fast_short_scalp or _micro_only_short
+                        scalp_allows_long  = (scalp_trend ==  1) or _micro_long_ok  or _both_tf_bull or _btc_bull_scalp_ok or _btc_fast_long_scalp  or _micro_only_long
                     if sig.direction == 1 and long_ok and scalp_allows_long:
                         long_signals.append(sig)
                     elif sig.direction == -1 and short_ok and scalp_allows_short:

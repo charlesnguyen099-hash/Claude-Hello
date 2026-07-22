@@ -159,10 +159,10 @@ class RiskManager:
         #   base_mult: consensus=1 → 10x, consensus=7 → 15x (scale tuyen tinh)
         #   consensus_boost: strength=0 → 1.0x, strength=1 → 2.0x
         #   final_mult = base_mult * consensus_boost → range [10x, 30x]
-        base_mult = 10 + int((consensus / 7) * 5)   # 10 → 15 theo consensus
-        base_mult = max(10, min(15, base_mult))
+        base_mult = 30 + int((consensus / 7) * 20)  # 30 → 50 theo consensus
+        base_mult = max(30, min(50, base_mult))
         consensus_boost = 1.0 + strength             # 1.0 → 2.0 theo strength
-        final_mult = base_mult * consensus_boost     # 10x → 30x
+        final_mult = base_mult * consensus_boost     # 30x → 100x
 
         MIN_NOTIONAL = 5.0
 
@@ -170,7 +170,7 @@ class RiskManager:
         qty = 0.0
         _used_mult = 0.0
         for _try_mult in [final_mult, final_mult * 0.7, final_mult * 0.5,
-                          base_mult, 10.0, 7.0, 5.0, 3.0, 1.5, 1.0]:
+                          base_mult, 30.0, 20.0, 15.0, 10.0, 5.0, 3.0, 1.5, 1.0]:
             _q = _round_qty(min_qty * _try_mult)
             if _q < min_qty:
                 _q = min_qty

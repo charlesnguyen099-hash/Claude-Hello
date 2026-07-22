@@ -760,8 +760,12 @@ class TradingBot:
             _avg_body_30 = _30c_bodies.mean()
             _max_body_30 = _30c_bodies.max()
             _no_spike_30 = (_max_body_30 < _avg_body_30 * 3.0) if _avg_body_30 > 0 else True
-            _is_gradual_uptrend   = _n_grn >= 18 and _no_spike_30
-            _is_gradual_downtrend = _n_red >= 18 and _no_spike_30
+            # Net rise/fall trong 30 nen: OPN tang 4.6% gradual (khong spike) van phai bi AEQ-12
+            # Neu net move > 1.2% trong 30 nen (30 phut) → exhaustion, KHONG bypass AEQ-12
+            _30c_net_rise = (_30c_c[-1] - _30c_c[0]) / _30c_c[0] if _30c_c[0] > 0 else 0
+            _30c_net_fall = (_30c_c[0] - _30c_c[-1]) / _30c_c[0] if _30c_c[0] > 0 else 0
+            _is_gradual_uptrend   = _n_grn >= 18 and _no_spike_30 and _30c_net_rise < 0.012
+            _is_gradual_downtrend = _n_red >= 18 and _no_spike_30 and _30c_net_fall < 0.012
 
         if not df_micro.empty and len(df_micro) >= 15:
             _micro_atr    = compute_atr(df_micro).iloc[-1]
@@ -1233,16 +1237,31 @@ class TradingBot:
                 ) and self._micro_entry_analysis(df_micro, reversal_dir, is_reversal=True)
                 reversal_signals = long_signals if reversal_dir == 1 else short_signals
                 reversal_base = config.MIN_CONSENSUS if is_priority else config.MIN_CONSENSUS_TRENDING
-                # Deep trend guard: neu ca 1h VA 4h deu oppose reversal direction -> +1 consensus
+                # Deep trend guard: neu ca 1h VA 4h deu oppose reversal direction -> block neu khong o extreme 2h
                 reversal_deep_opposed = (
                     (reversal_dir == 1  and macro_trend == -1 and macro_4h == -1) or
                     (reversal_dir == -1 and macro_trend ==  1 and macro_4h ==  1)
                 )
+                # DASH pattern: SHORT reversal khi macro UP (1+1=2) nhung price chi o 55% 2h range
+                # → pullback trong uptrend = KHONG PHAI DINH THAT → block
+                # Chi cho phep reversal chong macro khi price o EXTREME that su (>75% / <25% 2h range)
+                if reversal_deep_opposed:
+                    _rev_extreme_2h = (
+                        (reversal_dir == -1 and _m2h_pos > 0.75) or
+                        (reversal_dir == 1  and _m2h_pos < 0.25)
+                    )
+                    if not _rev_extreme_2h:
+                        reversal_spike_blocked = True
+                        logger.info(
+                            f"{symbol}: reversal {'SHORT' if reversal_dir==-1 else 'LONG'} blocked "
+                            f"— macro strongly {'UP' if macro_trend==1 else 'DOWN'} "
+                            f"but 2h_pos={_m2h_pos:.2f} not at extreme (need {'<0.25' if reversal_dir==1 else '>0.75'})"
+                        )
                 reversal_min = reversal_base + (1 if reversal_deep_opposed else 0)
                 # Range reversal: vi tri 2h extreme la xac nhan manh → giam yeu cau 1 signal
                 if _is_range_rev:
                     reversal_min = max(2, reversal_min - 1)
-                if reversal_deep_opposed:
+                if reversal_deep_opposed and not reversal_spike_blocked:
                     logger.debug(
                         f"{symbol}: reversal deep-trend guard +1 consensus "
                         f"(1h={'UP' if macro_trend==1 else 'DOWN'}, "

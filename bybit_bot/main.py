@@ -739,6 +739,11 @@ class TradingBot:
 
         scalp_trend = self._micro_trend(df_scalp)  # 5m trend cho post-spike check
 
+        # Strong trend flags — dung som cho EMA250, RSI guard, AEQ-4 bypass
+        # Ca 3 TF (macro/macro_4h/scalp) cung chieu = trend that su, khong phai spike
+        _strong_trend_up = (macro_trend == 1  and macro_4h == 1  and scalp_trend == 1)
+        _strong_trend_dn = (macro_trend == -1 and macro_4h == -1 and scalp_trend == -1)
+
         # [CHONG LO] Spike check tren 1m — direction-aware
         # Pump spike -> block LONG (khong mua dinh), nhung cho phep SHORT (ban dinh la hop le)
         # Dump spike -> block SHORT (khong ban day), nhung cho phep LONG (mua day la hop le)
@@ -1011,8 +1016,10 @@ class TradingBot:
         if symbol not in ("BTCUSDT", "ETHUSDT") and _btc_filter_on:
             btc_strongly_bull = (self.btc_trend == 1  and self.btc_trend_4h == 1)
             btc_strongly_bear = (self.btc_trend == -1 and self.btc_trend_4h == -1)
-            coin_independently_bull = (macro_trend == 1  and macro_4h == 1)
-            coin_independently_bear = (macro_trend == -1 and macro_4h == -1)
+            # Sum <= -1: it nhat 1 TF bear va TF kia khong bull (vd: -1,0 hoac -1,-1)
+            # Truoc day yeu cau ca 2 TF == -1 → coin -1,0 bi BTC bull xoa short oan
+            coin_independently_bull = (macro_trend + macro_4h) >= 1
+            coin_independently_bear = (macro_trend + macro_4h) <= -1
         else:
             btc_strongly_bull = False
             btc_strongly_bear = False
@@ -1318,9 +1325,11 @@ class TradingBot:
         # RSI 35 qua som — RSI 35-50 la binh thuong trong downtrend, khong phai oversold
         # RSI < 25 moi la oversold that su (chi xay ra khi dump manh bat thuong)
         # RSI > 75 moi la overbought that su
-        if rsi_now < 25:
+        # RSI extreme guard: 75→80 (BTC uptrend RSI bam sat 75-85 suot gio)
+        # Strong trend bypass: trong uptrend xac nhan, RSI cao la binh thuong
+        if rsi_now < 25 and not _strong_trend_dn:
             short_signals = []
-        elif rsi_now > 75:
+        elif rsi_now > 80 and not _strong_trend_up:
             long_signals = []
 
         # BTC GLOBAL TREND FILTER — HARD BLOCK khi ca 1h VA 4h BTC cung chieu
@@ -1629,16 +1638,19 @@ class TradingBot:
         # Macro STRONG = cả 15m VÀ 1h cùng chiều → pullback entry ok
         _strong_macro_bull = (macro_trend == 1  and macro_4h == 1)
         _strong_macro_bear = (macro_trend == -1 and macro_4h == -1)
+        # Partial macro: macro_4h alone + scalp confirm du de cho phep entry
+        _partial_macro_bull = macro_4h == 1  and scalp_trend == 1
+        _partial_macro_bear = macro_4h == -1 and scalp_trend == -1
         _has_st_long  = (micro == 1  or scalp_trend == 1)
         _has_st_short = (micro == -1 or scalp_trend == -1)
 
         if not is_reversal:
-            if best.direction == 1 and not _has_st_long and not _strong_macro_bull and not _btc_bull_long_ok:
+            if best.direction == 1 and not _has_st_long and not _strong_macro_bull and not _partial_macro_bull and not _btc_bull_long_ok:
                 return _block(
                     f"skip LONG — khong co TF ngan han xac nhan va macro khong manh "
                     f"(1m={micro}, 5m={scalp_trend}, 15m={macro_trend}, 1h={macro_4h})"
                 )
-            if best.direction == -1 and not _has_st_short and not _strong_macro_bear and not _btc_bear_short_ok:
+            if best.direction == -1 and not _has_st_short and not _strong_macro_bear and not _partial_macro_bear and not _btc_bear_short_ok:
                 return _block(
                     f"skip SHORT — khong co TF ngan han xac nhan va macro khong manh "
                     f"(1m={micro}, 5m={scalp_trend}, 15m={macro_trend}, 1h={macro_4h})"
@@ -1655,9 +1667,10 @@ class TradingBot:
             _p1m = df_signal["close"].iloc[-1]
             if _ema250_1m > 0 and _atr_1m > 0:
                 _ema250_dist = _p1m - _ema250_1m
-                if best.direction == 1 and _ema250_dist > 4.0 * _atr_1m:
+                # Strong trend bypass: BTC tang 5% → price >4xATR khoi EMA250 la binh thuong
+                if best.direction == 1 and _ema250_dist > 4.0 * _atr_1m and not _strong_trend_up:
                     return _block(f"skip LONG - price {_ema250_dist/_ema250_1m*100:.1f}% above 1m EMA250 ({_ema250_dist/(_atr_1m+1e-9):.1f}x ATR)")
-                if best.direction == -1 and _ema250_dist < -4.0 * _atr_1m:
+                if best.direction == -1 and _ema250_dist < -4.0 * _atr_1m and not _strong_trend_dn:
                     return _block(f"skip SHORT - price {-_ema250_dist/_ema250_1m*100:.1f}% below 1m EMA250 ({-_ema250_dist/(_atr_1m+1e-9):.1f}x ATR)")
 
         # [AEQ-1] ATR spike
@@ -1698,11 +1711,12 @@ class TradingBot:
 
         # [AEQ-4] Last 15m net body conflict — dung 15 nen 1m gan nhat (= 15 phut, tuong duong 1 nen 15m)
         # Tong body 15 nen 1m < -1.5x ATR = net bearish pressure manh khi muon long
+        # [AEQ-4] Net body conflict — bypass khi strong trend (pullback trong uptrend la binh thuong)
         if not df_signal.empty and len(df_signal) >= 20 and _atr_for_sl > 0 and not is_reversal:
             _net_15m_body = (df_signal["close"].iloc[-15:] - df_signal["open"].iloc[-15:]).sum()
-            if best.direction == 1 and _net_15m_body < -1.5 * _atr_for_sl:
+            if best.direction == 1 and _net_15m_body < -1.5 * _atr_for_sl and not _strong_trend_up:
                 return _block(f"skip LONG - 15m net body strongly bearish ({_net_15m_body:.4f})")
-            if best.direction == -1 and _net_15m_body > 1.5 * _atr_for_sl:
+            if best.direction == -1 and _net_15m_body > 1.5 * _atr_for_sl and not _strong_trend_dn:
                 return _block(f"skip SHORT - 15m net body strongly bullish ({_net_15m_body:.4f})")
 
         # [AEQ-5a] Candle color: da xoa — qua chat, xu ly boi _micro_entry_analysis score
@@ -1985,10 +1999,6 @@ class TradingBot:
         # Tier1 bypass KHONG duoc mien kieu tra nay — timing xau van la timing xau du consensus cao
         # Direction flip (tai extrema/range): bypass gate — da co range/extrema analysis lam timing
         # Flip entry la counter-trend, micro_entry_analysis se reject do EMA/momentum nguoc chieu
-        # Strong trend: ca 3 TF (macro/macro_4h/scalp) confirm cung chieu → bypass range block trong micro_entry
-        # BTC tang 5%: sau moi TP, range_pos luon >88% → block re-entry → miss continuation
-        _strong_trend_up = (macro_trend == 1 and macro_4h == 1 and scalp_trend == 1)
-        _strong_trend_dn = (macro_trend == -1 and macro_4h == -1 and scalp_trend == -1)
         _strong_trend = (best.direction == 1 and _strong_trend_up) or (best.direction == -1 and _strong_trend_dn)
 
         if not _direction_flipped:

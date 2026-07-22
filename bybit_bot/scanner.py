@@ -120,11 +120,11 @@ class MarketScanner:
         df["trending_score"] = df["s_momentum"] + df["s_volume"] + df["s_liq"] + df["s_vol24"]
 
         # Sap xep giam dan theo trending_score — tat ca coin, khong cat gioi han
+        # BTC/ETH KHONG con duoc ghim len dau: xep theo trending score that cua chinh no
+        # (data BTC cho trend filter/correlation da duoc fetch rieng moi tick trong main loop,
+        #  khong phu thuoc thu tu scan; slot uu tien danh cho coin trending lon = nhieu lenh tiem nang)
         sorted_df = df.sort_values("trending_score", ascending=False)
-        # BTC và ETH luôn được scan trước (dù momentum 24h thấp, chúng drive toàn thị trường)
-        _pinned = [s for s in ("BTCUSDT", "ETHUSDT") if s in sorted_df["symbol"].values]
-        _rest   = [s for s in sorted_df["symbol"].tolist() if s not in _pinned]
-        self.trending_symbols = _pinned + _rest
+        self.trending_symbols = sorted_df["symbol"].tolist()
         self.volume_map = dict(zip(df["symbol"], df["volume_usdt_24h"]))
 
         top5_info = ", ".join(

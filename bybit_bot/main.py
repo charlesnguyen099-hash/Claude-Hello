@@ -1474,32 +1474,28 @@ class TradingBot:
 
         both_sideways = (macro_trend == 0 and macro_4h == 0)  # ca 2 TF sideways = thi truong ranging
 
+        # BTC CHI LA THAM KHAO — khong duoc de BTC de "thuc luc" cua coin:
+        #   - Bonus khi BTC CUNG chieu: giam 1 consensus (BTC xac nhan them = tham khao ho tro)
+        #   - KHONG penalty khi coin diverge nguoc BTC: coin da co xu huong doc lap
+        #     duoc confirm ca 2 TF (coin_independently_*) = thuc luc rieng da chung minh,
+        #     trade theo chieu cua chinh coin — khong bat coin phai "xin phep" BTC
+        #     (penalty cu +1 consensus lam miss lenh tiem nang tren coin trend doc lap)
         if is_priority:
-            # Priority (top10): base = MIN_CONSENSUS = 5
-            # BTC cung chieu (bonus) -> giam 1 -> 4
-            # Coin diverge nguoc BTC -> tang 2 -> 7
-            # both_sideways (+1): ca 1h VA 4h sideways -> thi truong ranging, can them xac nhan
+            # Priority: base = MIN_CONSENSUS, BTC cung chieu -> giam 1
             base = config.MIN_CONSENSUS
             extra = 0
             btc_long_bonus  = 1 if btc_strongly_bull else 0
             btc_short_bonus = 1 if btc_strongly_bear else 0
-            # Giam tu 2 -> 1: penalty=2 tren base=3 = 5/7 strategies, gan nhu khong bao gio dat
-            # penalty=1 -> required=4/7 — con siet chac nhung co the dat voi coin co momentum ro
-            diverge_long_penalty  = 1 if (btc_strongly_bear and coin_independently_bull)  else 0
-            diverge_short_penalty = 1 if (btc_strongly_bull and coin_independently_bear) else 0
-            # BTC bonus giam required xuong 2 la qua thap — giu toi thieu 3 (MIN_CONSENSUS)
-            required_long  = max(config.MIN_CONSENSUS, min(7, base + extra - btc_long_bonus  + diverge_long_penalty))
-            required_short = max(config.MIN_CONSENSUS, min(7, base + extra - btc_short_bonus + diverge_short_penalty))
+            required_long  = max(config.MIN_CONSENSUS, min(7, base + extra - btc_long_bonus))
+            required_short = max(config.MIN_CONSENSUS, min(7, base + extra - btc_short_bonus))
         else:
-            # Non-priority: base = MIN_CONSENSUS_TRENDING = 3
+            # Non-priority: base = MIN_CONSENSUS_TRENDING
             base = config.MIN_CONSENSUS_TRENDING
             extra = 0
             btc_long_bonus  = 1 if btc_strongly_bull else 0
             btc_short_bonus = 1 if btc_strongly_bear else 0
-            diverge_long_penalty  = 1 if (btc_strongly_bear and coin_independently_bull)  else 0
-            diverge_short_penalty = 1 if (btc_strongly_bull and coin_independently_bear) else 0
-            required_long  = max(config.MIN_CONSENSUS, min(7, base + extra - btc_long_bonus  + diverge_long_penalty + (1 if btc_opposes_long  else 0)))
-            required_short = max(config.MIN_CONSENSUS, min(7, base + extra - btc_short_bonus + diverge_short_penalty + (1 if btc_opposes_short else 0)))
+            required_long  = max(config.MIN_CONSENSUS, min(7, base + extra - btc_long_bonus  + (1 if btc_opposes_long  else 0)))
+            required_short = max(config.MIN_CONSENSUS, min(7, base + extra - btc_short_bonus + (1 if btc_opposes_short else 0)))
 
         # TOP10 PRIORITY: 2 trong 2 Tier-1 strategy (supertrend + vwap_volume) dong thuan -> trade
         # Tier-1 bypass: KHONG bi chan boi BTC filter — top10 coin lon co momentum rieng

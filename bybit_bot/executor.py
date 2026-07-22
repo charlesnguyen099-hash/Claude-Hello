@@ -10,7 +10,7 @@ import logging
 import time
 
 from client import BybitClient
-from risk_manager import RiskManager, TradeParams
+from risk_manager import RiskManager, TradeParams, max_safe_sl_roi
 from strategies.base import Signal
 from bot_logger import BotLogger
 import config
@@ -190,38 +190,35 @@ class Executor:
                 logger.error(f"{symbol}: set_sl_tp layer2 FAILED: {str(e).encode('ascii','replace').decode()}")
 
             # Layer 3: Verify va re-arm (up to 5 attempts)
+            # QUAN TRONG: ty le SL/TP KHONG con co dinh 5:1 — risk_manager nen ty le
+            # ve 1:1-3:1 khi liq clamp (TP lon/leverage cao). Verify bang cach so
+            # gia thuc te tren exchange voi gia DA DAT (sl_rounded/tp_rounded),
+            # KHONG duoc ep ratio 5:1 — ep ratio cu lam re-arm vo han + SL vuot liq.
             _sl_tp_confirmed = False
             for _attempt in range(5):
                 time.sleep(1.0)
                 has_sl, actual_sl, has_tp, actual_tp = self.client.verify_position_tp_sl(symbol)
                 if has_sl and has_tp:
-                    # Kiem tra SL co dung ty le 5:1 voi TP
-                    _tp_dist = abs(actual_tp - signal.entry_price) if actual_tp > 0 else 0
-                    _sl_dist = abs(actual_sl - signal.entry_price) if actual_sl > 0 else 0
-                    _ratio_ok = True
-                    if _tp_dist > 0 and _sl_dist > 0:
-                        _ratio = _sl_dist / _tp_dist
-                        if abs(_ratio - config.SL_TP_RATIO) / config.SL_TP_RATIO > 0.15:
-                            _ratio_ok = False
-                            logger.warning(
-                                f"{symbol}: SL ratio wrong ({_ratio:.2f}×TP expected {config.SL_TP_RATIO}×) "
-                                f"— re-arm sl={sl_rounded} tp={tp_rounded}"
-                            )
-                            print(f"[FIX] {symbol} SL ratio {_ratio:.2f}× → forcing {config.SL_TP_RATIO}×", flush=True)
-                    if _ratio_ok:
+                    _sl_match = abs(actual_sl - sl_rounded) / sl_rounded <= 0.005 if sl_rounded > 0 else False
+                    _tp_match = abs(actual_tp - tp_rounded) / tp_rounded <= 0.005 if tp_rounded > 0 else False
+                    if _sl_match and _tp_match:
                         logger.info(f"{symbol}: CONFIRMED SL={actual_sl} TP={actual_tp} (attempt={_attempt+1})")
                         print(f"[OK] {symbol} SL={actual_sl} TP={actual_tp} confirmed", flush=True)
                         _sl_tp_confirmed = True
                         break
+                    logger.warning(
+                        f"{symbol}: SL/TP khac gia da dat (SL {actual_sl} vs {sl_rounded}, "
+                        f"TP {actual_tp} vs {tp_rounded}) — re-arm"
+                    )
                     try:
-                        self.client.set_sl_tp(symbol, sl_rounded, tp_rounded)
+                        self.client.set_sl_tp(symbol, sl_rounded, tp_rounded, tick_size=tick_size)
                     except Exception as e2:
-                        logger.error(f"{symbol}: fix-ratio re-arm FAILED: {str(e2).encode('ascii','replace').decode()}")
+                        logger.error(f"{symbol}: re-arm FAILED: {str(e2).encode('ascii','replace').decode()}")
                     continue
                 logger.error(f"{symbol}: SL/TP MISSING attempt {_attempt+1}/5 — re-arm")
                 print(f"[CRITICAL] {symbol} SL/TP MISSING attempt {_attempt+1}/5", flush=True)
                 try:
-                    self.client.set_sl_tp(symbol, sl_rounded, tp_rounded)
+                    self.client.set_sl_tp(symbol, sl_rounded, tp_rounded, tick_size=tick_size)
                 except Exception as e2:
                     logger.error(f"{symbol}: re-arm FAILED: {str(e2).encode('ascii','replace').decode()}")
 
@@ -304,7 +301,9 @@ class Executor:
         if mark > 0 and entry > 0:
             lev = max(leverage, 1)
             tp_roi = config.TP_ROI_MIN
-            sl_roi = tp_roi * config.SL_TP_RATIO
+            # CLAMP theo vung an toan thanh ly: 5:1 tho tai leverage cao cho SL vuot
+            # gia liq → Bybit reject → khong the dat SL → position khong duoc bao ve
+            sl_roi = min(tp_roi * config.SL_TP_RATIO, max_safe_sl_roi(lev))
             tp_dist = tp_roi * entry / lev
             sl_dist = sl_roi * entry / lev
             fresh_sl = entry - _dir * sl_dist
@@ -390,8 +389,10 @@ class Executor:
             _pos_lev    = max(10.0, _fval(pos, "leverage", 10.0))
 
             # Fallback SL/TP neu ca saved lan exchange deu khong co (restart + SL mat)
+            # CLAMP liq-safe: 5:1 tho o leverage cao (vd 100x → SL dist 0.6% > liq 0.45%)
+            # bi Bybit reject → re-arm that bai vinh vien → position khong co SL
             if saved_sl <= 0 and exchange_sl <= 0 and entry > 0:
-                sl_roi   = config.TP_ROI_MIN * config.SL_TP_RATIO
+                sl_roi   = min(config.TP_ROI_MIN * config.SL_TP_RATIO, max_safe_sl_roi(int(_pos_lev)))
                 sl_dist  = sl_roi * entry / _pos_lev
                 saved_sl = (entry + sl_dist) if side == "Sell" else (entry - sl_dist)
                 self._sl_price[symbol] = saved_sl
@@ -404,26 +405,22 @@ class Executor:
                 self._tp_price[symbol] = saved_tp
                 logger.warning(f"{symbol}: Fallback TP={saved_tp:.6f} (ROI={tp_roi*100:.0f}%/{_pos_lev:.0f}x)")
 
-            # Fix SL sai ty le 5:1 (co the bi Bybit clamp hoac tu code cu)
-            if exchange_sl > 0 and exchange_tp > 0 and entry > 0:
-                _tp_dist_hc = abs(exchange_tp - entry)
-                _sl_dist_hc = abs(exchange_sl - entry)
-                if _tp_dist_hc > 0:
-                    _ratio_hc = _sl_dist_hc / _tp_dist_hc
-                    if abs(_ratio_hc - config.SL_TP_RATIO) / config.SL_TP_RATIO > 0.15:
-                        _correct_sl_dist = _tp_dist_hc * config.SL_TP_RATIO
-                        _correct_sl = (entry + _correct_sl_dist) if side == "Sell" else (entry - _correct_sl_dist)
-                        logger.warning(
-                            f"{symbol}: SL ratio wrong ({_ratio_hc:.2f}×TP expected {config.SL_TP_RATIO}×) "
-                            f"SL={exchange_sl:.6f}→{_correct_sl:.6f}"
-                        )
-                        print(f"[FIX] {symbol} health: SL {_ratio_hc:.2f}×TP → {config.SL_TP_RATIO}×TP (SL={_correct_sl:.6f})", flush=True)
-                        try:
-                            self.client.set_sl_tp(symbol, _correct_sl, exchange_tp)
-                            self._sl_price[symbol] = _correct_sl
-                            saved_sl = _correct_sl
-                        except Exception as e:
-                            logger.error(f"{symbol}: fix-ratio FAILED: {str(e).encode('ascii','replace').decode()}")
+            # Health check: exchange SL/TP lech khoi gia DA LUU → re-arm gia da luu
+            # KHONG ep ty le 5:1 nua — ty le la DONG (risk_manager nen ve 1:1-3:1 khi
+            # liq clamp). Ep 5:1 cu tinh ra SL vuot gia thanh ly → Bybit reject moi cycle.
+            if exchange_sl > 0 and exchange_tp > 0 and saved_sl > 0 and saved_tp > 0:
+                _sl_drift = abs(exchange_sl - saved_sl) / saved_sl
+                _tp_drift = abs(exchange_tp - saved_tp) / saved_tp
+                if _sl_drift > 0.005 or _tp_drift > 0.005:
+                    logger.warning(
+                        f"{symbol}: SL/TP drift khoi gia da luu "
+                        f"(SL {exchange_sl:.6f} vs {saved_sl:.6f}, TP {exchange_tp:.6f} vs {saved_tp:.6f}) — re-arm"
+                    )
+                    try:
+                        _hc_tick0 = self._tick_size.get(symbol, 0.0)
+                        self.client.set_sl_tp(symbol, saved_sl, saved_tp, tick_size=_hc_tick0)
+                    except Exception as e:
+                        logger.error(f"{symbol}: drift re-arm FAILED: {str(e).encode('ascii','replace').decode()}")
 
             # Re-arm neu SL hoac TP bi mat tren exchange
             need_rearm_sl = saved_sl > 0 and exchange_sl <= 0

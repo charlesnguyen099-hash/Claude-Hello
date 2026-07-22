@@ -229,15 +229,15 @@ class BybitClient:
                 params["tpTriggerBy"] = "LastPrice"
 
         resp = self.session.place_order(**params)
-        result = resp["result"]
+        # Bybit v5 create-order response CHI tra orderId/orderLinkId — KHONG echo SL/TP.
+        # (Check cu doc result["stopLoss"] luon rong → bao loi "KHONG SET SL/TP" sai.
+        #  Viec xac nhan SL/TP thuc te do verify_position_tp_sl dam nhiem sau khi fill.)
         if params.get("stopLoss") or params.get("takeProfit"):
-            r_sl = result.get("stopLoss", "")
-            r_tp = result.get("takeProfit", "")
-            logger.info(f"place_order {params['symbol']}: order filled SL={r_sl!r} TP={r_tp!r}")
-            if not r_sl and not r_tp:
-                logger.error(f"place_order {params['symbol']}: Bybit KHONG SET SL/TP trong order — retCode={resp.get('retCode')} msg={resp.get('retMsg')}")
-                print(f"[ERROR] place_order {params['symbol']}: Bybit DID NOT set SL/TP in order response", flush=True)
-        return result
+            logger.info(
+                f"place_order {params['symbol']}: submitted with "
+                f"SL={params.get('stopLoss','-')} TP={params.get('takeProfit','-')}"
+            )
+        return resp["result"]
 
     @retry()
     def close_position(self, symbol: str, side: str, qty: float) -> dict:

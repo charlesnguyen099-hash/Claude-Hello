@@ -17,6 +17,20 @@ from strategies.base import Signal
 
 logger = logging.getLogger(__name__)
 
+# Hang so vung an toan thanh ly — dung chung cho compute_trade va executor fallback
+MAINT_RATE_EST = 0.005   # 0.5% maintenance margin (Bybit typical)
+LIQ_BUFFER     = 0.10    # 10% safety buffer truoc gia thanh ly
+
+
+def max_safe_sl_roi(leverage: int) -> float:
+    """SL ROI cao nhat con AN TOAN tai leverage nay:
+    - Nam tren gia thanh ly (kem buffer 10%) — SL ngoai liq = vo nghia, chay margin truoc
+    - Tran cung 0.75: emergency close (-0.80) phai fire SAU exchange SL
+    Moi noi tinh SL fallback PHAI dung ham nay — SL tinh tu ty le 5:1 tho co the
+    vuot gia thanh ly o leverage cao va bi Bybit reject → position khong co SL."""
+    _L = max(int(leverage), 1)
+    return max(0.20, min(0.75, (1.0 - MAINT_RATE_EST * _L) * (1.0 - LIQ_BUFFER)))
+
 
 @dataclass
 class TradeParams:
@@ -100,16 +114,14 @@ class RiskManager:
         # Khac ban cu: TP KHONG bi scale xuong theo liq clamp nua (bo tran TP 30% →
         # TP 60% kha thi: L=66, SL clamp ~60%, ty le nen tu 5:1 ve ~1:1 cho lenh manh).
         # Luon ton tai L hop le: tai L=1 max_sl=0.75 ≥ tp (tp da clamp ≤0.70), fee=0.11%.
-        MAINT_RATE_EST = 0.005   # 0.5% maintenance margin (Bybit typical)
-        LIQ_BUFFER     = 0.10    # 10% safety buffer
-        _min_net_roi   = 0.05    # loi rong toi thieu 5% margin sau phi
+        _min_net_roi = 0.05    # loi rong toi thieu 5% margin sau phi
 
         tp_roi = min(tp_roi, 0.70)   # tran cung: dam bao SL >= TP ton tai o L=1 (max_sl=0.75)
 
         _chosen_lev = 0
         _sl_roi_eff = 0.0
         for _L in range(leverage, 0, -1):
-            _max_sl = max(0.20, min(0.75, (1.0 - MAINT_RATE_EST * _L) * (1.0 - LIQ_BUFFER)))
+            _max_sl = max_safe_sl_roi(_L)
             _sl_eff = min(tp_roi * config.SL_TP_RATIO, _max_sl)
             if _sl_eff < tp_roi:                     # SL hep hon TP → can L thap hon
                 continue
@@ -208,9 +220,9 @@ class RiskManager:
     def should_close_position(self, position: dict, current_price: float) -> bool:
         # Emergency close: chi trigger khi SL exchange KHONG hoat dong (SL bi missed/huy)
         # Nguong -0.80 (80% margin loss) dam bao:
-        #   - SL min = 60% ROI: exchange close TRUOC emergency (60% < 80%) — khong can thiep
-        #   - SL max = 250% ROI: emergency close truoc de tranh liquidation
-        # Truoc day -0.30 fire TRUOC exchange SL (30% < 60% min SL) -> force-close qua som,
+        #   - SL luon <= 75% ROI (max_safe_sl_roi tran 0.75): exchange SL fire TRUOC emergency
+        #   - Emergency chi la lop bao ve cuoi khi SL exchange bi mat/khong trigger
+        # Truoc day -0.30 fire TRUOC exchange SL -> force-close qua som,
         # cat lenh o -30% du price se phuc hoi — nguyen nhan mat lenh loi.
         def _f(d, k, default=0.0):
             v = d.get(k, default)

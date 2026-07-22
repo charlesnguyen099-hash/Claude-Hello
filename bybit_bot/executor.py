@@ -475,6 +475,15 @@ class Executor:
                     )
                     self._close_position(pos)
                     continue
+                # Stagnation exit: > 6h ma khong tien trien (ROI < +5%) → dong, xoay vong von
+                # Lenh dung chieu thuong hit TP trong 1-3h; 6h khong dong nghia trend da chet
+                if _hold_sec > 6 * 3600 and _pnl_roi < 0.05:
+                    logger.warning(
+                        f"{symbol}: stagnation {_hold_sec/3600:.1f}h, PnL_ROI={_pnl_roi*100:.0f}% < +5% "
+                        f"→ close to rotate capital"
+                    )
+                    self._close_position(pos)
+                    continue
 
             # Emergency close: chi khi loss > 80% margin va SL exchange bi miss
             if self.risk_mgr.should_close_position(pos, mark_price):

@@ -78,7 +78,7 @@ class RiskManager:
         exchange_max_lev = self.client.get_max_leverage(signal.symbol) if config.USE_MAX_LEVERAGE \
                            else config.DEFAULT_LEVERAGE
         leverage = min(config.MAX_LEVERAGE, exchange_max_lev)
-        leverage = max(leverage, 1)
+        leverage = max(int(leverage), 1)   # int: dung cho range() trong fee+liq viability loop
 
         entry = signal.entry_price
 
@@ -96,41 +96,42 @@ class RiskManager:
             tp_roi = _tp_roi_override
         else:
             tp_roi = config.TP_ROI_MIN + potential * (config.TP_ROI_MAX - config.TP_ROI_MIN)
-        sl_roi  = tp_roi * config.SL_TP_RATIO   # SL = SL_TP_RATIO x TP
 
-        # Clamp SL/TP de dam bao SL luon nam TREN gia thanh ly (liquidation price)
-        # Voi leverage cao (50-100x), sl_dist = 5*tp_dist co the xuong duoi liq price
-        # → Bybit tu dong cap SL lai → pha ty le 5:1
-        #
-        # liq_price (Long) ≈ entry * (1 - 1/L + maint_rate)
-        # sl phai > liq_price → sl_roi < (1 - maint_rate * L)
-        # Dung 0.5% maint rate (pho bien tren Bybit) + 10% buffer de tranh bi clamp
+        # CHON LEVERAGE THOA MAN CA 2 RANG BUOC (khong bao gio skip lenh vi leverage):
+        #   1. LIQ:  sl_roi = 5*tp_roi ≤ max_sl_roi(L) = (1 - 0.005*L) * 0.9
+        #      (SL phai nam tren gia thanh ly; neu vuot → scale TP/SL xuong, giu ty le 5:1)
+        #   2. FEE:  tp_roi_hieu_luc ≥ ROUND_TRIP_FEE*L + 5% buffer
+        #      (TP hit phai LOI sau phi — phi theo ROI ty le thuan voi leverage)
+        # Leverage cao → phi an ROI nhieu + liq clamp ep TP nho → co the khong ton tai TP loi.
+        # Duyet L giam dan tu leverage hien tai: L thap hon luon de thoa (phi giam, max_sl tang)
+        # → lay L CAO NHAT thoa ca 2. Bug cu: check tuan tu roi SKIP → miss lenh flip TP=8%
+        # va lenh manh TP=30% tren coin 100x (liq clamp keo TP=9% < nguong phi 16%).
         MAINT_RATE_EST = 0.005   # 0.5% maintenance margin (Bybit typical)
         LIQ_BUFFER     = 0.10    # 10% safety buffer
-        max_sl_roi = max(0.20, (1.0 - MAINT_RATE_EST * leverage) * (1.0 - LIQ_BUFFER))
-        if sl_roi > max_sl_roi:
-            # Scale ca TP lan SL xuong de GIU TY LE 5:1 va SL khong bi Bybit clamp
-            liq_scale = max_sl_roi / sl_roi
-            tp_roi    = tp_roi * liq_scale
-            sl_roi    = max_sl_roi   # = tp_roi * SL_TP_RATIO (ty le van la 5:1)
-            logger.info(
-                f"{signal.symbol}: SL/TP scaled to fit liq constraint at {leverage}x "
-                f"→ TP_ROI={tp_roi*100:.0f}% SL_ROI={sl_roi*100:.0f}% (ratio={config.SL_TP_RATIO:.0f}:1 maintained)"
-            )
+        _min_net_roi   = 0.05    # loi rong toi thieu 5% margin sau phi
 
-        # Fee break-even check: TP phai LON HON phi giao dich + buffer toi thieu
-        # Phi round-trip tinh theo % margin = ROUND_TRIP_FEE * leverage
-        # Vi du 100x: phi = 0.11% * 100 = 11% margin. TP_ROI < 11% = lo dam bao du TP hit chinh xac
-        _fee_as_roi    = config.ROUND_TRIP_FEE * leverage   # phi tinh theo % margin
-        _min_net_roi   = 0.05                               # buffer toi thieu 5% margin sau phi
-        _min_tp_needed = _fee_as_roi + _min_net_roi
-        if tp_roi < _min_tp_needed:
-            logger.warning(
-                f"{signal.symbol}: SKIP — TP_ROI={tp_roi*100:.0f}% < fee_breakeven "
-                f"(fee={_fee_as_roi*100:.0f}% + buffer=5% = {_min_tp_needed*100:.0f}%) at {leverage}x "
-                f"→ guaranteed loss even on TP hit"
-            )
+        _chosen_lev    = 0
+        _tp_roi_eff    = 0.0
+        for _L in range(leverage, 0, -1):
+            _max_sl = max(0.20, (1.0 - MAINT_RATE_EST * _L) * (1.0 - LIQ_BUFFER))
+            _tp_eff = min(tp_roi, _max_sl / config.SL_TP_RATIO)   # sau liq clamp (giu 5:1)
+            if _tp_eff >= config.ROUND_TRIP_FEE * _L + _min_net_roi:
+                _chosen_lev = _L
+                _tp_roi_eff = _tp_eff
+                break
+
+        if _chosen_lev < 1:
+            logger.warning(f"{signal.symbol}: SKIP — TP_ROI={tp_roi*100:.0f}% cannot beat fees at any leverage")
             return None
+
+        if _chosen_lev != leverage or _tp_roi_eff < tp_roi:
+            logger.info(
+                f"{signal.symbol}: lev {leverage}x→{_chosen_lev}x TP_ROI {tp_roi*100:.0f}%→{_tp_roi_eff*100:.0f}% "
+                f"(fee+liq viability, ratio {config.SL_TP_RATIO:.0f}:1 kept)"
+            )
+        leverage = _chosen_lev
+        tp_roi   = _tp_roi_eff
+        sl_roi   = tp_roi * config.SL_TP_RATIO
 
         tp_dist = tp_roi * entry / leverage
         sl_dist = sl_roi * entry / leverage

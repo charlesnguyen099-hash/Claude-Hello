@@ -568,6 +568,10 @@ class TradingBot:
         # Init gradual trend flags — se duoc tinh chinh xac sau khi co df_micro
         _is_gradual_uptrend   = False
         _is_gradual_downtrend = False
+        # Init AEQ-12 bypass flags — dung o AEQ-EXTREMA ca khi block AEQ-12 bi skip
+        # (bug cu: NameError khi _range_live_price <= 0 → coin bi bo phan tich am tham)
+        _aeq12_bypass_long  = False
+        _aeq12_bypass_short = False
 
         # Fetch 1 lan duy nhat: 2000 nen 1m = ~33h data chi tiet
         # Tat ca df_ reuse cung bo data nay — khong co API call thua
@@ -1618,19 +1622,26 @@ class TradingBot:
             _direction_flipped = True
             logger.info(f"{symbol}: 2h range flip LONG→SHORT at 2h top ({_m2h_pos:.0%}), TP=12%")
 
-        # POST-PEAK / POST-TROUGH BLOCK: EMA(100/250) lag sau khi gia qua dinh/day
-        # MAGMAUSDT pattern: EMA con bullish nhung coin da giam 1% trong 40+ phut → LONG = sai chieu
-        # Chi block khi khong co flip khac da xay ra (direction_flipped = danh gia lai sau flip)
+        # POST-PEAK / POST-TROUGH: EMA(100/250) lag sau khi gia qua dinh/day
+        # MAGMAUSDT pattern: EMA con bullish nhung coin da giam 1%+ trong 40+ phut → LONG = sai chieu
+        # FLIP thay vi block: gia dang giam sustained sau dinh → SHORT la lenh dung chieu
+        # (nguyen tac: khong bo lenh tiem nang, doi chieu de trade theo trend thuc te)
         if not _direction_flipped:
             if best.direction == 1 and _post_peak_decline_long:
-                return _block(
-                    f"skip LONG — post-peak decline {_ppd_drop*100:.1f}% below 60c high "
-                    f"({_ppd_hi_age}c ago) EMA lag | scalp={scalp_trend}"
+                best.direction = -1
+                best.tp_roi_override = 0.10
+                _direction_flipped = True
+                logger.info(
+                    f"{symbol}: POST-PEAK flip LONG→SHORT — {_ppd_drop*100:.1f}% below 60c high "
+                    f"({_ppd_hi_age}c ago, EMA lag) scalp={scalp_trend}, TP=10%"
                 )
-            if best.direction == -1 and _post_trough_rise_short:
-                return _block(
-                    f"skip SHORT — post-trough rise {_ppd_rise*100:.1f}% above 60c low "
-                    f"({_ppd_lo_age}c ago) EMA lag | scalp={scalp_trend}"
+            elif best.direction == -1 and _post_trough_rise_short:
+                best.direction = 1
+                best.tp_roi_override = 0.10
+                _direction_flipped = True
+                logger.info(
+                    f"{symbol}: POST-TROUGH flip SHORT→LONG — {_ppd_rise*100:.1f}% above 60c low "
+                    f"({_ppd_lo_age}c ago, EMA lag) scalp={scalp_trend}, TP=10%"
                 )
 
         # ══ SHORT-TERM TREND CONFIRMATION — 3 CẤP ĐỘ ══════════════════════════
@@ -1948,10 +1959,12 @@ class TradingBot:
                 _ex_from_trough = (_ex_price - _ex_trough_p) / _ex_trough_p if _ex_trough_p > 0 else 0
                 if _ex_from_trough > 0.005 and scalp_trend != 1:
                     best.direction = -1
+                    best.tp_roi_override = 0.10
+                    _direction_flipped = True
                     logger.info(
                         f"{symbol}: EXTREMA flip LONG→SHORT at local 1m peak "
                         f"price={_ex_price:.6f} peak={_ex_peak_p:.6f} +{_ex_from_trough*100:.2f}% "
-                        f"(peak {_ex_since_peak}c ago)"
+                        f"(peak {_ex_since_peak}c ago), TP=10%"
                     )
                 elif _ex_from_trough > 0.008:
                     # scalp bullish nhung van o dinh local: flip LONG→SHORT voi TP nho
@@ -1968,10 +1981,12 @@ class TradingBot:
                 _ex_from_peak = (_ex_peak_p - _ex_price) / _ex_peak_p if _ex_peak_p > 0 else 0
                 if _ex_from_peak > 0.005 and scalp_trend != -1:
                     best.direction = 1
+                    best.tp_roi_override = 0.10
+                    _direction_flipped = True
                     logger.info(
                         f"{symbol}: EXTREMA flip SHORT→LONG at local 1m trough "
                         f"price={_ex_price:.6f} trough={_ex_trough_p:.6f} -{_ex_from_peak*100:.2f}% "
-                        f"(trough {_ex_since_trough}c ago)"
+                        f"(trough {_ex_since_trough}c ago), TP=10%"
                     )
                 elif _ex_from_peak > 0.008:
                     # scalp bearish nhung van o day local: flip SHORT→LONG voi TP nho

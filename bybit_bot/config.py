@@ -69,7 +69,7 @@ TP_ROI_MAX  = 0.30   # TP toi da 30% ROI (khi lenh manh) — chot loi som, khong
 SL_TP_RATIO = 5.0    # SL luon gap 5 lan TP (SL ROI = 5 x TP ROI)
 
 # --- Signal sensitivity -------------------------------------------------------
-MIN_SIGNAL_STRENGTH = 0.60   # Chi lay signal chat luong cao
+MIN_SIGNAL_STRENGTH = 0.55   # Giam tu 0.60: bat them signal tiem nang
 MIN_ADX             = 12     # ADX >= 12 cho 1m scalp — 18 qua cao, block het trong sideway/Asian session
 MIN_CONSENSUS          = 3   # 3/7 strategies dong thuan — 2 qua thap, de bi noise
 MIN_CONSENSUS_TRENDING = 3   # Dong bo voi MIN_CONSENSUS

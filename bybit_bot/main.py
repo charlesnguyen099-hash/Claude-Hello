@@ -499,14 +499,14 @@ class TradingBot:
             _r30 = _h30 - _l30
             if _r30 > 0:
                 _p30 = (price - _l30) / _r30
-                if direction == 1 and _p30 > 0.85:
-                    logger.debug(f"micro_entry: BLOCK long — 30c range_pos={_p30:.2f} > 0.85 (du dinh 30 phut)")
+                if direction == 1 and _p30 > 0.92:
+                    logger.debug(f"micro_entry: BLOCK long — 30c range_pos={_p30:.2f} > 0.92 (du dinh 30 phut)")
                     return False
-                if direction == -1 and _p30 < 0.15:
-                    logger.debug(f"micro_entry: BLOCK short — 30c range_pos={_p30:.2f} < 0.15 (du day 30 phut)")
+                if direction == -1 and _p30 < 0.08:
+                    logger.debug(f"micro_entry: BLOCK short — 30c range_pos={_p30:.2f} < 0.08 (du day 30 phut)")
                     return False
 
-        # 100-candle (~1.7h): block LONG neu o top 75%, block SHORT neu o bottom 25%
+        # 100-candle (~1.7h): block LONG neu o top, block SHORT neu o bottom
         _range_window = min(100, n)
         if _range_window >= 20:
             high_rng = high.iloc[-_range_window:].max()
@@ -515,11 +515,11 @@ class TradingBot:
             if rng > 0:
                 range_pos = (price - low_rng) / rng
                 if not is_reversal:
-                    if direction == 1 and range_pos > 0.80:
-                        logger.debug(f"micro_entry: BLOCK long — 100c range_pos={range_pos:.2f} > 0.80")
+                    if direction == 1 and range_pos > 0.88:
+                        logger.debug(f"micro_entry: BLOCK long — 100c range_pos={range_pos:.2f} > 0.88")
                         return False
-                    if direction == -1 and range_pos < 0.20:
-                        logger.debug(f"micro_entry: BLOCK short — 100c range_pos={range_pos:.2f} < 0.20")
+                    if direction == -1 and range_pos < 0.12:
+                        logger.debug(f"micro_entry: BLOCK short — 100c range_pos={range_pos:.2f} < 0.12")
                         return False
                 # Bonus cho entry o vung an toan (range 30%-70%)
                 if direction == 1 and range_pos < 0.45:
@@ -527,7 +527,7 @@ class TradingBot:
                 elif direction == -1 and range_pos > 0.55:
                     score += 1
 
-        # 20-candle local range: block LONG top 75%, block SHORT bottom 25%
+        # 20-candle local range: block LONG top, block SHORT bottom
         _local_window = min(20, n)
         if _local_window >= 10 and not is_reversal:
             local_high = high.iloc[-_local_window:].max()
@@ -535,11 +535,11 @@ class TradingBot:
             local_rng  = local_high - local_low
             if local_rng > 0:
                 local_pos = (price - local_low) / local_rng
-                if direction == 1 and local_pos > 0.80:
-                    logger.debug(f"micro_entry: BLOCK long — 20c local_pos={local_pos:.2f} > 0.80")
+                if direction == 1 and local_pos > 0.90:
+                    logger.debug(f"micro_entry: BLOCK long — 20c local_pos={local_pos:.2f} > 0.90")
                     return False
-                if direction == -1 and local_pos < 0.15:
-                    logger.debug(f"micro_entry: BLOCK short — 20c local_pos={local_pos:.2f} < 0.15")
+                if direction == -1 and local_pos < 0.10:
+                    logger.debug(f"micro_entry: BLOCK short — 20c local_pos={local_pos:.2f} < 0.10")
                     return False
 
         # Factor 7: Momentum deceleration — nen gan day nho manh so voi nen truoc
@@ -1683,9 +1683,9 @@ class TradingBot:
             if _lc_rng > 0:
                 _up_wick = _lc["high"] - max(_lc["open"], _lc["close"])
                 _dn_wick = min(_lc["open"], _lc["close"]) - _lc["low"]
-                if best.direction == 1 and _up_wick / _lc_rng > 0.75:
+                if best.direction == 1 and _up_wick / _lc_rng > 0.85:
                     return _block(f"skip LONG - 1m wick rejection {_up_wick/_lc_rng*100:.0f}%")
-                if best.direction == -1 and _dn_wick / _lc_rng > 0.75:
+                if best.direction == -1 and _dn_wick / _lc_rng > 0.85:
                     return _block(f"skip SHORT - 1m wick rejection {_dn_wick/_lc_rng*100:.0f}%")
 
         # [AEQ-4] Last 15m net body conflict — dung 15 nen 1m gan nhat (= 15 phut, tuong duong 1 nen 15m)
@@ -1716,12 +1716,13 @@ class TradingBot:
             if _vol_p > 0 and _vol_r < _vol_p * 0.20:
                 return _block(f"skip - volume near-zero {_vol_r:.0f} < 20% of {_vol_p:.0f}")
 
-        # [AEQ-8] Body deceleration near-zero
+        # [AEQ-8] Body deceleration near-zero — chi block khi HOAN TOAN dead (< 5%)
+        # 10% qua nho: brief pause truoc breakout bi block oan
         if not df_micro.empty and len(df_micro) >= 15:
             _bd_r = abs(df_micro["close"].iloc[-4:-1] - df_micro["open"].iloc[-4:-1]).mean()
             _bd_p = abs(df_micro["close"].iloc[-11:-4] - df_micro["open"].iloc[-11:-4]).mean()
-            if _bd_p > 0 and _bd_r < _bd_p * 0.10:
-                return _block(f"skip - candle bodies near-zero {_bd_r:.4f} < 10% of {_bd_p:.4f}")
+            if _bd_p > 0 and _bd_r < _bd_p * 0.05:
+                return _block(f"skip - candle bodies near-zero {_bd_r:.4f} < 5% of {_bd_p:.4f}")
 
         # [AEQ-10] Stochastic extreme on 5m — chi block khi CUC DOAN (92/8)
         # 85/15 qua chat: trong uptrend manh, stochastic bam sat 80-95 lien tuc

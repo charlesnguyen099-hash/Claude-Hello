@@ -775,6 +775,34 @@ class TradingBot:
             _is_gradual_uptrend   = _n_grn >= 18 and _no_spike_30 and _30c_net_rise < 0.012
             _is_gradual_downtrend = _n_red >= 18 and _no_spike_30 and _30c_net_fall < 0.012
 
+        # POST-PEAK / POST-TROUGH DECLINE: EMA(100/250) lag 30-60 phut sau khi gia qua dinh/day
+        # → macro_trend van = 1 nhung coin thuc te da dung tang va dang giam sustained
+        # Block LONG neu: giam > 1% tu dinh 60c, dinh >= 15c truoc, 5m chua confirm uptrend
+        # Ngoai le: scalp_trend == 1 (5m EMA xac nhan uptrend van tiep tuc → cho phep LONG)
+        _post_peak_decline_long  = False
+        _post_trough_rise_short  = False
+        _ppd_drop = 0.0
+        _ppd_rise = 0.0
+        _ppd_hi_age = 0
+        _ppd_lo_age = 0
+        if not df_micro.empty and len(df_micro) >= 60:
+            _ppd_price  = df_micro["close"].iloc[-1]
+            _ppd_60h    = df_micro["high"].iloc[-60:].max()
+            _ppd_60l    = df_micro["low"].iloc[-60:].min()
+            _ppd_hi_idx = int(df_micro["high"].iloc[-60:].values.argmax())
+            _ppd_lo_idx = int(df_micro["low"].iloc[-60:].values.argmin())
+            _ppd_hi_age = 59 - _ppd_hi_idx   # nen cu hon = so lon hon
+            _ppd_lo_age = 59 - _ppd_lo_idx
+            _ppd_drop   = (_ppd_60h - _ppd_price) / _ppd_60h if _ppd_60h > 0 else 0
+            _ppd_rise   = (_ppd_price - _ppd_60l) / _ppd_60l if _ppd_60l > 0 else 0
+            _ppd_thresh = 0.010 * _sp   # 1.0% altcoin, 0.5% BTC/ETH
+            if (_ppd_hi_age >= 15 and _ppd_drop > _ppd_thresh and scalp_trend != 1):
+                _post_peak_decline_long = True
+                logger.debug(f"{symbol}: post-peak-decline — {_ppd_drop*100:.1f}% below 60c high ({_ppd_hi_age}c ago)")
+            if (_ppd_lo_age >= 15 and _ppd_rise > _ppd_thresh and scalp_trend != -1):
+                _post_trough_rise_short = True
+                logger.debug(f"{symbol}: post-trough-rise — {_ppd_rise*100:.1f}% above 60c low ({_ppd_lo_age}c ago)")
+
         if not df_micro.empty and len(df_micro) >= 15:
             _micro_atr    = compute_atr(df_micro).iloc[-1]
             _micro_bodies = (df_micro["close"].iloc[-15:].values - df_micro["open"].iloc[-15:].values)
@@ -1101,11 +1129,15 @@ class TradingBot:
                     if _btc_fast_dump_ok and not coin_independently_bull and _btc_fast_coin_ok_bear:
                         short_ok = True
                     # Early trend entry: cho phep SHORT/LONG khi 1m + 5m da confirm du 15m chua flip
+                    # Guard: KHONG bypass khi CA HAI TF (macro_trend + macro_4h) deu oppose —
+                    # dual-TF confirmed downtrend = khong phai "early flip", la downtrend that
                     if is_priority and sig.direction == -1 and not short_ok:
-                        if micro_down and scalp_trend == -1:
+                        _macro_not_both_bull = not (macro_trend == 1 and macro_4h == 1)
+                        if micro_down and scalp_trend == -1 and _macro_not_both_bull:
                             short_ok = True
                     if is_priority and sig.direction == 1 and not long_ok:
-                        if micro_up and scalp_trend == 1:
+                        _macro_not_both_bear = not (macro_trend == -1 and macro_4h == -1)
+                        if micro_up and scalp_trend == 1 and _macro_not_both_bear:
                             long_ok = True
                     # Micro-only entry: bat early trend khi ca 2 TF sideways (0,0) nhung 1m+5m ro chieu
                     # Dieu kien: ca 2 TF phai khong bearish/bullish (khong co conflict hoac downtrend)
@@ -1227,6 +1259,21 @@ class TradingBot:
                 (reversal_dir == 1  and ((_micro_spike_dump and not _is_range_rev) or _rev_1h_blocked)) or
                 (reversal_dir == -1 and ((_micro_spike_pump and not _is_range_rev) or _rev_1h_blocked))
             )
+            # Post-peak block cho reversal: EMA lag → RSI oversold trong downtrend = false reversal
+            # MAGMAUSDT pattern: RSI < 30 sau 40 phut giam, nhung gia van o tren day 2h thuc su
+            # Chi cho phep neu price o extreme 2h bottom (< 20%) — day that su khong phai EMA lag
+            if not reversal_spike_blocked and _post_peak_decline_long and reversal_dir == 1 and _m2h_pos >= 0.20:
+                reversal_spike_blocked = True
+                logger.info(
+                    f"{symbol}: reversal LONG blocked — post-peak decline {_ppd_drop*100:.1f}% "
+                    f"({_ppd_hi_age}c ago), 2h_pos={_m2h_pos:.2f} not at extreme bottom"
+                )
+            if not reversal_spike_blocked and _post_trough_rise_short and reversal_dir == -1 and _m2h_pos <= 0.80:
+                reversal_spike_blocked = True
+                logger.info(
+                    f"{symbol}: reversal SHORT blocked — post-trough rise {_ppd_rise*100:.1f}% "
+                    f"({_ppd_lo_age}c ago), 2h_pos={_m2h_pos:.2f} not at extreme top"
+                )
             if not reversal_spike_blocked:
                 # RSI slope check: reversal chi hop le khi RSI dang THUC SU dao chieu
                 # RSI < 30 nhung van dang giam = falling knife; phai tang 3 nen lien tiep moi vao
@@ -1552,6 +1599,21 @@ class TradingBot:
             best.tp_roi_override = 0.12
             _direction_flipped = True
             logger.info(f"{symbol}: 2h range flip LONG→SHORT at 2h top ({_m2h_pos:.0%}), TP=12%")
+
+        # POST-PEAK / POST-TROUGH BLOCK: EMA(100/250) lag sau khi gia qua dinh/day
+        # MAGMAUSDT pattern: EMA con bullish nhung coin da giam 1% trong 40+ phut → LONG = sai chieu
+        # Chi block khi khong co flip khac da xay ra (direction_flipped = danh gia lai sau flip)
+        if not _direction_flipped:
+            if best.direction == 1 and _post_peak_decline_long:
+                return _block(
+                    f"skip LONG — post-peak decline {_ppd_drop*100:.1f}% below 60c high "
+                    f"({_ppd_hi_age}c ago) EMA lag | scalp={scalp_trend}"
+                )
+            if best.direction == -1 and _post_trough_rise_short:
+                return _block(
+                    f"skip SHORT — post-trough rise {_ppd_rise*100:.1f}% above 60c low "
+                    f"({_ppd_lo_age}c ago) EMA lag | scalp={scalp_trend}"
+                )
 
         # ══ SHORT-TERM TREND CONFIRMATION — 3 CẤP ĐỘ ══════════════════════════
         #

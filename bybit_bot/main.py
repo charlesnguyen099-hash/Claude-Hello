@@ -785,6 +785,8 @@ class TradingBot:
         _ppd_rise = 0.0
         _ppd_hi_age = 0
         _ppd_lo_age = 0
+        _spike_dump_60c = False   # co nen dump don le > 1.5% trong 60c
+        _spike_pump_60c = False   # co nen pump don le > 1.5% trong 60c
         if not df_micro.empty and len(df_micro) >= 60:
             _ppd_price  = df_micro["close"].iloc[-1]
             _ppd_60h    = df_micro["high"].iloc[-60:].max()
@@ -796,12 +798,28 @@ class TradingBot:
             _ppd_drop   = (_ppd_60h - _ppd_price) / _ppd_60h if _ppd_60h > 0 else 0
             _ppd_rise   = (_ppd_price - _ppd_60l) / _ppd_60l if _ppd_60l > 0 else 0
             _ppd_thresh = 0.010 * _sp   # 1.0% altcoin, 0.5% BTC/ETH
-            if (_ppd_hi_age >= 15 and _ppd_drop > _ppd_thresh and scalp_trend != 1):
+
+            # Spike detection (% based, khong dung ATR vi chua tinh tai day)
+            # CHILLGUY pattern: dump -3.6% trong 1 nen 1m → price bounce 1.6% → SHORT sai
+            # Dung 1.5% cho altcoin (0.75% cho BTC/ETH) — spike bat thuong, khong phai move binh thuong
+            _ppd_spike_th = 0.015 * _sp
+            _ppd_60c_cl = df_micro["close"].iloc[-60:].values
+            _ppd_60c_op = df_micro["open"].iloc[-60:].values
+            _ppd_60c_bp = (_ppd_60c_cl - _ppd_60c_op) / (_ppd_60c_op + 1e-12)
+            _spike_dump_60c = any(b < -_ppd_spike_th for b in _ppd_60c_bp)
+            _spike_pump_60c = any(b >  _ppd_spike_th for b in _ppd_60c_bp)
+
+            # Spike bounce block: sau spike dump → price bounce = dump exhausted
+            # Block SHORT du scalp_trend = -1 (EMA lag sau spike dump)
+            _ppd_dump_bounce = _spike_dump_60c and _ppd_lo_age >= 15 and _ppd_rise > _ppd_thresh
+            _ppd_pump_fade   = _spike_pump_60c and _ppd_hi_age >= 15 and _ppd_drop > _ppd_thresh
+
+            if (_ppd_hi_age >= 15 and _ppd_drop > _ppd_thresh and (scalp_trend != 1  or _ppd_pump_fade)):
                 _post_peak_decline_long = True
-                logger.debug(f"{symbol}: post-peak-decline — {_ppd_drop*100:.1f}% below 60c high ({_ppd_hi_age}c ago)")
-            if (_ppd_lo_age >= 15 and _ppd_rise > _ppd_thresh and scalp_trend != -1):
+                logger.debug(f"{symbol}: post-peak-decline — {_ppd_drop*100:.1f}% below 60c high ({_ppd_hi_age}c ago) spike_pump={_spike_pump_60c}")
+            if (_ppd_lo_age >= 15 and _ppd_rise > _ppd_thresh and (scalp_trend != -1 or _ppd_dump_bounce)):
                 _post_trough_rise_short = True
-                logger.debug(f"{symbol}: post-trough-rise — {_ppd_rise*100:.1f}% above 60c low ({_ppd_lo_age}c ago)")
+                logger.debug(f"{symbol}: post-trough-rise — {_ppd_rise*100:.1f}% above 60c low ({_ppd_lo_age}c ago) spike_dump={_spike_dump_60c}")
 
         if not df_micro.empty and len(df_micro) >= 15:
             _micro_atr    = compute_atr(df_micro).iloc[-1]

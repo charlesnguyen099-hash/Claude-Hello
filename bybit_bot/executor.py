@@ -457,6 +457,25 @@ class Executor:
                         tick_size=_hc_tick,
                     )
 
+            # Max hold-time exit: dong lenh neu ngam von qua lau ma dang lo
+            # Tranh tinh huong: lenh sai chieu, gia khong hit SL, von bi giu hang gio
+            # Nguong: 3h hold + lo > 20% ROI (chua hit SL nhung chac chan khong phuc hoi)
+            _open_ts  = self._open_time.get(symbol, 0)
+            _hold_sec = time.time() - _open_ts if _open_ts > 0 else 0
+            if _hold_sec > 3 * 3600:  # 3 gio
+                _pos_val = max(_fval(pos, "positionValue", 0), 1.0)
+                _lev_h   = max(1.0, _fval(pos, "leverage", 10.0))
+                _margin  = _pos_val / _lev_h
+                _upnl    = _fval(pos, "unrealisedPnl")
+                _pnl_roi = _upnl / _margin if _margin > 0 else 0
+                if _pnl_roi < -0.20:  # lo > 20% ROI
+                    logger.warning(
+                        f"{symbol}: max-hold {_hold_sec/3600:.1f}h exceeded, "
+                        f"PnL_ROI={_pnl_roi*100:.0f}% < -20% → force close (save capital)"
+                    )
+                    self._close_position(pos)
+                    continue
+
             # Emergency close: chi khi loss > 80% margin va SL exchange bi miss
             if self.risk_mgr.should_close_position(pos, mark_price):
                 logger.warning(f"{symbol}: Emergency close — excessive loss")

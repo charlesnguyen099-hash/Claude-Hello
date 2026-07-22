@@ -1854,21 +1854,43 @@ class TradingBot:
         # [AEQ-11] Flat/ranging at top or bottom of 2h range: tranh Long khi gia flat o dinh (distribution)
         # ONDO pattern: price flat 30+ min o top range -> distribution zone -> Long bi SL
         # std < 0.15% cua mean = flat (price khong di chuyen dang ke trong 20 nen gan nhat)
+        # FLIP thay vi block khi o CUC DOAN that su (>=80% / <=20% cua 2h range):
+        #   flat o dinh = distribution → SHORT dung chieu; flat o day = accumulation → LONG dung chieu
+        #   (nguyen tac: dinh phai short, day phai long — khong bo lenh tiem nang)
+        # Vung giua (50-80% / 20-50%): van block — chua du gan dinh/day de flip tu tin
         if not is_reversal and not df_micro.empty and len(df_micro) >= 20:
             _close20  = df_micro["close"].iloc[-20:]
             _std20    = _close20.std()
             _mean20   = _close20.mean()
             if _mean20 > 0 and (_std20 / _mean20) < 0.0015:  # std < 0.15% = flat range
                 if best.direction == 1 and _m2h_pos > 0.50:
-                    return _block(
-                        f"skip LONG - flat at 2h top ({_m2h_pos:.0%}), "
-                        f"std={_std20/_mean20*100:.3f}% (distribution zone)"
-                    )
-                if best.direction == -1 and _m2h_pos < 0.50:
-                    return _block(
-                        f"skip SHORT - flat at 2h bottom ({_m2h_pos:.0%}), "
-                        f"std={_std20/_mean20*100:.3f}% (accumulation zone)"
-                    )
+                    if _m2h_pos >= 0.80 and not _direction_flipped:
+                        best.direction = -1
+                        best.tp_roi_override = 0.10
+                        _direction_flipped = True
+                        logger.info(
+                            f"{symbol}: AEQ-11 flip LONG→SHORT — flat at 2h top ({_m2h_pos:.0%}), "
+                            f"distribution zone, TP=10%"
+                        )
+                    else:
+                        return _block(
+                            f"skip LONG - flat at 2h top ({_m2h_pos:.0%}), "
+                            f"std={_std20/_mean20*100:.3f}% (distribution zone)"
+                        )
+                elif best.direction == -1 and _m2h_pos < 0.50:
+                    if _m2h_pos <= 0.20 and not _direction_flipped:
+                        best.direction = 1
+                        best.tp_roi_override = 0.10
+                        _direction_flipped = True
+                        logger.info(
+                            f"{symbol}: AEQ-11 flip SHORT→LONG — flat at 2h bottom ({_m2h_pos:.0%}), "
+                            f"accumulation zone, TP=10%"
+                        )
+                    else:
+                        return _block(
+                            f"skip SHORT - flat at 2h bottom ({_m2h_pos:.0%}), "
+                            f"std={_std20/_mean20*100:.3f}% (accumulation zone)"
+                        )
 
         # [AEQ-12] Pump-top / dump-bottom prevention (đu đỉnh / đu đáy toàn diện)
         #
@@ -2161,7 +2183,7 @@ class TradingBot:
         # → Dung 8% ROI lam TP nho (an toan voi moi leverage tu 10x tro len)
         _tp_small  = 0.08   # 8% ROI — TP nho cho short-term extrema
         _tp_medium = 0.15   # 15% ROI — TP trung binh
-        _tp_large  = 0.0    # 0 = dung potential scaling binh thuong (12-50%)
+        _tp_large  = 0.0    # 0 = dung potential scaling binh thuong (12-60%)
 
         # Xac dinh kich thuoc extrema tu cac bien da tinh truoc do
         # _ex_near_peak/_ex_near_trough: da xac dinh trong AEQ-EXTREMA block

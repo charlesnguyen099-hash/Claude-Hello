@@ -1,9 +1,9 @@
 """
 Risk Manager
-- SL dong: khoang cach = ATR * SL_MULTIPLIER (config), tinh tu entry
-- TP1 = entry +/- ATR * TP1_MULTIPLIER; TP2 = entry +/- ATR * TP2_MULTIPLIER
-- Phi 0.11% tich hop vao ca SL lan TP
-- Von moi lenh = 10% equity, khong all-in
+- SL/TP theo ROI (% tren margin): TP scale theo potential [12%, 60%]
+- SL = min(SL_TP_RATIO x TP, tran an toan thanh ly) — TP khong bi scale xuong
+- Leverage chon cao nhat thoa: SL >= TP, SL trong vung an toan liq, TP loi rong >= 5% sau phi
+- Von moi lenh theo potential: [5%, 25%] cua max(equity, EQUITY_FLOOR)
 """
 
 import logging
@@ -58,21 +58,14 @@ class RiskManager:
             logger.warning(f"{signal.symbol}: cannot get instrument info: {e}")
             return None
 
-        # CAPITAL SCALE THEO DO TIEM NANG LENH:
+        # DO TIEM NANG LENH (potential [0,1]):
         # Consensus (so strategies dong thuan) x Signal Strength (0.0-1.0)
-        # Cang nhieu strategy dong thuan + strength cao = lenh cang tiem nang = capital lon hon
-        #
-        # Cong thuc:
         #   potential = (consensus/7) * 0.6 + strength * 0.4   (trong so: consensus quan trong hon)
-        #   scale = (0.5 + potential * 2.0) * 3.0   -> range [1.5x, 7.5x]
-        #     potential=0.0 (consensus=1,strength=0): scale=1.5x  (lenh yeu)
-        #     potential=0.5 (consensus=3-4,str~0.7): scale=4.5x  (lenh trung binh)
-        #     potential=1.0 (consensus=7,strength=1): scale=7.5x (lenh manh nhat)
+        # Dung cho CA HAI: TP ROI scale [12%, 60%] va VON scale [5%, 25%] equity
         consensus = getattr(signal, 'consensus', 1)
         strength  = getattr(signal, 'strength',  0.5)
         potential = (consensus / 7) * 0.6 + strength * 0.4
         potential = max(0.0, min(1.0, potential))
-        scale_factor = (0.5 + potential * 2.0) * 3.0   # [1.5x, 7.5x] — 3x capital boost
 
         # Lay leverage truoc de tinh SL/TP theo ROI
         exchange_max_lev = self.client.get_max_leverage(signal.symbol) if config.USE_MAX_LEVERAGE \
@@ -86,59 +79,63 @@ class RiskManager:
         #   ROI = (price_dist / entry) * leverage
         #   price_dist = ROI * entry / leverage
         #
-        # TP ROI: scale theo potential [12%, 50%]
-        #   potential=0 -> TP ROI=12%, potential=1 -> TP ROI=50%
-        # SL ROI = SL_TP_RATIO x TP ROI (hien tai 5x)
-        #   -> SL ROI range: [60%, 250%]
-        #   -> SL toi thieu 60% ROI (khi TP=12%), SL toi da 250% ROI (khi TP=50%)
+        # TP ROI: scale theo potential [12%, 60%] — khong con tran 30%
+        #   potential=0 -> TP ROI=12%, potential=1 -> TP ROI=60%
+        # SL ROI muc tieu = SL_TP_RATIO x TP (5x), nhung bi clamp boi vung an toan thanh ly
+        # trong vong chon leverage ben duoi — TP giu nguyen, chi SL bi gioi han
         _tp_roi_override = getattr(signal, 'tp_roi_override', 0.0)
         if _tp_roi_override > 0:
             tp_roi = _tp_roi_override
         else:
             tp_roi = config.TP_ROI_MIN + potential * (config.TP_ROI_MAX - config.TP_ROI_MIN)
 
-        # CHON LEVERAGE THOA MAN CA 2 RANG BUOC (khong bao gio skip lenh vi leverage):
-        #   1. LIQ:  sl_roi = 5*tp_roi ≤ max_sl_roi(L) = (1 - 0.005*L) * 0.9
-        #      (SL phai nam tren gia thanh ly; neu vuot → scale TP/SL xuong, giu ty le 5:1)
-        #   2. FEE:  tp_roi_hieu_luc ≥ ROUND_TRIP_FEE*L + 5% buffer
-        #      (TP hit phai LOI sau phi — phi theo ROI ty le thuan voi leverage)
-        # Leverage cao → phi an ROI nhieu + liq clamp ep TP nho → co the khong ton tai TP loi.
-        # Duyet L giam dan tu leverage hien tai: L thap hon luon de thoa (phi giam, max_sl tang)
-        # → lay L CAO NHAT thoa ca 2. Bug cu: check tuan tu roi SKIP → miss lenh flip TP=8%
-        # va lenh manh TP=30% tren coin 100x (liq clamp keo TP=9% < nguong phi 16%).
+        # CHON LEVERAGE — TP GIU NGUYEN GIA TRI DAY DU, chi SL bi clamp (khong bao gio skip):
+        #   1. LIQ:  sl_roi = min(5*tp_roi, max_sl(L)) voi max_sl(L) = min(0.75, (1-0.005L)*0.9)
+        #      SL phai nam TREN gia thanh ly. Tran cung 0.75 de emergency close (-0.80) luon
+        #      fire SAU exchange SL — tranh conflict logic voi should_close_position.
+        #   2. SL >= TP: neu clamp ep SL hep hon TP → leverage qua cao, giam L xuong
+        #      (lenh can khoang tho it nhat bang TP; L thap hon → max_sl rong hon)
+        #   3. FEE: tp_roi ≥ ROUND_TRIP_FEE*L + 5% → TP hit luon LOI RONG ≥5% margin sau phi
+        # Duyet L giam dan → lay L CAO NHAT thoa ca 3.
+        # Khac ban cu: TP KHONG bi scale xuong theo liq clamp nua (bo tran TP 30% →
+        # TP 60% kha thi: L=66, SL clamp ~60%, ty le nen tu 5:1 ve ~1:1 cho lenh manh).
+        # Luon ton tai L hop le: tai L=1 max_sl=0.75 ≥ tp (tp da clamp ≤0.70), fee=0.11%.
         MAINT_RATE_EST = 0.005   # 0.5% maintenance margin (Bybit typical)
         LIQ_BUFFER     = 0.10    # 10% safety buffer
         _min_net_roi   = 0.05    # loi rong toi thieu 5% margin sau phi
 
-        _chosen_lev    = 0
-        _tp_roi_eff    = 0.0
+        tp_roi = min(tp_roi, 0.70)   # tran cung: dam bao SL >= TP ton tai o L=1 (max_sl=0.75)
+
+        _chosen_lev = 0
+        _sl_roi_eff = 0.0
         for _L in range(leverage, 0, -1):
-            _max_sl = max(0.20, (1.0 - MAINT_RATE_EST * _L) * (1.0 - LIQ_BUFFER))
-            _tp_eff = min(tp_roi, _max_sl / config.SL_TP_RATIO)   # sau liq clamp (giu 5:1)
-            if _tp_eff >= config.ROUND_TRIP_FEE * _L + _min_net_roi:
+            _max_sl = max(0.20, min(0.75, (1.0 - MAINT_RATE_EST * _L) * (1.0 - LIQ_BUFFER)))
+            _sl_eff = min(tp_roi * config.SL_TP_RATIO, _max_sl)
+            if _sl_eff < tp_roi:                     # SL hep hon TP → can L thap hon
+                continue
+            if tp_roi >= config.ROUND_TRIP_FEE * _L + _min_net_roi:
                 _chosen_lev = _L
-                _tp_roi_eff = _tp_eff
+                _sl_roi_eff = _sl_eff
                 break
 
         if _chosen_lev < 1:
-            logger.warning(f"{signal.symbol}: SKIP — TP_ROI={tp_roi*100:.0f}% cannot beat fees at any leverage")
+            logger.warning(f"{signal.symbol}: SKIP — TP_ROI={tp_roi*100:.0f}% khong tim duoc leverage hop le")
             return None
 
-        if _chosen_lev != leverage or _tp_roi_eff < tp_roi:
+        if _chosen_lev != leverage:
             logger.info(
-                f"{signal.symbol}: lev {leverage}x→{_chosen_lev}x TP_ROI {tp_roi*100:.0f}%→{_tp_roi_eff*100:.0f}% "
-                f"(fee+liq viability, ratio {config.SL_TP_RATIO:.0f}:1 kept)"
+                f"{signal.symbol}: lev {leverage}x→{_chosen_lev}x (fee+liq viability) | "
+                f"TP={tp_roi*100:.0f}% SL={_sl_roi_eff*100:.0f}% (SL/TP={_sl_roi_eff/tp_roi:.1f})"
             )
         leverage = _chosen_lev
-        tp_roi   = _tp_roi_eff
-        sl_roi   = tp_roi * config.SL_TP_RATIO
+        sl_roi   = _sl_roi_eff
 
         tp_dist = tp_roi * entry / leverage
         sl_dist = sl_roi * entry / leverage
 
         logger.info(
             f"{signal.symbol}: lev={leverage}x | "
-            f"TP_ROI={tp_roi*100:.0f}% SL_ROI={sl_roi*100:.0f}% (={sl_roi/tp_roi:.0f}xTP) | "
+            f"TP_ROI={tp_roi*100:.0f}% SL_ROI={sl_roi*100:.0f}% (SL/TP={sl_roi/tp_roi:.1f}) | "
             f"tp_dist={tp_dist:.6f} sl_dist={sl_dist:.6f}"
         )
 
@@ -151,50 +148,35 @@ class RiskManager:
         def _ceil_qty(q: float) -> float:
             return round(math.ceil(q / qty_step) * qty_step, _qty_decimals)
 
-        # MIN-QTY BASED POSITION SIZING:
-        # Qty = min_qty * base_mult * consensus_boost
-        # base_mult: 10x-15x min_qty (theo consensus), consensus_boost: 1.0-2.0x (theo strength)
-        # Neu equity khong du → ha dan multiplier xuong cho den khi vua von
-        # Muc dich: size lon hon, bat duoc profit on dinh, khong phu thuoc % equity (qua nho)
-        #
-        #   base_mult: consensus=1 → 10x, consensus=7 → 15x (scale tuyen tinh)
-        #   consensus_boost: strength=0 → 1.0x, strength=1 → 2.0x
-        #   final_mult = base_mult * consensus_boost → range [10x, 30x]
-        base_mult = 30 + int((consensus / 7) * 20)  # 30 → 50 theo consensus
-        base_mult = max(30, min(50, base_mult))
-        consensus_boost = 1.0 + strength             # 1.0 → 2.0 theo strength
-        final_mult = base_mult * consensus_boost     # 30x → 100x
+        # VON THEO TIEM NANG LENH (% equity, khong phu thuoc min_qty tung coin):
+        #   capital_pct = CAPITAL_PCT_MIN + potential * (CAPITAL_PCT_MAX - CAPITAL_PCT_MIN)
+        #   -> lenh yeu (potential=0): 5% equity, lenh manh nhat (potential=1): 25% equity
+        # EQUITY_FLOOR: equity giam sau chuoi thua thi lenh tiem nang van duoc size
+        # tren floor (mien margin thuc te <= equity con lai)
+        MIN_NOTIONAL = 5.0   # Bybit min order value
 
-        MIN_NOTIONAL = 5.0
+        _cap_pct   = config.CAPITAL_PCT_MIN + potential * (config.CAPITAL_PCT_MAX - config.CAPITAL_PCT_MIN)
+        _eff_eq    = max(equity, config.EQUITY_FLOOR)
+        _cap_target = min(_eff_eq * _cap_pct, equity)   # khong bao gio vuot equity thuc
+        _notional_target = _cap_target * leverage
 
-        # Thu lan luot tu final_mult xuong den 1x (min_qty), chon mult vua equity
-        qty = 0.0
-        _used_mult = 0.0
-        for _try_mult in [final_mult, final_mult * 0.7, final_mult * 0.5,
-                          base_mult, 30.0, 20.0, 15.0, 10.0, 5.0, 3.0, 1.5, 1.0]:
-            _q = _round_qty(min_qty * _try_mult)
-            if _q < min_qty:
-                _q = min_qty
-            _notional_try = _q * signal.entry_price
-            _cap_try      = _notional_try / leverage
-            if _cap_try <= equity and _notional_try >= MIN_NOTIONAL:
-                qty = _q
-                _used_mult = _try_mult
-                break
+        qty = _round_qty(_notional_target / entry)
+        if qty < min_qty:
+            qty = min_qty
 
-        if qty <= 0:
-            # Last resort: min_qty neu notional >= $5, margin <= equity
-            _q = _ceil_qty(MIN_NOTIONAL / signal.entry_price)
-            _q = max(_q, min_qty)
-            if _q * signal.entry_price / leverage <= equity:
-                qty = _q
-                _used_mult = qty / min_qty
-            else:
-                logger.warning(f"{signal.symbol}: even min_qty notional exceeds equity={equity:.2f}$ -> skip")
-                return None
+        # Bybit min notional $5: nang qty len neu can
+        if qty * entry < MIN_NOTIONAL:
+            qty = max(_ceil_qty(MIN_NOTIONAL / entry), min_qty)
 
-        notional    = qty * signal.entry_price
+        notional     = qty * entry
         capital_used = notional / leverage
+
+        if capital_used > equity:
+            logger.warning(
+                f"{signal.symbol}: margin {capital_used:.2f}$ > equity {equity:.2f}$ "
+                f"(min_qty/min_notional qua lon cho equity) -> skip"
+            )
+            return None
 
         fee_usdt = notional * config.ROUND_TRIP_FEE
 
@@ -203,10 +185,10 @@ class RiskManager:
         tp = entry + d * tp_dist
 
         logger.info(
-            f"{signal.symbol}: {side} lev={leverage}x | consensus={consensus} str={strength:.2f} | "
-            f"mult={_used_mult:.1f}x({base_mult}base×{consensus_boost:.1f}boost) | "
+            f"{signal.symbol}: {side} lev={leverage}x | consensus={consensus} str={strength:.2f} "
+            f"potential={potential:.2f} | cap_pct={_cap_pct*100:.0f}% | "
             f"qty={qty} | notional={notional:.2f}$ | capital={capital_used:.2f}$ | "
-            f"TP_ROI=+{tp_roi*100:.0f}% SL_ROI=-{sl_roi*100:.0f}% (SL={config.SL_TP_RATIO:.0f}xTP)"
+            f"TP_ROI=+{tp_roi*100:.0f}% SL_ROI=-{sl_roi*100:.0f}% (SL/TP={sl_roi/tp_roi:.1f})"
         )
 
         return TradeParams(

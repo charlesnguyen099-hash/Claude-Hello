@@ -45,10 +45,18 @@ ROUND_TRIP_FEE = TAKER_FEE * 2   # 0.11% tong phi ca 2 chieu
 USE_MAX_LEVERAGE       = True
 MAX_LEVERAGE           = 100   # Dung leverage cao nhat exchange cho phep moi coin
 DEFAULT_LEVERAGE       = 10
-# Risk-based sizing: RISK_PER_TRADE_PCT% equity mat neu SL hit (scale theo consensus)
-# RISK_PER_TRADE_PCT=0.01 -> max 1% equity mat moi lenh -> 100 lenh SL lien tiep het account
-RISK_PER_TRADE_PCT = 0.01   # Max 1% equity mat khi SL hit (base, scale voi consensus)
-MAX_CAPITAL_PCT    = 0.10   # Max 10% equity dung lam margin moi lenh
+# VON MOI LENH THEO TIEM NANG (potential-scaled capital):
+#   potential = f(consensus, strength) trong [0,1]
+#   capital = effective_equity * (CAPITAL_PCT_MIN + potential * (CAPITAL_PCT_MAX - CAPITAL_PCT_MIN))
+#   -> lenh yeu: 5% equity (rui ro nho), lenh manh nhat: 25% equity (von lon de an dam)
+# EQUITY_FLOOR: effective_equity = max(equity, EQUITY_FLOOR) — sau chuoi thua equity giam,
+#   lenh tiem nang van duoc size tren floor de khong bo lo co hoi (mien margin <= equity thuc)
+CAPITAL_PCT_MIN = 0.05   # 5% equity — lenh kem tiem nang
+CAPITAL_PCT_MAX = 0.25   # 25% equity — lenh tiem nang cao nhat
+EQUITY_FLOOR    = 30.0   # USDT — san tinh size khi equity nho
+# RISK_PER_TRADE_PCT / MAX_CAPITAL_PCT: KHONG DUNG — thay bang CAPITAL_PCT_MIN/MAX o tren
+RISK_PER_TRADE_PCT = 0.01
+MAX_CAPITAL_PCT    = 0.10
 # So lenh mo cung luc: khong gioi han cung, phu thuoc do tiem nang thi truong va equity con lai
 # ATR period (dung cho compute_atr trong signal analysis, KHONG dung cho SL/TP sizing)
 # SL/TP sizing hien tai dung ROI-based (xem TP_ROI_MIN/MAX, SL_TP_RATIO ben duoi)
@@ -61,15 +69,19 @@ ATR_PERIOD        = 14
 # TP1 toi da 6%, TP2 toi da 10%: TP phai co the dat duoc trong dieu kien binh thuong
 # SL/TP TINH THEO ROI% (% tren margin = loi/lo / von bo vao)
 # ROI = (price_dist / entry) * leverage
-# TP ROI: scale theo potential [12%, 50%] — lenh manh TP cao hon
-# SL ROI = SL_TP_RATIO x TP ROI (hien tai 5x)
-#   -> SL range [60%, 250%] ROI — toi thieu -60% ROI
-TP_ROI_MIN  = 0.12   # TP toi thieu 12% ROI (khi lenh yeu) -> SL toi thieu 60% ROI (5x)
-TP_ROI_MAX  = 0.30   # TP toi da 30% ROI (khi lenh manh) — chot loi som, khong de qua xa
-SL_TP_RATIO = 5.0    # SL luon gap 5 lan TP (SL ROI = 5 x TP ROI)
+# TP ROI: scale theo potential [12%, 60%] — lenh manh TP cao hon, KHONG con tran 30%
+# SL ROI = min(SL_TP_RATIO x TP ROI, tran an toan thanh ly):
+#   SL khong bao gio duoc vuot qua gia thanh ly (SL ngoai liq = vo nghia, chay margin truoc)
+#   -> lenh yeu  (TP 12%): SL = 60% (giu du 5:1)
+#   -> lenh manh (TP 60%): SL bi clamp ve ~60-75% theo leverage (ty le nen ve ~1:1)
+# TP KHONG bi scale xuong theo clamp — chi SL bi gioi han (risk_manager chon leverage phu hop)
+TP_ROI_MIN  = 0.12   # TP toi thieu 12% ROI (khi lenh yeu)
+TP_ROI_MAX  = 0.60   # TP toi da 60% ROI (khi lenh manh nhat) — bo tran 30% cu
+SL_TP_RATIO = 5.0    # SL muc tieu = 5 x TP (truoc khi clamp thanh ly)
 
 # --- Signal sensitivity -------------------------------------------------------
-MIN_SIGNAL_STRENGTH = 0.55   # Giam tu 0.60: bat them signal tiem nang
+MIN_SIGNAL_STRENGTH = 0.50   # Giam tu 0.55: bat them lenh — signal yeu gio duoc size nho (5% equity)
+                             # nen rui ro da duoc kiem soat bang capital scaling, khong can chan som
 MIN_ADX             = 12     # ADX >= 12 cho 1m scalp — 18 qua cao, block het trong sideway/Asian session
 MIN_CONSENSUS          = 2   # 2/7 strategies dong thuan — du voi 10+ AEQ gate downstream
 MIN_CONSENSUS_TRENDING = 2   # Dong bo voi MIN_CONSENSUS

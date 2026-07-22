@@ -399,7 +399,7 @@ class TradingBot:
         candles_since_trough = n - 1 - last_trough_idx
         return peaks, troughs, last_peak_price, last_trough_price, candles_since_peak, candles_since_trough
 
-    def _micro_entry_analysis(self, df_micro, direction: int, is_reversal: bool = False) -> bool:
+    def _micro_entry_analysis(self, df_micro, direction: int, is_reversal: bool = False, strong_trend: bool = False) -> bool:
         """
         Phan tich toan bo 1m candles de xac dinh timing entry.
         7 yeu to: EMA, momentum, volume, body size, micro structure, range, deceleration.
@@ -507,6 +507,8 @@ class TradingBot:
                     return False
 
         # 100-candle (~1.7h): block LONG neu o top, block SHORT neu o bottom
+        # strong_trend=True: BTC/coin dang uptrend manh (macro+scalp+micro confirm) → skip range block
+        # BTC tang tu 63678→66937: sau moi TP, range_pos>88% → block re-entry → miss tiep theo
         _range_window = min(100, n)
         if _range_window >= 20:
             high_rng = high.iloc[-_range_window:].max()
@@ -514,7 +516,7 @@ class TradingBot:
             rng = high_rng - low_rng
             if rng > 0:
                 range_pos = (price - low_rng) / rng
-                if not is_reversal:
+                if not is_reversal and not strong_trend:
                     if direction == 1 and range_pos > 0.88:
                         logger.debug(f"micro_entry: BLOCK long — 100c range_pos={range_pos:.2f} > 0.88")
                         return False
@@ -528,8 +530,9 @@ class TradingBot:
                     score += 1
 
         # 20-candle local range: block LONG top, block SHORT bottom
+        # strong_trend: trong uptrend manh, price lien tuc lam dinh moi → local_pos luon > 90% → skip
         _local_window = min(20, n)
-        if _local_window >= 10 and not is_reversal:
+        if _local_window >= 10 and not is_reversal and not strong_trend:
             local_high = high.iloc[-_local_window:].max()
             local_low  = low.iloc[-_local_window:].min()
             local_rng  = local_high - local_low
@@ -1799,25 +1802,37 @@ class TradingBot:
                 _aeq12_bypass_long  = _is_gradual_uptrend   and scalp_trend == 1 and macro_trend == 1
                 _aeq12_bypass_short = _is_gradual_downtrend and scalp_trend == -1 and macro_trend == -1
 
-                if best.direction == 1 and _at_10c_peak and _ext_up > _ext_thresh and not _aeq12_bypass_long:
-                    # Flip LONG→SHORT: o dinh ngắn hạn (30c spike), SHORT có xác suất cao
-                    # Dang o dinh ngắn hạn — co the tao dinh moi, nhung SHORT voi TP nho de khong lo
-                    best.direction = -1
-                    best.tp_roi_override = 0.08  # 8% ROI: dinh ngan han, chot nhanh
-                    _direction_flipped = True
-                    logger.info(
-                        f"{symbol}: AEQ-12 flip LONG→SHORT at 10c peak "
-                        f"({_ext_up*100:.1f}% above 30c low, scalp={scalp_trend}), TP=8%"
-                    )
-                if best.direction == -1 and _at_10c_trough and _ext_down > _ext_thresh and not _aeq12_bypass_short:
-                    # Flip SHORT→LONG: o day ngắn hạn (30c dump), LONG có xác suất cao
-                    best.direction = 1
-                    best.tp_roi_override = 0.08  # 8% ROI: day ngan han, chot nhanh
-                    _direction_flipped = True
-                    logger.info(
-                        f"{symbol}: AEQ-12 flip SHORT→LONG at 10c trough "
-                        f"({_ext_down*100:.1f}% below 30c high, scalp={scalp_trend}), TP=8%"
-                    )
+                # Volume exhaustion override: du bypass active, neu volume dang giam o peak/trough
+                # → move dang kiet suc → force flip (SLX SHORT at trough: volume giam, dump het hoi)
+                if not df_micro.empty and len(df_micro) >= 15:
+                    _vol5  = df_micro["volume"].iloc[-5:].mean()
+                    _vol15 = df_micro["volume"].iloc[-15:-5].mean()
+                    _vol_exhausted = (_vol5 < _vol15 * 0.65) if _vol15 > 0 else False
+                else:
+                    _vol_exhausted = False
+
+                if best.direction == 1 and _at_10c_peak and _ext_up > _ext_thresh:
+                    # Bypass chi hop le neu KHONG co volume exhaustion tai dinh
+                    _bypass_ok = _aeq12_bypass_long and not _vol_exhausted
+                    if not _bypass_ok:
+                        best.direction = -1
+                        best.tp_roi_override = 0.08
+                        _direction_flipped = True
+                        logger.info(
+                            f"{symbol}: AEQ-12 flip LONG→SHORT at 10c peak "
+                            f"({_ext_up*100:.1f}% above 30c low, scalp={scalp_trend}, vol_exhausted={_vol_exhausted}), TP=8%"
+                        )
+                if best.direction == -1 and _at_10c_trough and _ext_down > _ext_thresh:
+                    # Bypass chi hop le neu KHONG co volume exhaustion tai day
+                    _bypass_ok = _aeq12_bypass_short and not _vol_exhausted
+                    if not _bypass_ok:
+                        best.direction = 1
+                        best.tp_roi_override = 0.08
+                        _direction_flipped = True
+                        logger.info(
+                            f"{symbol}: AEQ-12 flip SHORT→LONG at 10c trough "
+                            f"({_ext_down*100:.1f}% below 30c high, scalp={scalp_trend}, vol_exhausted={_vol_exhausted}), TP=8%"
+                        )
 
         # [AEQ-EXTREMA] Local peak/trough detection tren 1m — chinh xac hon AEQ-12 don gian
         # Tim local extrema trong 60 nen gan nhat, xac dinh price dang o dinh hay day that su
@@ -1970,8 +1985,14 @@ class TradingBot:
         # Tier1 bypass KHONG duoc mien kieu tra nay — timing xau van la timing xau du consensus cao
         # Direction flip (tai extrema/range): bypass gate — da co range/extrema analysis lam timing
         # Flip entry la counter-trend, micro_entry_analysis se reject do EMA/momentum nguoc chieu
+        # Strong trend: ca 3 TF (macro/macro_4h/scalp) confirm cung chieu → bypass range block trong micro_entry
+        # BTC tang 5%: sau moi TP, range_pos luon >88% → block re-entry → miss continuation
+        _strong_trend_up = (macro_trend == 1 and macro_4h == 1 and scalp_trend == 1)
+        _strong_trend_dn = (macro_trend == -1 and macro_4h == -1 and scalp_trend == -1)
+        _strong_trend = (best.direction == 1 and _strong_trend_up) or (best.direction == -1 and _strong_trend_dn)
+
         if not _direction_flipped:
-            if not self._micro_entry_analysis(df_micro, best.direction, is_reversal=False):
+            if not self._micro_entry_analysis(df_micro, best.direction, is_reversal=False, strong_trend=_strong_trend):
                 return _block(f"skip - MOMENTUM micro_entry_analysis rejected (consensus={len(signals)})")
 
         # [AEQ-PUMP] Live price vs 5-candle average: tranh đu đỉnh / đu đáy

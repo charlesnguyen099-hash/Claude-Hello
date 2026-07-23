@@ -1339,7 +1339,11 @@ class TradingBot:
                 _bo_true_ok = not (_bo_true != 0 and _bo_true != bo_sig.direction)
                 if not _bo_true_ok:
                     logger.info(f"{symbol} [BREAKOUT] block: trend chu dao {_bo_true} nguoc breakout {bo_sig.direction}")
-                if bo_ok and micro_ok and not is_spike and post_spike_ok and micro_spike_ok and bo_btc_ok and bo_h1_ok and bo_24h_ok and bo_trend_ok and bo_m2h_ok and bo_30c_ok and bo_aeq12_ok and bo_aeq_mh_ok and bo_vol_ok and _bo_vwt_ok and _bo_ez_ok and _bo_imm_ok and _bo_true_ok:
+                # ANTI-CHOP: breakout chi hop le khi co TREND RO (ADX>=20), khong pha vo gia trong chop
+                _bo_adx_ok = not (math.isnan(adx) or adx < 20.0)
+                if not _bo_adx_ok:
+                    logger.info(f"{symbol} [BREAKOUT] block: ADX={adx:.1f} < 20 (chop, khong phai breakout that)")
+                if bo_ok and micro_ok and not is_spike and post_spike_ok and micro_spike_ok and bo_btc_ok and bo_h1_ok and bo_24h_ok and bo_trend_ok and bo_m2h_ok and bo_30c_ok and bo_aeq12_ok and bo_aeq_mh_ok and bo_vol_ok and _bo_vwt_ok and _bo_ez_ok and _bo_imm_ok and _bo_true_ok and _bo_adx_ok:
                     # micro_entry_analysis da xoa: BREAKOUT theo dinh nghia la break qua range
                     # -> range check trong _micro_entry_analysis se HARD BLOCK moi breakout hop le
                     # Da co: bo_h1_ok, bo_m2h_ok, bo_trend_ok, micro_ok thay the
@@ -1906,6 +1910,11 @@ class TradingBot:
         elif len(short_signals) >= required_short:
             signals = short_signals
         else:
+            # ANTI-CHOP cho SCENARIO: chi bat scenario khi co TREND RO (ADX>=20).
+            # Scenario range-extreme (S7/S8) mean-revert trong chop la nguyen nhan lo -> chan.
+            if math.isnan(adx) or adx < 20.0:
+                logger.debug(f"{symbol}: scenario skip - ADX={adx:.1f} < 20 (chop, khong trend)")
+                return False
             # == SCENARIO ENGINE - bat lenh tiem nang khi strategies im lang ======
             # Strategies (EMA/RSI-based) co lag co huu - nhieu setup tiem nang RO RANG
             # tren cau truc gia khong duoc strategy nao bao (HBAR: uptrend moi tu day

@@ -45,18 +45,21 @@ ROUND_TRIP_FEE = TAKER_FEE * 2   # 0.11% tong phi ca 2 chieu
 USE_MAX_LEVERAGE       = True
 MAX_LEVERAGE           = 100   # Dung leverage cao nhat exchange cho phep moi coin
 DEFAULT_LEVERAGE       = 10
-# VON MOI LENH THEO TIEM NANG (potential-scaled capital):
+# VON MOI LENH THEO TIEM NANG (potential-scaled capital) — TREN EQUITY THAT:
 #   potential = f(consensus, strength) trong [0,1]
-#   capital = effective_equity * (CAPITAL_PCT_MIN + potential * (CAPITAL_PCT_MAX - CAPITAL_PCT_MIN))
-#   -> lenh yeu: 5% equity (rui ro nho), lenh manh nhat: 25% equity (von lon de an dam)
-# EQUITY_FLOOR: effective_equity = max(equity, EQUITY_FLOOR) — sau chuoi thua equity giam,
-#   lenh tiem nang van duoc size tren floor de khong bo lo co hoi (mien margin <= equity thuc)
-CAPITAL_PCT_MIN = 0.05   # 5% equity — lenh kem tiem nang
-CAPITAL_PCT_MAX = 0.25   # 25% equity — lenh tiem nang cao nhat
-EQUITY_FLOOR    = 30.0   # USDT — san tinh size khi equity nho
-# RISK_PER_TRADE_PCT / MAX_CAPITAL_PCT: KHONG DUNG — thay bang CAPITAL_PCT_MIN/MAX o tren
+#   capital = equity_that * (CAPITAL_PCT_MIN + potential * (CAPITAL_PCT_MAX - CAPITAL_PCT_MIN))
+#   -> lenh yeu: 4% equity (rui ro nho), lenh manh nhat: 15% equity (von lon hon, khong all-in)
+# KHONG all-in 1 lenh: moi lenh toi da MAX_CAPITAL_PCT equity + phai chua margin cho lenh khac
+CAPITAL_PCT_MIN = 0.04   # 4% equity — lenh kem tiem nang
+CAPITAL_PCT_MAX = 0.15   # 15% equity — lenh tiem nang cao nhat (coin trend manh)
+MAX_CAPITAL_PCT = 0.15   # HARD CAP: 1 lenh KHONG BAO GIO vuot 15% equity that
+# Chua margin cho nhieu lenh: 1 lenh dung toi da FRACTION nay cua margin CON TRONG (free)
+# → luon con cho >= (1-0.50)=50% free cho cac lenh tiem nang tiep theo
+MAX_FREE_MARGIN_FRAC = 0.50
+# San tinh size CHI de dam bao min-notional Bybit ($5), KHONG dung de phong % equity
+EQUITY_FLOOR    = 0.0    # bo hieu ung bom phong % tren tai khoan nho (nguyen nhan all-in)
+# RISK_PER_TRADE_PCT: KHONG DUNG
 RISK_PER_TRADE_PCT = 0.01
-MAX_CAPITAL_PCT    = 0.10
 # So lenh mo cung luc: khong gioi han cung, phu thuoc do tiem nang thi truong va equity con lai
 # ATR period (dung cho compute_atr trong signal analysis, KHONG dung cho SL/TP sizing)
 # SL/TP sizing hien tai dung ROI-based (xem TP_ROI_MIN/MAX, SL_TP_RATIO ben duoi)

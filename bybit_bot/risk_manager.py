@@ -160,16 +160,33 @@ class RiskManager:
         def _ceil_qty(q: float) -> float:
             return round(math.ceil(q / qty_step) * qty_step, _qty_decimals)
 
-        # VON THEO TIEM NANG LENH (% equity, khong phu thuoc min_qty tung coin):
+        # VON THEO TIEM NANG LENH — TREN EQUITY THAT, KHONG all-in, CHUA cho lenh khac:
         #   capital_pct = CAPITAL_PCT_MIN + potential * (CAPITAL_PCT_MAX - CAPITAL_PCT_MIN)
-        #   -> lenh yeu (potential=0): 5% equity, lenh manh nhat (potential=1): 25% equity
-        # EQUITY_FLOOR: equity giam sau chuoi thua thi lenh tiem nang van duoc size
-        # tren floor (mien margin thuc te <= equity con lai)
+        #   -> lenh yeu (potential=0): 4% equity, lenh manh nhat (potential=1): 15% equity
+        # 3 rang buoc de KHONG dồn von 1 lenh (nguyen nhan ton that nang):
+        #   1. HARD CAP: capital <= equity * MAX_CAPITAL_PCT (15%)
+        #   2. FREE MARGIN: capital <= free_margin * MAX_FREE_MARGIN_FRAC (chua >=50% free
+        #      cho cac lenh tiem nang tiep theo) — free = equity - margin dang dung
+        #   3. capital <= equity (khong the vuot tong von)
         MIN_NOTIONAL = 5.0   # Bybit min order value
 
-        _cap_pct   = config.CAPITAL_PCT_MIN + potential * (config.CAPITAL_PCT_MAX - config.CAPITAL_PCT_MIN)
-        _eff_eq    = max(equity, config.EQUITY_FLOOR)
-        _cap_target = min(_eff_eq * _cap_pct, equity)   # khong bao gio vuot equity thuc
+        # Margin dang bi chiem boi cac position dang mo (de tinh free margin)
+        _used_margin = 0.0
+        for _p in (open_positions or []):
+            try:
+                _pv  = float(_p.get("positionValue", 0) or 0)
+                _plv = max(1.0, float(_p.get("leverage", 1) or 1))
+                _used_margin += _pv / _plv
+            except (TypeError, ValueError):
+                continue
+        _free_margin = max(0.0, equity - _used_margin)
+
+        _cap_pct    = config.CAPITAL_PCT_MIN + potential * (config.CAPITAL_PCT_MAX - config.CAPITAL_PCT_MIN)
+        _cap_target = equity * _cap_pct
+        _cap_target = min(_cap_target, equity * config.MAX_CAPITAL_PCT)          # (1) hard cap 15%
+        _cap_target = min(_cap_target, _free_margin * config.MAX_FREE_MARGIN_FRAC)  # (2) chua free
+        _cap_target = min(_cap_target, equity)                                    # (3) tran tong von
+
         _notional_target = _cap_target * leverage
 
         qty = _round_qty(_notional_target / entry)
@@ -183,10 +200,18 @@ class RiskManager:
         notional     = qty * entry
         capital_used = notional / leverage
 
+        # Neu min-notional/min-qty ep margin vuot free margin → khong con cho, skip
+        # (giu von cho lenh khac thay vi dồn het vao lenh min-size nay)
         if capital_used > equity:
             logger.warning(
                 f"{signal.symbol}: margin {capital_used:.2f}$ > equity {equity:.2f}$ "
                 f"(min_qty/min_notional qua lon cho equity) -> skip"
+            )
+            return None
+        if capital_used > _free_margin and _free_margin > 0 and _used_margin > 0:
+            logger.info(
+                f"{signal.symbol}: margin {capital_used:.2f}$ > free {_free_margin:.2f}$ "
+                f"(da co {_used_margin:.2f}$ dang trade) -> skip, giu von cho lenh dang mo"
             )
             return None
 
@@ -198,7 +223,7 @@ class RiskManager:
 
         logger.info(
             f"{signal.symbol}: {side} lev={leverage}x | consensus={consensus} str={strength:.2f} "
-            f"potential={potential:.2f} | cap_pct={_cap_pct*100:.0f}% | "
+            f"potential={potential:.2f} | cap_pct={_cap_pct*100:.0f}% free={_free_margin:.1f}$ | "
             f"qty={qty} | notional={notional:.2f}$ | capital={capital_used:.2f}$ | "
             f"TP_ROI=+{tp_roi*100:.0f}% SL_ROI=-{sl_roi*100:.0f}% (SL/TP={sl_roi/tp_roi:.1f})"
         )

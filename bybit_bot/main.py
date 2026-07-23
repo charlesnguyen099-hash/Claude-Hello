@@ -2825,44 +2825,54 @@ class TradingBot:
         # Mien: reversal (mean-reversion co chu dich), scenario/flip (da co phan tich cau truc)
         if not is_reversal and not _direction_flipped and not _scenario_entry:
             _imm = self._immediate_momentum(df_micro, _sp)
-            _true_dir = self._true_direction(macro_trend, macro_4h, _vwt_dir, _vwt_str, _imm)
-            if _true_dir == 0:
-                logger.info(f"{symbol}: TRUE-DIR skip (macro={macro_trend}/{macro_4h} imm={_imm} vwt={_vwt_dir}:{_vwt_str:.2f}) - khong du xac nhan / nguoc move")
-                return _block("skip - khong du xac nhan trend / nguoc move hien tai")
-            # BENCHMARK TREND MANH - chi trade coin co trend RO/MANH (tap trung lenh chat luong,
-            # bo qua coin nho trend yeu). Trend phai dat 1 trong 3 muc do MANH:
-            #   (a) volume-trend RAT manh cung chieu (str >= 0.50), HOAC
-            #   (b) CA HAI macro TF cung chieu (trend da xac lap ro), HOAC
-            #   (c) 1 macro cung chieu + volume kha (str >= 0.40).
-            # Coin trend yeu (chi imm keo, volume/macro lang) -> KHONG dat benchmark -> SKIP.
-            _bm_strong_vol   = (_vwt_dir == _true_dir and _vwt_str >= 0.50)
-            _bm_both_macro   = (macro_trend == _true_dir and macro_4h == _true_dir)
-            _bm_macro_vol    = ((macro_trend == _true_dir or macro_4h == _true_dir)
-                                and _vwt_dir == _true_dir and _vwt_str >= 0.40)
-            if not (_bm_strong_vol or _bm_both_macro or _bm_macro_vol):
-                logger.info(
-                    f"{symbol}: BENCHMARK skip - trend chua du MANH "
-                    f"(vwt={_vwt_dir}:{_vwt_str:.2f} macro={macro_trend}/{macro_4h}) - cho lenh trend manh hon"
-                )
-                return _block("skip - trend yeu, chua dat benchmark trend manh")
-            # ANTI-CHOP bang ADX: coin phai co TREND RO (khong di ngang). ADX = suc manh
-            # xu huong (chuan). ADX thap = choppy/di ngang (HYPE range 0.57% dao dong ->
-            # whipsaw + TP dat qua xa range -> lo). Yeu cau ADX >= 20 cho momentum trade.
-            # (adx da tinh o dau ham tu df_signal; NaN -> coi nhu yeu -> skip)
+            # === MO HINH TREND-FOLLOWING + PULLBACK ENTRY (chong vao dinh/day dao chieu) ===
+            # DOGE/OPUSDT: short o DAY cu dump (macro van UP) -> lo. BASED: long o DINH (extended).
+            # Nguyen nhan: indicator 1m lag -> bot vao ngay diem kiet suc/dao chieu.
+            #
+            # 1. TREND DA XAC LAP: CA HAI macro TF (EMA100/250 ~5m + EMA300/600 ~15m) phai
+            #    DONG THUAN. Dump 8 nen trong uptrend -> macro van UP -> short = counter-trend -> chan.
+            if macro_trend == 0 or macro_trend != macro_4h:
+                logger.info(f"{symbol}: TREND skip - chua co trend XAC LAP (macro={macro_trend}/{macro_4h})")
+                return _block("skip - 2 macro TF khong dong thuan, khong co trend xac lap")
+            _T = macro_trend   # chieu trend da xac lap (= macro_4h)
+            # 2. ADX >= 20 (trend du manh, khong chop)
             if math.isnan(adx) or adx < 20.0:
-                logger.info(f"{symbol}: ANTI-CHOP skip - ADX={adx:.1f} < 20 (di ngang/chop, khong trend ro)")
-                return _block("skip - ADX thap (coin di ngang/chop), khong co trend ro")
-            # _true_dir da bao gom: dung chieu move hien tai + co xac nhan (volume/macro)
-            # + khong nguoc volume manh + khong nguoc ca 2 macro. Flip signal ve dung chieu.
-            # Exhaustion guard chay NGAY SAU se chan neu chieu moi roi vao cuc doan xau.
-            if best.direction != _true_dir:
-                logger.info(
-                    f"{symbol}: TRUE-DIR flip {'LONG' if best.direction==1 else 'SHORT'}"
-                    f"->{'LONG' if _true_dir==1 else 'SHORT'} (trend thuc: macro={macro_trend}/{macro_4h} "
-                    f"imm={_imm} vwt={_vwt_dir}:{_vwt_str:.2f}) - trade dung trend"
-                )
-                best.direction = _true_dir
-                best.tp_roi_override = 0.12
+                logger.info(f"{symbol}: TREND skip - ADX={adx:.1f}<20 (chop)")
+                return _block("skip - ADX<20 (chop)")
+            # 3. Volume KHONG duoc nguoc trend xac lap (dong tien phai ung ho trend)
+            if _vwt_dir == -_T and _vwt_str >= 0.45:
+                logger.info(f"{symbol}: TREND skip - volume nguoc trend (vwt={_vwt_dir}:{_vwt_str:.2f} T={_T})")
+                return _block("skip - volume nguoc trend xac lap")
+            # 4. VAO TREN PULLBACK, KHONG DUOI EXTENSION: gia khong duoc qua xa EMA21 theo
+            #    chieu trend (o dinh/day cua move = chase). BASED long o dinh (xa EMA tren) -> chan.
+            _ema21m = compute_ema(df_micro["close"], 21).iloc[-1]
+            _atrm = _atr_for_sl if _atr_for_sl > 0 else float(
+                (df_micro["high"].iloc[-14:] - df_micro["low"].iloc[-14:]).mean())
+            _price_now = _range_live_price if _range_live_price > 0 else df_micro["close"].iloc[-1]
+            _ext = (_price_now - _ema21m) / _atrm if _atrm > 0 else 0.0
+            if _T == 1 and _ext > 1.2:
+                logger.info(f"{symbol}: TREND skip LONG - extended {_ext:.1f} ATR tren EMA21 (chase dinh, cho pullback)")
+                return _block("skip LONG - gia extended tren EMA (chase dinh)")
+            if _T == -1 and _ext < -1.2:
+                logger.info(f"{symbol}: TREND skip SHORT - extended {_ext:.1f} ATR duoi EMA21 (chase day, cho rally)")
+                return _block("skip SHORT - gia extended duoi EMA (chase day)")
+            # 5. RESUME: immediate KHONG duoc dang keo MANH nguoc trend (pullback chua xong).
+            #    imm == -T -> dang pull nguoc -> cho. imm == T hoac 0 -> pullback xong/resume -> vao.
+            if _imm == -_T:
+                logger.info(f"{symbol}: TREND skip - imm={_imm} nguoc trend T={_T} (pullback chua xong, cho resume)")
+                return _block("skip - pullback chua ket thuc (imm nguoc trend)")
+            # DA QUA HET: trend xac lap + ADX manh + volume ung ho + entry pullback + resume.
+            # Direction = TREND XAC LAP (khong theo signal goc neu nguoc).
+            if best.direction != _T:
+                logger.info(f"{symbol}: TREND-ENTRY dat huong theo trend xac lap: {'LONG' if _T==1 else 'SHORT'} (signal goc {best.direction})")
+            best.direction = _T
+            best.tp_roi_override = 0.12
+            # Conviction cho capital: trend xac lap + volume manh + ADX cao = conviction cao
+            _conv = 0.5
+            if _vwt_dir == _T and _vwt_str >= 0.50: _conv += 0.25
+            if adx >= 30: _conv += 0.15
+            if abs(_ext) <= 0.5: _conv += 0.10   # entry dep sat EMA
+            best.strength = max(best.strength, min(1.0, _conv))
 
         # ======================================================================
         # |  FINAL EXHAUSTION-ZONE GUARD - QUYET DINH CUOI CUNG tai CUC DOAN     |

@@ -10,7 +10,8 @@ API_SECRET = os.getenv("BYBIT_API_SECRET", "YOUR_API_SECRET_HERE")
 TESTNET    = os.getenv("BYBIT_TESTNET", "false").lower() == "true"
 
 # --- Market Scanner -----------------------------------------------------------
-MIN_VOLUME_USDT_24H  = 100_000       # min 100K USDT/24h - bat ca coin nho co trend dep
+MIN_VOLUME_USDT_24H  = 10_000_000    # min 10M USDT/24h - CHI coin thanh khoan tot, bo coin nho
+                                     # (BASED 1.57M, OP 8.9M = noise). Coin lon trend that, it whipsaw.
 SCAN_INTERVAL_SEC    = 30            # cap nhat danh sach trending moi 30s (giam API call)
 
 # --- Multi-Timeframe Analysis -------------------------------------------------
@@ -53,8 +54,9 @@ DEFAULT_LEVERAGE       = 10
 # VON LON HON - vi gio chi trade lenh CHAT LUONG CAO (high-conviction), it lenh hon:
 # 'tha it ma chat con hon nhieu ma lo' -> moi lenh dung von lon de an dam.
 CAPITAL_PCT_MIN = 0.10   # 10% equity - lenh conviction thap nhat (van du dieu kien chat)
-CAPITAL_PCT_MAX = 0.30   # 30% equity - lenh trend cuc ro, xac nhan manh
-MAX_CAPITAL_PCT = 0.30   # HARD CAP: 1 lenh KHONG vuot 30% equity that
+CAPITAL_PCT_MAX = 0.50   # 50% equity - lenh conviction CUC CAO (trend xac lap + volume manh + ADX cao)
+MAX_CAPITAL_PCT = 0.50   # HARD CAP: 1 lenh toi da 50% equity (all-in that su nguy hiem vi
+                         # leverage + SL co the thanh ly ca tai khoan; 50% da rat manh tay)
 # Chua margin cho lenh khac: 1 lenh dung toi da 60% margin CON TRONG (free)
 # -> van con cho cho 1-2 lenh chat luong tiep theo, khong all-in
 MAX_FREE_MARGIN_FRAC = 0.60

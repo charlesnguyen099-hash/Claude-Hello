@@ -515,10 +515,10 @@ class TradingBot:
         # QUY TAC: KHONG trade trong 25% CUC DOAN (dinh/day) — "dinh hoac gan dinh, day hoac gan day".
         # Trend vao lenh o vung giua (25-75%): long tren pullback, short tren bounce — entry dep hon,
         # khong bao gio mua sat/gan dinh / ban sat/gan day. Tai cuc doan: flip neu dao chieu, else skip.
-        imm = self._immediate_momentum(df_micro, sp)
-        TOP, BOT = 0.75, 0.25
-        NEAR_TOP, NEAR_BOT = 0.70, 0.30
-        # 1. CUC DOAN CUNG (>=75% / <=25%): khong long dinh / short day. Flip neu dao chieu.
+        # QUY TAC CHAT: KHONG long trong 30% TREN cua range, KHONG short trong 30% DUOI.
+        # 'tha khong trade con hon trade lo' — chi trade o vung giua 30-70% (long tren pullback,
+        # short tren bounce). Tai cuc doan: flip neu co dao chieu ro, khong thi SKIP.
+        TOP, BOT = 0.70, 0.30
         if direction == 1 and pos >= TOP:
             if reject and not vol_locked:
                 return -1, 0.10, f"flip LONG->SHORT reject@dinh {pos:.0%}"
@@ -527,14 +527,6 @@ class TradingBot:
             if bounce and not vol_locked:
                 return 1, 0.10, f"flip SHORT->LONG bounce@day {pos:.0%}"
             return 0, 0.0, f"BLOCK SHORT@day/gan-day {pos:.0%}"
-        # 2. VUNG MO RONG (25-35% / 65-75%): TICH LUY/PHAN PHOI khi da dung.
-        # ONDO: short o 28% range NHUNG da BASING (da dung roi, imm=0) → tich luy → pump → lo.
-        # Chi chan khi da DUNG dong (imm khong con cung chieu trade) — downtrend CON roi (imm=-1)
-        # tai 25-35% van cho short (trend that su dang tiep dien).
-        if direction == -1 and pos <= NEAR_BOT and imm != -1:
-            return 0, 0.0, f"BLOCK SHORT@gan-day {pos:.0%} (da dung roi imm={imm}=tich luy)"
-        if direction == 1 and pos >= NEAR_TOP and imm != 1:
-            return 0, 0.0, f"BLOCK LONG@gan-dinh {pos:.0%} (da dung len imm={imm}=phan phoi)"
         return direction, 0.0, f"pass@{pos:.0%}"
 
     def _immediate_momentum(self, df, sp: float = 1.0, n: int = 7) -> int:
@@ -559,18 +551,23 @@ class TradingBot:
 
     def _true_direction(self, macro_trend: int, macro_4h: int, vwt_dir: int,
                         vwt_str: float, imm: int) -> int:
-        """TREND THUC SU tu nhieu tin hieu DONG THUAN (co trong so):
-          macro EMA(100/250)=1, macro EMA(300/600)=1, immediate(7c)=1.5, volume=2.0/0.8.
-        Tra +1/-1 khi diem tuyet doi >= 2.0 (trend RO), else 0 (choppy → khong trade momentum).
-        Muc dich: chi trade khi trend ro rang va DUNG chieu — REU/MORPHO deu bi chan."""
-        score = float(macro_trend) + float(macro_4h) + float(imm) * 1.5
-        if vwt_dir != 0:
-            score += vwt_dir * (2.0 if vwt_str >= 0.45 else 0.8)
-        if score >= 2.0:
+        """TREND THUC — CHI TRADE KHI RO TUYET DOI (high-conviction), else KHONG trade.
+        Triet ly user: 'tha khong trade con hon trade lo'. → yeu cau NHIEU tin hieu dong
+        thuan VA TUYET DOI KHONG tin hieu nao nguoc chieu. Bat ky mau thuan → 0 (skip).
+
+        4 tin hieu doc lap: macro EMA(100/250), macro EMA(300/600), immediate(7c),
+        volume-trend (chi tinh khi str>=0.40, dem 2 phieu vi volume quan trong nhat).
+        Dieu kien: >=2 phieu CUNG chieu VA 0 phieu nguoc → tra chieu do. Con lai → 0."""
+        votes = [int(macro_trend), int(macro_4h), int(imm)]
+        if vwt_dir != 0 and vwt_str >= 0.40:
+            votes += [int(vwt_dir), int(vwt_dir)]   # volume: trong so kep
+        up = sum(1 for v in votes if v == 1)
+        dn = sum(1 for v in votes if v == -1)
+        if up >= 2 and dn == 0:
             return 1
-        if score <= -2.0:
+        if dn >= 2 and up == 0:
             return -1
-        return 0
+        return 0   # mau thuan / khong du dong thuan → KHONG TRADE
 
     def _find_local_extrema(self, df, window: int = 5):
         """

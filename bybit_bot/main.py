@@ -1285,7 +1285,12 @@ class TradingBot:
                 _bo_ez_ok = (_bo_ez_dir == bo_sig.direction)
                 if not _bo_ez_ok:
                     logger.info(f"{symbol} [BREAKOUT] block exhaustion: {_bo_ez_reason}")
-                if bo_ok and micro_ok and not is_spike and post_spike_ok and micro_spike_ok and bo_btc_ok and bo_h1_ok and bo_24h_ok and bo_trend_ok and bo_m2h_ok and bo_30c_ok and bo_aeq12_ok and bo_aeq_mh_ok and bo_vol_ok and _bo_vwt_ok and _bo_ez_ok:
+                # Immediate momentum phai CUNG chieu breakout (khong long khi dang roi, short khi dang len)
+                _bo_imm = self._immediate_momentum(df_micro, _sp)
+                _bo_imm_ok = not ((bo_sig.direction == 1 and _bo_imm == -1) or (bo_sig.direction == -1 and _bo_imm == 1))
+                if not _bo_imm_ok:
+                    logger.info(f"{symbol} [BREAKOUT] block: immediate momentum nguoc chieu (imm={_bo_imm})")
+                if bo_ok and micro_ok and not is_spike and post_spike_ok and micro_spike_ok and bo_btc_ok and bo_h1_ok and bo_24h_ok and bo_trend_ok and bo_m2h_ok and bo_30c_ok and bo_aeq12_ok and bo_aeq_mh_ok and bo_vol_ok and _bo_vwt_ok and _bo_ez_ok and _bo_imm_ok:
                     # micro_entry_analysis da xoa: BREAKOUT theo dinh nghia la break qua range
                     # -> range check trong _micro_entry_analysis se HARD BLOCK moi breakout hop le
                     # Da co: bo_h1_ok, bo_m2h_ok, bo_trend_ok, micro_ok thay the
@@ -1656,6 +1661,16 @@ class TradingBot:
                         df_micro, best.direction, _rv_ez_price, rsi_now, _sp, vol_locked=True)
                     if _rv_ez_dir != best.direction:
                         logger.info(f"{symbol} [REVERSAL] block exhaustion: {_rv_ez_reason} — skip")
+                        return False
+                    # KHONG BAT DAO ROI: reversal LONG chi khi da co dau hieu XOAY (gia khong con
+                    # roi manh), reversal SHORT khi khong con tang manh. APLD/RDW: RSI<30 giua
+                    # downtrend manh → mua dip → dao roi → lo. Doi immediate momentum khong con nguoc.
+                    _rv_imm = self._immediate_momentum(df_micro, _sp)
+                    if best.direction == 1 and _rv_imm == -1:
+                        logger.info(f"{symbol} [REVERSAL] block LONG — gia dang roi manh (imm=-1), khong bat dao roi")
+                        return False
+                    if best.direction == -1 and _rv_imm == 1:
+                        logger.info(f"{symbol} [REVERSAL] block SHORT — gia dang tang manh (imm=1), khong ban dinh dang len")
                         return False
                     names = "+".join(s.strategy_name for s in signals)
                     rsi_label = f"RSI15m={rsi_now:.0f}({'OVERSOLD<30' if reversal_dir==1 else 'OVERBOUGHT>70'})"

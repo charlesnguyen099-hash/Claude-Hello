@@ -372,6 +372,114 @@ class TradingBot:
             return -1
         return 0
 
+    def _volume_confirmed_trend(self, df, sp: float = 1.0) -> tuple[int, float]:
+        """QUAN TOA XAC DINH TREND — ket hop VOLUME (trong so lon) + cau truc gia.
+        Tra ve (direction, strength) — direction: +1 up, -1 down, 0 khong ro;
+        strength 0.0-1.0 (do manh/ro cua trend, dung cho TP/SL scaling + priority).
+
+        Volume la yeu to QUYET DINH — trend that su phai co dong tien xac nhan:
+          - OBV (On-Balance Volume) slope: dong tien tich luy theo huong nao
+          - Directional volume: volume nen xanh vs do (ai dang thang the)
+          - Volume expansion: volume tang dan = trend con fuel (khong phai kiet suc)
+          - Price structure: EMA9/21/50 stack + higher-highs/lower-lows
+          - Net move: gia da di bao nhieu % (xac nhan co move that)
+
+        Dung cho MASTER AUTHORITY: neu strong+clear → mo lenh THEO huong nay,
+        flip moi signal nguoc chieu. Giai quyet HBAR (up+vol → short) va HYPE (down → long)."""
+        if df is None or df.empty or len(df) < 60:
+            return 0, 0.0
+
+        close  = df["close"]
+        open_  = df["open"]
+        high   = df["high"]
+        low    = df["low"]
+        volume = df["volume"]
+        n = len(df)
+        price = close.iloc[-1]
+
+        # ── 1. OBV slope (dong tien tich luy) — trong so cao nhat ──────────────
+        _chg = close.diff().fillna(0.0)
+        _dir_sign = _chg.apply(lambda x: 1.0 if x > 0 else (-1.0 if x < 0 else 0.0))
+        _obv = (_dir_sign * volume).cumsum()
+        obv_score = 0.0
+        if n >= 30:
+            _obv_now  = _obv.iloc[-1]
+            _obv_past = _obv.iloc[-30]
+            _obv_rng  = float(abs(_obv.iloc[-30:]).max()) + 1e-9
+            _obv_slope = (_obv_now - _obv_past) / _obv_rng
+            if   _obv_slope >  0.15: obv_score =  1.0
+            elif _obv_slope < -0.15: obv_score = -1.0
+            else: obv_score = _obv_slope / 0.15   # tuyen tinh trong vung yeu
+
+        # ── 2. Directional volume (buy vs sell) 20c ───────────────────────────
+        _rv = min(20, n)
+        _bull_v = volume.iloc[-_rv:][close.iloc[-_rv:] > open_.iloc[-_rv:]].sum()
+        _bear_v = volume.iloc[-_rv:][close.iloc[-_rv:] < open_.iloc[-_rv:]].sum()
+        _tot_v  = _bull_v + _bear_v
+        dvol_score = 0.0
+        if _tot_v > 0:
+            _br = _bull_v / _tot_v
+            dvol_score = (_br - 0.5) / 0.15   # 0.65→+1, 0.35→-1
+            dvol_score = max(-1.0, min(1.0, dvol_score))
+
+        # ── 3. Volume expansion (trend con fuel?) ─────────────────────────────
+        vexp = 0.0
+        if n >= 40:
+            _v_recent = volume.iloc[-10:].mean()
+            _v_prior  = volume.iloc[-40:-10].mean()
+            if _v_prior > 0:
+                _ratio = _v_recent / _v_prior
+                vexp = min(1.0, max(0.0, (_ratio - 1.0) / 0.5))   # +50% vol = full expansion
+
+        # ── 4. Price structure: EMA stack ─────────────────────────────────────
+        e9  = compute_ema(close, 9).iloc[-1]
+        e21 = compute_ema(close, 21).iloc[-1]
+        e50 = compute_ema(close, min(50, n - 1)).iloc[-1]
+        if   price > e9 > e21 > e50: struct_score =  1.0
+        elif price < e9 < e21 < e50: struct_score = -1.0
+        elif price > e21 and e9 > e21: struct_score =  0.5
+        elif price < e21 and e9 < e21: struct_score = -0.5
+        else: struct_score = 0.0
+
+        # ── 5. Higher-highs/lower-lows 15c ────────────────────────────────────
+        hhll = 0.0
+        if n >= 15:
+            _hr = high.iloc[-8:].max();  _hp = high.iloc[-15:-8].max()
+            _lr = low.iloc[-8:].min();   _lp = low.iloc[-15:-8].min()
+            if   _hr > _hp and _lr > _lp: hhll =  1.0
+            elif _hr < _hp and _lr < _lp: hhll = -1.0
+
+        # ── 6. Net move 30c (co move that su khong) ───────────────────────────
+        netmove = 0.0
+        if n >= 30 and close.iloc[-30] > 0:
+            _nm = (price - close.iloc[-30]) / close.iloc[-30]
+            netmove = max(-1.0, min(1.0, _nm / (0.010 * sp)))   # 1%*sp = full
+
+        # ── TONG HOP: volume nhom (OBV + dvol) la chu dao ────────────────────
+        _vol_core = obv_score * 0.5 + dvol_score * 0.5     # -1..1
+        _struct_core = struct_score * 0.5 + hhll * 0.3 + netmove * 0.2  # -1..1
+
+        # Direction — GATE CHAT de tranh doc nham chop/nhieu la trend:
+        #   1. Volume core manh (>0.30): OBV + directional volume dong thuan
+        #   2. EMA stack DAY DU (struct_score == ±1: price>e9>e21>e50): trend that
+        #   3. Net move THAT (abs>=0.35 = >=0.35%*sp): co di chuyen, khong phai đứng im
+        #   4. HH/LL khong nguoc chieu (>=0 cho up, <=0 cho down)
+        #   5. Struct core tong hop manh (>0.35)
+        if (_vol_core > 0.30 and struct_score >= 1.0 and abs(netmove) >= 0.35
+                and hhll >= 0.0 and _struct_core > 0.35):
+            direction = 1
+        elif (_vol_core < -0.30 and struct_score <= -1.0 and abs(netmove) >= 0.35
+                and hhll <= 0.0 and _struct_core < -0.35):
+            direction = -1
+        else:
+            return 0, 0.0
+
+        # Strength ~ do lon 2 core, ti le voi MOVE THUC (move nho khong the "manh")
+        # va boost boi volume expansion (trend con fuel). Chop move nho → strength thap.
+        _mag = (abs(_vol_core) + abs(_struct_core)) / 2.0
+        strength = min(1.0, _mag * (0.55 + 0.45 * abs(netmove)) * (1.0 + 0.2 * vexp))
+        return direction, round(strength, 3)
+
     def _find_local_extrema(self, df, window: int = 5):
         """
         Tim local peaks va troughs tren 1m data.
@@ -743,6 +851,10 @@ class TradingBot:
 
         scalp_trend = self._micro_trend(df_scalp)  # 5m trend cho post-spike check
 
+        # VOLUME-CONFIRMED TREND — tinh SOM de dung cho ca consensus reduction
+        # (uu tien coin trend ro) VA master authority (flip signal nguoc chieu ben duoi)
+        _vwt_dir, _vwt_str = self._volume_confirmed_trend(df_micro, _sp)
+
         # Strong trend flags — dung som cho EMA250, RSI guard, AEQ-4 bypass
         # Ca 3 TF (macro/macro_4h/scalp) cung chieu = trend that su, khong phai spike
         _strong_trend_up = (macro_trend == 1  and macro_4h == 1  and scalp_trend == 1)
@@ -1078,7 +1190,12 @@ class TradingBot:
                             if _bo_buy_press > _bo_thresh:
                                 bo_vol_ok = False
                                 logger.debug(f"{symbol} [BREAKOUT] AEQ-VOL block SHORT: buy_pressure={_bo_buy_press:.0%} at 2h bot {_m2h_pos:.0%}")
-                if bo_ok and micro_ok and not is_spike and post_spike_ok and micro_spike_ok and bo_btc_ok and bo_h1_ok and bo_24h_ok and bo_trend_ok and bo_m2h_ok and bo_30c_ok and bo_aeq12_ok and bo_aeq_mh_ok and bo_vol_ok:
+                # VOL-TREND guard cho BREAKOUT: breakout NGUOC volume-trend manh = false breakout
+                # (break len nhung OBV+volume dang DOWN manh → bull trap). Block, khong trade.
+                _bo_vwt_ok = not (_vwt_dir != 0 and _vwt_str >= 0.45 and bo_sig.direction != _vwt_dir)
+                if not _bo_vwt_ok:
+                    logger.info(f"{symbol} [BREAKOUT] block: nguoc vol-trend manh (vwt={_vwt_dir} str={_vwt_str:.2f})")
+                if bo_ok and micro_ok and not is_spike and post_spike_ok and micro_spike_ok and bo_btc_ok and bo_h1_ok and bo_24h_ok and bo_trend_ok and bo_m2h_ok and bo_30c_ok and bo_aeq12_ok and bo_aeq_mh_ok and bo_vol_ok and _bo_vwt_ok:
                     # micro_entry_analysis da xoa: BREAKOUT theo dinh nghia la break qua range
                     # -> range check trong _micro_entry_analysis se HARD BLOCK moi breakout hop le
                     # Da co: bo_h1_ok, bo_m2h_ok, bo_trend_ok, micro_ok thay the
@@ -1413,7 +1530,17 @@ class TradingBot:
                         f"reversal={'LONG' if reversal_dir==1 else 'SHORT'}) "
                         f"-> need {reversal_min}/{len(ALL_STRATEGIES)}"
                     )
-                if len(reversal_signals) >= reversal_min and reversal_confirmed:
+                # VOL-TREND guard cho REVERSAL: reversal la counter-trend tai RSI extreme
+                # (mua day RSI<30 / ban dinh RSI>70). Nhung neu volume-trend VERY STRONG
+                # nguoc chieu (locked-level 0.62) → khong phai diem dao chieu ma la trend
+                # manh dang chay → catch dao chieu = bat dao roi (falling knife). Block.
+                _rev_vwt_block = (_vwt_dir != 0 and _vwt_str >= 0.62 and reversal_dir != _vwt_dir)
+                if _rev_vwt_block:
+                    logger.info(
+                        f"{symbol} [REVERSAL] block: volume-trend VERY STRONG nguoc chieu "
+                        f"(vwt={_vwt_dir} str={_vwt_str:.2f} vs rev={reversal_dir}) — khong bat dao roi"
+                    )
+                if len(reversal_signals) >= reversal_min and reversal_confirmed and not _rev_vwt_block:
                     signals = reversal_signals
                     best = max(signals, key=lambda s: s.strength)
                     best.strength = min(0.95, best.strength + 0.15)
@@ -1540,22 +1667,32 @@ class TradingBot:
         #     duoc confirm ca 2 TF (coin_independently_*) = thuc luc rieng da chung minh,
         #     trade theo chieu cua chinh coin — khong bat coin phai "xin phep" BTC
         #     (penalty cu +1 consensus lam miss lenh tiem nang tren coin trend doc lap)
+        # VOLUME-TREND BONUS: coin co trend VOLUME ro (strength cao) → giam consensus
+        # yeu cau theo dung huong trend → coin lon/trend ro de vao lenh hon (dung yeu cau
+        # cua user: coin lon trend ro phai duoc trade, khong bo qua). Chi giam BEN trend.
+        _vwt_long_bonus  = 0
+        _vwt_short_bonus = 0
+        if _vwt_dir == 1:
+            _vwt_long_bonus  = 2 if _vwt_str >= 0.62 else (1 if _vwt_str >= 0.45 else 0)
+        elif _vwt_dir == -1:
+            _vwt_short_bonus = 2 if _vwt_str >= 0.62 else (1 if _vwt_str >= 0.45 else 0)
+
         if is_priority:
             # Priority: base = MIN_CONSENSUS, BTC cung chieu -> giam 1
             base = config.MIN_CONSENSUS
             extra = 0
             btc_long_bonus  = 1 if btc_strongly_bull else 0
             btc_short_bonus = 1 if btc_strongly_bear else 0
-            required_long  = max(config.MIN_CONSENSUS, min(7, base + extra - btc_long_bonus))
-            required_short = max(config.MIN_CONSENSUS, min(7, base + extra - btc_short_bonus))
+            required_long  = max(config.MIN_CONSENSUS, min(7, base + extra - btc_long_bonus  - _vwt_long_bonus))
+            required_short = max(config.MIN_CONSENSUS, min(7, base + extra - btc_short_bonus - _vwt_short_bonus))
         else:
             # Non-priority: base = MIN_CONSENSUS_TRENDING
             base = config.MIN_CONSENSUS_TRENDING
             extra = 0
             btc_long_bonus  = 1 if btc_strongly_bull else 0
             btc_short_bonus = 1 if btc_strongly_bear else 0
-            required_long  = max(config.MIN_CONSENSUS, min(7, base + extra - btc_long_bonus  + (1 if btc_opposes_long  else 0)))
-            required_short = max(config.MIN_CONSENSUS, min(7, base + extra - btc_short_bonus + (1 if btc_opposes_short else 0)))
+            required_long  = max(config.MIN_CONSENSUS, min(7, base + extra - btc_long_bonus  - _vwt_long_bonus  + (1 if btc_opposes_long  else 0)))
+            required_short = max(config.MIN_CONSENSUS, min(7, base + extra - btc_short_bonus - _vwt_short_bonus + (1 if btc_opposes_short else 0)))
 
         # TOP10 PRIORITY: 2 trong 2 Tier-1 strategy (supertrend + vwap_volume) dong thuan -> trade
         # Tier-1 bypass: KHONG bi chan boi BTC filter — top10 coin lon co momentum rieng
@@ -1692,6 +1829,46 @@ class TradingBot:
         # True khi flip direction tai extrema/range extreme (peak/trough)
         # Dung de bypass micro_entry_analysis va AEQ-PUMP sau khi da quyet dinh flip
         _direction_flipped = False
+
+        # ══════════════════════════════════════════════════════════════════════
+        # ║  MASTER VOLUME-CONFIRMED TREND AUTHORITY — QUAN TOA TOI CAO         ║
+        # ══════════════════════════════════════════════════════════════════════
+        # Nguyen nhan HBAR (up+vol → short) va HYPE (down → long): signal sai chieu
+        # van duoc trade vi khong co "quan toa" cuoi cung xac dinh trend bang VOLUME.
+        # _volume_confirmed_trend ket hop OBV + directional volume + expansion +
+        # cau truc gia → khi STRONG va CLEAR, day la chan ly, flip moi thu nguoc chieu.
+        #
+        # 3 muc do:
+        #   strength >= 0.62 (VERY STRONG): flip BAT KY signal nguoc chieu. Khoa
+        #     _vol_trend_locked → khong flip nguoc lai duoc nua (chong dao chieu ngu).
+        #   strength >= 0.45 (STRONG): flip signal nguoc chieu (chua khoa cung).
+        #   strength <  0.45: chi tham khao, khong ep.
+        # TP scale theo strength: trend cang ro → TP cang lon (an dam theo trend).
+        # (_vwt_dir/_vwt_str da tinh som o tren — dung lai, khong goi 2 lan)
+        _vol_trend_locked  = False
+        if _vwt_dir != 0 and _vwt_str >= 0.45 and not is_reversal:
+            # TP theo tiem nang trend: strength 0.45→0.20 ROI, 1.0→0.50 ROI
+            _vwt_tp = 0.20 + (_vwt_str - 0.45) / 0.55 * 0.30
+            _vwt_tp = max(0.15, min(0.50, _vwt_tp))
+            if best.direction != _vwt_dir:
+                # Signal NGUOC volume-trend → flip THEO volume-trend (dung chieu that su)
+                logger.info(
+                    f"{symbol}: [VOL-TREND MASTER] flip {'LONG' if best.direction==1 else 'SHORT'}"
+                    f"->{'LONG' if _vwt_dir==1 else 'SHORT'} | strength={_vwt_str:.2f} "
+                    f"(OBV+vol+structure xac nhan {'UP' if _vwt_dir==1 else 'DOWN'}), TP={_vwt_tp*100:.0f}%"
+                )
+                best.direction = _vwt_dir
+                best.tp_roi_override = _vwt_tp
+                _direction_flipped = True
+                if _vwt_str >= 0.62:
+                    _vol_trend_locked = True
+            else:
+                # Signal CUNG chieu volume-trend → boost strength (lenh tiem nang cao)
+                # → potential cao hon → TP + von lon hon (TP/SL theo do tiem nang)
+                best.strength = min(1.0, best.strength + 0.15 * _vwt_str)
+                if _vwt_str >= 0.62:
+                    _vol_trend_locked = True
+                logger.debug(f"{symbol}: vol-trend CONFIRMS {'LONG' if _vwt_dir==1 else 'SHORT'} str={_vwt_str:.2f} -> boost")
 
         # BTC/ETH CORRELATION BLOCK: block neu pair kia da co position CUNG CHIEU
         # BTC va ETH correlated manh -> ca 2 cung SHORT = double loss khi bounce
@@ -2000,14 +2177,21 @@ class TradingBot:
         # [AEQ-5a] Candle color: da xoa — qua chat, xu ly boi _micro_entry_analysis score
         # [AEQ-5b] EMA20 slope: da xoa — duplicate voi micro_up/down check
 
-        # [AEQ-6] Funding period
+        # [AEQ-6] Funding period — CHI block khi trend YEU/khong ro
+        # Funding fee ~0.01-0.05% = rat nho so voi move cua trend manh. Chan ca lenh
+        # trend ro chi vi funding = bo lo lenh l"i lon. → bypass khi vol-trend manh cung chieu
+        # hoac scenario/flip (da co trend xac nhan). Thu hep window: 8->5 phut moi ben.
         _utc_now_f  = datetime.now(timezone.utc)
         _f_hour     = _utc_now_f.hour
         _f_min      = _utc_now_f.minute
-        _near_funding_pre  = (_f_hour % 8 == 7 and _f_min >= 50)
-        _near_funding_post = (_f_hour % 8 == 0 and _f_min <= 5)
-        if _near_funding_pre or _near_funding_post:
-            return _block(f"skip - near funding window {_f_hour:02d}:{_f_min:02d} UTC")
+        _near_funding_pre  = (_f_hour % 8 == 7 and _f_min >= 55)
+        _near_funding_post = (_f_hour % 8 == 0 and _f_min <= 3)
+        _funding_bypass = (
+            (_vwt_dir == best.direction and _vwt_str >= 0.45)  # vol-trend manh cung chieu
+            or _direction_flipped or _scenario_entry            # da co trend/scenario xac nhan
+        )
+        if (_near_funding_pre or _near_funding_post) and not _funding_bypass:
+            return _block(f"skip - near funding window {_f_hour:02d}:{_f_min:02d} UTC (trend yeu)")
 
         # [AEQ-7] Volume near-zero
         if not df_micro.empty and len(df_micro) >= 20:
@@ -2315,6 +2499,21 @@ class TradingBot:
                         )
 
         # ══════════════════════════════════════════════════════════════════════
+        # ║  RE-ASSERT MASTER VOLUME-TREND LOCK — chot chan cuoi cung           ║
+        # ══════════════════════════════════════════════════════════════════════
+        # Neu volume-trend VERY STRONG (locked): TUYET DOI khong flip nguoc lai.
+        # Bat ky flip site nao o tren (AEQ-VOL/MULTIHR/EXTREMA...) lo dao chieu
+        # nguoc volume-trend manh → khoi phuc lai dung chieu + TP theo trend.
+        # Day la nguyen nhan HBAR: uptrend manh nhung "at peak" flip → short → lo.
+        if _vol_trend_locked and best.direction != _vwt_dir:
+            logger.info(
+                f"{symbol}: ⚖️ VOL-TREND LOCK re-assert → khoi phuc {'LONG' if _vwt_dir==1 else 'SHORT'} "
+                f"(mot flip site da dao nguoc trend manh str={_vwt_str:.2f})"
+            )
+            best.direction = _vwt_dir
+            _vwt_tp2 = 0.20 + (_vwt_str - 0.40) / 0.60 * 0.30
+            best.tp_roi_override = max(0.15, min(0.50, _vwt_tp2))
+            _direction_flipped = True
 
         # MOMENTUM GATE: LUON goi micro_entry_analysis cho tat ca momentum trade
         # Tranh vao lenh khi 1m dang di nguoc chieu (JASMY Long trong downtrend, v.v.)

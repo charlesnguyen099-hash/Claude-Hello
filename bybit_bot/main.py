@@ -828,13 +828,16 @@ class TradingBot:
         # BTC trend filter ap dung cho crypto - stock token co dynamic hoan toan khac biet
         # -> Skip hoan toan de tranh trade nhung coin co logic rieng ma bot khong hieu
         _STOCK_TOKENS = {
-            "SKHYNIXUSDT", "SKHYUSDT", "MRVLUSDT", "MUUSDT", "SOXLUSDT",
-            "INTCUSDT", "NVDAUSDT", "AMDUSDT", "TSMUSDT", "MSFTUSDT",
-            "AAPLUSDT", "GOOGLAUSDT", "AMZNUSDT", "METAUSDT", "TSLAAUSDT",
-            "COINUSDT", "ESPORTSUSDT", "SPCXUSDT",
+            "SKHYNIXUSDT", "SKHYUSDT", "MRVLUSDT", "MUUSDT", "SOXLUSDT", "SOXXUSDT",
+            "INTCUSDT", "NVDAUSDT", "AMDUSDT", "TSMUSDT", "MSFTUSDT", "TSLAUSDT",
+            "AAPLUSDT", "GOOGLAUSDT", "GOOGLUSDT", "AMZNUSDT", "METAUSDT", "TSLAAUSDT",
+            "TSLLUSDT", "COINUSDT", "ESPORTSUSDT", "SPCXUSDT", "PLTRUSDT", "HOODUSDT",
+            "MSTRUSDT", "IONQUSDT", "PENGSTOCKUSDT", "APPSTOCKUSDT", "PANWUSDT", "ARKKUSDT",
         }
-        if symbol in _STOCK_TOKENS:
-            logger.debug(f"{symbol}: skip - stock token, follows NASDAQ not BTC")
+        # Heuristic an toan: chi ten chua "STOCK" (PENGSTOCK, APPSTOCK...) - khong dung
+        # suffix-match vi nhieu crypto that ket thuc bang X (AVAX, PYTH...) se bi chan oan.
+        if symbol in _STOCK_TOKENS or "STOCK" in symbol:
+            logger.debug(f"{symbol}: skip - stock/ETF token, follows NASDAQ not crypto")
             return False
 
         # ATR filter: bo qua symbol bien dong qua nho
@@ -2817,6 +2820,22 @@ class TradingBot:
             if _true_dir == 0:
                 logger.info(f"{symbol}: TRUE-DIR skip (macro={macro_trend}/{macro_4h} imm={_imm} vwt={_vwt_dir}:{_vwt_str:.2f}) - khong du xac nhan / nguoc move")
                 return _block("skip - khong du xac nhan trend / nguoc move hien tai")
+            # BENCHMARK TREND MANH - chi trade coin co trend RO/MANH (tap trung lenh chat luong,
+            # bo qua coin nho trend yeu). Trend phai dat 1 trong 3 muc do MANH:
+            #   (a) volume-trend RAT manh cung chieu (str >= 0.50), HOAC
+            #   (b) CA HAI macro TF cung chieu (trend da xac lap ro), HOAC
+            #   (c) 1 macro cung chieu + volume kha (str >= 0.40).
+            # Coin trend yeu (chi imm keo, volume/macro lang) -> KHONG dat benchmark -> SKIP.
+            _bm_strong_vol   = (_vwt_dir == _true_dir and _vwt_str >= 0.50)
+            _bm_both_macro   = (macro_trend == _true_dir and macro_4h == _true_dir)
+            _bm_macro_vol    = ((macro_trend == _true_dir or macro_4h == _true_dir)
+                                and _vwt_dir == _true_dir and _vwt_str >= 0.40)
+            if not (_bm_strong_vol or _bm_both_macro or _bm_macro_vol):
+                logger.info(
+                    f"{symbol}: BENCHMARK skip - trend chua du MANH "
+                    f"(vwt={_vwt_dir}:{_vwt_str:.2f} macro={macro_trend}/{macro_4h}) - cho lenh trend manh hon"
+                )
+                return _block("skip - trend yeu, chua dat benchmark trend manh")
             # _true_dir da bao gom: dung chieu move hien tai + co xac nhan (volume/macro)
             # + khong nguoc volume manh + khong nguoc ca 2 macro. Flip signal ve dung chieu.
             # Exhaustion guard chay NGAY SAU se chan neu chieu moi roi vao cuc doan xau.

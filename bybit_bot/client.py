@@ -1,6 +1,6 @@
 """
-Bybit API Client Wrapper — dùng pybit v5
-Lấy dữ liệu trực tiếp từ Bybit, không lưu local (tiết kiệm storage)
+Bybit API Client Wrapper - dung pybit v5
+Lay du lieu truc tiep tu Bybit, khong luu local (tiet kiem storage)
 """
 
 import time
@@ -15,7 +15,7 @@ import config
 
 logger = logging.getLogger(__name__)
 
-# Cache instrument info để không gọi API lặp lại (reset mỗi lần khởi động)
+# Cache instrument info de khong goi API lap lai (reset moi lan khoi dong)
 _instrument_cache: dict[str, dict] = {}
 
 
@@ -38,7 +38,7 @@ def retry(attempts: int = 3, delay: float = 2.0):
                 try:
                     return fn(*args, **kwargs)
                 except ValueError:
-                    # ValueError = gia/tham so khong hop le — retry cung khong giai quyet duoc
+                    # ValueError = gia/tham so khong hop le - retry cung khong giai quyet duoc
                     raise
                 except Exception as e:
                     if i == attempts - 1:
@@ -57,18 +57,18 @@ class BybitClient:
             api_secret=config.API_SECRET,
         )
 
-    # ── Market Data ──────────────────────────────────────────────────────────
+    # -- Market Data ----------------------------------------------------------
 
     @retry()
     def get_tickers(self) -> list[dict]:
-        """Lấy tất cả ticker linear perpetual."""
+        """Lay tat ca ticker linear perpetual."""
         resp = self.session.get_tickers(category="linear")
         return resp["result"]["list"]
 
     @retry()
     def get_klines(self, symbol: str, interval: str, limit: int = 200) -> pd.DataFrame:
         """
-        Lay nen OHLCV tu Bybit API — khong luu local.
+        Lay nen OHLCV tu Bybit API - khong luu local.
         Bybit tra ve du lieu theo thu tu moi nhat truoc.
         """
         resp = self.session.get_kline(
@@ -143,11 +143,11 @@ class BybitClient:
         df = df.drop_duplicates("timestamp").sort_values("timestamp").reset_index(drop=True)
         return df
 
-    # ── Account ───────────────────────────────────────────────────────────────
+    # -- Account ---------------------------------------------------------------
 
     @retry()
     def get_wallet_balance(self) -> float:
-        """Trả về tổng equity USDT."""
+        """Tra ve tong equity USDT."""
         resp = self.session.get_wallet_balance(accountType="UNIFIED")
         coins = resp["result"]["list"][0]["coin"]
         for c in coins:
@@ -157,11 +157,11 @@ class BybitClient:
 
     @retry()
     def get_positions(self) -> list[dict]:
-        """Lấy tất cả vị thế đang mở."""
+        """Lay tat ca vi the dang mo."""
         resp = self.session.get_positions(category="linear", settleCoin="USDT")
         return [p for p in resp["result"]["list"] if _sf(p.get("size")) > 0]
 
-    # ── Trading ───────────────────────────────────────────────────────────────
+    # -- Trading ---------------------------------------------------------------
 
     @retry()
     def set_leverage(self, symbol: str, leverage: int):
@@ -188,10 +188,10 @@ class BybitClient:
         sl: Optional[float] = None,
         tp: Optional[float] = None,
         reduce_only: bool = False,
-        limit_price: Optional[float] = None,  # Dat khi dung Limit/IOC — rounds theo tick
+        limit_price: Optional[float] = None,  # Dat khi dung Limit/IOC - rounds theo tick
         tick_size: float = 0.0,               # Can thiet de round limit_price chinh xac
     ) -> dict:
-        # Limit order: dung IOC (fill ngay hoac huy — tranh lenh treo)
+        # Limit order: dung IOC (fill ngay hoac huy - tranh lenh treo)
         # Market order: GTC (standard)
         if order_type == "Limit" and limit_price is not None:
             time_in_force = "IOC"
@@ -214,7 +214,7 @@ class BybitClient:
                 raise ValueError(f"place_order: limit_price={lp} invalid (<=0), abort")
             params["price"] = str(lp)
 
-        # Dung is not None thay vi truthy check — sl=0.0 la falsy nhung la gia hop le
+        # Dung is not None thay vi truthy check - sl=0.0 la falsy nhung la gia hop le
         if sl is not None or tp is not None:
             params["tpslMode"] = "Full"
         if sl is not None and sl > 0:
@@ -229,8 +229,8 @@ class BybitClient:
                 params["tpTriggerBy"] = "LastPrice"
 
         resp = self.session.place_order(**params)
-        # Bybit v5 create-order response CHI tra orderId/orderLinkId — KHONG echo SL/TP.
-        # (Check cu doc result["stopLoss"] luon rong → bao loi "KHONG SET SL/TP" sai.
+        # Bybit v5 create-order response CHI tra orderId/orderLinkId - KHONG echo SL/TP.
+        # (Check cu doc result["stopLoss"] luon rong -> bao loi "KHONG SET SL/TP" sai.
         #  Viec xac nhan SL/TP thuc te do verify_position_tp_sl dam nhiem sau khi fill.)
         if params.get("stopLoss") or params.get("takeProfit"):
             logger.info(
@@ -247,7 +247,7 @@ class BybitClient:
     def _tick_round(self, price: float, tick_size: float) -> str:
         """Round price theo tick_size va tra ve string cho Bybit API.
         Neu tick_size=0: tu dong lay tu cache instrument info.
-        Dam bao LUON tra ve gia hop le — tranh Bybit reject SL/TP vi sai decimal."""
+        Dam bao LUON tra ve gia hop le - tranh Bybit reject SL/TP vi sai decimal."""
         if tick_size > 0:
             return str(self.round_to_tick(price, tick_size))
         # fallback: xac dinh so decimal tu do lon gia
@@ -283,7 +283,7 @@ class BybitClient:
                 pass
 
         if sl_price <= 0 and tp_price <= 0:
-            logger.warning(f"set_sl_tp {symbol}: ca SL va TP deu = 0 (kể cả exchange), skip")
+            logger.warning(f"set_sl_tp {symbol}: ca SL va TP deu = 0 (ke ca exchange), skip")
             return
 
         if tick_size <= 0:
@@ -306,17 +306,17 @@ class BybitClient:
             if float(sl_rounded) > 0:   # guard: sau khi round khong duoc = 0 (scientific notation bug)
                 params["stopLoss"] = sl_rounded
             else:
-                logger.warning(f"set_sl_tp {symbol}: sl_price={sl_price} round->0 (tick={tick_size}) — skip SL")
+                logger.warning(f"set_sl_tp {symbol}: sl_price={sl_price} round->0 (tick={tick_size}) - skip SL")
         if tp_price > 0:
             tp_rounded = self._tick_round(tp_price, tick_size)
             if float(tp_rounded) > 0:
                 params["takeProfit"] = tp_rounded
             else:
-                logger.warning(f"set_sl_tp {symbol}: tp_price={tp_price} round->0 (tick={tick_size}) — skip TP")
+                logger.warning(f"set_sl_tp {symbol}: tp_price={tp_price} round->0 (tick={tick_size}) - skip TP")
 
         # Neu khong co ca hai sau khi guard, skip luon (khong gui request vo nghia)
         if "stopLoss" not in params and "takeProfit" not in params:
-            logger.warning(f"set_sl_tp {symbol}: ca SL va TP deu round ve 0 — skip request")
+            logger.warning(f"set_sl_tp {symbol}: ca SL va TP deu round ve 0 - skip request")
             return
 
         logger.info(f"set_sl_tp {symbol}: SL={params.get('stopLoss','(none)')} TP={params.get('takeProfit','(none)')} tick={tick_size}")
@@ -328,7 +328,7 @@ class BybitClient:
             err_str = str(e).encode("ascii", "replace").decode()
             # ErrCode 34040 "not modified": gia tri da duoc set, khong can thay doi -> success
             if "34040" in str(e):
-                logger.info(f"set_sl_tp {symbol}: 34040 not modified (SL/TP da dung gia tri nay) — OK")
+                logger.info(f"set_sl_tp {symbol}: 34040 not modified (SL/TP da dung gia tri nay) - OK")
                 return
             raise
         ret_code = resp.get("retCode", -1)
@@ -337,12 +337,12 @@ class BybitClient:
             logger.error(f"set_sl_tp {symbol} FAILED retCode={ret_code} msg={msg} SL={params.get('stopLoss')} TP={params.get('takeProfit')}")
             print(f"[SL/TP ERROR] {symbol} retCode={ret_code} {msg}", flush=True)
             if ret_code in _NO_RETRY_CODES:
-                # Gia sai huong hoac invalid — retry cung khong co ich, raise de caller xu ly
+                # Gia sai huong hoac invalid - retry cung khong co ich, raise de caller xu ly
                 raise ValueError(f"set_trading_stop price invalid retCode={ret_code}: {msg}")
             raise RuntimeError(f"set_trading_stop failed retCode={ret_code}: {msg}")
 
     def update_stop_loss(self, symbol: str, sl_price: float, tick_size: float = 0.0):
-        """Cap nhat SL — lay TP hien tai tu exchange va goi set_sl_tp voi ca hai gia tri.
+        """Cap nhat SL - lay TP hien tai tu exchange va goi set_sl_tp voi ca hai gia tri.
         tpslMode=Full: KHONG duoc set chi 1 gia tri vi Bybit se XOA gia tri con lai."""
         try:
             resp = self.session.get_positions(category="linear", symbol=symbol)
@@ -356,7 +356,7 @@ class BybitClient:
         self.set_sl_tp(symbol, sl_price, tp_current, tick_size=tick_size)
 
     def update_take_profit(self, symbol: str, tp_price: float, tick_size: float = 0.0):
-        """Cap nhat TP — lay SL hien tai tu exchange va goi set_sl_tp voi ca hai gia tri.
+        """Cap nhat TP - lay SL hien tai tu exchange va goi set_sl_tp voi ca hai gia tri.
         tpslMode=Full: KHONG duoc set chi 1 gia tri vi Bybit se XOA gia tri con lai."""
         try:
             resp = self.session.get_positions(category="linear", symbol=symbol)
@@ -379,7 +379,7 @@ class BybitClient:
         return info
 
     def get_max_leverage(self, symbol: str) -> int:
-        """Lấy leverage tối đa Bybit cho phép với symbol này."""
+        """Lay leverage toi da Bybit cho phep voi symbol nay."""
         try:
             info = self.get_instrument_info(symbol)
             max_lev = int(_sf(info.get("leverageFilter", {}).get("maxLeverage", config.MAX_LEVERAGE), config.MAX_LEVERAGE))
@@ -428,8 +428,8 @@ class BybitClient:
     @staticmethod
     def round_to_tick(price: float, tick_size: float, ceil: bool = False) -> float:
         """Round price theo tick_size.
-        ceil=False (default): floor — dung cho TP, LONG SL (di xa khoi entry)
-        ceil=True: ceiling — dung cho SHORT SL (phai o TREN entry, floor lam chat SL)
+        ceil=False (default): floor - dung cho TP, LONG SL (di xa khoi entry)
+        ceil=True: ceiling - dung cho SHORT SL (phai o TREN entry, floor lam chat SL)
         """
         import math
         if tick_size <= 0:

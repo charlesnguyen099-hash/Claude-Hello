@@ -1,11 +1,11 @@
 """
-Market Scanner — Tat ca coin co TRENDING (khong gioi han so luong).
+Market Scanner - Tat ca coin co TRENDING (khong gioi han so luong).
 
 Dinh nghia TRENDING (4 tieu chi, score 0-100):
-  1. Price Momentum  (40%): % thay doi gia 24h — coin dang tang/giam manh
-  2. Volume Surge    (30%): volume so voi nguong toi thieu — dong tien dang do vao
+  1. Price Momentum  (40%): % thay doi gia 24h - coin dang tang/giam manh
+  2. Volume Surge    (30%): volume so voi nguong toi thieu - dong tien dang do vao
   3. Liquidity       (20%): spread nho = thanh khoan tot = de vao/ra
-  4. Volume size     (10%): tong volume 24h — coin dang active
+  4. Volume size     (10%): tong volume 24h - coin dang active
 
 Tra ve TAT CA coin qua filter, sap xep theo trending_score giam dan.
 Coin score cao nhat duoc phan tich truoc trong moi tick.
@@ -55,7 +55,7 @@ class MarketScanner:
             sym = t.get("symbol", "")
             if not sym.endswith("USDT"):
                 continue
-            # Loai leverage token va stable pairs (1000PEPE, 1000BONK la coin that — KHONG loai)
+            # Loai leverage token va stable pairs (1000PEPE, 1000BONK la coin that - KHONG loai)
             if any(x in sym for x in ["3LUSDT", "3SUSDT", "UPUSDT", "DOWNUSDT", "BULLUSDT", "BEARUSDT", "USDC", "BUSD", "TUSD"]):
                 continue
 
@@ -80,7 +80,7 @@ class MarketScanner:
                     if spread > 0.5:          # spread > 0.5% = kho execute, bo qua
                         continue
 
-                # Loai coin pump/dump xong (>25% trong 24h — momentum can)
+                # Loai coin pump/dump xong (>25% trong 24h - momentum can)
                 if abs(raw_chg) > 25:
                     logger.debug(f"Scanner skip {sym}: 24h change={raw_chg:.1f}% > 25%")
                     continue
@@ -98,7 +98,7 @@ class MarketScanner:
                 continue
 
         if not symbols:
-            logger.warning("No symbols passed filter — keeping previous list")
+            logger.warning("No symbols passed filter - keeping previous list")
             return self.trending_symbols
 
         df = pd.DataFrame([s.__dict__ for s in symbols])
@@ -119,7 +119,7 @@ class MarketScanner:
 
         df["trending_score"] = df["s_momentum"] + df["s_volume"] + df["s_liq"] + df["s_vol24"]
 
-        # Sap xep giam dan theo trending_score — tat ca coin, khong cat gioi han
+        # Sap xep giam dan theo trending_score - tat ca coin, khong cat gioi han
         # BTC/ETH KHONG con duoc ghim len dau: xep theo trending score that cua chinh no
         # (data BTC cho trend filter/correlation da duoc fetch rieng moi tick trong main loop,
         #  khong phu thuoc thu tu scan; slot uu tien danh cho coin trending lon = nhieu lenh tiem nang)

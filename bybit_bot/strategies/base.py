@@ -1,6 +1,6 @@
 """
-Abstract base class cho tất cả strategies.
-Signal: 1 = Long, -1 = Short, 0 = Không vào lệnh
+Abstract base class cho tat ca strategies.
+Signal: 1 = Long, -1 = Short, 0 = Khong vao lenh
 """
 
 from abc import ABC, abstractmethod
@@ -17,12 +17,12 @@ class Signal:
     strength: float         # 0.0 - 1.0
     strategy_name: str
     entry_price: float
-    atr: float              # Dùng để tính SL/TP dong
+    atr: float              # Dung de tinh SL/TP dong
     reason: str = ""        # Mo ta ly do vao lenh (positional arg thu 6)
     symbol: str = ""
     consensus: int = 1      # So strategies dong thuan cung chieu
     swing_sl: float = 0.0   # Swing high/low 15m lam SL reference (0 = dung ATR thuan tuy)
-    tp_roi_override: float = 0.0  # != 0 → dung truc tiep lam TP ROI (bo qua potential scaling)
+    tp_roi_override: float = 0.0  # != 0 -> dung truc tiep lam TP ROI (bo qua potential scaling)
 
 
 def compute_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
@@ -76,9 +76,9 @@ class BaseStrategy(ABC):
     @abstractmethod
     def generate_signal(self, df: pd.DataFrame, df_trend: pd.DataFrame, df_macro: pd.DataFrame) -> Signal:
         """
-        df       : nến 15m (signal timeframe)
-        df_trend : nến 1h  (trend confirmation)
-        df_macro : nến 4h  (macro direction)
+        df       : nen 15m (signal timeframe)
+        df_trend : nen 1h  (trend confirmation)
+        df_macro : nen 4h  (macro direction)
         """
         ...
 

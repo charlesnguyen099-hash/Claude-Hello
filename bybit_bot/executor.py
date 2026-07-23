@@ -1,5 +1,5 @@
 """
-Trade Executor — thực thi lệnh và quản lý vị thế
+Trade Executor - thuc thi lenh va quan ly vi the
 - Dat lenh Market voi SL+TP ngay khi vao
 - 1 TP duy nhat: hit la dong toan bo position (Bybit tu dong dong)
 - Health check: re-arm SL/TP neu mat, fix SL sai ty le
@@ -52,7 +52,7 @@ class Executor:
 
         # Execution lock: tuyet doi khong cho 2 luong chay cung luc cho 1 symbol
         if symbol in self._executing:
-            logger.warning(f"{symbol}: execute_signal already in progress — skip duplicate call")
+            logger.warning(f"{symbol}: execute_signal already in progress - skip duplicate call")
             return
         self._executing.add(symbol)
         try:
@@ -72,8 +72,8 @@ class Executor:
         if symbol in self._open_symbols:
             existing_check = [p for p in open_positions if p["symbol"] == symbol]
             if not existing_check:
-                # open_positions stale — executor cache noi co position, tin cache
-                logger.warning(f"{symbol}: SKIP — executor cache shows open position (open_positions may be stale)")
+                # open_positions stale - executor cache noi co position, tin cache
+                logger.warning(f"{symbol}: SKIP - executor cache shows open position (open_positions may be stale)")
                 return
 
         existing = [p for p in open_positions if p["symbol"] == symbol]
@@ -95,7 +95,7 @@ class Executor:
             # so position always closes via SL before PnL hits -20%. Time-only check.
             if held_seconds < 300:
                 logger.info(
-                    f"{symbol}: Signal reversal — SKIP (held={held_seconds:.0f}s < 300s)"
+                    f"{symbol}: Signal reversal - SKIP (held={held_seconds:.0f}s < 300s)"
                 )
                 return
 
@@ -106,7 +106,7 @@ class Executor:
         # Cap nhat entry_price bang gia live
         bid_live, ask_live = self.client.get_bid_ask(symbol)
         if bid_live <= 0 or ask_live <= 0:
-            logger.warning(f"{symbol}: SKIP — khong lay duoc bid/ask live")
+            logger.warning(f"{symbol}: SKIP - khong lay duoc bid/ask live")
             return
         signal.entry_price = ask_live if signal.direction == 1 else bid_live
 
@@ -123,7 +123,7 @@ class Executor:
 
             bid, ask = self.client.get_bid_ask(symbol)
             if bid <= 0 or ask <= 0:
-                logger.warning(f"{symbol}: ABORT entry — khong lay duoc bid/ask")
+                logger.warning(f"{symbol}: ABORT entry - khong lay duoc bid/ask")
                 return
 
             mid_price  = (bid + ask) / 2.0
@@ -131,7 +131,7 @@ class Executor:
             is_largecap = symbol in {"BTCUSDT", "ETHUSDT"}
             max_spread  = config.MAX_SPREAD_PCT_LARGE if is_largecap else config.MAX_SPREAD_PCT_ALT
             if spread_pct > max_spread:
-                logger.warning(f"{symbol}: ABORT — spread={spread_pct*100:.3f}% > {max_spread*100:.3f}%")
+                logger.warning(f"{symbol}: ABORT - spread={spread_pct*100:.3f}% > {max_spread*100:.3f}%")
                 return
 
             tick_size = 0.0
@@ -161,19 +161,19 @@ class Executor:
             except Exception as _place_err:
                 # place_order co the raise sau khi Bybit da chap nhan lenh (response parse fail / timeout)
                 # Kiem tra exchange xem co position thuc su mo khong
-                logger.warning(f"{symbol}: place_order raised {_place_err!r} — checking exchange for position")
+                logger.warning(f"{symbol}: place_order raised {_place_err!r} - checking exchange for position")
                 time.sleep(1.5)
                 try:
                     _positions = self.client.get_positions()
                     _found = [p for p in _positions if p["symbol"] == symbol and _fval(p, "size") > 0]
                     if _found:
-                        logger.warning(f"{symbol}: Position confirmed on exchange despite place_order error — proceeding to set SL/TP")
+                        logger.warning(f"{symbol}: Position confirmed on exchange despite place_order error - proceeding to set SL/TP")
                         _order_placed = True
                     else:
-                        logger.error(f"{symbol}: place_order failed and no position found — abort")
+                        logger.error(f"{symbol}: place_order failed and no position found - abort")
                         return
                 except Exception as _check_err:
-                    logger.error(f"{symbol}: place_order failed + position check failed ({_check_err!r}) — abort")
+                    logger.error(f"{symbol}: place_order failed + position check failed ({_check_err!r}) - abort")
                     return
 
             self._sl_price[symbol]  = sl_rounded
@@ -190,10 +190,10 @@ class Executor:
                 logger.error(f"{symbol}: set_sl_tp layer2 FAILED: {str(e).encode('ascii','replace').decode()}")
 
             # Layer 3: Verify va re-arm (up to 5 attempts)
-            # QUAN TRONG: ty le SL/TP KHONG con co dinh 5:1 — risk_manager nen ty le
+            # QUAN TRONG: ty le SL/TP KHONG con co dinh 5:1 - risk_manager nen ty le
             # ve 1:1-3:1 khi liq clamp (TP lon/leverage cao). Verify bang cach so
             # gia thuc te tren exchange voi gia DA DAT (sl_rounded/tp_rounded),
-            # KHONG duoc ep ratio 5:1 — ep ratio cu lam re-arm vo han + SL vuot liq.
+            # KHONG duoc ep ratio 5:1 - ep ratio cu lam re-arm vo han + SL vuot liq.
             _sl_tp_confirmed = False
             for _attempt in range(5):
                 time.sleep(1.0)
@@ -208,14 +208,14 @@ class Executor:
                         break
                     logger.warning(
                         f"{symbol}: SL/TP khac gia da dat (SL {actual_sl} vs {sl_rounded}, "
-                        f"TP {actual_tp} vs {tp_rounded}) — re-arm"
+                        f"TP {actual_tp} vs {tp_rounded}) - re-arm"
                     )
                     try:
                         self.client.set_sl_tp(symbol, sl_rounded, tp_rounded, tick_size=tick_size)
                     except Exception as e2:
                         logger.error(f"{symbol}: re-arm FAILED: {str(e2).encode('ascii','replace').decode()}")
                     continue
-                logger.error(f"{symbol}: SL/TP MISSING attempt {_attempt+1}/5 — re-arm")
+                logger.error(f"{symbol}: SL/TP MISSING attempt {_attempt+1}/5 - re-arm")
                 print(f"[CRITICAL] {symbol} SL/TP MISSING attempt {_attempt+1}/5", flush=True)
                 try:
                     self.client.set_sl_tp(symbol, sl_rounded, tp_rounded, tick_size=tick_size)
@@ -225,8 +225,8 @@ class Executor:
             # Last resort: neu tat ca 5 attempt deu that bai, thu lai voi gia hien tai
             # Truong hop xay ra khi gia di chuyen qua SL/TP goc trong luc dat lenh
             if not _sl_tp_confirmed:
-                logger.error(f"{symbol}: SL/TP not confirmed after 5 attempts — trying fresh prices or closing")
-                print(f"[CRITICAL] {symbol}: SL/TP UNSET after 5 tries — emergency recovery", flush=True)
+                logger.error(f"{symbol}: SL/TP not confirmed after 5 attempts - trying fresh prices or closing")
+                print(f"[CRITICAL] {symbol}: SL/TP UNSET after 5 tries - emergency recovery", flush=True)
                 _recovered = self._recover_sl_tp(
                     symbol=symbol,
                     side=params.side,
@@ -269,7 +269,7 @@ class Executor:
     ) -> bool:
         """Last-resort SL/TP recovery khi gia di chuyen sau khi dat lenh.
         Thu dat gia goc, neu khong duoc thi tinh lai tu gia hien tai.
-        Neu khong the dat ca hai → dong lenh ngay (khong co SL = rui ro khong kiem soat duoc)."""
+        Neu khong the dat ca hai -> dong lenh ngay (khong co SL = rui ro khong kiem soat duoc)."""
         try:
             bid, ask = self.client.get_bid_ask(symbol)
             mark = (bid + ask) / 2.0 if bid > 0 and ask > 0 else 0.0
@@ -285,7 +285,7 @@ class Executor:
         orig_tp_valid = mark <= 0 or (_dir == 1 and orig_tp > mark) or (_dir == -1 and orig_tp < mark)
 
         if orig_sl_valid and orig_tp_valid:
-            # Gia hop le — thu dat lai lan cuoi
+            # Gia hop le - thu dat lai lan cuoi
             try:
                 self.client.set_sl_tp(symbol, orig_sl, orig_tp, tick_size=tick_size)
                 time.sleep(0.5)
@@ -297,12 +297,12 @@ class Executor:
             except Exception as e:
                 logger.error(f"{symbol}: Recovery attempt FAILED: {str(e).encode('ascii','replace').decode()}")
 
-        # Gia goc khong hop le hoac thu lai van that bai → tinh lai tu gia hien tai
+        # Gia goc khong hop le hoac thu lai van that bai -> tinh lai tu gia hien tai
         if mark > 0 and entry > 0:
             lev = max(leverage, 1)
             tp_roi = config.TP_ROI_MIN
             # CLAMP theo vung an toan thanh ly: 5:1 tho tai leverage cao cho SL vuot
-            # gia liq → Bybit reject → khong the dat SL → position khong duoc bao ve
+            # gia liq -> Bybit reject -> khong the dat SL -> position khong duoc bao ve
             sl_roi = min(tp_roi * config.SL_TP_RATIO, max_safe_sl_roi(lev))
             tp_dist = tp_roi * entry / lev
             sl_dist = sl_roi * entry / lev
@@ -329,9 +329,9 @@ class Executor:
                 except Exception as e:
                     logger.error(f"{symbol}: Fresh SL/TP FAILED: {str(e).encode('ascii','replace').decode()}")
 
-        # Khong the dat SL/TP → dong lenh ngay de tranh rui ro khong kiem soat
-        logger.error(f"{symbol}: Cannot set SL/TP → EMERGENCY CLOSE to protect account")
-        print(f"[EMERGENCY] {symbol}: SL/TP unset — closing position for safety", flush=True)
+        # Khong the dat SL/TP -> dong lenh ngay de tranh rui ro khong kiem soat
+        logger.error(f"{symbol}: Cannot set SL/TP -> EMERGENCY CLOSE to protect account")
+        print(f"[EMERGENCY] {symbol}: SL/TP unset - closing position for safety", flush=True)
         try:
             positions = self.client.get_positions()
             for pos in positions:
@@ -389,8 +389,8 @@ class Executor:
             _pos_lev    = max(10.0, _fval(pos, "leverage", 10.0))
 
             # Fallback SL/TP neu ca saved lan exchange deu khong co (restart + SL mat)
-            # CLAMP liq-safe: 5:1 tho o leverage cao (vd 100x → SL dist 0.6% > liq 0.45%)
-            # bi Bybit reject → re-arm that bai vinh vien → position khong co SL
+            # CLAMP liq-safe: 5:1 tho o leverage cao (vd 100x -> SL dist 0.6% > liq 0.45%)
+            # bi Bybit reject -> re-arm that bai vinh vien -> position khong co SL
             if saved_sl <= 0 and exchange_sl <= 0 and entry > 0:
                 sl_roi   = min(config.TP_ROI_MIN * config.SL_TP_RATIO, max_safe_sl_roi(int(_pos_lev)))
                 sl_dist  = sl_roi * entry / _pos_lev
@@ -405,16 +405,16 @@ class Executor:
                 self._tp_price[symbol] = saved_tp
                 logger.warning(f"{symbol}: Fallback TP={saved_tp:.6f} (ROI={tp_roi*100:.0f}%/{_pos_lev:.0f}x)")
 
-            # Health check: exchange SL/TP lech khoi gia DA LUU → re-arm gia da luu
-            # KHONG ep ty le 5:1 nua — ty le la DONG (risk_manager nen ve 1:1-3:1 khi
-            # liq clamp). Ep 5:1 cu tinh ra SL vuot gia thanh ly → Bybit reject moi cycle.
+            # Health check: exchange SL/TP lech khoi gia DA LUU -> re-arm gia da luu
+            # KHONG ep ty le 5:1 nua - ty le la DONG (risk_manager nen ve 1:1-3:1 khi
+            # liq clamp). Ep 5:1 cu tinh ra SL vuot gia thanh ly -> Bybit reject moi cycle.
             if exchange_sl > 0 and exchange_tp > 0 and saved_sl > 0 and saved_tp > 0:
                 _sl_drift = abs(exchange_sl - saved_sl) / saved_sl
                 _tp_drift = abs(exchange_tp - saved_tp) / saved_tp
                 if _sl_drift > 0.005 or _tp_drift > 0.005:
                     logger.warning(
                         f"{symbol}: SL/TP drift khoi gia da luu "
-                        f"(SL {exchange_sl:.6f} vs {saved_sl:.6f}, TP {exchange_tp:.6f} vs {saved_tp:.6f}) — re-arm"
+                        f"(SL {exchange_sl:.6f} vs {saved_sl:.6f}, TP {exchange_tp:.6f} vs {saved_tp:.6f}) - re-arm"
                     )
                     try:
                         _hc_tick0 = self._tick_size.get(symbol, 0.0)
@@ -430,7 +430,7 @@ class Executor:
                 rearm_tp = saved_tp if need_rearm_tp else exchange_tp
                 logger.warning(
                     f"{symbol}: SL/TP missing (SL={'miss' if need_rearm_sl else 'ok'}, "
-                    f"TP={'miss' if need_rearm_tp else 'ok'}) — re-arming"
+                    f"TP={'miss' if need_rearm_tp else 'ok'}) - re-arming"
                 )
                 rearm_ok = False
                 try:
@@ -441,7 +441,7 @@ class Executor:
                     logger.error(f"{symbol}: re-arm FAILED: {str(e).encode('ascii','replace').decode()}")
 
                 if not rearm_ok:
-                    # Gia co the di chuyen qua SL/TP goc → thu recover hoac close
+                    # Gia co the di chuyen qua SL/TP goc -> thu recover hoac close
                     _hc_tick = self._tick_size.get(symbol, 0.0)
                     _hc_lev  = max(int(_pos_lev), 1)
                     self._recover_sl_tp(
@@ -468,23 +468,23 @@ class Executor:
                 if _pnl_roi < -0.20:  # lo > 20% ROI
                     logger.warning(
                         f"{symbol}: max-hold {_hold_sec/3600:.1f}h exceeded, "
-                        f"PnL_ROI={_pnl_roi*100:.0f}% < -20% → force close (save capital)"
+                        f"PnL_ROI={_pnl_roi*100:.0f}% < -20% -> force close (save capital)"
                     )
                     self._close_position(pos)
                     continue
-                # Stagnation exit: > 6h ma khong tien trien (ROI < +5%) → dong, xoay vong von
+                # Stagnation exit: > 6h ma khong tien trien (ROI < +5%) -> dong, xoay vong von
                 # Lenh dung chieu thuong hit TP trong 1-3h; 6h khong dong nghia trend da chet
                 if _hold_sec > 6 * 3600 and _pnl_roi < 0.05:
                     logger.warning(
                         f"{symbol}: stagnation {_hold_sec/3600:.1f}h, PnL_ROI={_pnl_roi*100:.0f}% < +5% "
-                        f"→ close to rotate capital"
+                        f"-> close to rotate capital"
                     )
                     self._close_position(pos)
                     continue
 
             # Emergency close: chi khi loss > 80% margin va SL exchange bi miss
             if self.risk_mgr.should_close_position(pos, mark_price):
-                logger.warning(f"{symbol}: Emergency close — excessive loss")
+                logger.warning(f"{symbol}: Emergency close - excessive loss")
                 self._close_position(pos)
 
         # Xoa state stale

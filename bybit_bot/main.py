@@ -480,6 +480,42 @@ class TradingBot:
         strength = min(1.0, _mag * (0.55 + 0.45 * abs(netmove)) * (1.0 + 0.2 * vexp))
         return direction, round(strength, 3)
 
+    def _exhaustion_check(self, df_micro, direction: int, price: float,
+                          rsi_now: float, sp: float, vol_locked: bool) -> tuple[int, float, str]:
+        """QUY TAC TUYET DOI (user): KHONG long o dinh/gan dinh, KHONG short o day/gan day.
+        Ket qua (new_direction, tp_override, reason):
+          new_direction = 0 → BLOCK (khong trade), != 0 → chieu duoc phep trade.
+        Tai TOP >=80% range 2h: khong long — flip SHORT neu co reject sign, khong thi BLOCK.
+        Tai BOTTOM <=20% range 2h: khong short — flip LONG neu co bounce sign, khong thi BLOCK.
+        KHONG co ngoai le breakout: pump len dinh MOI van la mua dinh (BZ pattern) → chan.
+        vol_locked: neu vol-trend khoa cung → KHONG flip (tranh whipsaw) nhung VAN block."""
+        if df_micro is None or df_micro.empty or len(df_micro) < 120:
+            return direction, 0.0, "pass"
+        hi = df_micro["high"].iloc[-120:].max()
+        lo = df_micro["low"].iloc[-120:].min()
+        rng = hi - lo
+        if rng <= 0 or lo <= 0 or (rng / lo) < 0.006 * sp:
+            return direction, 0.0, "pass-narrow"
+        p   = price if price > 0 else df_micro["close"].iloc[-1]
+        pos = (p - lo) / rng
+        c = df_micro["close"].iloc[-1]; o = df_micro["open"].iloc[-1]
+        h = df_micro["high"].iloc[-1];  l = df_micro["low"].iloc[-1]
+        rngc = max(h - l, 1e-12); body = c - o
+        lower_wick = (min(o, c) - l) / rngc
+        upper_wick = (h - max(o, c)) / rngc
+        bounce = (body > 0) or (lower_wick > 0.5) or (rsi_now < 38)
+        reject = (body < 0) or (upper_wick > 0.5) or (rsi_now > 62)
+        TOP, BOT = 0.80, 0.20
+        if direction == 1 and pos >= TOP:
+            if reject and not vol_locked:
+                return -1, 0.10, f"flip LONG->SHORT reject@dinh {pos:.0%}"
+            return 0, 0.0, f"BLOCK LONG@dinh {pos:.0%}"
+        if direction == -1 and pos <= BOT:
+            if bounce and not vol_locked:
+                return 1, 0.10, f"flip SHORT->LONG bounce@day {pos:.0%}"
+            return 0, 0.0, f"BLOCK SHORT@day {pos:.0%}"
+        return direction, 0.0, f"pass@{pos:.0%}"
+
     def _find_local_extrema(self, df, window: int = 5):
         """
         Tim local peaks va troughs tren 1m data.
@@ -1195,7 +1231,16 @@ class TradingBot:
                 _bo_vwt_ok = not (_vwt_dir != 0 and _vwt_str >= 0.45 and bo_sig.direction != _vwt_dir)
                 if not _bo_vwt_ok:
                     logger.info(f"{symbol} [BREAKOUT] block: nguoc vol-trend manh (vwt={_vwt_dir} str={_vwt_str:.2f})")
-                if bo_ok and micro_ok and not is_spike and post_spike_ok and micro_spike_ok and bo_btc_ok and bo_h1_ok and bo_24h_ok and bo_trend_ok and bo_m2h_ok and bo_30c_ok and bo_aeq12_ok and bo_aeq_mh_ok and bo_vol_ok and _bo_vwt_ok:
+                # EXHAUSTION: khong long dinh/gan dinh, khong short day/gan day — ke ca breakout
+                # (BZ pattern: pump len 91.88 gan dinh 91.93 → mua dinh → lo). Chan neu sai phia.
+                _bo_ez_price = _range_live_price if _range_live_price > 0 else (
+                    df_micro["close"].iloc[-1] if not df_micro.empty else 0.0)
+                _bo_ez_dir, _, _bo_ez_reason = self._exhaustion_check(
+                    df_micro, bo_sig.direction, _bo_ez_price, rsi_now, _sp, vol_locked=True)
+                _bo_ez_ok = (_bo_ez_dir == bo_sig.direction)
+                if not _bo_ez_ok:
+                    logger.info(f"{symbol} [BREAKOUT] block exhaustion: {_bo_ez_reason}")
+                if bo_ok and micro_ok and not is_spike and post_spike_ok and micro_spike_ok and bo_btc_ok and bo_h1_ok and bo_24h_ok and bo_trend_ok and bo_m2h_ok and bo_30c_ok and bo_aeq12_ok and bo_aeq_mh_ok and bo_vol_ok and _bo_vwt_ok and _bo_ez_ok:
                     # micro_entry_analysis da xoa: BREAKOUT theo dinh nghia la break qua range
                     # -> range check trong _micro_entry_analysis se HARD BLOCK moi breakout hop le
                     # Da co: bo_h1_ok, bo_m2h_ok, bo_trend_ok, micro_ok thay the
@@ -1557,6 +1602,16 @@ class TradingBot:
                         best.tp_roi_override = 0.0   # RSI cuc doan manh → TP lon (potential scaling)
                     else:
                         best.tp_roi_override = 0.12  # RSI vua du → TP trung binh
+                    # EXHAUSTION guard cho REVERSAL: reversal LONG phai o DAY (RSI<30), reversal
+                    # SHORT phai o DINH (RSI>70) — dung nguyen tac. Guard chan truong hop nghich ly
+                    # (reversal LONG lai o dinh / reversal SHORT lai o day) neu co.
+                    _rv_ez_price = _range_live_price if _range_live_price > 0 else (
+                        df_micro["close"].iloc[-1] if not df_micro.empty else 0.0)
+                    _rv_ez_dir, _, _rv_ez_reason = self._exhaustion_check(
+                        df_micro, best.direction, _rv_ez_price, rsi_now, _sp, vol_locked=True)
+                    if _rv_ez_dir != best.direction:
+                        logger.info(f"{symbol} [REVERSAL] block exhaustion: {_rv_ez_reason} — skip")
+                        return False
                     names = "+".join(s.strategy_name for s in signals)
                     rsi_label = f"RSI15m={rsi_now:.0f}({'OVERSOLD<30' if reversal_dir==1 else 'OVERBOUGHT>70'})"
                     logger.info(
@@ -2637,73 +2692,20 @@ class TradingBot:
         # → bounce ngay sau → LO. Short o day / long o dinh = nguoc mean-reversion tai cuc doan.
         #
         # Guard chay CUOI CUNG (sau ca vol-trend master + moi flip) → tieng noi quyet dinh.
-        # Chi act tai CUC DOAN THAT (range du rong) + phan biet BREAKOUT that vs EXHAUSTION:
-        #   - Breakdown/breakout THAT: nen hien tai pha day/dinh MOI + volume expand + body lon
-        #     → cho phep tiep tuc (trend that su dang mo rong)
-        #   - EXHAUSTION (khong pha moi, momentum giam): day/dinh da kiet → dao chieu → FLIP
-        if not is_reversal and not df_micro.empty and len(df_micro) >= 120:
-            _ez_price = _range_live_price if _range_live_price > 0 else df_micro["close"].iloc[-1]
-            _ez_hi = df_micro["high"].iloc[-120:].max()
-            _ez_lo = df_micro["low"].iloc[-120:].min()
-            _ez_rng = _ez_hi - _ez_lo
-            if _ez_rng > 0 and _ez_lo > 0 and (_ez_rng / _ez_lo) >= 0.006 * _sp:
-                _ez_pos     = (_ez_price - _ez_lo) / _ez_rng
-                _ez_last_c  = df_micro["close"].iloc[-1]
-                _ez_last_o  = df_micro["open"].iloc[-1]
-                _ez_last_hi = df_micro["high"].iloc[-1]
-                _ez_last_lo = df_micro["low"].iloc[-1]
-                _ez_rngc    = max(_ez_last_hi - _ez_last_lo, 1e-12)
-                _ez_body    = _ez_last_c - _ez_last_o
-                _ez_vol_now = df_micro["volume"].iloc[-3:].mean()
-                _ez_vol_base= df_micro["volume"].iloc[-30:-3].mean()
-                _ez_vol_exp = _ez_vol_now > _ez_vol_base * 1.3 if _ez_vol_base > 0 else False
-                _ez_atr     = (df_micro["high"].iloc[-14:] - df_micro["low"].iloc[-14:]).mean()
-                # Fresh breakdown: nen dang tao day MOI + volume bung + body do lon
-                _ez_fresh_breakdown = (
-                    _ez_last_lo <= _ez_lo * 1.0008 and _ez_vol_exp
-                    and _ez_body < -0.4 * _ez_atr
-                )
-                _ez_fresh_breakout = (
-                    _ez_last_hi >= _ez_hi * 0.9992 and _ez_vol_exp
-                    and _ez_body > 0.4 * _ez_atr
-                )
-                # Bounce sign tai day: nen xanh, hoac lower-wick dai (buyers do vao)
-                _ez_lower_wick = (min(_ez_last_o, _ez_last_c) - _ez_last_lo) / _ez_rngc
-                _ez_bounce = (_ez_body > 0) or (_ez_lower_wick > 0.5) or (rsi_now < 38)
-                # Rejection sign tai dinh: nen do, hoac upper-wick dai (sellers do vao)
-                _ez_upper_wick = (_ez_last_hi - max(_ez_last_o, _ez_last_c)) / _ez_rngc
-                _ez_reject = (_ez_body < 0) or (_ez_upper_wick > 0.5) or (rsi_now > 62)
-
-                # SHORT tai DAY range (<=20%): downmove kiet → khong short day
-                if best.direction == -1 and _ez_pos <= 0.20 and not _ez_fresh_breakdown:
-                    if _ez_bounce and not _vol_trend_locked:
-                        best.direction = 1
-                        best.tp_roi_override = 0.10   # bounce tu day → TP nho, thu von nhanh
-                        logger.info(
-                            f"{symbol}: ⚖️ EXHAUSTION flip SHORT→LONG — gia o {_ez_pos:.0%} range (DAY), "
-                            f"downmove kiet + bounce sign (khong pha day moi), TP=10%"
-                        )
-                    else:
-                        logger.info(
-                            f"{symbol}: block SHORT tai DAY range ({_ez_pos:.0%}) — khong pha day moi, "
-                            f"nguy co bounce (ZEC pattern)"
-                        )
-                        return _block(f"skip SHORT - exhaustion tai day range {_ez_pos:.0%}")
-                # LONG tai DINH range (>=80%): upmove kiet → khong long dinh
-                elif best.direction == 1 and _ez_pos >= 0.80 and not _ez_fresh_breakout:
-                    if _ez_reject and not _vol_trend_locked:
-                        best.direction = -1
-                        best.tp_roi_override = 0.10   # reject tu dinh → TP nho
-                        logger.info(
-                            f"{symbol}: ⚖️ EXHAUSTION flip LONG→SHORT — gia o {_ez_pos:.0%} range (DINH), "
-                            f"upmove kiet + rejection sign (khong pha dinh moi), TP=10%"
-                        )
-                    else:
-                        logger.info(
-                            f"{symbol}: block LONG tai DINH range ({_ez_pos:.0%}) — khong pha dinh moi, "
-                            f"nguy co dao chieu (BLESS pattern)"
-                        )
-                        return _block(f"skip LONG - exhaustion tai dinh range {_ez_pos:.0%}")
+        # QUY TAC TUYET DOI: KHONG long dinh/gan dinh (>=80%), KHONG short day/gan day (<=20%).
+        # KHONG ngoai le breakout — pump len dinh moi van la mua dinh (BZ 91.88 gan dinh 91.93).
+        if not is_reversal:
+            _ez_price = _range_live_price if _range_live_price > 0 else (
+                df_micro["close"].iloc[-1] if not df_micro.empty else 0.0)
+            _ez_newdir, _ez_tp, _ez_reason = self._exhaustion_check(
+                df_micro, best.direction, _ez_price, rsi_now, _sp, _vol_trend_locked)
+            if _ez_newdir == 0:
+                logger.info(f"{symbol}: EXHAUSTION {_ez_reason} — {'BLESS' if best.direction==1 else 'ZEC'} pattern, skip")
+                return _block(f"skip - exhaustion {_ez_reason}")
+            if _ez_newdir != best.direction:
+                logger.info(f"{symbol}: [EXHAUSTION] {_ez_reason} — flip sang {'LONG' if _ez_newdir==1 else 'SHORT'}")
+                best.direction = _ez_newdir
+                best.tp_roi_override = _ez_tp
 
         names = "+".join(s.strategy_name for s in signals)
         _tp_log = f" TP_override={best.tp_roi_override*100:.0f}%" if best.tp_roi_override > 0 else ""

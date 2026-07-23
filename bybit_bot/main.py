@@ -482,13 +482,19 @@ class TradingBot:
 
     def _exhaustion_check(self, df_micro, direction: int, price: float,
                           rsi_now: float, sp: float, vol_locked: bool) -> tuple[int, float, str]:
-        """QUY TAC TUYET DOI (user): KHONG long o dinh/gan dinh, KHONG short o day/gan day.
-        Ket qua (new_direction, tp_override, reason):
-          new_direction = 0 → BLOCK (khong trade), != 0 → chieu duoc phep trade.
-        Tai TOP >=80% range 2h: khong long — flip SHORT neu co reject sign, khong thi BLOCK.
-        Tai BOTTOM <=20% range 2h: khong short — flip LONG neu co bounce sign, khong thi BLOCK.
-        KHONG co ngoai le breakout: pump len dinh MOI van la mua dinh (BZ pattern) → chan.
-        vol_locked: neu vol-trend khoa cung → KHONG flip (tranh whipsaw) nhung VAN block."""
+        """Phan biet KIET SUC (chan) vs TREND TIEP DIEN (cho) tai cuc doan range.
+        Ket qua (new_direction, tp_override, reason): new_direction=0 → BLOCK.
+
+        Nguyen tac: KHONG mua DINH kiet suc, KHONG ban DAY kiet suc — NHUNG van cho
+        trend tiep dien (downtrend dang do → short OK; uptrend deu → long OK).
+        Phan biet bang 2 dau hieu KIET SUC tai cuc doan:
+          1. OVER-EXTENSION: gia cach EMA21 qua xa (>3 ATR) = parabol/qua da (BZ pump doc)
+          2. DAO CHIEU: nen dao chieu (bounce tai day / reject tai dinh) hoac RSI cuc doan
+        Tai TOP >=80%:
+          - long ma (reject HOAC over-extended up) → KIET → flip short (neu reject) / block
+          - long ma dang len DEU (immediate up, khong over-ext, khong reject) → CHO (trend)
+        Tai BOTTOM <=20%: doi xung.
+        vol_locked: khong flip (tranh whipsaw) nhung van block khi kiet."""
         if df_micro is None or df_micro.empty or len(df_micro) < 120:
             return direction, 0.0, "pass"
         hi = df_micro["high"].iloc[-120:].max()
@@ -503,18 +509,57 @@ class TradingBot:
         rngc = max(h - l, 1e-12); body = c - o
         lower_wick = (min(o, c) - l) / rngc
         upper_wick = (h - max(o, c)) / rngc
-        bounce = (body > 0) or (lower_wick > 0.5) or (rsi_now < 38)
-        reject = (body < 0) or (upper_wick > 0.5) or (rsi_now > 62)
+        # Dau hieu dao chieu tai cuc doan (de FLIP thay vi chi block)
+        reject = (body < 0) or (upper_wick > 0.5) or (rsi_now > 68)
+        bounce = (body > 0) or (lower_wick > 0.5) or (rsi_now < 32)
+        # QUY TAC: KHONG trade trong 20% CUC DOAN (dinh/day) — "dinh hoac gan dinh, day hoac gan day".
+        # Trend vao lenh o vung giua (20-80%): long tren pullback, short tren bounce — entry dep hon,
+        # khong bao gio mua sat dinh / ban sat day. Tai cuc doan: flip neu co dao chieu, khong thi skip.
         TOP, BOT = 0.80, 0.20
         if direction == 1 and pos >= TOP:
             if reject and not vol_locked:
                 return -1, 0.10, f"flip LONG->SHORT reject@dinh {pos:.0%}"
-            return 0, 0.0, f"BLOCK LONG@dinh {pos:.0%}"
+            return 0, 0.0, f"BLOCK LONG@dinh/gan-dinh {pos:.0%}"
         if direction == -1 and pos <= BOT:
             if bounce and not vol_locked:
                 return 1, 0.10, f"flip SHORT->LONG bounce@day {pos:.0%}"
-            return 0, 0.0, f"BLOCK SHORT@day {pos:.0%}"
+            return 0, 0.0, f"BLOCK SHORT@day/gan-day {pos:.0%}"
         return direction, 0.0, f"pass@{pos:.0%}"
+
+    def _immediate_momentum(self, df, sp: float = 1.0, n: int = 7) -> int:
+        """Chieu di chuyen NGAY LUC NAY (n nen gan nhat) — nhanh hon EMA/vwt.
+        +1 dang len, -1 dang xuong, 0 di ngang. Dung de KHONG trade nguoc move hien tai
+        (khong short khi dang bounce len, khong long khi dang do xuong)."""
+        if df is None or df.empty or len(df) < n + 1:
+            return 0
+        r = df.iloc[-n:]
+        c0 = r["close"].iloc[0]; c1 = r["close"].iloc[-1]
+        if c0 <= 0:
+            return 0
+        net = (c1 - c0) / c0
+        greens = int((r["close"] > r["open"]).sum())
+        reds   = int((r["close"] < r["open"]).sum())
+        thr = 0.0025 * sp   # 0.25%*sp qua n nen = move that su
+        if net > thr and greens > reds:
+            return 1
+        if net < -thr and reds > greens:
+            return -1
+        return 0
+
+    def _true_direction(self, macro_trend: int, macro_4h: int, vwt_dir: int,
+                        vwt_str: float, imm: int) -> int:
+        """TREND THUC SU tu nhieu tin hieu DONG THUAN (co trong so):
+          macro EMA(100/250)=1, macro EMA(300/600)=1, immediate(7c)=1.5, volume=2.0/0.8.
+        Tra +1/-1 khi diem tuyet doi >= 2.0 (trend RO), else 0 (choppy → khong trade momentum).
+        Muc dich: chi trade khi trend ro rang va DUNG chieu — REU/MORPHO deu bi chan."""
+        score = float(macro_trend) + float(macro_4h) + float(imm) * 1.5
+        if vwt_dir != 0:
+            score += vwt_dir * (2.0 if vwt_str >= 0.45 else 0.8)
+        if score >= 2.0:
+            return 1
+        if score <= -2.0:
+            return -1
+        return 0
 
     def _find_local_extrema(self, df, window: int = 5):
         """
@@ -2683,6 +2728,34 @@ class TradingBot:
                 best.tp_roi_override = _tp_medium
                 logger.info(f"{symbol}: exhaustion flip → TP={_tp_medium*100:.0f}% ROI (medium)")
             # else: default potential scaling
+
+        # ══════════════════════════════════════════════════════════════════════
+        # ║  TRUE-DIRECTION GATE — chi trade khi trend RO + DUNG chieu           ║
+        # ══════════════════════════════════════════════════════════════════════
+        # REU: long khi trend quay xuong → lo. MORPHO: short trong range choppy → lo.
+        # ZRO/ADA: short khi gia dang bounce len → lo. Nguyen nhan: trade nguoc trend thuc
+        # / trade trong choppy khong co trend. Gate nay:
+        #   - Tinh TREND THUC tu macro + immediate momentum + volume (dong thuan co trong so)
+        #   - Choppy (khong trend ro): SKIP momentum (khong danh bac trong range)
+        #   - Signal nguoc trend thuc: FLIP ve dung chieu (bat lenh tiem nang dung huong)
+        # Mien: reversal (mean-reversion co chu dich), scenario/flip (da co phan tich cau truc)
+        if not is_reversal and not _direction_flipped and not _scenario_entry:
+            _imm = self._immediate_momentum(df_micro, _sp)
+            _true_dir = self._true_direction(macro_trend, macro_4h, _vwt_dir, _vwt_str, _imm)
+            if _true_dir == 0:
+                logger.info(f"{symbol}: TRUE-DIR choppy (macro={macro_trend}/{macro_4h} imm={_imm} vwt={_vwt_dir}:{_vwt_str:.2f}) — skip momentum")
+                return _block("skip - khong co trend ro (choppy), tranh trade sai trend")
+            # Signal nguoc trend thuc → FLIP ve dung chieu trend (bat lenh dung huong).
+            # Exhaustion guard chay NGAY SAU se chan neu chieu moi roi vao cuc doan xau
+            # (vd flip sang short nhung gia o day → bi chan). 2 lop bao ve nhau.
+            if best.direction != _true_dir:
+                logger.info(
+                    f"{symbol}: TRUE-DIR flip {'LONG' if best.direction==1 else 'SHORT'}"
+                    f"→{'LONG' if _true_dir==1 else 'SHORT'} (trend thuc: macro={macro_trend}/{macro_4h} "
+                    f"imm={_imm} vwt={_vwt_dir}:{_vwt_str:.2f}) — trade dung trend"
+                )
+                best.direction = _true_dir
+                best.tp_roi_override = 0.12
 
         # ══════════════════════════════════════════════════════════════════════
         # ║  FINAL EXHAUSTION-ZONE GUARD — QUYET DINH CUOI CUNG tai CUC DOAN     ║

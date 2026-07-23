@@ -32,7 +32,13 @@ class TradingBot:
     def __init__(self):
         logger.info("="*60)
         logger.info("Bybit Auto Trading Bot starting...")
+        # ═══ VERSION BANNER — de XAC NHAN dang chay code MOI (khong phai code cu) ═══
+        # Neu ban KHONG thay dong nay khi khoi dong → bot dang chay code CU, PHAI restart.
+        logger.info(">>> TREND-GUARD v5 : high-conviction + exhaustion 30/70 + TP 12-25% <<<")
+        logger.info(">>> Gates: TRUE-DIR(unanimity) + EXHAUSTION + IMM-momentum tren CA 3 path <<<")
+        print(">>> [TREND-GUARD v5] high-conviction mode ACTIVE — long-top/short-bottom BLOCKED <<<", flush=True)
         logger.info(f"Mode: {'TESTNET' if config.TESTNET else 'MAINNET (LIVE)'}")
+        logger.info(f"TP range: {config.TP_ROI_MIN*100:.0f}%-{config.TP_ROI_MAX*100:.0f}% ROI | SL={config.SL_TP_RATIO:.0f}xTP")
         logger.info(f"Scan budget per tick: TOP{config.TOP20_COUNT}={config.SCAN_BUDGET_TOP20_SEC}s + REST={config.SCAN_BUDGET_REST_SEC}s")
         logger.info("Max positions: unlimited (limited by equity & market opportunity)")
         logger.info(f"Strategies: {[s.name for s in ALL_STRATEGIES]}")
@@ -2821,6 +2827,24 @@ class TradingBot:
 
         names = "+".join(s.strategy_name for s in signals)
         _tp_log = f" TP_override={best.tp_roi_override*100:.0f}%" if best.tp_roi_override > 0 else ""
+
+        # ENTRY DECISION LOG — hien thi CHINH XAC vi sao vao lenh + tat ca gate values.
+        # Neu 1 lenh sai chieu, dong log nay cho biet dung path/gia tri nao → fix trung dich.
+        try:
+            _dbg_pos = 0.0
+            if not df_micro.empty and len(df_micro) >= 120:
+                _dh = df_micro["high"].iloc[-120:].max(); _dl = df_micro["low"].iloc[-120:].min()
+                if _dh > _dl:
+                    _dbg_pos = ((_range_live_price if _range_live_price > 0 else df_micro["close"].iloc[-1]) - _dl) / (_dh - _dl)
+            logger.info(
+                f"{symbol}: [ENTRY-DECISION] {'LONG' if best.direction==1 else 'SHORT'} | "
+                f"pos_in_range={_dbg_pos*100:.0f}% | macro={macro_trend}/{macro_4h} "
+                f"vwt={_vwt_dir}:{_vwt_str:.2f} imm={self._immediate_momentum(df_micro,_sp)} | "
+                f"path={'reversal' if is_reversal else ('scenario:'+_scenario_name if _scenario_entry else 'momentum')} "
+                f"flipped={_direction_flipped}"
+            )
+        except Exception:
+            pass
 
         logger.info(
             f"{symbol} [{names}] consensus={len(signals)} -> "

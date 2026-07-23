@@ -512,10 +512,10 @@ class TradingBot:
         # Dau hieu dao chieu tai cuc doan (de FLIP thay vi chi block)
         reject = (body < 0) or (upper_wick > 0.5) or (rsi_now > 68)
         bounce = (body > 0) or (lower_wick > 0.5) or (rsi_now < 32)
-        # QUY TAC: KHONG trade trong 20% CUC DOAN (dinh/day) — "dinh hoac gan dinh, day hoac gan day".
-        # Trend vao lenh o vung giua (20-80%): long tren pullback, short tren bounce — entry dep hon,
-        # khong bao gio mua sat dinh / ban sat day. Tai cuc doan: flip neu co dao chieu, khong thi skip.
-        TOP, BOT = 0.80, 0.20
+        # QUY TAC: KHONG trade trong 25% CUC DOAN (dinh/day) — "dinh hoac gan dinh, day hoac gan day".
+        # Trend vao lenh o vung giua (25-75%): long tren pullback, short tren bounce — entry dep hon,
+        # khong bao gio mua sat/gan dinh / ban sat/gan day. Tai cuc doan: flip neu dao chieu, else skip.
+        TOP, BOT = 0.75, 0.25
         if direction == 1 and pos >= TOP:
             if reject and not vol_locked:
                 return -1, 0.10, f"flip LONG->SHORT reject@dinh {pos:.0%}"
@@ -1290,7 +1290,12 @@ class TradingBot:
                 _bo_imm_ok = not ((bo_sig.direction == 1 and _bo_imm == -1) or (bo_sig.direction == -1 and _bo_imm == 1))
                 if not _bo_imm_ok:
                     logger.info(f"{symbol} [BREAKOUT] block: immediate momentum nguoc chieu (imm={_bo_imm})")
-                if bo_ok and micro_ok and not is_spike and post_spike_ok and micro_spike_ok and bo_btc_ok and bo_h1_ok and bo_24h_ok and bo_trend_ok and bo_m2h_ok and bo_30c_ok and bo_aeq12_ok and bo_aeq_mh_ok and bo_vol_ok and _bo_vwt_ok and _bo_ez_ok and _bo_imm_ok:
+                # Trend chu dao khong duoc nguoc chieu breakout (breakout gia = pha vo THEO trend)
+                _bo_true = self._true_direction(macro_trend, macro_4h, _vwt_dir, _vwt_str, _bo_imm)
+                _bo_true_ok = not (_bo_true != 0 and _bo_true != bo_sig.direction)
+                if not _bo_true_ok:
+                    logger.info(f"{symbol} [BREAKOUT] block: trend chu dao {_bo_true} nguoc breakout {bo_sig.direction}")
+                if bo_ok and micro_ok and not is_spike and post_spike_ok and micro_spike_ok and bo_btc_ok and bo_h1_ok and bo_24h_ok and bo_trend_ok and bo_m2h_ok and bo_30c_ok and bo_aeq12_ok and bo_aeq_mh_ok and bo_vol_ok and _bo_vwt_ok and _bo_ez_ok and _bo_imm_ok and _bo_true_ok:
                     # micro_entry_analysis da xoa: BREAKOUT theo dinh nghia la break qua range
                     # -> range check trong _micro_entry_analysis se HARD BLOCK moi breakout hop le
                     # Da co: bo_h1_ok, bo_m2h_ok, bo_trend_ok, micro_ok thay the
@@ -1672,6 +1677,17 @@ class TradingBot:
                     if best.direction == -1 and _rv_imm == 1:
                         logger.info(f"{symbol} [REVERSAL] block SHORT — gia dang tang manh (imm=1), khong ban dinh dang len")
                         return False
+                    # TREND CHU DAO: reversal la counter-trend, nhung neu trend chu dao con MANH
+                    # nguoc chieu (macro + volume deu chong) → dead-cat bounce, KHONG mua/ban.
+                    # KORU: long tren bounce nho giua downtrend manh (macro down + vwt down) → block.
+                    # Reversal CHI hop le khi trend da suy yeu (true_dir trung tinh) — day/dinh THAT.
+                    _rv_true = self._true_direction(macro_trend, macro_4h, _vwt_dir, _vwt_str, _rv_imm)
+                    if _rv_true != 0 and _rv_true != best.direction:
+                        logger.info(
+                            f"{symbol} [REVERSAL] block — trend chu dao {_rv_true} con manh nguoc chieu "
+                            f"reversal {best.direction} (macro={macro_trend}/{macro_4h} vwt={_vwt_dir}:{_vwt_str:.2f}) — dead-cat"
+                        )
+                        return False
                     names = "+".join(s.strategy_name for s in signals)
                     rsi_label = f"RSI15m={rsi_now:.0f}({'OVERSOLD<30' if reversal_dir==1 else 'OVERBOUGHT>70'})"
                     logger.info(
@@ -1963,8 +1979,8 @@ class TradingBot:
         _vol_trend_locked  = False
         if _vwt_dir != 0 and _vwt_str >= 0.45 and not is_reversal:
             # TP theo tiem nang trend: strength 0.45→0.20 ROI, 1.0→0.50 ROI
-            _vwt_tp = 0.20 + (_vwt_str - 0.45) / 0.55 * 0.30
-            _vwt_tp = max(0.15, min(0.50, _vwt_tp))
+            _vwt_tp = 0.12 + (_vwt_str - 0.45) / 0.55 * 0.10
+            _vwt_tp = max(0.10, min(0.22, _vwt_tp))
             if best.direction != _vwt_dir:
                 # Signal NGUOC volume-trend → flip THEO volume-trend (dung chieu that su)
                 logger.info(
@@ -2626,8 +2642,8 @@ class TradingBot:
                 f"(mot flip site da dao nguoc trend manh str={_vwt_str:.2f})"
             )
             best.direction = _vwt_dir
-            _vwt_tp2 = 0.20 + (_vwt_str - 0.40) / 0.60 * 0.30
-            best.tp_roi_override = max(0.15, min(0.50, _vwt_tp2))
+            _vwt_tp2 = 0.12 + (_vwt_str - 0.40) / 0.60 * 0.10
+            best.tp_roi_override = max(0.10, min(0.22, _vwt_tp2))
             _direction_flipped = True
 
         # MOMENTUM GATE: LUON goi micro_entry_analysis cho tat ca momentum trade

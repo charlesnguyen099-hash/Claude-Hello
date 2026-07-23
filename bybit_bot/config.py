@@ -72,14 +72,14 @@ ATR_PERIOD        = 14
 # TP1 toi da 6%, TP2 toi da 10%: TP phai co the dat duoc trong dieu kien binh thuong
 # SL/TP TINH THEO ROI% (% tren margin = loi/lo / von bo vao)
 # ROI = (price_dist / entry) * leverage
-# TP ROI: scale theo potential [12%, 60%] — lenh manh TP cao hon, KHONG con tran 30%
-# SL ROI = min(SL_TP_RATIO x TP ROI, tran an toan thanh ly):
-#   SL khong bao gio duoc vuot qua gia thanh ly (SL ngoai liq = vo nghia, chay margin truoc)
-#   -> lenh yeu  (TP 12%): SL = 60% (giu du 5:1)
-#   -> lenh manh (TP 60%): SL bi clamp ve ~60-75% theo leverage (ty le nen ve ~1:1)
-# TP KHONG bi scale xuong theo clamp — chi SL bi gioi han (risk_manager chon leverage phu hop)
-TP_ROI_MIN  = 0.12   # TP toi thieu 12% ROI (khi lenh yeu)
-TP_ROI_MAX  = 0.60   # TP toi da 60% ROI (khi lenh manh nhat) — bo tran 30% cu
+# TP ROI: scale theo potential [10%, 22%] — CHOT LOI AN TOAN, gan, de dat.
+# Triet ly (user): "th" lenh nay co 1 range an toan cho TP → lay muc AN TOAN NHAT,
+# tha loi it con hon bi lo. TP nho = gia chi can di 1 chut = HIT nhanh, chot loi truoc
+# khi dao chieu. Vi du 50x: TP 20% ROI = gia di 0.4% = rat de dat trong 1 lenh dung trend.
+# TP cao (60% cu) can gia di 1.2% → thuong dao chieu truoc khi toi → mat lenh loi.
+# SL ROI = min(SL_TP_RATIO x TP, tran an toan thanh ly) — SL khong vuot gia thanh ly.
+TP_ROI_MIN  = 0.10   # TP toi thieu 10% ROI (lenh yeu) — chot rat nhanh
+TP_ROI_MAX  = 0.22   # TP toi da 22% ROI (lenh manh nhat) — van an toan, de dat
 SL_TP_RATIO = 5.0    # SL muc tieu = 5 x TP (truoc khi clamp thanh ly)
 
 # --- Signal sensitivity -------------------------------------------------------

@@ -145,10 +145,32 @@ class RiskManager:
         tp_dist = tp_roi * entry / leverage
         sl_dist = sl_roi * entry / leverage
 
+        # TP THICH UNG VOLATILITY - TP phai NAM TRONG TAM VOI cua coin (khong dat qua xa range).
+        # Loi 'ngu set TP': TP ROI co dinh -> khoang cach gia co the vuot bien do dao dong binh
+        # thuong cua coin -> gia dao chieu TRUOC khi cham TP -> lo. Cap TP <= 2 x ATR gan nhat
+        # (dat duoc trong vai nen), nhung van >= phi + buffer de con LOI sau phi.
+        # Neu TP-bu-phi VUOT tam-voi (coin volatility qua thap) -> KHONG the lai sau phi -> SKIP.
+        _atr = signal.atr if signal.atr > 0 else 0.0
+        if _atr > 0:
+            _tp_cap   = 2.0 * _atr                                 # tran: trong tam voi (~2 nen)
+            _tp_floor = config.ROUND_TRIP_FEE * entry * 2.0        # san: >= 2x phi (con loi)
+            if _tp_floor > _tp_cap:
+                logger.info(
+                    f"{signal.symbol}: SKIP - volatility qua thap (ATR={_atr:.6f}), TP bu phi "
+                    f"({_tp_floor:.6f}) vuot tam voi (2xATR={_tp_cap:.6f}) -> khong lai sau phi"
+                )
+                return None
+            _tp_target = max(_tp_floor, min(tp_dist, _tp_cap))
+            if abs(_tp_target - tp_dist) > 1e-12:
+                tp_dist = _tp_target
+                tp_roi  = tp_dist * leverage / entry               # dong bo ROI theo dist moi
+                sl_roi  = min(tp_roi * config.SL_TP_RATIO, max_safe_sl_roi(leverage))
+                sl_dist = sl_roi * entry / leverage
+
         logger.info(
             f"{signal.symbol}: lev={leverage}x | "
             f"TP_ROI={tp_roi*100:.0f}% SL_ROI={sl_roi*100:.0f}% (SL/TP={sl_roi/tp_roi:.1f}) | "
-            f"tp_dist={tp_dist:.6f} sl_dist={sl_dist:.6f}"
+            f"tp_dist={tp_dist:.6f} sl_dist={sl_dist:.6f} atr={_atr:.6f}"
         )
 
         # Helper: round qty theo so chu so thap phan cua qty_step (tranh float artifact)

@@ -2836,6 +2836,13 @@ class TradingBot:
                     f"(vwt={_vwt_dir}:{_vwt_str:.2f} macro={macro_trend}/{macro_4h}) - cho lenh trend manh hon"
                 )
                 return _block("skip - trend yeu, chua dat benchmark trend manh")
+            # ANTI-CHOP bang ADX: coin phai co TREND RO (khong di ngang). ADX = suc manh
+            # xu huong (chuan). ADX thap = choppy/di ngang (HYPE range 0.57% dao dong ->
+            # whipsaw + TP dat qua xa range -> lo). Yeu cau ADX >= 20 cho momentum trade.
+            # (adx da tinh o dau ham tu df_signal; NaN -> coi nhu yeu -> skip)
+            if math.isnan(adx) or adx < 20.0:
+                logger.info(f"{symbol}: ANTI-CHOP skip - ADX={adx:.1f} < 20 (di ngang/chop, khong trend ro)")
+                return _block("skip - ADX thap (coin di ngang/chop), khong co trend ro")
             # _true_dir da bao gom: dung chieu move hien tai + co xac nhan (volume/macro)
             # + khong nguoc volume manh + khong nguoc ca 2 macro. Flip signal ve dung chieu.
             # Exhaustion guard chay NGAY SAU se chan neu chieu moi roi vao cuc doan xau.

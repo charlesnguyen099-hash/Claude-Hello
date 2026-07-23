@@ -515,7 +515,10 @@ class TradingBot:
         # QUY TAC: KHONG trade trong 25% CUC DOAN (dinh/day) — "dinh hoac gan dinh, day hoac gan day".
         # Trend vao lenh o vung giua (25-75%): long tren pullback, short tren bounce — entry dep hon,
         # khong bao gio mua sat/gan dinh / ban sat/gan day. Tai cuc doan: flip neu dao chieu, else skip.
+        imm = self._immediate_momentum(df_micro, sp)
         TOP, BOT = 0.75, 0.25
+        NEAR_TOP, NEAR_BOT = 0.70, 0.30
+        # 1. CUC DOAN CUNG (>=75% / <=25%): khong long dinh / short day. Flip neu dao chieu.
         if direction == 1 and pos >= TOP:
             if reject and not vol_locked:
                 return -1, 0.10, f"flip LONG->SHORT reject@dinh {pos:.0%}"
@@ -524,6 +527,14 @@ class TradingBot:
             if bounce and not vol_locked:
                 return 1, 0.10, f"flip SHORT->LONG bounce@day {pos:.0%}"
             return 0, 0.0, f"BLOCK SHORT@day/gan-day {pos:.0%}"
+        # 2. VUNG MO RONG (25-35% / 65-75%): TICH LUY/PHAN PHOI khi da dung.
+        # ONDO: short o 28% range NHUNG da BASING (da dung roi, imm=0) → tich luy → pump → lo.
+        # Chi chan khi da DUNG dong (imm khong con cung chieu trade) — downtrend CON roi (imm=-1)
+        # tai 25-35% van cho short (trend that su dang tiep dien).
+        if direction == -1 and pos <= NEAR_BOT and imm != -1:
+            return 0, 0.0, f"BLOCK SHORT@gan-day {pos:.0%} (da dung roi imm={imm}=tich luy)"
+        if direction == 1 and pos >= NEAR_TOP and imm != 1:
+            return 0, 0.0, f"BLOCK LONG@gan-dinh {pos:.0%} (da dung len imm={imm}=phan phoi)"
         return direction, 0.0, f"pass@{pos:.0%}"
 
     def _immediate_momentum(self, df, sp: float = 1.0, n: int = 7) -> int:
@@ -1979,8 +1990,8 @@ class TradingBot:
         _vol_trend_locked  = False
         if _vwt_dir != 0 and _vwt_str >= 0.45 and not is_reversal:
             # TP theo tiem nang trend: strength 0.45→0.20 ROI, 1.0→0.50 ROI
-            _vwt_tp = 0.12 + (_vwt_str - 0.45) / 0.55 * 0.10
-            _vwt_tp = max(0.10, min(0.22, _vwt_tp))
+            _vwt_tp = 0.14 + (_vwt_str - 0.45) / 0.55 * 0.11
+            _vwt_tp = max(0.12, min(0.25, _vwt_tp))
             if best.direction != _vwt_dir:
                 # Signal NGUOC volume-trend → flip THEO volume-trend (dung chieu that su)
                 logger.info(
@@ -2642,8 +2653,8 @@ class TradingBot:
                 f"(mot flip site da dao nguoc trend manh str={_vwt_str:.2f})"
             )
             best.direction = _vwt_dir
-            _vwt_tp2 = 0.12 + (_vwt_str - 0.40) / 0.60 * 0.10
-            best.tp_roi_override = max(0.10, min(0.22, _vwt_tp2))
+            _vwt_tp2 = 0.14 + (_vwt_str - 0.40) / 0.60 * 0.11
+            best.tp_roi_override = max(0.12, min(0.25, _vwt_tp2))
             _direction_flipped = True
 
         # MOMENTUM GATE: LUON goi micro_entry_analysis cho tat ca momentum trade

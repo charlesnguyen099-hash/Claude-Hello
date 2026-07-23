@@ -78,8 +78,8 @@ ATR_PERIOD        = 14
 # khi dao chieu. Vi du 50x: TP 20% ROI = gia di 0.4% = rat de dat trong 1 lenh dung trend.
 # TP cao (60% cu) can gia di 1.2% → thuong dao chieu truoc khi toi → mat lenh loi.
 # SL ROI = min(SL_TP_RATIO x TP, tran an toan thanh ly) — SL khong vuot gia thanh ly.
-TP_ROI_MIN  = 0.10   # TP toi thieu 10% ROI (lenh yeu) — chot rat nhanh
-TP_ROI_MAX  = 0.22   # TP toi da 22% ROI (lenh manh nhat) — van an toan, de dat
+TP_ROI_MIN  = 0.12   # TP toi thieu 12% ROI (lenh yeu) — chot nhanh, an toan
+TP_ROI_MAX  = 0.25   # TP toi da 25% ROI (lenh manh nhat) — van de dat truoc khi dao chieu
 SL_TP_RATIO = 5.0    # SL muc tieu = 5 x TP (truoc khi clamp thanh ly)
 
 # --- Signal sensitivity -------------------------------------------------------

@@ -50,12 +50,14 @@ DEFAULT_LEVERAGE       = 10
 #   capital = equity_that * (CAPITAL_PCT_MIN + potential * (CAPITAL_PCT_MAX - CAPITAL_PCT_MIN))
 #   -> lenh yeu: 4% equity (rui ro nho), lenh manh nhat: 15% equity (von lon hon, khong all-in)
 # KHONG all-in 1 lenh: moi lenh toi da MAX_CAPITAL_PCT equity + phai chua margin cho lenh khac
-CAPITAL_PCT_MIN = 0.04   # 4% equity — lenh kem tiem nang
-CAPITAL_PCT_MAX = 0.15   # 15% equity — lenh tiem nang cao nhat (coin trend manh)
-MAX_CAPITAL_PCT = 0.15   # HARD CAP: 1 lenh KHONG BAO GIO vuot 15% equity that
-# Chua margin cho nhieu lenh: 1 lenh dung toi da FRACTION nay cua margin CON TRONG (free)
-# → luon con cho >= (1-0.50)=50% free cho cac lenh tiem nang tiep theo
-MAX_FREE_MARGIN_FRAC = 0.50
+# VON LON HON — vi gio chi trade lenh CHAT LUONG CAO (high-conviction), it lenh hon:
+# 'tha it ma chat con hon nhieu ma lo' → moi lenh dung von lon de an dam.
+CAPITAL_PCT_MIN = 0.10   # 10% equity — lenh conviction thap nhat (van du dieu kien chat)
+CAPITAL_PCT_MAX = 0.30   # 30% equity — lenh trend cuc ro, xac nhan manh
+MAX_CAPITAL_PCT = 0.30   # HARD CAP: 1 lenh KHONG vuot 30% equity that
+# Chua margin cho lenh khac: 1 lenh dung toi da 60% margin CON TRONG (free)
+# → van con cho cho 1-2 lenh chat luong tiep theo, khong all-in
+MAX_FREE_MARGIN_FRAC = 0.60
 # San tinh size CHI de dam bao min-notional Bybit ($5), KHONG dung de phong % equity
 EQUITY_FLOOR    = 0.0    # bo hieu ung bom phong % tren tai khoan nho (nguyen nhan all-in)
 # RISK_PER_TRADE_PCT: KHONG DUNG

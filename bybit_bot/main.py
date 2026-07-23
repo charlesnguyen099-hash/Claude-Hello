@@ -501,10 +501,13 @@ class TradingBot:
           - long ma dang len DEU (immediate up, khong over-ext, khong reject) → CHO (trend)
         Tai BOTTOM <=20%: doi xung.
         vol_locked: khong flip (tranh whipsaw) nhung van block khi kiet."""
-        if df_micro is None or df_micro.empty or len(df_micro) < 120:
+        # Dung 120 nen (2h) neu du, con khong dung het data co (>=60). Coin moi list
+        # (60-119 nen) VAN duoc bao ve exhaustion — truoc day <120 bi bo qua (lo hong).
+        if df_micro is None or df_micro.empty or len(df_micro) < 60:
             return direction, 0.0, "pass"
-        hi = df_micro["high"].iloc[-120:].max()
-        lo = df_micro["low"].iloc[-120:].min()
+        _nw = min(120, len(df_micro))
+        hi = df_micro["high"].iloc[-_nw:].max()
+        lo = df_micro["low"].iloc[-_nw:].min()
         rng = hi - lo
         if rng <= 0 or lo <= 0 or (rng / lo) < 0.006 * sp:
             return direction, 0.0, "pass-narrow"
@@ -2790,9 +2793,23 @@ class TradingBot:
             if _true_dir == 0:
                 logger.info(f"{symbol}: TRUE-DIR choppy (macro={macro_trend}/{macro_4h} imm={_imm} vwt={_vwt_dir}:{_vwt_str:.2f}) — skip momentum")
                 return _block("skip - khong co trend ro (choppy), tranh trade sai trend")
-            # Signal nguoc trend thuc → FLIP ve dung chieu trend (bat lenh dung huong).
-            # Exhaustion guard chay NGAY SAU se chan neu chieu moi roi vao cuc doan xau
-            # (vd flip sang short nhung gia o day → bi chan). 2 lop bao ve nhau.
+            # QUALITY GATE — chi trade lenh CHAT LUONG CAO (tha it ma chat):
+            # Trend thuc phai duoc XAC NHAN MANH boi it nhat 1 trong 2:
+            #   (a) volume-trend manh cung chieu (vwt_dir == true_dir va str >= 0.45), HOAC
+            #   (b) CA HAI macro TF (100/250 va 300/600) cung chieu true_dir.
+            # Neu chi co momentum ngan han keo (khong volume, khong macro dong thuan) → SKIP.
+            _strong_vol   = (_vwt_dir == _true_dir and _vwt_str >= 0.45)
+            _strong_macro = (macro_trend == _true_dir and macro_4h == _true_dir)
+            _imm_confirms = (_imm == _true_dir)
+            if not (_strong_vol or _strong_macro) or not _imm_confirms:
+                logger.info(
+                    f"{symbol}: QUALITY-GATE skip — xac nhan yeu "
+                    f"(vol_manh={_strong_vol} macro_manh={_strong_macro} imm_confirms={_imm_confirms} "
+                    f"| macro={macro_trend}/{macro_4h} vwt={_vwt_dir}:{_vwt_str:.2f} imm={_imm})"
+                )
+                return _block("skip - xac nhan trend yeu, cho lenh chat luong hon")
+            # Signal nguoc trend thuc → FLIP ve dung chieu trend (da qua quality gate).
+            # Exhaustion guard chay NGAY SAU se chan neu chieu moi roi vao cuc doan xau.
             if best.direction != _true_dir:
                 logger.info(
                     f"{symbol}: TRUE-DIR flip {'LONG' if best.direction==1 else 'SHORT'}"

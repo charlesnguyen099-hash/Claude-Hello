@@ -324,7 +324,10 @@ class TradingBot:
             macro_trend = self._trend_direction(df, fast=100, slow=250)
             macro_4h    = self._trend_direction(df, fast=300, slow=600)
             imm         = self._immediate_momentum(df, sp=1.0)
-            macro_dir   = macro_trend if macro_trend == macro_4h else 0   # ca 2 dong thuan moi tinh
+            # macro_dir: dung cho dynamic exit.
+            # Lay macro_trend lam chieu chinh; chi reset ve 0 khi macro_4h XUNG DOT (ngược chiều).
+            # macro_4h == 0 (trung tinh): van tin macro_trend.
+            macro_dir   = macro_trend if (macro_trend != 0 and macro_4h != -macro_trend) else 0
 
             # Nguong chot loi phai TRU phi DONG lenh (theo ROI = exit_fee * leverage) +
             # buffer funding -> chot la LOI RONG that su, khong hoa/lo vi phi o don bay cao.
@@ -2941,12 +2944,14 @@ class TradingBot:
             # DOGE/OPUSDT: short o DAY cu dump (macro van UP) -> lo. BASED: long o DINH (extended).
             # Nguyen nhan: indicator 1m lag -> bot vao ngay diem kiet suc/dao chieu.
             #
-            # 1. TREND DA XAC LAP: CA HAI macro TF (EMA100/250 ~5m + EMA300/600 ~15m) phai
-            #    DONG THUAN. Dump 8 nen trong uptrend -> macro van UP -> short = counter-trend -> chan.
-            if macro_trend == 0 or macro_trend != macro_4h:
+            # 1. TREND DA XAC LAP: macro_trend (EMA100/250) phai co chieu ro rang (!=0)
+            #    VA macro_4h (EMA300/600) KHONG DUOC NGUOC CHIEU (co the == 0: trung tinh, chua xac nhan).
+            #    macro_4h == 0: trend dai han chua ro -> van cho vao, macro_trend quyet dinh chieu.
+            #    macro_4h == -macro_trend: XUNG DOT ro rang -> block (vd: 1h up nhung 4h down).
+            if macro_trend == 0 or macro_4h == -macro_trend:
                 logger.info(f"{symbol}: TREND skip - chua co trend XAC LAP (macro={macro_trend}/{macro_4h})")
-                return _block("skip - 2 macro TF khong dong thuan, khong co trend xac lap")
-            _T = macro_trend   # chieu trend da xac lap (= macro_4h)
+                return _block("skip - macro TF khong hop le (macro=0 hoac macro_4h xung dot)")
+            _T = macro_trend   # chieu trend da xac lap
             # 1b. CHONG MACRO-EMA LAG (loi SNXX: long @17.85 khi gia dang roi 17.97->17.50).
             #     Macro EMA100/250 + EMA300/600 tren 1m LAG rat nang -> khi downtrend MOI bat dau,
             #     macro van bao UP (tu uptrend cu) -> bot "mua pullback" thuc ra la mua vao downtrend.

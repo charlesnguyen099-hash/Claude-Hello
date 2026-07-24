@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 
 import config
 from bot_logger import setup_logging, BotLogger
-from client import BybitClient
+from client import BybitClient, _sf
 from executor import Executor
 from risk_manager import RiskManager
 from scanner import MarketScanner
@@ -136,6 +136,9 @@ class TradingBot:
         # Quan ly vi the dang mo
         if open_positions:
             self.executor.manage_positions(open_positions)
+            # DYNAMIC EXIT: phan tich lien tuc -> chot loi khi market quay dau,
+            # cat lo som khi trend nguoc han (khong cho SL/TP chet)
+            self._dynamic_manage_positions(open_positions)
             # Refresh lai sau khi manage - co the co lenh vua dong (SL/TP hit)
             # De bot co the re-enter ngay trong cung tick nay
             try:
@@ -275,6 +278,79 @@ class TradingBot:
         if price < ema_f < ema_s:
             return -1
         return 0
+
+    def _dynamic_manage_positions(self, open_positions: list[dict]):
+        """Quan ly lenh CHU DONG bang phan tich lien tuc (khong cho SL/TP chet).
+        - Dang LOI + market quay dau nguoc -> chot ngay (khoa loi, khong de thanh lo).
+        - Dang LO + trend lon nguoc han (khong phuc hoi) -> dong luc LO IT NHAT (bounce),
+          hoac cat cung khi lo qua sau -> khong cho cham SL banh chanh.
+        SL/TP tren san van con nguyen lam luoi an toan cuoi cung."""
+        if not getattr(config, "DYN_EXIT_ENABLE", True) or not open_positions:
+            return
+        for pos in open_positions:
+            symbol = pos["symbol"]
+            side   = pos.get("side", "")
+            if side not in ("Buy", "Sell"):
+                continue
+            pos_dir = 1 if side == "Buy" else -1
+
+            # Cho lenh 'tho' - khong dong theo nhieu ngan han ngay sau khi vao
+            _created = int(pos.get("createdTime", 0) or 0) / 1000
+            if _created > 0 and (time.time() - _created) < config.DYN_MIN_HOLD_SEC:
+                continue
+
+            # PnL ROI (tren margin)
+            _pos_val = max(_sf(pos.get("positionValue", 0)), 0.0)
+            _lev     = max(1.0, _sf(pos.get("leverage", 10.0)))
+            _margin  = _pos_val / _lev if _lev > 0 else 0.0
+            _upnl    = _sf(pos.get("unrealisedPnl", 0))
+            if _margin <= 0:
+                continue
+            pnl_roi = _upnl / _margin
+
+            # Phan tich hien tai cua chinh coin nay
+            try:
+                df = self.client.get_klines_paginated(symbol, "1", 700)
+            except Exception as e:
+                logger.debug(f"[DYN-EXIT] {symbol}: fetch klines failed: {e!r}")
+                continue
+            if df is None or len(df) < 260:
+                continue
+
+            macro_trend = self._trend_direction(df, fast=100, slow=250)
+            macro_4h    = self._trend_direction(df, fast=300, slow=600)
+            imm         = self._immediate_momentum(df, sp=1.0)
+            macro_dir   = macro_trend if macro_trend == macro_4h else 0   # ca 2 dong thuan moi tinh
+
+            # 1) PROFIT-LOCK: dang loi ma market quay dau nguoc chieu lenh -> chot ngay
+            if pnl_roi >= config.DYN_PROFIT_LOCK_ROI:
+                _turned = (imm == -pos_dir) or (macro_dir == -pos_dir)
+                if _turned:
+                    logger.warning(
+                        f"[DYN-EXIT] {symbol} {side}: LOCK PROFIT roi=+{pnl_roi*100:.0f}% "
+                        f"| market quay dau (imm={imm} macro={macro_dir} pos={pos_dir}) -> chot ngay"
+                    )
+                    self.executor._close_position(pos)
+                    continue
+
+            # 2) SMART CUT-LOSS: dang lo + trend lon nguoc han -> khong the phuc hoi
+            if pnl_roi < 0 and macro_dir == -pos_dir:
+                if imm == pos_dir:
+                    # co bounce nguoc ve phia minh = luc LO IT NHAT -> dong ngay
+                    logger.warning(
+                        f"[DYN-EXIT] {symbol} {side}: CUT on bounce roi={pnl_roi*100:.0f}% "
+                        f"| trend nguoc (macro={macro_dir}) + bounce (imm={imm}) -> dong luc lo it nhat"
+                    )
+                    self.executor._close_position(pos)
+                    continue
+                if pnl_roi <= -config.DYN_HARD_CUT_ROI:
+                    # lo qua sau, khong co bounce -> cat luon, khong cho cham SL banh chanh
+                    logger.warning(
+                        f"[DYN-EXIT] {symbol} {side}: HARD CUT roi={pnl_roi*100:.0f}% "
+                        f"| trend nguoc + khong bounce -> cat, chan lo them"
+                    )
+                    self.executor._close_position(pos)
+                    continue
 
     def _btc_correlated(self, df_coin, lookback: int = 100, threshold: float = 0.5) -> bool:
         """True neu coin co rolling correlation voi BTC >= threshold (neo theo BTC).

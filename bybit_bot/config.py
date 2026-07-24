@@ -113,6 +113,17 @@ ENABLE_BREAKOUT_PATH = False  # breakout hay vao false-breakout -> tat
 ENABLE_REVERSAL_PATH = False  # reversal = bat dao chieu (bat dao roi) -> tat
 ENABLE_SCENARIO_PATH = False  # scenario mean-revert trong range -> tat
 
+# --- DYNAMIC EXIT (bot phan tich lien tuc -> dong lenh chu dong, khong cho SL/TP chet) ---
+# Bot analyze moi tick -> hieu market hon 2 moc SL/TP tinh. SL/TP chi la luoi an toan cuoi.
+#   1. PROFIT-LOCK: dang LOI ma market quay dau nguoc chieu -> dong NGAY, khoa lai loi,
+#      khong de loi bay mat / thanh lo.
+#   2. SMART CUT-LOSS: dang LO ma trend lon da nguoc han (khong the phuc hoi) -> khong cho
+#      cham SL banh chanh, ma dong ngay khi co BOUNCE nguoc ve phia minh (luc lo IT NHAT).
+DYN_EXIT_ENABLE     = True
+DYN_PROFIT_LOCK_ROI = 0.05   # dang loi >= 5% ROI ma momentum quay dau nguoc -> chot ngay
+DYN_HARD_CUT_ROI    = 0.35   # dang lo >= 35% ROI + trend nguoc, khong co bounce -> cat luon (chan banh chanh)
+DYN_MIN_HOLD_SEC    = 60     # cho lenh 'tho' 60s dau, tranh churn theo nhieu ngan han
+
 # Max spread: neu bid-ask spread > nguong nay -> khong entry (thanh khoan kem)
 # Largecap (BTC/ETH): 0.05%, Altcoin: 0.15%
 MAX_SPREAD_PCT_LARGE = 0.0005   # 0.05% cho BTC/ETH

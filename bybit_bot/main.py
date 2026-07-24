@@ -2940,89 +2940,186 @@ class TradingBot:
         # Mien DUY NHAT: reversal path (da tat) va scenario (da tat) -> thuc te LUON chay gate nay.
         if not is_reversal and not _scenario_entry:
             _imm = self._immediate_momentum(df_micro, _sp)
-            # === MO HINH TREND-FOLLOWING + PULLBACK ENTRY (chong vao dinh/day dao chieu) ===
-            # DOGE/OPUSDT: short o DAY cu dump (macro van UP) -> lo. BASED: long o DINH (extended).
-            # Nguyen nhan: indicator 1m lag -> bot vao ngay diem kiet suc/dao chieu.
+
+            # ================================================================
+            # TREND GATE v3 - 10000-SCENARIO SCORING FRAMEWORK
+            # ================================================================
+            # Kien truc: Fast EMA (20/50) la TIN HIEU CHU DAO (phan ung 20-50p).
+            # Macro (100/250 / 300/600) la BO LOC BAI TRU - block khi nguoc Fast,
+            # khong phai nguon quyet dinh chieu chinh.
             #
-            # 1. TREND DA XAC LAP: macro_trend (EMA100/250) phai co chieu ro rang (!=0)
-            #    VA macro_4h (EMA300/600) KHONG DUOC NGUOC CHIEU (co the == 0: trung tinh, chua xac nhan).
-            #    macro_4h == 0: trend dai han chua ro -> van cho vao, macro_trend quyet dinh chieu.
-            #    macro_4h == -macro_trend: XUNG DOT ro rang -> block (vd: 1h up nhung 4h down).
-            if macro_trend == 0 or macro_4h == -macro_trend:
-                logger.info(f"{symbol}: TREND skip - chua co trend XAC LAP (macro={macro_trend}/{macro_4h})")
-                return _block("skip - macro TF khong hop le (macro=0 hoac macro_4h xung dot)")
-            _T = macro_trend   # chieu trend da xac lap
-            # 1b. CHONG MACRO-EMA LAG (loi SNXX: long @17.85 khi gia dang roi 17.97->17.50).
-            #     Macro EMA100/250 + EMA300/600 tren 1m LAG rat nang -> khi downtrend MOI bat dau,
-            #     macro van bao UP (tu uptrend cu) -> bot "mua pullback" thuc ra la mua vao downtrend.
-            #     Kiem tra trend NHANH (EMA20/50 tren 1m): neu da lat NGUOC _T -> macro dang lag
-            #     dao chieu -> KHONG vao. (Pullback lanh manh: fast=0 trung tinh -> van cho vao.)
-            #     KIEM TRA trend NHANH (EMA20/50): neu da lat NGUOC _T -> macro dang lag dao chieu -> chan.
-            #     (Da bo check 'net 20 nen' cu: no MAU THUAN mo hinh pullback - hoi ve EMA21 luon co
-            #      net 20 nen am du momentum da resume -> chan nham lenh tot. Fast EMA + macro-align +
-            #      imm da du bat SNXX: khi gia roi that su, macro100/250 ve 0 -> gate chan o buoc 1.)
+            # 8 bien trang thai thi truong:
+            #   F (fast EMA 20/50), M1 (macro 100/250), M2 (macro 300/600),
+            #   I (imm 7 nen), P (vi tri range), ADX, V (volume), S (HH/HL structure)
+            # 3^5 x 7 x 4 x 3 = 20,412 to hop -> xu ly bang scoring engine.
+            #
+            # Loi goc KAITO: F=0 (crossing), M1=1 (lag), M2=0, I=1 (bounce) -> LONG SAI.
+            #   Nguyen nhan: cu chi block F == -_T, khong block F == 0.
+            #   Fix: khi F=0 -> CA HAI macro (M1 va M2) phai dong thuan,
+            #   M2=0 (neutral) KHONG DU khi F=0 (khong co xac nhan thu 3).
+            # ================================================================
+
             _fast_tr = self._trend_direction(df_micro, fast=20, slow=50)
-            if _fast_tr == -_T:
-                logger.info(f"{symbol}: TREND skip - fast EMA20/50={_fast_tr} nguoc macro _T={_T} (macro EMA lag dao chieu)")
-                return _block("skip - fast trend nguoc macro (macro EMA lag, dao chieu som)")
-            # 2. ADX >= 20 (trend du manh, khong chop)
+
+            # --- BUOC 1: XAC DINH CHIEU TRADE (_T) ----------------------------
+            # Fast EMA la tin hieu nhanh nhat co the tin cay (EMA 20/50 ~ 20-50 phut lag).
+            # Macro (EMA 100-600) la boi canh lich su - block khi roi ro nguoc, khong phai chu.
+            if _fast_tr != 0:
+                # F co chieu ro rang: lay lam _T chu dao
+                _T = _fast_tr
+                # Macro KHONG DUOC NGUOC chieu F.
+                # M1 nguoc: gia da di ra khoi macro -> conflict nguy hiem
+                # M2 nguoc: 4h macro chong Fast -> 2 TF lon deu phan doi -> block
+                if macro_trend == -_T:
+                    logger.info(f"{symbol}: TREND skip - M1={macro_trend} nguoc fast={_fast_tr} (trend dang dao chieu)")
+                    return _block("skip - macro nguoc fast EMA (trend dao chieu)")
+                if macro_4h == -_T:
+                    logger.info(f"{symbol}: TREND skip - M2={macro_4h} nguoc fast={_fast_tr} (4h trend chong fast)")
+                    return _block("skip - macro_4h nguoc fast EMA (4h conflict)")
+            else:
+                # F=0: EMA20 ~ EMA50, dang crossing hoac sideway.
+                # Khi F=0, CA HAI macro phai dong thuan (M1 == M2).
+                # M1=1 + M2=0 + F=0 + I=1 = KAITO bug: chi co 1 macro, fast chua xac nhan
+                # -> KHONG DU de xac dinh xu huong - nguy co vao lenh trong transition.
+                if macro_trend != 0 and macro_trend == macro_4h:
+                    # Ca hai macro dong thuan -> dung lam _T (do tin thap: F chua confirm)
+                    _T = macro_trend
+                else:
+                    _msg = (f"fast=0 macro={macro_trend}/{macro_4h} "
+                            f"({'M1=M2=0' if macro_trend==0 else 'M1!=M2, khong du'})")
+                    logger.info(f"{symbol}: TREND skip - F=0, {_msg}")
+                    return _block("skip - fast EMA neutral, khong du xac nhan huong (F=0 transition risk)")
+
+            # --- BUOC 2: ADX - trend phai du manh de trade --------------------
             if math.isnan(adx) or adx < 20.0:
-                logger.info(f"{symbol}: TREND skip - ADX={adx:.1f}<20 (chop)")
+                logger.info(f"{symbol}: TREND skip - ADX={adx:.1f}<20 (chop/sideway)")
                 return _block("skip - ADX<20 (chop)")
-            # 3. Volume KHONG duoc nguoc trend xac lap (dong tien phai ung ho trend)
+
+            # --- BUOC 3: VOLUME khong duoc nguoc trend xac lap ----------------
             if _vwt_dir == -_T and _vwt_str >= 0.45:
-                logger.info(f"{symbol}: TREND skip - volume nguoc trend (vwt={_vwt_dir}:{_vwt_str:.2f} T={_T})")
-                return _block("skip - volume nguoc trend xac lap")
-            # 4. VAO TREN PULLBACK, KHONG DUOI EXTENSION: gia khong duoc qua xa EMA21 theo
-            #    chieu trend (o dinh/day cua move = chase). BASED long o dinh (xa EMA tren) -> chan.
+                logger.info(f"{symbol}: TREND skip - volume nguoc (vwt={_vwt_dir}:{_vwt_str:.2f} T={_T})")
+                return _block("skip - volume nguoc trend")
+
+            # --- BUOC 4: EMA STACK CHECK (them moi - bao ve khi F=0) ----------
+            # Khi F=0 (EMA20~EMA50, transition), gia co the da vao "vung sai":
+            #   LONG ma gia < EMA9 < EMA21 < EMA50 = bearish stack -> SKIP
+            #   SHORT ma gia > EMA9 > EMA21 > EMA50 = bullish stack -> SKIP
+            # Chi apply khi F=0 vi khi F!=0, EMA20/50 stack da phan anh trong _T roi.
+            if _fast_tr == 0:
+                _e9s  = compute_ema(df_micro["close"], 9).iloc[-1]
+                _e21s = compute_ema(df_micro["close"], 21).iloc[-1]
+                _e50s = compute_ema(df_micro["close"], min(50, len(df_micro) - 1)).iloc[-1]
+                _ps   = df_micro["close"].iloc[-1]
+                _bearish_stack = _ps < _e9s and _e9s < _e21s   # price below EMA9 & EMA9 below EMA21
+                _bullish_stack = _ps > _e9s and _e9s > _e21s
+                if _T == 1 and _bearish_stack:
+                    logger.info(f"{symbol}: TREND skip LONG - EMA stack bearish khi F=0 (p<e9<e21, gia trong vung giam)")
+                    return _block("skip LONG - EMA stack bearish khi F=0")
+                if _T == -1 and _bullish_stack:
+                    logger.info(f"{symbol}: TREND skip SHORT - EMA stack bullish khi F=0 (p>e9>e21, gia trong vung tang)")
+                    return _block("skip SHORT - EMA stack bullish khi F=0")
+
+            # --- BUOC 5: EXTENSION - entry tren pullback, khong chase ----------
             _ema21m = compute_ema(df_micro["close"], 21).iloc[-1]
             _atrm = _atr_for_sl if _atr_for_sl > 0 else float(
                 (df_micro["high"].iloc[-14:] - df_micro["low"].iloc[-14:]).mean())
             _price_now = _range_live_price if _range_live_price > 0 else df_micro["close"].iloc[-1]
             _ext = (_price_now - _ema21m) / _atrm if _atrm > 0 else 0.0
             if _T == 1 and _ext > 1.5:
-                logger.info(f"{symbol}: TREND skip LONG - extended {_ext:.1f} ATR tren EMA21 (chase dinh, cho pullback)")
+                logger.info(f"{symbol}: TREND skip LONG - extended {_ext:.1f}x ATR tren EMA21 (chase dinh)")
                 return _block("skip LONG - gia extended tren EMA (chase dinh)")
             if _T == -1 and _ext < -1.5:
-                logger.info(f"{symbol}: TREND skip SHORT - extended {_ext:.1f} ATR duoi EMA21 (chase day, cho rally)")
+                logger.info(f"{symbol}: TREND skip SHORT - extended {_ext:.1f}x ATR duoi EMA21 (chase day)")
                 return _block("skip SHORT - gia extended duoi EMA (chase day)")
-            # 5. RESUME CONFIRMED: immediate momentum phai CUNG chieu trend (khong chi 'khong nguoc').
-            #    imm == -T (nguoc) HOAC imm == 0 (chop/khong ro luc) -> KHONG vao.
-            #    Chi vao khi gia DANG chay DUNG huong trend NGAY LUC NAY -> pullback da resume that su.
-            #    Loi KAITO: long vao vung chop (imm=0) sau khi rot tu dinh -> dung im -> dong hoa von
-            #    tru phi. Yeu cau imm==T loai sach entry chop khong follow-through.
+
+            # --- BUOC 6: IMMEDIATE MOMENTUM phai CUNG CHIEU _T ----------------
+            # imm == 0 (chop) HOAC imm == -_T (nguoc) -> KHONG vao.
+            # Chi trade khi gia DANG di DUNG HUONG NGAY LUC NAY.
             if _imm != _T:
-                logger.info(f"{symbol}: TREND skip - imm={_imm} chua xac nhan trend T={_T} (chop/nguoc, cho momentum resume dung huong)")
-                return _block("skip - imm chua xac nhan trend (chop hoac nguoc, khong follow-through)")
-            # 5b. CHONG BREAKOUT NGUOC TREND (loi REUSDT: short @0.5827 khi gia dang break LEN).
-            #     _immediate_momentum can 7 nen moi xac nhan -> cu breakout moi (2-3 nen xanh manh)
-            #     doc imm=0 -> lot. Bat SOM bang cau truc gia: neu nen VUA DONG pha DINH 10 nen
-            #     truoc do -> gia dang break LEN -> KHONG short. Pha DAY 10 nen -> KHONG long.
-            #     Trong downtrend that, gia lien tuc pha DAY (short ok) va KHONG pha dinh 10 nen;
-            #     bounce bi reject (wick len, dong xuong) van cho short (dong khong vuot dinh).
+                logger.info(f"{symbol}: TREND skip - imm={_imm} != T={_T} (chua resume hoac nguoc)")
+                return _block("skip - imm chua xac nhan trend (chop hoac nguoc)")
+
+            # --- BUOC 7: CANDLE STRUCTURE (HH/HL) ----------------------------
+            # Kiem tra 15 nen gan nhat: HH+HL = bullish, LH+LL = bearish.
+            # Neu structure NGUOC chieu _T va F=0 (fast chua confirm): block.
+            # Khi F!=0 (fast confirm), structure check chi la bonus cho confidence.
+            _hh_ll = 0
+            if len(df_micro) >= 15:
+                _hr = df_micro["high"].iloc[-8:].max();  _hp = df_micro["high"].iloc[-15:-8].max()
+                _lr = df_micro["low"].iloc[-8:].min();   _lp = df_micro["low"].iloc[-15:-8].min()
+                if   _hr > _hp and _lr > _lp: _hh_ll = 1    # higher highs + higher lows
+                elif _hr < _hp and _lr < _lp: _hh_ll = -1   # lower highs + lower lows
+            if _fast_tr == 0 and _hh_ll == -_T:
+                logger.info(f"{symbol}: TREND skip - candle structure (HH_LL={_hh_ll}) nguoc T={_T} khi F=0")
+                return _block("skip - HH/HL candle structure nguoc trend (F=0)")
+
+            # --- BUOC 8: ANTI-BREAKOUT COUNTER-TREND (bao ve nguoc breakout) --
+            # Short khi gia dang break DINH 10 nen = short vao rally -> block.
+            # Long khi gia dang break DAY 10 nen = long vao dump -> block.
             _N_brk = 10
             if len(df_micro) > _N_brk + 1:
                 _prior_high = float(df_micro["high"].iloc[-(_N_brk + 1):-1].max())
                 _prior_low  = float(df_micro["low"].iloc[-(_N_brk + 1):-1].min())
                 _cur_close  = float(df_micro["close"].iloc[-1])
                 if _T == -1 and _cur_close > _prior_high:
-                    logger.info(f"{symbol}: TREND skip SHORT - nen dong {_cur_close:.6f} pha dinh 10 nen {_prior_high:.6f} (breakout LEN, khong short vao rally)")
-                    return _block("skip SHORT - gia break dinh 10 nen (rally nguoc trend short)")
+                    logger.info(f"{symbol}: TREND skip SHORT - close {_cur_close:.6f} pha dinh 10 nen {_prior_high:.6f} (breakout len)")
+                    return _block("skip SHORT - gia break dinh 10 nen (rally nguoc)")
                 if _T == 1 and _cur_close < _prior_low:
-                    logger.info(f"{symbol}: TREND skip LONG - nen dong {_cur_close:.6f} pha day 10 nen {_prior_low:.6f} (breakdown XUONG, khong long vao dump)")
-                    return _block("skip LONG - gia break day 10 nen (dump nguoc trend long)")
-            # DA QUA HET: trend xac lap + ADX manh + volume ung ho + entry pullback + resume.
-            # Direction = TREND XAC LAP (khong theo signal goc neu nguoc).
+                    logger.info(f"{symbol}: TREND skip LONG - close {_cur_close:.6f} pha day 10 nen {_prior_low:.6f} (breakdown xuong)")
+                    return _block("skip LONG - gia break day 10 nen (dump nguoc)")
+
+            # ================================================================
+            # DA QUA CA 8 GATE - TINH DIEM DO TIN CAY (CONFIDENCE 0-10)
+            # Quy tac: moi yeu to dong thuan voi _T cho them diem.
+            # Diem quyet dinh TP (bao nhieu % ROI chot loi) va von (bao nhieu % equity).
+            # ================================================================
+            # Lop 1 - EMA alignment (toi da 6 diem):
+            #   fast_tr == _T: +2 (luon dung vi gate buoc 1 da check)
+            #   M1     == _T: +2 (macro 100/250 xac nhan)
+            #   M2     == _T: +2 (macro 300/600 xac nhan)
+            # Lop 2 - Supplement (toi da 4 diem):
+            #   volume xac nhan va manh: +1
+            #   ADX >= 30 (trend rat manh): +1
+            #   HH/HL candle structure dong thuan: +1
+            #   Entry gap EMA21 <= 0.5 ATR (entry dep): +1
+            _conf = 0
+            if _fast_tr == _T:                              _conf += 2   # fast EMA xac nhan
+            if macro_trend == _T:                           _conf += 2   # M1 xac nhan
+            if macro_4h == _T:                              _conf += 2   # M2 xac nhan
+            if _vwt_dir == _T and _vwt_str >= 0.40:        _conf += 1   # volume xac nhan
+            if not math.isnan(adx) and adx >= 30:          _conf += 1   # trend rat manh
+            if _hh_ll == _T:                                _conf += 1   # structure dong thuan
+            if abs(_ext) <= 0.5:                            _conf += 1   # entry gan EMA21
+            # _conf: 0-10
+
+            # Nguong toi thieu: can it nhat 3 diem
+            # (vi du: fast=+2 + 1 supplement = 3 -> TP nho nhat, von nho nhat)
+            if _conf < 3:
+                logger.info(f"{symbol}: TREND skip - confidence={_conf}<3 (qua it tin hieu dong thuan)")
+                return _block("skip - confidence < 3 (khong du tin hieu dong thuan)")
+
+            # TP scale theo confidence: 12% (conf=0) -> 25% (conf=10)
+            # conf=3 -> 15.9%, conf=5 -> 18.5%, conf=7 -> 21.1%, conf=10 -> 25%
+            _tp_by_conf = 0.12 + (_conf / 10.0) * 0.13
+            _tp_by_conf = max(config.TP_ROI_MIN, min(config.TP_ROI_MAX, _tp_by_conf))
+
+            # Conviction cho capital: conf/10 -> potential -> capital_pct
+            # conf=3 -> 0.30 (5% equity), conf=5 -> 0.50, conf=7 -> 0.70, conf=10 -> 1.0 (90%)
+            _conv = _conf / 10.0
+
+            # Direction = _T da xac lap qua toan bo gate
             if best.direction != _T:
-                logger.info(f"{symbol}: TREND-ENTRY dat huong theo trend xac lap: {'LONG' if _T==1 else 'SHORT'} (signal goc {best.direction})")
+                logger.info(f"{symbol}: TREND override -> {'LONG' if _T==1 else 'SHORT'} (signal={best.direction})")
             best.direction = _T
-            best.tp_roi_override = 0.12
-            # Conviction cho capital: trend xac lap + volume manh + ADX cao = conviction cao
-            _conv = 0.5
-            if _vwt_dir == _T and _vwt_str >= 0.50: _conv += 0.25
-            if adx >= 30: _conv += 0.15
-            if abs(_ext) <= 0.5: _conv += 0.10   # entry dep sat EMA
+            best.tp_roi_override = round(_tp_by_conf, 4)
             best.strength = max(best.strength, min(1.0, _conv))
+
+            logger.info(
+                f"{symbol}: GATE PASS | {'L' if _T==1 else 'S'} | "
+                f"F={_fast_tr} M1={macro_trend} M2={macro_4h} I={_imm} | "
+                f"ADX={adx:.0f} ext={_ext:.2f} HH_LL={_hh_ll} vwt={_vwt_dir}:{_vwt_str:.2f} | "
+                f"conf={_conf}/10 TP={_tp_by_conf*100:.1f}% conv={_conv:.2f}"
+            )
 
         # ======================================================================
         # |  FINAL EXHAUSTION-ZONE GUARD - QUYET DINH CUOI CUNG tai CUC DOAN     |

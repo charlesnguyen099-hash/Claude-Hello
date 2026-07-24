@@ -2949,11 +2949,14 @@ class TradingBot:
             if _T == -1 and _ext < -1.2:
                 logger.info(f"{symbol}: TREND skip SHORT - extended {_ext:.1f} ATR duoi EMA21 (chase day, cho rally)")
                 return _block("skip SHORT - gia extended duoi EMA (chase day)")
-            # 5. RESUME: immediate KHONG duoc dang keo MANH nguoc trend (pullback chua xong).
-            #    imm == -T -> dang pull nguoc -> cho. imm == T hoac 0 -> pullback xong/resume -> vao.
-            if _imm == -_T:
-                logger.info(f"{symbol}: TREND skip - imm={_imm} nguoc trend T={_T} (pullback chua xong, cho resume)")
-                return _block("skip - pullback chua ket thuc (imm nguoc trend)")
+            # 5. RESUME CONFIRMED: immediate momentum phai CUNG chieu trend (khong chi 'khong nguoc').
+            #    imm == -T (nguoc) HOAC imm == 0 (chop/khong ro luc) -> KHONG vao.
+            #    Chi vao khi gia DANG chay DUNG huong trend NGAY LUC NAY -> pullback da resume that su.
+            #    Loi KAITO: long vao vung chop (imm=0) sau khi rot tu dinh -> dung im -> dong hoa von
+            #    tru phi. Yeu cau imm==T loai sach entry chop khong follow-through.
+            if _imm != _T:
+                logger.info(f"{symbol}: TREND skip - imm={_imm} chua xac nhan trend T={_T} (chop/nguoc, cho momentum resume dung huong)")
+                return _block("skip - imm chua xac nhan trend (chop hoac nguoc, khong follow-through)")
             # 5b. CHONG BREAKOUT NGUOC TREND (loi REUSDT: short @0.5827 khi gia dang break LEN).
             #     _immediate_momentum can 7 nen moi xac nhan -> cu breakout moi (2-3 nen xanh manh)
             #     doc imm=0 -> lot. Bat SOM bang cau truc gia: neu nen VUA DONG pha DINH 10 nen

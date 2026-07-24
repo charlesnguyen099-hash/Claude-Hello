@@ -202,8 +202,8 @@ class TradingBot:
                 f"-> DUNG mo lenh moi hom nay (bao ve von)"
             )
             return
-        # 2. MAX CONCURRENT: da du so lenh -> khong mo them (tranh rai rac)
-        if len(open_positions) >= config.MAX_CONCURRENT_POSITIONS:
+        # 2. MAX CONCURRENT: 0 = khong gioi han (potential + free-margin tu dieu tiet so lenh)
+        if config.MAX_CONCURRENT_POSITIONS > 0 and len(open_positions) >= config.MAX_CONCURRENT_POSITIONS:
             logger.info(f"[RISK] Da co {len(open_positions)}/{config.MAX_CONCURRENT_POSITIONS} lenh - khong mo them, cho lenh dong")
             return
 
@@ -225,8 +225,8 @@ class TradingBot:
                     break
                 if symbol in pos_symbols:
                     continue
-                # Dung ngay khi da du so lenh (co the vua mo trong vong lap nay)
-                if len(pos_symbols) >= config.MAX_CONCURRENT_POSITIONS:
+                # Dung ngay khi da du so lenh (0 = khong gioi han)
+                if config.MAX_CONCURRENT_POSITIONS > 0 and len(pos_symbols) >= config.MAX_CONCURRENT_POSITIONS:
                     break
                 _last = self._last_analyzed.get(symbol, 0)
                 if _now - _last < cooldown:

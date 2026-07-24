@@ -53,13 +53,16 @@ DEFAULT_LEVERAGE       = 10
 # KHONG all-in 1 lenh: moi lenh toi da MAX_CAPITAL_PCT equity + phai chua margin cho lenh khac
 # VON LON HON - vi gio chi trade lenh CHAT LUONG CAO (high-conviction), it lenh hon:
 # 'tha it ma chat con hon nhieu ma lo' -> moi lenh dung von lon de an dam.
-CAPITAL_PCT_MIN = 0.10   # 10% equity - lenh conviction thap nhat
-CAPITAL_PCT_MAX = 0.40   # 40% equity - lenh conviction CUC CAO. KHONG all-in 100% vi leverage
-                         # + SL co the thanh ly CA TAI KHOAN chi 1 lenh (day la ly do ve 0 truoc do).
-MAX_CAPITAL_PCT = 0.40   # HARD CAP 40%. Voi max 2 lenh + phanh daily-loss -> rui ro co gioi han.
-# Chua margin cho lenh khac: 1 lenh dung toi da 60% margin CON TRONG (free)
-# -> van con cho cho 1-2 lenh chat luong tiep theo, khong all-in
-MAX_FREE_MARGIN_FRAC = 0.60
+# VON THEO DO TIEM NANG (potential-scaled), KHONG cap cung tuy tien:
+#   potential thap -> von nho (giu cho cho lenh khac), potential cao -> von lon (an dam).
+# potential = f(consensus, strength) trong [0,1].
+CAPITAL_PCT_MIN = 0.05   # 5% equity - lenh conviction thap nhat (rui ro nho, con nhieu cho)
+CAPITAL_PCT_MAX = 0.90   # 90% equity - lenh conviction CUC CAO (gan all-in nhung chua het,
+                         # de lai buffer tranh 1 lenh thanh ly CA tai khoan).
+MAX_CAPITAL_PCT = 0.90   # tran mem = CAPITAL_PCT_MAX (khong cap cung thap hon nua)
+# Free margin: 1 lenh dung toi da 95% margin CON TRONG. So lenh TU DIEU TIET:
+# lenh manh an nhieu von -> free giam nhanh -> it lenh song song; lenh yeu an it -> con cho nhieu lenh.
+MAX_FREE_MARGIN_FRAC = 0.95
 # San tinh size CHI de dam bao min-notional Bybit ($5), KHONG dung de phong % equity
 EQUITY_FLOOR    = 0.0    # bo hieu ung bom phong % tren tai khoan nho (nguyen nhan all-in)
 # RISK_PER_TRADE_PCT: KHONG DUNG
@@ -100,8 +103,10 @@ TRADE_SIZE_MULT         = 1    # Khong dung nua - risk-based sizing thay the
 MAX_DAILY_LOSS_PCT   = 0.08   # lo > 8%/ngay -> ngung mo lenh moi (bao ve von)
 # CHI TRADE TOP COIN THANH KHOAN NHAT (bybit tra ve, sort theo trend score)
 TOP_TRADE_COUNT      = 12     # chi phan tich/trade 12 coin top - tap trung, khong rai rac
-# Toi da so lenh mo cung luc - tranh rai rac nhieu lenh lo compound ve 0
-MAX_CONCURRENT_POSITIONS = 2  # toi da 2 lenh cung luc (chat luong, khong rai rac)
+# So lenh mo cung luc: KHONG gioi han cung (0 = unlimited).
+# So lenh tu dieu tiet qua free-margin + potential: lenh manh an nhieu von thi tu dong con it slot.
+# Phanh that su la daily-loss (8%/ngay) - do moi la cai chan ve 0, khong phai dem so lenh.
+MAX_CONCURRENT_POSITIONS = 0  # 0 = khong gioi han so lenh (potential + free-margin tu dieu tiet)
 # CHI bat path TREND-FOLLOWING (chat nhat). Tat cac path nhieu/rui ro cao:
 ENABLE_BREAKOUT_PATH = False  # breakout hay vao false-breakout -> tat
 ENABLE_REVERSAL_PATH = False  # reversal = bat dao chieu (bat dao roi) -> tat

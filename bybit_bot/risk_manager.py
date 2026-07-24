@@ -182,13 +182,13 @@ class RiskManager:
         def _ceil_qty(q: float) -> float:
             return round(math.ceil(q / qty_step) * qty_step, _qty_decimals)
 
-        # VON THEO TIEM NANG LENH - TREN EQUITY THAT, KHONG all-in, CHUA cho lenh khac:
+        # VON THEO DO TIEM NANG LENH - TREN EQUITY THAT:
         #   capital_pct = CAPITAL_PCT_MIN + potential * (CAPITAL_PCT_MAX - CAPITAL_PCT_MIN)
-        #   -> lenh yeu (potential=0): 4% equity, lenh manh nhat (potential=1): 15% equity
-        # 3 rang buoc de KHONG don von 1 lenh (nguyen nhan ton that nang):
-        #   1. HARD CAP: capital <= equity * MAX_CAPITAL_PCT (15%)
-        #   2. FREE MARGIN: capital <= free_margin * MAX_FREE_MARGIN_FRAC (chua >=50% free
-        #      cho cac lenh tiem nang tiep theo) - free = equity - margin dang dung
+        #   -> lenh yeu (potential=0): 5% equity, lenh manh nhat (potential=1): 90% equity
+        # So lenh KHONG bi chan cung - tu dieu tiet qua free margin:
+        #   1. capital <= equity * MAX_CAPITAL_PCT (tran mem 90%, de lai buffer chong thanh ly ca tk)
+        #   2. FREE MARGIN: capital <= free_margin * MAX_FREE_MARGIN_FRAC (95% free con lai)
+        #      -> lenh manh an nhieu von => free giam => it slot; lenh yeu an it => con nhieu slot
         #   3. capital <= equity (khong the vuot tong von)
         MIN_NOTIONAL = 5.0   # Bybit min order value
 
@@ -205,7 +205,7 @@ class RiskManager:
 
         _cap_pct    = config.CAPITAL_PCT_MIN + potential * (config.CAPITAL_PCT_MAX - config.CAPITAL_PCT_MIN)
         _cap_target = equity * _cap_pct
-        _cap_target = min(_cap_target, equity * config.MAX_CAPITAL_PCT)          # (1) hard cap 15%
+        _cap_target = min(_cap_target, equity * config.MAX_CAPITAL_PCT)          # (1) tran mem 90%
         _cap_target = min(_cap_target, _free_margin * config.MAX_FREE_MARGIN_FRAC)  # (2) chua free
         _cap_target = min(_cap_target, equity)                                    # (3) tran tong von
 

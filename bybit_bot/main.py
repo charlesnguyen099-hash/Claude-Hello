@@ -2954,6 +2954,23 @@ class TradingBot:
             if _imm == -_T:
                 logger.info(f"{symbol}: TREND skip - imm={_imm} nguoc trend T={_T} (pullback chua xong, cho resume)")
                 return _block("skip - pullback chua ket thuc (imm nguoc trend)")
+            # 5b. CHONG BREAKOUT NGUOC TREND (loi REUSDT: short @0.5827 khi gia dang break LEN).
+            #     _immediate_momentum can 7 nen moi xac nhan -> cu breakout moi (2-3 nen xanh manh)
+            #     doc imm=0 -> lot. Bat SOM bang cau truc gia: neu nen VUA DONG pha DINH 10 nen
+            #     truoc do -> gia dang break LEN -> KHONG short. Pha DAY 10 nen -> KHONG long.
+            #     Trong downtrend that, gia lien tuc pha DAY (short ok) va KHONG pha dinh 10 nen;
+            #     bounce bi reject (wick len, dong xuong) van cho short (dong khong vuot dinh).
+            _N_brk = 10
+            if len(df_micro) > _N_brk + 1:
+                _prior_high = float(df_micro["high"].iloc[-(_N_brk + 1):-1].max())
+                _prior_low  = float(df_micro["low"].iloc[-(_N_brk + 1):-1].min())
+                _cur_close  = float(df_micro["close"].iloc[-1])
+                if _T == -1 and _cur_close > _prior_high:
+                    logger.info(f"{symbol}: TREND skip SHORT - nen dong {_cur_close:.6f} pha dinh 10 nen {_prior_high:.6f} (breakout LEN, khong short vao rally)")
+                    return _block("skip SHORT - gia break dinh 10 nen (rally nguoc trend short)")
+                if _T == 1 and _cur_close < _prior_low:
+                    logger.info(f"{symbol}: TREND skip LONG - nen dong {_cur_close:.6f} pha day 10 nen {_prior_low:.6f} (breakdown XUONG, khong long vao dump)")
+                    return _block("skip LONG - gia break day 10 nen (dump nguoc trend long)")
             # DA QUA HET: trend xac lap + ADX manh + volume ung ho + entry pullback + resume.
             # Direction = TREND XAC LAP (khong theo signal goc neu nguoc).
             if best.direction != _T:

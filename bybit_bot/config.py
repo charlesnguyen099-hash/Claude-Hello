@@ -53,10 +53,10 @@ DEFAULT_LEVERAGE       = 10
 # KHONG all-in 1 lenh: moi lenh toi da MAX_CAPITAL_PCT equity + phai chua margin cho lenh khac
 # VON LON HON - vi gio chi trade lenh CHAT LUONG CAO (high-conviction), it lenh hon:
 # 'tha it ma chat con hon nhieu ma lo' -> moi lenh dung von lon de an dam.
-CAPITAL_PCT_MIN = 0.10   # 10% equity - lenh conviction thap nhat (van du dieu kien chat)
-CAPITAL_PCT_MAX = 0.50   # 50% equity - lenh conviction CUC CAO (trend xac lap + volume manh + ADX cao)
-MAX_CAPITAL_PCT = 0.50   # HARD CAP: 1 lenh toi da 50% equity (all-in that su nguy hiem vi
-                         # leverage + SL co the thanh ly ca tai khoan; 50% da rat manh tay)
+CAPITAL_PCT_MIN = 0.10   # 10% equity - lenh conviction thap nhat
+CAPITAL_PCT_MAX = 0.40   # 40% equity - lenh conviction CUC CAO. KHONG all-in 100% vi leverage
+                         # + SL co the thanh ly CA TAI KHOAN chi 1 lenh (day la ly do ve 0 truoc do).
+MAX_CAPITAL_PCT = 0.40   # HARD CAP 40%. Voi max 2 lenh + phanh daily-loss -> rui ro co gioi han.
 # Chua margin cho lenh khac: 1 lenh dung toi da 60% margin CON TRONG (free)
 # -> van con cho cho 1-2 lenh chat luong tiep theo, khong all-in
 MAX_FREE_MARGIN_FRAC = 0.60
@@ -95,9 +95,17 @@ MIN_CONSENSUS_TRENDING = 2   # Dong bo voi MIN_CONSENSUS
 MIN_ATR_PCT         = 0.0005 # 0.05% cho 1m (ATR 1m nho hon 15m, largecap BTC ~0.03-0.08%)
 TRADE_SIZE_MULT         = 1    # Khong dung nua - risk-based sizing thay the
 
-# --- Risk Guards --------------------------------------------------------------
-# Daily max loss: neu tong PnL trong ngay < -(equity * MAX_DAILY_LOSS_PCT) -> dung mo lenh moi
-MAX_DAILY_LOSS_PCT   = 0.05   # 5% equity - dung ngay khi mat > 5% trong 1 ngay
+# --- Risk Guards (PHANH AN TOAN - chong chay mau/ve 0) ------------------------
+# Daily max loss: neu PnL ngay < -MAX_DAILY_LOSS_PCT -> DUNG mo lenh moi (thuc thi)
+MAX_DAILY_LOSS_PCT   = 0.08   # lo > 8%/ngay -> ngung mo lenh moi (bao ve von)
+# CHI TRADE TOP COIN THANH KHOAN NHAT (bybit tra ve, sort theo trend score)
+TOP_TRADE_COUNT      = 12     # chi phan tich/trade 12 coin top - tap trung, khong rai rac
+# Toi da so lenh mo cung luc - tranh rai rac nhieu lenh lo compound ve 0
+MAX_CONCURRENT_POSITIONS = 2  # toi da 2 lenh cung luc (chat luong, khong rai rac)
+# CHI bat path TREND-FOLLOWING (chat nhat). Tat cac path nhieu/rui ro cao:
+ENABLE_BREAKOUT_PATH = False  # breakout hay vao false-breakout -> tat
+ENABLE_REVERSAL_PATH = False  # reversal = bat dao chieu (bat dao roi) -> tat
+ENABLE_SCENARIO_PATH = False  # scenario mean-revert trong range -> tat
 
 # Max spread: neu bid-ask spread > nguong nay -> khong entry (thanh khoan kem)
 # Largecap (BTC/ETH): 0.05%, Altcoin: 0.15%

@@ -194,9 +194,21 @@ class TradingBot:
         _pos_side_map = {p["symbol"]: p.get("side", "") for p in open_positions}
         _now          = time.time()
 
-        # Tach top 20 va phan con lai
-        top20   = self.symbols[:config.TOP20_COUNT]
-        rest    = self.symbols[config.TOP20_COUNT:]
+        # === PHANH AN TOAN (chong ve 0) ===
+        # 1. DAILY LOSS: lo qua nguong trong ngay -> DUNG mo lenh moi (van quan ly lenh dang mo)
+        if _daily_pnl_pct <= -config.MAX_DAILY_LOSS_PCT:
+            logger.warning(
+                f"[RISK] Daily PnL {_daily_pnl_pct*100:.1f}% <= -{config.MAX_DAILY_LOSS_PCT*100:.0f}% "
+                f"-> DUNG mo lenh moi hom nay (bao ve von)"
+            )
+            return
+        # 2. MAX CONCURRENT: da du so lenh -> khong mo them (tranh rai rac)
+        if len(open_positions) >= config.MAX_CONCURRENT_POSITIONS:
+            logger.info(f"[RISK] Da co {len(open_positions)}/{config.MAX_CONCURRENT_POSITIONS} lenh - khong mo them, cho lenh dong")
+            return
+
+        # CHI TRADE TOP COIN (thanh khoan cao nhat) - khong rai rac ra coin nho
+        top_trade = self.symbols[:config.TOP_TRADE_COUNT]
 
         def _run_scan(symbols: list[str], cooldown: float, budget: float, label: str) -> bool:
             """Chay scan cho 1 nhom symbols. Tra ve equity_exhausted."""
@@ -213,6 +225,9 @@ class TradingBot:
                     break
                 if symbol in pos_symbols:
                     continue
+                # Dung ngay khi da du so lenh (co the vua mo trong vong lap nay)
+                if len(pos_symbols) >= config.MAX_CONCURRENT_POSITIONS:
+                    break
                 _last = self._last_analyzed.get(symbol, 0)
                 if _now - _last < cooldown:
                     continue
@@ -246,14 +261,8 @@ class TradingBot:
             logger.debug(f"[TICK] {label}: analyzed {_analyzed}/{len(symbols)} coins, traded {_traded}")
             return False
 
-        # Pass 1: Top 20 - cooldown ngan, budget dai, uu tien cao nhat
-        if _run_scan(top20, config.TOP20_COOLDOWN_SEC, config.SCAN_BUDGET_TOP20_SEC, f"TOP{config.TOP20_COUNT}"):
-            logger.info("[TICK] Equity exhausted after TOP20 scan")
-            return
-
-        # Pass 2: Phan con lai - cooldown binh thuong
-        if _run_scan(rest, config.SYMBOL_COOLDOWN_SEC, config.SCAN_BUDGET_REST_SEC, "REST"):
-            logger.info("[TICK] Equity exhausted after REST scan")
+        # CHI 1 PASS tren TOP COIN - khong scan phan con lai (khong rai rac ra coin nho)
+        _run_scan(top_trade, config.TOP20_COOLDOWN_SEC, config.SCAN_BUDGET_TOP20_SEC, "TOP")
 
     def _trend_direction(self, df, fast: int = 20, slow: int = 50) -> int:
         """+1 up, -1 down, 0 sideways.
@@ -1193,7 +1202,8 @@ class TradingBot:
 
         # Strong trend flags - dung cho 30c range bypass va cac check sau
         # BREAKOUT: chay cho tat ca scan_list - su dung 1m signal data
-        if df_signal is not None and not df_signal.empty and len(df_signal) >= 30:
+        # (TAT theo config.ENABLE_BREAKOUT_PATH - chi trade trend-following)
+        if config.ENABLE_BREAKOUT_PATH and df_signal is not None and not df_signal.empty and len(df_signal) >= 30:
             bo_sig = BREAKOUT_STRATEGY.generate_signal(df_signal, df_scalp, df_trend)
             if bo_sig.direction != 0:
                 # 5m khong duoc nguoc chieu - cho phep sideways
@@ -1535,7 +1545,8 @@ class TradingBot:
                 continue
 
         # REVERSAL trade: RSI cuc doan + 2 nen 15m + 1m micro xac nhan dao chieu + >= MIN_CONSENSUS
-        if is_reversal and reversal_dir != 0:
+        # (TAT theo config.ENABLE_REVERSAL_PATH - bat dao chieu de bat dao roi -> tat de an toan)
+        if config.ENABLE_REVERSAL_PATH and is_reversal and reversal_dir != 0:
             # 1h range (60 nen 1m = 60 phut): reversal long chi hop le khi price o BOTTOM 60% range
             # Tranh "catch dead cat bounce" khi price da phuc hoi nhieu tu day 1h
             _W1H = 60
@@ -1910,8 +1921,10 @@ class TradingBot:
         elif len(short_signals) >= required_short:
             signals = short_signals
         else:
+            # SCENARIO ENGINE - TAT theo config.ENABLE_SCENARIO_PATH (chi trade trend-following)
+            if not config.ENABLE_SCENARIO_PATH:
+                return False
             # ANTI-CHOP cho SCENARIO: chi bat scenario khi co TREND RO (ADX>=20).
-            # Scenario range-extreme (S7/S8) mean-revert trong chop la nguyen nhan lo -> chan.
             if math.isnan(adx) or adx < 20.0:
                 logger.debug(f"{symbol}: scenario skip - ADX={adx:.1f} < 20 (chop, khong trend)")
                 return False

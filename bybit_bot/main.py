@@ -2930,8 +2930,12 @@ class TradingBot:
         #   - Tinh TREND THUC tu macro + immediate momentum + volume (dong thuan co trong so)
         #   - Choppy (khong trend ro): SKIP momentum (khong danh bac trong range)
         #   - Signal nguoc trend thuc: FLIP ve dung chieu (bat lenh tiem nang dung huong)
-        # Mien: reversal (mean-reversion co chu dich), scenario/flip (da co phan tich cau truc)
-        if not is_reversal and not _direction_flipped and not _scenario_entry:
+        # MOI LENH deu phai qua gate nay (KE CA da flip huong): gate tu set best.direction = _T
+        # (trend da xac minh anti-lag) -> khong tin huong signal/flip lung tung. Day la CACH DAM BAO
+        # 'biet huong nao dung': huong = trend macro + fast EMA + cau truc 20 nen dong thuan, khong
+        # phai do 1 trong 13 diem flip quyet dinh roi lot qua. Neu khong co trend xac lap -> KHONG trade.
+        # Mien DUY NHAT: reversal path (da tat) va scenario (da tat) -> thuc te LUON chay gate nay.
+        if not is_reversal and not _scenario_entry:
             _imm = self._immediate_momentum(df_micro, _sp)
             # === MO HINH TREND-FOLLOWING + PULLBACK ENTRY (chong vao dinh/day dao chieu) ===
             # DOGE/OPUSDT: short o DAY cu dump (macro van UP) -> lo. BASED: long o DINH (extended).

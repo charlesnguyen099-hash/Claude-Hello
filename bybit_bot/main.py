@@ -619,12 +619,13 @@ class TradingBot:
         # day/gan-day). Vung giua 25-75%: long tren pullback / short tren bounce - VAN bat
         # duoc trend continuation (trong uptrend gia thuong o phan tren, 30/70 qua chat).
         # Tai cuc doan: flip neu co dao chieu ro, khong thi SKIP.
-        # 2 TANG (can bang: chan blow-off nhung VAN cho trend continuation):
-        #  - HARD extreme (>=90% / <=10% cua cua so 45c): blow-off/vertical (BZ) -> luon
-        #    block/flip. Day la cuc doan tuyet doi, khong bao gio long/short o day.
-        #  - SOFT extreme (75-90% / 10-25%): chi flip/block khi CO dau hieu dao chieu
-        #    (reject candle tai dinh / bounce candle tai day). Khong co dau hieu = trend
-        #    continuation sach -> CHO trade (khong chan oan continuation gan dinh).
+        # QUY TAC TUYET DOI (user lap nhieu lan): KHONG short o DAY hoac GAN DAY,
+        # KHONG long o DINH hoac GAN DINH. Vung cuc doan = 25% tren/duoi cua so 45 nen.
+        #  - HARD extreme (>=90% / <=10%): blow-off/vertical -> block, flip neu co dao chieu.
+        #  - SOFT extreme (75-90% / 10-25% = "gan dinh/gan day"): LUON block huong nguy hiem
+        #    (short gan day / long gan dinh). Neu co dao chieu ro -> flip; khong thi SKIP.
+        #    KHAC ban cu: truoc chi block SOFT khi co bounce/reject -> lot "short gan day" khi
+        #    nen con do/RSI chua qua ban -> bounce sau do -> LO. Gio gan day/gan dinh = CAM.
         HARD_TOP, HARD_BOT = 0.90, 0.10
         SOFT_TOP, SOFT_BOT = 0.75, 0.25
         if direction == 1:
@@ -632,19 +633,19 @@ class TradingBot:
                 if reject and not vol_locked:
                     return -1, 0.10, f"flip LONG->SHORT blow-off@dinh {pos:.0%}"
                 return 0, 0.0, f"BLOCK LONG@blow-off-dinh {pos:.0%}"
-            if pos >= SOFT_TOP and reject:
-                if not vol_locked:
+            if pos >= SOFT_TOP:   # gan dinh -> KHONG long (du co reject hay khong)
+                if reject and not vol_locked:
                     return -1, 0.10, f"flip LONG->SHORT reject@gan-dinh {pos:.0%}"
-                return 0, 0.0, f"BLOCK LONG@gan-dinh reject {pos:.0%}"
+                return 0, 0.0, f"BLOCK LONG@gan-dinh {pos:.0%} (khong long gan dinh)"
         if direction == -1:
             if pos <= HARD_BOT:
                 if bounce and not vol_locked:
                     return 1, 0.10, f"flip SHORT->LONG blow-off@day {pos:.0%}"
                 return 0, 0.0, f"BLOCK SHORT@blow-off-day {pos:.0%}"
-            if pos <= SOFT_BOT and bounce:
-                if not vol_locked:
+            if pos <= SOFT_BOT:   # gan day -> KHONG short (du co bounce hay khong)
+                if bounce and not vol_locked:
                     return 1, 0.10, f"flip SHORT->LONG bounce@gan-day {pos:.0%}"
-                return 0, 0.0, f"BLOCK SHORT@gan-day bounce {pos:.0%}"
+                return 0, 0.0, f"BLOCK SHORT@gan-day {pos:.0%} (khong short gan day)"
         return direction, 0.0, f"pass@{pos:.0%}"
 
     def _immediate_momentum(self, df, sp: float = 1.0, n: int = 7) -> int:
@@ -1472,6 +1473,20 @@ class TradingBot:
                 is_reversal   = True
                 reversal_dir  = -1
                 logger.debug(f"{symbol}: range-extreme SHORT trigger - 2h pos={_m2h_pos:.2f} > 0.82, micro_down")
+
+        # ====================== LO HONG NGHIEM TRONG (FIX) ======================
+        # Reversal path DA TAT (ENABLE_REVERSAL_PATH=False) NHUNG is_reversal van =True khi
+        # RSI cuc doan (RSI<30 = gan DAY, RSI>70 = gan DINH). Khi do coin roi xuong MOMENTUM
+        # path, ma CA HAI lop bao ve deu co dieu kien 'not is_reversal':
+        #   - Gate trend-following (macro-align + ADX + pullback + imm==T + breakout)
+        #   - FINAL exhaustion guard (khong short day / khong long dinh)
+        # -> BI BO QUA HET -> short o day (RSI<30) / long o dinh (RSI>70) chay thang ra lenh.
+        # Day CHINH LA nguyen nhan 'short o day'. Reversal tat -> is_reversal KHONG duoc bypass:
+        # ep ve momentum binh thuong de di qua DAY DU gate + exhaustion.
+        if not config.ENABLE_REVERSAL_PATH:
+            is_reversal   = False
+            _is_range_rev = False
+            reversal_dir  = 0
 
         long_signals  = []
         short_signals = []

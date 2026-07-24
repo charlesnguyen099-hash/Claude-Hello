@@ -3041,28 +3041,82 @@ class TradingBot:
                 return _block("skip SHORT - gia extended duoi EMA (chase day)")
 
             # --- BUOC 5.5: FRESH MOVE DETECTOR - khong chase dump/pump moi ----
-            # ORDI bug: gia vua dump manh 10 nen roi, bot muon SHORT -> "chase dump bottom"
-            # -> gia bounce ngay sau -> LO. Move da xay ra roi, late-chase = nguy hiem.
-            # Nguong: net move trong 10 nen > 1.0 ATR = move manh, khong duoc chase tiep.
-            # Block SHORT khi gia vua dump 1+ ATR (= bot dang vao DAY dump, khong phai mid-trend).
-            # Block LONG khi gia vua pump 1+ ATR (= bot dang vao DINH pump).
-            # Khac STEP 5 (extension tu EMA21): STEP 5 do khoang cach gia-EMA, STEP 5.5 do
-            # TOC DO move 10 nen gan nhat -> bat duoc fresh dump ngay ca khi EMA chua lag xa.
-            _N_fresh = 10
-            if len(df_micro) >= _N_fresh + 1 and _atrm > 0:
-                _fresh_ref   = float(df_micro["close"].iloc[-(_N_fresh + 1)])
-                _fresh_close = float(df_micro["close"].iloc[-1])
-                _fresh_move  = (_fresh_close - _fresh_ref) / _atrm   # ATR units, signed
-                if _T == -1 and _fresh_move < -1.0:
+            # ORDI bug: gia vua dump manh 10 nen -> SHORT = chase day -> bounce -> LO.
+            # CRV bug (nang cap): dump xay ra TREN NEN DANG MO (chua dong) -> df close[-1]
+            #   van la nen cu (truoc dump) -> _fresh_move ≈ 0 -> STEP 5.5 cu khong chan duoc.
+            #   Fix: dung _range_live_price (gia tick hien tai) thay cho close[-1] -> bat
+            #   ca dump xay ra intra-candle, khong chi sau khi nen dong.
+            # 2 cua so:
+            #   10 nen (10 phut): phat hien dump vua xay ra trong 10p qua (nguong 1.0 ATR)
+            #    5 nen  (5 phut): phat hien micro-dump cuc manh (nguong 0.7 ATR)
+            # Dung live price thay cho close[-1] -> bat intra-candle dump/pump.
+            if _atrm > 0:
+                _live_p = _range_live_price if _range_live_price > 0 else float(df_micro["close"].iloc[-1])
+                # 10-candle window
+                if len(df_micro) >= 11:
+                    _ref10 = float(df_micro["close"].iloc[-11])
+                    _mv10  = (_live_p - _ref10) / _atrm
+                    if _T == -1 and _mv10 < -1.0:
+                        logger.info(
+                            f"{symbol}: TREND skip SHORT - fresh dump {_mv10:.2f}ATR/10n live={_live_p:.6f} "
+                            f"(vua dump manh, chase day - ORDI/CRV pattern)")
+                        return _block(f"skip SHORT - fresh dump {_mv10:.2f}ATR/10n (doi bounce)")
+                    if _T == 1 and _mv10 > 1.0:
+                        logger.info(
+                            f"{symbol}: TREND skip LONG - fresh pump {_mv10:.2f}ATR/10n live={_live_p:.6f} "
+                            f"(vua pump manh, chase dinh)")
+                        return _block(f"skip LONG - fresh pump {_mv10:.2f}ATR/10n (doi pullback)")
+                # 5-candle window - phat hien micro-spike cuc manh (nguong thap hon: 0.7 ATR)
+                if len(df_micro) >= 6:
+                    _ref5 = float(df_micro["close"].iloc[-6])
+                    _mv5  = (_live_p - _ref5) / _atrm
+                    if _T == -1 and _mv5 < -0.7:
+                        logger.info(
+                            f"{symbol}: TREND skip SHORT - micro dump {_mv5:.2f}ATR/5n (spike do, doi bounce)")
+                        return _block(f"skip SHORT - micro dump {_mv5:.2f}ATR/5n (spike exhaustion)")
+                    if _T == 1 and _mv5 > 0.7:
+                        logger.info(
+                            f"{symbol}: TREND skip LONG - micro pump {_mv5:.2f}ATR/5n (spike len, doi pullback)")
+                        return _block(f"skip LONG - micro pump {_mv5:.2f}ATR/5n (spike exhaustion)")
+
+            # --- BUOC 5.7: RSI EXTREME BLOCK (GATE V3 RIENG) --------------------
+            # RSI <25 trong xu huong SHORT = da ban qua da, bounce sap xay ra.
+            # RSI >75 trong xu huong LONG  = da mua qua da, dump sap xay ra.
+            # Exhaustion check (sau) dung RSI tai cuc doan RANGE (45 nen); check nay khac:
+            #   - Doc lap voi vi tri trong range (bat khi RSI extreme ke ca gia o GIUA range)
+            #   - CRV pattern: RSI <25 ma gia o 50% range -> exhaustion KHONG chan -> bot SHORT -> LO
+            # Nguong co tinh: <25/>75 (khac is_reversal dung <30/>70 cho path rieng).
+            if not math.isnan(rsi_now):
+                if _T == -1 and rsi_now < 25:
                     logger.info(
-                        f"{symbol}: TREND skip SHORT - fresh dump {_fresh_move:.2f}ATR/{_N_fresh}n "
-                        f"(vua dump manh, khong chase day - ORDI pattern)")
-                    return _block(f"skip SHORT - fresh dump {_fresh_move:.2f}ATR (chase day, doi bounce)")
-                if _T == 1 and _fresh_move > 1.0:
+                        f"{symbol}: TREND skip SHORT - RSI oversold ({rsi_now:.0f}<25) "
+                        f"trong xu huong SHORT, bounce likely")
+                    return _block(f"skip SHORT - RSI {rsi_now:.0f}<25 (oversold, bounce incoming)")
+                if _T == 1 and rsi_now > 75:
                     logger.info(
-                        f"{symbol}: TREND skip LONG - fresh pump {_fresh_move:.2f}ATR/{_N_fresh}n "
-                        f"(vua pump manh, khong chase dinh)")
-                    return _block(f"skip LONG - fresh pump {_fresh_move:.2f}ATR (chase dinh, doi pullback)")
+                        f"{symbol}: TREND skip LONG - RSI overbought ({rsi_now:.0f}>75) "
+                        f"trong xu huong LONG, dump likely")
+                    return _block(f"skip LONG - RSI {rsi_now:.0f}>75 (overbought, dump incoming)")
+
+            # --- BUOC 5.8: LARGE SINGLE CANDLE EXHAUSTION -----------------------
+            # Neu nen HIEN TAI co than (body) > 1.5 ATR CUNG CHIEU _T:
+            #   = mot nen gia tang/giam BUNG doc -> spike -> nen tiep theo thuong la pin bar hoac dao chieu.
+            # KHONG vao lenh khi gia dang o giua 1 nen khong lo cung chieu (chase spike).
+            # Ap dung: nen cuoi cung (da dong) trong df_micro.
+            if len(df_micro) >= 2 and _atrm > 0:
+                _lc_o = float(df_micro["open"].iloc[-1])
+                _lc_c = float(df_micro["close"].iloc[-1])
+                _lc_body = (_lc_c - _lc_o) / _atrm   # ATR units, signed
+                if _T == -1 and _lc_body < -1.5:
+                    logger.info(
+                        f"{symbol}: TREND skip SHORT - nen cuoi body={_lc_body:.2f}ATR (nen do khong lo, "
+                        f"spike do xong, doi nen tiep theo)")
+                    return _block(f"skip SHORT - large red candle body {_lc_body:.2f}ATR (spike exhaustion)")
+                if _T == 1 and _lc_body > 1.5:
+                    logger.info(
+                        f"{symbol}: TREND skip LONG - nen cuoi body={_lc_body:.2f}ATR (nen xanh khong lo, "
+                        f"spike xanh xong, doi nen tiep theo)")
+                    return _block(f"skip LONG - large green candle body {_lc_body:.2f}ATR (spike exhaustion)")
 
             # --- BUOC 6: IMMEDIATE MOMENTUM phai CUNG CHIEU _T ----------------
             # imm == 0 (chop) HOAC imm == -_T (nguoc) -> KHONG vao.

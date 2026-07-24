@@ -2943,6 +2943,26 @@ class TradingBot:
                 logger.info(f"{symbol}: TREND skip - chua co trend XAC LAP (macro={macro_trend}/{macro_4h})")
                 return _block("skip - 2 macro TF khong dong thuan, khong co trend xac lap")
             _T = macro_trend   # chieu trend da xac lap (= macro_4h)
+            # 1b. CHONG MACRO-EMA LAG (loi SNXX: long @17.85 khi gia dang roi 17.97->17.50).
+            #     Macro EMA100/250 + EMA300/600 tren 1m LAG rat nang -> khi downtrend MOI bat dau,
+            #     macro van bao UP (tu uptrend cu) -> bot "mua pullback" thuc ra la mua vao downtrend.
+            #     Kiem tra trend NHANH (EMA20/50 tren 1m): neu da lat NGUOC _T -> macro dang lag
+            #     dao chieu -> KHONG vao. (Pullback lanh manh: fast=0 trung tinh -> van cho vao.)
+            _fast_tr = self._trend_direction(df_micro, fast=20, slow=50)
+            if _fast_tr == -_T:
+                logger.info(f"{symbol}: TREND skip - fast EMA20/50={_fast_tr} nguoc macro _T={_T} (macro EMA lag dao chieu)")
+                return _block("skip - fast trend nguoc macro (macro EMA lag, dao chieu som)")
+            # 1c. Cau truc gia gan day KHONG duoc di NGUOC _T manh: net move 20 nen gan nhat.
+            #     Macro UP nhung 20 nen gan nhat net GIAM > 0.4% -> gia dang thuc su di xuong -> chan.
+            if len(df_micro) >= 21:
+                _c_now = float(df_micro["close"].iloc[-1]); _c_20 = float(df_micro["close"].iloc[-21])
+                _net20 = (_c_now - _c_20) / _c_20 if _c_20 > 0 else 0.0
+                if _T == 1 and _net20 < -0.004:
+                    logger.info(f"{symbol}: TREND skip LONG - 20 nen gan nhat net {_net20*100:.1f}% (gia dang roi, macro lag)")
+                    return _block("skip LONG - cau truc 20 nen dang giam (macro lag downtrend)")
+                if _T == -1 and _net20 > 0.004:
+                    logger.info(f"{symbol}: TREND skip SHORT - 20 nen gan nhat net +{_net20*100:.1f}% (gia dang len, macro lag)")
+                    return _block("skip SHORT - cau truc 20 nen dang tang (macro lag uptrend)")
             # 2. ADX >= 20 (trend du manh, khong chop)
             if math.isnan(adx) or adx < 20.0:
                 logger.info(f"{symbol}: TREND skip - ADX={adx:.1f}<20 (chop)")

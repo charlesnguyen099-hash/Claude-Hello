@@ -472,11 +472,12 @@ class Executor:
                     )
                     self._close_position(pos)
                     continue
-                # Stagnation exit: > 6h ma khong tien trien (ROI < +5%) -> dong, xoay vong von
-                # Lenh dung chieu thuong hit TP trong 1-3h; 6h khong dong nghia trend da chet
-                if _hold_sec > 6 * 3600 and _pnl_roi < 0.05:
+                # Stagnation exit: > 6h ma dang LO (roi < 0) -> dong, xoay vong von.
+                # KHONG dong lenh dang LOI chi vi het gio (do la dumb timer) - dynamic-exit
+                # se lo viec chot loi khi market quay dau. Lenh con xanh + trend con thuan -> giu.
+                if _hold_sec > 6 * 3600 and _pnl_roi < 0:
                     logger.warning(
-                        f"{symbol}: stagnation {_hold_sec/3600:.1f}h, PnL_ROI={_pnl_roi*100:.0f}% < +5% "
+                        f"{symbol}: stagnation {_hold_sec/3600:.1f}h, PnL_ROI={_pnl_roi*100:.0f}% < 0 "
                         f"-> close to rotate capital"
                     )
                     self._close_position(pos)

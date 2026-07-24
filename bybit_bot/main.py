@@ -204,8 +204,12 @@ class TradingBot:
             logger.info(f"[RISK] Da co {len(open_positions)}/{config.MAX_CONCURRENT_POSITIONS} lenh - khong mo them, cho lenh dong")
             return
 
-        # CHI TRADE TOP COIN (thanh khoan cao nhat) - khong rai rac ra coin nho
-        top_trade = self.symbols[:config.TOP_TRADE_COUNT]
+        # Coin de phan tich: 0 = tat ca (da sort theo trend score), >0 = cat top-N.
+        # Khong cat cung -> khong bo lo lenh tiem nang; budget+cooldown tu dieu tiet.
+        if config.TOP_TRADE_COUNT > 0:
+            top_trade = self.symbols[:config.TOP_TRADE_COUNT]
+        else:
+            top_trade = self.symbols
 
         def _run_scan(symbols: list[str], cooldown: float, budget: float, label: str) -> bool:
             """Chay scan cho 1 nhom symbols. Tra ve equity_exhausted."""

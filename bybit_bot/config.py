@@ -102,8 +102,11 @@ TRADE_SIZE_MULT         = 1    # Khong dung nua - risk-based sizing thay the
 # Daily max loss: KHONG DUNG lam phanh nua - chan lo o LOGIC vao lenh, khong o phanh dem PnL.
 # Chi con dung de HIEN THI DayPnL trong log (thong tin), khong chan mo lenh.
 MAX_DAILY_LOSS_PCT   = 0.08   # (khong con thuc thi - chi tham khao)
-# CHI TRADE TOP COIN THANH KHOAN NHAT (bybit tra ve, sort theo trend score)
-TOP_TRADE_COUNT      = 12     # chi phan tich/trade 12 coin top - tap trung, khong rai rac
+# Phan tich bao nhieu coin moi tick (da sort theo trend score, da loc volume>=10M).
+# 0 = KHONG gioi han: soi TAT CA coin du dieu kien, uu tien trend score cao truoc.
+# Budget thoi gian scan + cooldown tu dieu tiet; gate chat luong tung lenh chan lenh xau.
+# KHONG cat cung 12 coin -> khong bo lo lenh tiem nang o coin thu 13+.
+TOP_TRADE_COUNT      = 0      # 0 = tat ca coin du dieu kien (scanner da loc + sort)
 # So lenh mo cung luc: KHONG gioi han cung (0 = unlimited).
 # So lenh tu dieu tiet qua free-margin + potential: lenh manh an nhieu von thi tu dong con it slot.
 # Phanh that su la daily-loss (8%/ngay) - do moi la cai chan ve 0, khong phai dem so lenh.

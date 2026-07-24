@@ -99,8 +99,9 @@ MIN_ATR_PCT         = 0.0005 # 0.05% cho 1m (ATR 1m nho hon 15m, largecap BTC ~0
 TRADE_SIZE_MULT         = 1    # Khong dung nua - risk-based sizing thay the
 
 # --- Risk Guards (PHANH AN TOAN - chong chay mau/ve 0) ------------------------
-# Daily max loss: neu PnL ngay < -MAX_DAILY_LOSS_PCT -> DUNG mo lenh moi (thuc thi)
-MAX_DAILY_LOSS_PCT   = 0.08   # lo > 8%/ngay -> ngung mo lenh moi (bao ve von)
+# Daily max loss: KHONG DUNG lam phanh nua - chan lo o LOGIC vao lenh, khong o phanh dem PnL.
+# Chi con dung de HIEN THI DayPnL trong log (thong tin), khong chan mo lenh.
+MAX_DAILY_LOSS_PCT   = 0.08   # (khong con thuc thi - chi tham khao)
 # CHI TRADE TOP COIN THANH KHOAN NHAT (bybit tra ve, sort theo trend score)
 TOP_TRADE_COUNT      = 12     # chi phan tich/trade 12 coin top - tap trung, khong rai rac
 # So lenh mo cung luc: KHONG gioi han cung (0 = unlimited).

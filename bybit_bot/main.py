@@ -194,15 +194,9 @@ class TradingBot:
         _pos_side_map = {p["symbol"]: p.get("side", "") for p in open_positions}
         _now          = time.time()
 
-        # === PHANH AN TOAN (chong ve 0) ===
-        # 1. DAILY LOSS: lo qua nguong trong ngay -> DUNG mo lenh moi (van quan ly lenh dang mo)
-        if _daily_pnl_pct <= -config.MAX_DAILY_LOSS_PCT:
-            logger.warning(
-                f"[RISK] Daily PnL {_daily_pnl_pct*100:.1f}% <= -{config.MAX_DAILY_LOSS_PCT*100:.0f}% "
-                f"-> DUNG mo lenh moi hom nay (bao ve von)"
-            )
-            return
-        # 2. MAX CONCURRENT: 0 = khong gioi han (potential + free-margin tu dieu tiet so lenh)
+        # KHONG dung phanh daily-loss: chan lo phai o LOGIC VAO LENH (sat market, dung trend),
+        # khong phai o phanh dem PnL/dem so lenh. Chi giu gate potential + free-margin ben duoi.
+        # MAX CONCURRENT: 0 = khong gioi han (potential + free-margin tu dieu tiet so lenh)
         if config.MAX_CONCURRENT_POSITIONS > 0 and len(open_positions) >= config.MAX_CONCURRENT_POSITIONS:
             logger.info(f"[RISK] Da co {len(open_positions)}/{config.MAX_CONCURRENT_POSITIONS} lenh - khong mo them, cho lenh dong")
             return

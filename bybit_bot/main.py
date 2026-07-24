@@ -3040,6 +3040,30 @@ class TradingBot:
                 logger.info(f"{symbol}: TREND skip SHORT - extended {_ext:.1f}x ATR duoi EMA21 (chase day)")
                 return _block("skip SHORT - gia extended duoi EMA (chase day)")
 
+            # --- BUOC 5.5: FRESH MOVE DETECTOR - khong chase dump/pump moi ----
+            # ORDI bug: gia vua dump manh 10 nen roi, bot muon SHORT -> "chase dump bottom"
+            # -> gia bounce ngay sau -> LO. Move da xay ra roi, late-chase = nguy hiem.
+            # Nguong: net move trong 10 nen > 1.0 ATR = move manh, khong duoc chase tiep.
+            # Block SHORT khi gia vua dump 1+ ATR (= bot dang vao DAY dump, khong phai mid-trend).
+            # Block LONG khi gia vua pump 1+ ATR (= bot dang vao DINH pump).
+            # Khac STEP 5 (extension tu EMA21): STEP 5 do khoang cach gia-EMA, STEP 5.5 do
+            # TOC DO move 10 nen gan nhat -> bat duoc fresh dump ngay ca khi EMA chua lag xa.
+            _N_fresh = 10
+            if len(df_micro) >= _N_fresh + 1 and _atrm > 0:
+                _fresh_ref   = float(df_micro["close"].iloc[-(_N_fresh + 1)])
+                _fresh_close = float(df_micro["close"].iloc[-1])
+                _fresh_move  = (_fresh_close - _fresh_ref) / _atrm   # ATR units, signed
+                if _T == -1 and _fresh_move < -1.0:
+                    logger.info(
+                        f"{symbol}: TREND skip SHORT - fresh dump {_fresh_move:.2f}ATR/{_N_fresh}n "
+                        f"(vua dump manh, khong chase day - ORDI pattern)")
+                    return _block(f"skip SHORT - fresh dump {_fresh_move:.2f}ATR (chase day, doi bounce)")
+                if _T == 1 and _fresh_move > 1.0:
+                    logger.info(
+                        f"{symbol}: TREND skip LONG - fresh pump {_fresh_move:.2f}ATR/{_N_fresh}n "
+                        f"(vua pump manh, khong chase dinh)")
+                    return _block(f"skip LONG - fresh pump {_fresh_move:.2f}ATR (chase dinh, doi pullback)")
+
             # --- BUOC 6: IMMEDIATE MOMENTUM phai CUNG CHIEU _T ----------------
             # imm == 0 (chop) HOAC imm == -_T (nguoc) -> KHONG vao.
             # Chi trade khi gia DANG di DUNG HUONG NGAY LUC NAY.

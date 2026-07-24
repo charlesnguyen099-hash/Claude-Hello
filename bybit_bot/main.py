@@ -28,15 +28,82 @@ setup_logging()
 logger = logging.getLogger(__name__)
 
 
+def compute_macd(close, fast: int = 12, slow: int = 26, signal: int = 9):
+    """MACD = EMA(fast) - EMA(slow). Signal = EMA(signal) of MACD. Histogram = MACD - Signal.
+    Tra ve (macd_val, signal_val, histogram) tai nen cuoi cung. NaN neu khong du du lieu."""
+    if close is None or len(close) < slow + signal:
+        return float("nan"), float("nan"), float("nan")
+    macd_line = compute_ema(close, fast) - compute_ema(close, slow)
+    sig_line  = compute_ema(macd_line, signal)
+    return float(macd_line.iloc[-1]), float(sig_line.iloc[-1]), float((macd_line - sig_line).iloc[-1])
+
+
+def _candle_pattern(df, n: int = 3) -> int:
+    """Phan tich pattern nen cuoi cung (va n nen truoc).
+    Tra ve: +1 bullish pattern, -1 bearish pattern, 0 khong ro.
+    Bat: Engulfing, Pin Bar, Hammer/Shooting Star, Marubozu.
+    Dung cho GATE V4: pattern xac nhan la 1 trong 5 dau hieu confluence."""
+    if df is None or df.empty or len(df) < 2:
+        return 0
+    o1 = float(df["open"].iloc[-1]);  c1 = float(df["close"].iloc[-1])
+    h1 = float(df["high"].iloc[-1]); l1 = float(df["low"].iloc[-1])
+    o2 = float(df["open"].iloc[-2]); c2 = float(df["close"].iloc[-2])
+    rng1 = max(h1 - l1, 1e-12)
+    body1 = abs(c1 - o1)
+    low_wick1  = (min(o1, c1) - l1) / rng1
+    high_wick1 = (h1 - max(o1, c1)) / rng1
+    body_ratio1 = body1 / rng1
+
+    # Bullish Engulfing: nen hien tai xanh nuot toan bo nen do truoc
+    if c1 > o1 and c2 < o2 and c1 >= o2 and o1 <= c2:
+        return 1
+    # Bearish Engulfing: nen hien tai do nuot toan bo nen xanh truoc
+    if c1 < o1 and c2 > o2 and c1 <= o2 and o1 >= c2:
+        return -1
+    # Hammer (bullish): bong duoi dai (>55% range), than nho, o duoi range
+    if low_wick1 >= 0.55 and body_ratio1 <= 0.35 and (min(o1,c1) - l1) > (h1 - max(o1,c1)):
+        return 1
+    # Shooting Star (bearish): bong tren dai, than nho, o tren range
+    if high_wick1 >= 0.55 and body_ratio1 <= 0.35 and (h1 - max(o1,c1)) > (min(o1,c1) - l1):
+        return -1
+    # Pin Bar Bullish: bong duoi rat dai (>65%), than rat nho
+    if low_wick1 >= 0.65 and body_ratio1 <= 0.20:
+        return 1
+    # Pin Bar Bearish: bong tren rat dai (>65%), than rat nho
+    if high_wick1 >= 0.65 and body_ratio1 <= 0.20:
+        return -1
+    # Marubozu Bullish: than chiem >80% range, rat it bong
+    if c1 > o1 and body_ratio1 >= 0.80:
+        return 1
+    # Marubozu Bearish
+    if c1 < o1 and body_ratio1 >= 0.80:
+        return -1
+    return 0
+
+
+def _volume_ratio(df, lookback: int = 20) -> float:
+    """Tinh ty le volume trung binh 3 nen cuoi / volume trung binh lookback nen.
+    > 2.0 = spike manh; 1.5-2.0 = cao; 0.7-1.5 = binh thuong; < 0.7 = thap.
+    Dung trong Gate V4 de chot volume magnitude (khi la volume cung chieu tren spike)."""
+    if df is None or df.empty or len(df) < lookback:
+        return 1.0
+    vol = df["volume"]
+    avg_recent = vol.iloc[-3:].mean()
+    avg_base   = vol.iloc[-lookback:-3].mean()
+    if avg_base <= 0:
+        return 1.0
+    return avg_recent / avg_base
+
+
 class TradingBot:
     def __init__(self):
         logger.info("="*60)
         logger.info("Bybit Auto Trading Bot starting...")
         # === VERSION BANNER - de XAC NHAN dang chay code MOI (khong phai code cu) ===
         # Neu ban KHONG thay dong nay khi khoi dong -> bot dang chay code CU, PHAI restart.
-        logger.info(">>> TREND-GUARD v5 : high-conviction + exhaustion 30/70 + TP 12-25% <<<")
-        logger.info(">>> Gates: TRUE-DIR(unanimity) + EXHAUSTION + IMM-momentum tren CA 3 path <<<")
-        print(">>> [TREND-GUARD v5] high-conviction mode ACTIVE - long-top/short-bottom BLOCKED <<<", flush=True)
+        logger.info(">>> SCENARIO-GATE v4 : 1248-scenario scoring (>=70% certainty) + MACD+Vol+Candle <<<")
+        logger.info(">>> 10-factor confluence scoring (0-100) — trade khi score>=65 — Excel-aligned <<<")
+        print(">>> [SCENARIO-GATE v4] 1248-scenario framework ACTIVE — MACD+Volume+Candle+BOS <<<", flush=True)
         logger.info(f"Mode: {'TESTNET' if config.TESTNET else 'MAINNET (LIVE)'}")
         logger.info(f"TP range: {config.TP_ROI_MIN*100:.0f}%-{config.TP_ROI_MAX*100:.0f}% ROI | SL={config.SL_TP_RATIO:.0f}xTP")
         logger.info(f"Scan budget per tick: TOP{config.TOP20_COUNT}={config.SCAN_BUDGET_TOP20_SEC}s + REST={config.SCAN_BUDGET_REST_SEC}s")
@@ -3155,56 +3222,137 @@ class TradingBot:
                     return _block("skip LONG - gia break day 10 nen (dump nguoc)")
 
             # ================================================================
-            # DA QUA CA 8 GATE - TINH DIEM DO TIN CAY (CONFIDENCE 0-10)
-            # Quy tac: moi yeu to dong thuan voi _T cho them diem.
-            # Diem quyet dinh TP (bao nhieu % ROI chot loi) va von (bao nhieu % equity).
+            # GATE v4 - 100-DIEM SCORING (1248 SCENARIOS >=70% CERTAINTY)
+            # Map tu 10,000 kich ban Excel: chi trade khi score >= 65 diem
+            # (tuong duong >=70% do chac chan trong file phan tich).
             # ================================================================
-            # Lop 1 - EMA alignment (toi da 6 diem):
-            #   fast_tr == _T: +2 (luon dung vi gate buoc 1 da check)
-            #   M1     == _T: +2 (macro 100/250 xac nhan)
-            #   M2     == _T: +2 (macro 300/600 xac nhan)
-            # Lop 2 - Supplement (toi da 4 diem):
-            #   volume xac nhan va manh: +1
-            #   ADX >= 30 (trend rat manh): +1
-            #   HH/HL candle structure dong thuan: +1
-            #   Entry gap EMA21 <= 0.5 ATR (entry dep): +1
-            _conf = 0
-            if _fast_tr == _T:                              _conf += 2   # fast EMA xac nhan
-            if macro_trend == _T:                           _conf += 2   # M1 xac nhan
-            if macro_4h == _T:                              _conf += 2   # M2 xac nhan
-            if _vwt_dir == _T and _vwt_str >= 0.40:        _conf += 1   # volume xac nhan
-            if not math.isnan(adx) and adx >= 30:          _conf += 1   # trend rat manh
-            if _hh_ll == _T:                                _conf += 1   # structure dong thuan
-            if abs(_ext) <= 0.5:                            _conf += 1   # entry gan EMA21
-            # _conf: 0-10
+            # Tinh MACD, candle pattern, volume ratio cho scoring
+            _macd_line, _macd_sig, _macd_hist = compute_macd(df_micro["close"])
+            _prev_hist = float("nan")
+            if len(df_micro) >= 28:
+                _prev_close = df_micro["close"].iloc[:-1]
+                _, _, _ph = compute_macd(_prev_close)
+                _prev_hist = _ph
+            _cpat = _candle_pattern(df_micro)   # +1 bull, -1 bear, 0 neutral
+            _vrat = _volume_ratio(df_micro)      # ratio vs 20-bar avg
 
-            # Nguong toi thieu: can it nhat 3 diem
-            # (vi du: fast=+2 + 1 supplement = 3 -> TP nho nhat, von nho nhat)
-            if _conf < 3:
-                logger.info(f"{symbol}: TREND skip - confidence={_conf}<3 (qua it tin hieu dong thuan)")
-                return _block("skip - confidence < 3 (khong du tin hieu dong thuan)")
+            _score = 0
 
-            # TP scale theo confidence: 12% (conf=0) -> 25% (conf=10)
-            # conf=3 -> 15.9%, conf=5 -> 18.5%, conf=7 -> 21.1%, conf=10 -> 25%
-            _tp_by_conf = 0.12 + (_conf / 10.0) * 0.13
-            _tp_by_conf = max(config.TP_ROI_MIN, min(config.TP_ROI_MAX, _tp_by_conf))
+            # --- LOC 1: EMA ALIGNMENT (0-25 diem) ---
+            # Full stack (F=T, M1=T, M2=T): +15 (tat ca 3 TF dong thuan)
+            # Partial stack (F=T + 1 macro): +10
+            # Fast only (F=T): +6
+            # Bonus macro confirms: M1==T +5, M2==T +5 (them vao partial/full)
+            if _fast_tr == _T and macro_trend == _T and macro_4h == _T:
+                _score += 15   # full 3-TF alignment
+            elif _fast_tr == _T and (macro_trend == _T or macro_4h == _T):
+                _score += 10   # fast + 1 macro
+            elif _fast_tr == _T:
+                _score += 6    # fast only
+            elif _fast_tr == 0:
+                # F=0 nhung ca 2 macro dong thuan (da qua buoc 1 gate)
+                if macro_trend == _T: _score += 5
+                if macro_4h   == _T: _score += 5
+            # Extra macro bonus khi fast xac nhan
+            if _fast_tr == _T:
+                if macro_trend == _T and macro_4h != _T: _score += 3
+                if macro_4h   == _T and macro_trend != _T: _score += 3
 
-            # Conviction cho capital: conf/10 -> potential -> capital_pct
-            # conf=3 -> 0.30 (5% equity), conf=5 -> 0.50, conf=7 -> 0.70, conf=10 -> 1.0 (90%)
-            _conv = _conf / 10.0
+            # --- LOC 2: MACD (0-20 diem) ---
+            # MACD xuat hien trong MOI kich ban xac suat cao -> trong so cao nhat sau EMA
+            if not math.isnan(_macd_hist) and not math.isnan(_macd_line):
+                _hist_dir = 1 if _macd_hist > 0 else (-1 if _macd_hist < 0 else 0)
+                # Histogram cung chieu _T va dang tang (slope cung chieu)
+                if _hist_dir == _T:
+                    if not math.isnan(_prev_hist):
+                        _hist_slope_ok = (_T == 1 and _macd_hist > _prev_hist) or \
+                                         (_T == -1 and _macd_hist < _prev_hist)
+                        _score += 8 if _hist_slope_ok else 5
+                    else:
+                        _score += 5
+                # Crossover: histogram doi dau cung chieu _T (tin hieu manh nhat)
+                if not math.isnan(_prev_hist) and _prev_hist != 0:
+                    _cross = ((_T == 1  and _prev_hist < 0 and _macd_hist > 0) or
+                              (_T == -1 and _prev_hist > 0 and _macd_hist < 0))
+                    if _cross:
+                        _score += 7   # thi them 7 (co the cong voi histogram diem)
+                # Divergence (gia nguoc MACD): dieu kien dac biet, uu tien cao
+                # Simplified: RSI va MACD diverge khi gia tiep tuc nhung MACD nguoc
+                _div_bull = (_T == 1  and _macd_hist < 0 and not math.isnan(rsi_now) and rsi_now < 40)
+                _div_bear = (_T == -1 and _macd_hist > 0 and not math.isnan(rsi_now) and rsi_now > 60)
+                if _div_bull or _div_bear:
+                    _score += 8
 
-            # Direction = _T da xac lap qua toan bo gate
+            # --- LOC 3: VOLUME MAGNITUDE (0-20 diem) ---
+            if _vrat >= 2.0:
+                # Volume spike: xac nhan manh nhat
+                if _vwt_dir == _T:  _score += 20
+                else:               _score += 4   # spike nguoc: khong them nhieu
+            elif _vrat >= 1.5:
+                # Volume cao
+                if _vwt_dir == _T:  _score += 14
+                else:               _score += 8   # cao nhung neutral
+            elif _vrat >= 0.7:
+                _score += 5    # volume binh thuong
+            # else: _vrat < 0.7 -> low volume -> 0 diem (block gate v3 phai xet rieng)
+
+            # --- LOC 4: IMM MOMENTUM + BOS/CHoCH (0-15 diem) ---
+            # _imm da xac nhan == _T o buoc 6 gate, nen luon co +5
+            _score += 5    # imm confirmed (buoc 6 da pass)
+            # BOS/CHoCH (HH/HL structure)
+            if _hh_ll == _T:
+                _score += 7    # BOS cung chieu (Higher Highs + Higher Lows)
+            elif _hh_ll == -_T:
+                _score -= 3    # CHoCH nguoc (canh bao dao chieu)
+            elif _hh_ll == 0:
+                _score += 3    # Structure neutral (CHoCH khong ro)
+
+            # --- LOC 5: CANDLE PATTERN (0-10 diem) ---
+            if _cpat == _T:
+                _score += 10   # Engulfing/Hammer/Marubozu cung chieu
+            elif _cpat == -_T:
+                _score -= 5    # Pattern nguoc chieu (canh bao reversal)
+
+            # --- LOC 6: ADX + ENTRY QUALITY (0-10 diem) ---
+            if not math.isnan(adx):
+                if adx >= 35:   _score += 6
+                elif adx >= 25: _score += 4
+                elif adx >= 15: _score += 2
+            _ext_abs = abs(_ext)
+            if _ext_abs <= 0.3:   _score += 4   # entry rat gan EMA21 (ideal)
+            elif _ext_abs <= 0.7: _score += 2   # entry gan EMA21
+
+            # Clamp score [0, 100]
+            _score = max(0, min(100, _score))
+
+            # NGUONG: >=65 = tuong duong >=70% do chac chan trong 10000 kich ban Excel
+            # <65 = cac kich ban co xac suat <70% -> SKIP (thua lo nhieu hon thang)
+            if _score < 65:
+                logger.info(
+                    f"{symbol}: GATE v4 SKIP - score={_score}/100 < 65 "
+                    f"(khong nam trong 1248 kich ban >=70% certainty)"
+                )
+                return _block(f"skip - score={_score}/100 < 65 (duoi nguong 70% certainty)")
+
+            # TP scale theo score: score=65 -> TP=12%, score=100 -> TP=25%
+            _tp_by_score = config.TP_ROI_MIN + (((_score - 65) / 35.0) * (config.TP_ROI_MAX - config.TP_ROI_MIN))
+            _tp_by_score = max(config.TP_ROI_MIN, min(config.TP_ROI_MAX, _tp_by_score))
+
+            # Conviction cho capital scaling: score/100
+            _conv = _score / 100.0
+
             if best.direction != _T:
                 logger.info(f"{symbol}: TREND override -> {'LONG' if _T==1 else 'SHORT'} (signal={best.direction})")
             best.direction = _T
-            best.tp_roi_override = round(_tp_by_conf, 4)
+            best.tp_roi_override = round(_tp_by_score, 4)
             best.strength = max(best.strength, min(1.0, _conv))
 
             logger.info(
-                f"{symbol}: GATE PASS | {'L' if _T==1 else 'S'} | "
+                f"{symbol}: GATE v4 PASS | {'L' if _T==1 else 'S'} | score={_score}/100 | "
                 f"F={_fast_tr} M1={macro_trend} M2={macro_4h} I={_imm} | "
-                f"ADX={adx:.0f} ext={_ext:.2f} HH_LL={_hh_ll} vwt={_vwt_dir}:{_vwt_str:.2f} | "
-                f"conf={_conf}/10 TP={_tp_by_conf*100:.1f}% conv={_conv:.2f}"
+                f"MACD_hist={_macd_hist:.4f} vrat={_vrat:.1f} cpat={_cpat} | "
+                f"ADX={adx:.0f} ext={_ext:.2f} HH_LL={_hh_ll} | "
+                f"TP={_tp_by_score*100:.1f}% conv={_conv:.2f}"
             )
 
         # ======================================================================

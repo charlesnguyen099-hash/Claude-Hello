@@ -125,7 +125,9 @@ class RiskManager:
             _sl_eff = min(tp_roi * config.SL_TP_RATIO, _max_sl)
             if _sl_eff < tp_roi:                     # SL hep hon TP -> can L thap hon
                 continue
-            if tp_roi >= config.ROUND_TRIP_FEE * _L + _min_net_roi:
+            # TP phai phu TAT CA phi (vao+ra+funding) tinh theo ROI (= cost_notional * L)
+            # RONG hon net toi thieu -> TP hit la LOI RONG that su sau MOI loai phi.
+            if tp_roi >= config.TOTAL_ROUND_TRIP_COST * _L + _min_net_roi:
                 _chosen_lev = _L
                 _sl_roi_eff = _sl_eff
                 break
@@ -153,7 +155,9 @@ class RiskManager:
         _atr = signal.atr if signal.atr > 0 else 0.0
         if _atr > 0:
             _tp_cap   = 2.0 * _atr                                 # tran: trong tam voi (~2 nen)
-            _tp_floor = config.ROUND_TRIP_FEE * entry * 2.0        # san: >= 2x phi (con loi)
+            # san TP (price dist): >= TAT CA phi khu hoi x1.5 -> hit TP luon con lai loi that
+            # sau vao+ra+funding (khong chi hoa von). Truoc chi 2x trading fee, thieu funding.
+            _tp_floor = config.TOTAL_ROUND_TRIP_COST * entry * 1.5
             if _tp_floor > _tp_cap:
                 logger.info(
                     f"{signal.symbol}: SKIP - volatility qua thap (ATR={_atr:.6f}), TP bu phi "
@@ -237,7 +241,7 @@ class RiskManager:
             )
             return None
 
-        fee_usdt = notional * config.ROUND_TRIP_FEE
+        fee_usdt = notional * config.TOTAL_ROUND_TRIP_COST   # vao+ra+funding buffer
 
         d  = signal.direction
         sl = entry - d * sl_dist

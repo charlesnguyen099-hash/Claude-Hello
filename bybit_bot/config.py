@@ -37,10 +37,19 @@ CANDLE_LIMIT_SCALP  = 2000   # reuse
 CANDLE_LIMIT_TREND  = 2000   # reuse
 CANDLE_LIMIT_MACRO  = 2000   # reuse
 
-# --- Phi giao dich Bybit ------------------------------------------------------
-TAKER_FEE      = 0.00055
-MAKER_FEE      = 0.00020
-ROUND_TRIP_FEE = TAKER_FEE * 2   # 0.11% tong phi ca 2 chieu
+# --- Phi giao dich Bybit (TINH DU TAT CA LOAI PHI vao diem chot loi) -----------
+TAKER_FEE      = 0.00055   # phi taker (market order) 1 chieu
+MAKER_FEE      = 0.00020   # phi maker (limit order) 1 chieu
+# Vao lenh = market (taker), dong lenh (TP/SL/close) = market (taker) -> 2 chieu taker.
+ENTRY_FEE      = TAKER_FEE  # vao bang market order
+EXIT_FEE       = TAKER_FEE  # dong (TP/SL/dynamic-exit) bang market order
+# FUNDING FEE: perpetual thu funding moi 8h. Neu giu lenh qua moc funding se bi tru.
+# Funding Bybit thuong +-0.01%, co the vot len 0.05-0.1% khi trend manh. Dem buffer
+# 0.03% (khoang 1-2 moc funding cho scalp vai gio) de TP luon con lai loi that sau funding.
+FUNDING_FEE_BUFFER = 0.0003   # 0.03% buffer cho funding fee (perpetual)
+# TONG CHI PHI KHU HOI = vao + ra + funding buffer. DUNG cho MOI tinh toan TP.
+TOTAL_ROUND_TRIP_COST = ENTRY_FEE + EXIT_FEE + FUNDING_FEE_BUFFER   # ~0.14% notional
+ROUND_TRIP_FEE = TAKER_FEE * 2   # 0.11% (giu lai cho code cu tham chieu)
 
 # --- Risk Management ----------------------------------------------------------
 USE_MAX_LEVERAGE       = True

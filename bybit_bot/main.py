@@ -326,8 +326,14 @@ class TradingBot:
             imm         = self._immediate_momentum(df, sp=1.0)
             macro_dir   = macro_trend if macro_trend == macro_4h else 0   # ca 2 dong thuan moi tinh
 
-            # 1) PROFIT-LOCK: dang loi ma market quay dau nguoc chieu lenh -> chot ngay
-            if pnl_roi >= config.DYN_PROFIT_LOCK_ROI:
+            # Nguong chot loi phai TRU phi DONG lenh (theo ROI = exit_fee * leverage) +
+            # buffer funding -> chot la LOI RONG that su, khong hoa/lo vi phi o don bay cao.
+            # unrealisedPnl cua Bybit la GROSS (chua tru phi dong) nen phai cong nguong len.
+            _exit_cost_roi = (config.EXIT_FEE + config.FUNDING_FEE_BUFFER) * _lev
+            _lock_thresh   = max(config.DYN_PROFIT_LOCK_ROI, _exit_cost_roi + 0.02)  # +2% net toi thieu
+
+            # 1) PROFIT-LOCK: dang loi (sau phi dong) ma market quay dau nguoc -> chot ngay
+            if pnl_roi >= _lock_thresh:
                 _turned = (imm == -pos_dir) or (macro_dir == -pos_dir)
                 if _turned:
                     logger.warning(

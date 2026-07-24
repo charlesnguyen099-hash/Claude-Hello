@@ -2952,21 +2952,14 @@ class TradingBot:
             #     macro van bao UP (tu uptrend cu) -> bot "mua pullback" thuc ra la mua vao downtrend.
             #     Kiem tra trend NHANH (EMA20/50 tren 1m): neu da lat NGUOC _T -> macro dang lag
             #     dao chieu -> KHONG vao. (Pullback lanh manh: fast=0 trung tinh -> van cho vao.)
+            #     KIEM TRA trend NHANH (EMA20/50): neu da lat NGUOC _T -> macro dang lag dao chieu -> chan.
+            #     (Da bo check 'net 20 nen' cu: no MAU THUAN mo hinh pullback - hoi ve EMA21 luon co
+            #      net 20 nen am du momentum da resume -> chan nham lenh tot. Fast EMA + macro-align +
+            #      imm da du bat SNXX: khi gia roi that su, macro100/250 ve 0 -> gate chan o buoc 1.)
             _fast_tr = self._trend_direction(df_micro, fast=20, slow=50)
             if _fast_tr == -_T:
                 logger.info(f"{symbol}: TREND skip - fast EMA20/50={_fast_tr} nguoc macro _T={_T} (macro EMA lag dao chieu)")
                 return _block("skip - fast trend nguoc macro (macro EMA lag, dao chieu som)")
-            # 1c. Cau truc gia gan day KHONG duoc di NGUOC _T manh: net move 20 nen gan nhat.
-            #     Macro UP nhung 20 nen gan nhat net GIAM > 0.4% -> gia dang thuc su di xuong -> chan.
-            if len(df_micro) >= 21:
-                _c_now = float(df_micro["close"].iloc[-1]); _c_20 = float(df_micro["close"].iloc[-21])
-                _net20 = (_c_now - _c_20) / _c_20 if _c_20 > 0 else 0.0
-                if _T == 1 and _net20 < -0.004:
-                    logger.info(f"{symbol}: TREND skip LONG - 20 nen gan nhat net {_net20*100:.1f}% (gia dang roi, macro lag)")
-                    return _block("skip LONG - cau truc 20 nen dang giam (macro lag downtrend)")
-                if _T == -1 and _net20 > 0.004:
-                    logger.info(f"{symbol}: TREND skip SHORT - 20 nen gan nhat net +{_net20*100:.1f}% (gia dang len, macro lag)")
-                    return _block("skip SHORT - cau truc 20 nen dang tang (macro lag uptrend)")
             # 2. ADX >= 20 (trend du manh, khong chop)
             if math.isnan(adx) or adx < 20.0:
                 logger.info(f"{symbol}: TREND skip - ADX={adx:.1f}<20 (chop)")
@@ -2982,10 +2975,10 @@ class TradingBot:
                 (df_micro["high"].iloc[-14:] - df_micro["low"].iloc[-14:]).mean())
             _price_now = _range_live_price if _range_live_price > 0 else df_micro["close"].iloc[-1]
             _ext = (_price_now - _ema21m) / _atrm if _atrm > 0 else 0.0
-            if _T == 1 and _ext > 1.2:
+            if _T == 1 and _ext > 1.5:
                 logger.info(f"{symbol}: TREND skip LONG - extended {_ext:.1f} ATR tren EMA21 (chase dinh, cho pullback)")
                 return _block("skip LONG - gia extended tren EMA (chase dinh)")
-            if _T == -1 and _ext < -1.2:
+            if _T == -1 and _ext < -1.5:
                 logger.info(f"{symbol}: TREND skip SHORT - extended {_ext:.1f} ATR duoi EMA21 (chase day, cho rally)")
                 return _block("skip SHORT - gia extended duoi EMA (chase day)")
             # 5. RESUME CONFIRMED: immediate momentum phai CUNG chieu trend (khong chi 'khong nguoc').

@@ -186,7 +186,7 @@ class TradingBot:
         # Xu ly TAT CA coin trending, coin score cao nhat truoc
         # Dung time budget: uu tien top 20 truoc, phan con lai sau
         logger.info(
-            f"[TICK] Scan {len(self.symbols)} coins (top{config.TOP20_COUNT}+rest) | "
+            f"[TICK] Scan {len(self.symbols)} coins ({sum(1 for s in self.symbols if self.scanner.volume_map.get(s,0)>=config.HIGH_VOL_THRESHOLD)}high+{sum(1 for s in self.symbols if self.scanner.volume_map.get(s,0)<config.HIGH_VOL_THRESHOLD)}rest) | "
             f"open={len(open_positions)} | "
             f"BTC_fast={'UP' if self.btc_trend_fast==1 else 'DOWN' if self.btc_trend_fast==-1 else 'SIDE'} "
             f"BTC_mid={'UP' if self.btc_trend==1 else 'DOWN' if self.btc_trend==-1 else 'SIDE'} "
@@ -205,11 +205,18 @@ class TradingBot:
             return
 
         # Coin de phan tich: 0 = tat ca (da sort theo trend score), >0 = cat top-N.
-        # Khong cat cung -> khong bo lo lenh tiem nang; budget+cooldown tu dieu tiet.
         if config.TOP_TRADE_COUNT > 0:
             top_trade = self.symbols[:config.TOP_TRADE_COUNT]
         else:
             top_trade = self.symbols
+
+        # Tach 2 nhom theo volume:
+        #   high_vol (>= HIGH_VOL_THRESHOLD = 10M): scan tan suat cao (cooldown ngan, budget lon)
+        #   rest     (<  HIGH_VOL_THRESHOLD)       : scan tan suat thap hon (cooldown dai, budget nho)
+        # Scanner da sort tat ca theo trending_score -> thu tu uu tien van theo score.
+        _vmap      = self.scanner.volume_map
+        high_vol   = [s for s in top_trade if _vmap.get(s, 0) >= config.HIGH_VOL_THRESHOLD]
+        rest_vol   = [s for s in top_trade if _vmap.get(s, 0) <  config.HIGH_VOL_THRESHOLD]
 
         def _run_scan(symbols: list[str], cooldown: float, budget: float, label: str) -> bool:
             """Chay scan cho 1 nhom symbols. Tra ve equity_exhausted."""
@@ -262,8 +269,9 @@ class TradingBot:
             logger.debug(f"[TICK] {label}: analyzed {_analyzed}/{len(symbols)} coins, traded {_traded}")
             return False
 
-        # CHI 1 PASS tren TOP COIN - khong scan phan con lai (khong rai rac ra coin nho)
-        _run_scan(top_trade, config.TOP20_COOLDOWN_SEC, config.SCAN_BUDGET_TOP20_SEC, "TOP")
+        # 2 pass: high-vol truoc (tan suat cao), rest sau (tan suat thap hon)
+        _run_scan(high_vol,  config.TOP20_COOLDOWN_SEC,  config.SCAN_BUDGET_TOP20_SEC, "HIGH-VOL")
+        _run_scan(rest_vol,  config.SYMBOL_COOLDOWN_SEC, config.SCAN_BUDGET_REST_SEC,  "REST")
 
     def _trend_direction(self, df, fast: int = 20, slow: int = 50) -> int:
         """+1 up, -1 down, 0 sideways.

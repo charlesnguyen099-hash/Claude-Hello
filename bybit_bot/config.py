@@ -10,8 +10,10 @@ API_SECRET = os.getenv("BYBIT_API_SECRET", "YOUR_API_SECRET_HERE")
 TESTNET    = os.getenv("BYBIT_TESTNET", "false").lower() == "true"
 
 # --- Market Scanner -----------------------------------------------------------
-MIN_VOLUME_USDT_24H  = 10_000_000    # min 10M USDT/24h - CHI coin thanh khoan tot, bo coin nho
-                                     # (BASED 1.57M, OP 8.9M = noise). Coin lon trend that, it whipsaw.
+MIN_VOLUME_USDT_24H  = 1_000_000     # min 1M USDT/24h - mo rong de scan nhieu coin hon.
+                                     # Coin 1-10M: phai co momentum >=1% va spread <=0.5% (quality gate scanner).
+                                     # Coin >=10M (HIGH_VOL_THRESHOLD): duoc phan tich tan suat cao hon.
+HIGH_VOL_THRESHOLD   = 10_000_000    # nguong volume cao: coin >= nguong nay scan tan suat cao (cooldown ngan)
 SCAN_INTERVAL_SEC    = 30            # cap nhat danh sach trending moi 30s (giam API call)
 
 # --- Multi-Timeframe Analysis -------------------------------------------------

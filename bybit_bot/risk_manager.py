@@ -155,10 +155,11 @@ class RiskManager:
         _atr = signal.atr if signal.atr > 0 else 0.0
         if _atr > 0:
             _tp_cap   = 2.0 * _atr                                 # tran: trong tam voi (~2 nen)
-            # san TP (price dist): >= TAT CA phi khu hoi x2.0 -> hit TP luon LOI ROI that su
-            # sau vao+ra+funding, khong bao gio hoa von hoac lo phi khi TP cham.
-            # x2.0 (thay vi x1.5 cu): buffer du rong dam bao net profit duong y nghia.
-            _tp_floor = config.TOTAL_ROUND_TRIP_COST * entry * 2.0
+            # san TP (price dist): phi khu hoi + loi rong toi thieu (_min_net_roi) -> hit TP luon LOI RONG.
+            # Phi (theo price dist): TOTAL_ROUND_TRIP_COST * entry (khong phu thuoc leverage vi phi = % notional)
+            # Loi rong toi thieu (theo price dist): _min_net_roi * entry / leverage
+            # -> TP floor chinh xac theo tung lenh (leverage cao -> floor nho hon theo % gia)
+            _tp_floor = config.TOTAL_ROUND_TRIP_COST * entry + _min_net_roi * entry / leverage
             if _tp_floor > _tp_cap:
                 logger.info(
                     f"{signal.symbol}: SKIP - volatility qua thap (ATR={_atr:.6f}), TP bu phi "

@@ -3847,6 +3847,28 @@ class TradingBot:
                 if _T == 1 and _mv10_abs > 3.0:
                     return _block(f"skip LONG - fresh pump {_mv10_abs:.2f}ATR/10n (spike dien cuong)")
 
+            # --- ABSOLUTE BLOCK 4: CANDLE EXHAUSTION (vao cuoi song - du day/du dinh) ---
+            # Block khi 3 nen gan nhat da chay MANH cung chieu muon vao -> van cuoi song.
+            # Vi du LQTYUSDT: cay nen do lon drop 4+ ATR, bot SHORT cuoi nen = du day.
+            # Nguong: 3c bodies + single last candle. High-conviction bypass (F+M1+M2+ADX25+vol).
+            if _atrm > 0 and len(df_micro) >= 5 and not _high_conviction:
+                _c3 = df_micro.iloc[-4:-1]
+                _c3_bodies = (_c3["close"] - _c3["open"]).values
+                _run_up   = sum(float(b) for b in _c3_bodies if b > 0) / _atrm  # ATR of green bodies
+                _run_down = sum(-float(b) for b in _c3_bodies if b < 0) / _atrm  # ATR of red bodies
+                _last_body_raw = float(df_micro["close"].iloc[-2]) - float(df_micro["open"].iloc[-2])
+                _last_green_atr = max(0.0, _last_body_raw) / _atrm
+                _last_red_atr   = max(0.0, -_last_body_raw) / _atrm
+                # LONG khi gia vua pump = du dinh; SHORT khi gia vua dump = du day
+                if _T == 1 and (_run_up >= 1.5 or _last_green_atr >= 2.0):
+                    return _block(
+                        f"skip LONG - 3c pump {_run_up:.1f}ATR last={_last_green_atr:.1f}ATR (du dinh)"
+                    )
+                if _T == -1 and (_run_down >= 1.5 or _last_red_atr >= 2.0):
+                    return _block(
+                        f"skip SHORT - 3c dump {_run_down:.1f}ATR last={_last_red_atr:.1f}ATR (du day short)"
+                    )
+
             # ================================================================
             # UNIFIED SCORE - tat ca tin hieu deu la diem
             # Tong diem toi da ly thuyet: ~130+ nhung clamp 0-100

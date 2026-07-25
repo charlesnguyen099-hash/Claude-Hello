@@ -2593,9 +2593,9 @@ class TradingBot:
             _total_vol = _green_vol + _red_vol
             if _total_vol > 0:
                 _buy_ratio = _green_vol / _total_vol
-                if best.direction == -1 and _buy_ratio >= 0.75:
+                if best.direction == -1 and _buy_ratio >= 0.80:
                     return _block(f"skip SHORT - 5-bar volume pressure BUY {_buy_ratio*100:.0f}%")
-                if best.direction == 1 and _buy_ratio <= 0.25:
+                if best.direction == 1 and _buy_ratio <= 0.20:
                     return _block(f"skip LONG - 5-bar volume pressure SELL {(1-_buy_ratio)*100:.0f}%")
 
         # Dual spike (ranging market): block tat ca momentum entry
@@ -2724,6 +2724,15 @@ class TradingBot:
         # Ngoai le: BTC strongly bull + coin macro bull -> LONG trong micro dip = mua day pullback hop le
         _btc_bear_short_ok = btc_strongly_bear and (macro_trend <= -1 or macro_4h <= -1)
         _btc_bull_long_ok  = btc_strongly_bull and (macro_trend >= 1  or macro_4h >= 1)
+        # Pre-compute high_conviction for early bypass (full compute again in gate section)
+        _fast_tr_pre = self._trend_direction(df_micro, fast=20, slow=50) if not df_micro.empty and len(df_micro) >= 55 else 0
+        _T_pre = best.direction  # fallback to signal direction
+        _vrat_pre = (df_micro["volume"].iloc[-5:].mean() / (df_micro["volume"].iloc[-20:-5].mean() + 1e-9)
+                     if not df_micro.empty and len(df_micro) >= 20 else 0.0)
+        _high_conviction = (
+            _fast_tr_pre == best.direction and macro_trend == best.direction and macro_4h == best.direction
+            and adx >= 25 and _vrat_pre >= 1.5
+        )
 
         # PUMP EXHAUSTION SHORT: khi LONG bi HARD BLOCK vi micro_down,
         # nhung gia vua pump (o phan tren 2h range) -> flip sang SHORT thay vi bo qua.
@@ -2755,6 +2764,8 @@ class TradingBot:
                     f"is_gradual_up={_is_gradual_uptrend} scalp={scalp_trend}"
                 )
                 # Do NOT return - continue with direction=-1
+            elif _high_conviction:
+                pass  # HIGH-CONVICTION: F+M1+M2 cung chieu + ADX>=25 + vol>=1.5x -> cho phep entry du micro nguoc
             else:
                 return _block(
                     f"HARD BLOCK LONG - 1m BEARISH (micro=-1, gia dang giam) "
@@ -2784,6 +2795,8 @@ class TradingBot:
                     f"{symbol}: DUMP-EXHAUSTION flip SHORT->LONG | "
                     f"dump30={_dump_exh_30*100:.1f}% m2h={_m2h_pos:.0%} scalp={scalp_trend}"
                 )
+            elif _high_conviction:
+                pass  # HIGH-CONVICTION: F+M1+M2 cung chieu + ADX>=25 + vol>=1.5x -> cho phep entry du micro nguoc
             else:
                 return _block(
                     f"HARD BLOCK SHORT - 1m BULLISH (micro=+1, gia dang tang) "
@@ -2871,7 +2884,7 @@ class TradingBot:
         # [AEQ-4] Last 15m net body conflict - dung 15 nen 1m gan nhat (= 15 phut, tuong duong 1 nen 15m)
         # Tong body 15 nen 1m < -1.5x ATR = net bearish pressure manh khi muon long
         # [AEQ-4] Net body conflict - bypass khi strong trend (pullback trong uptrend la binh thuong)
-        if not df_signal.empty and len(df_signal) >= 20 and _atr_for_sl > 0 and not is_reversal:
+        if not df_signal.empty and len(df_signal) >= 20 and _atr_for_sl > 0 and not is_reversal and not _high_conviction:
             _net_15m_body = (df_signal["close"].iloc[-15:] - df_signal["open"].iloc[-15:]).sum()
             if best.direction == 1 and _net_15m_body < -1.5 * _atr_for_sl and not _strong_trend_up:
                 return _block(f"skip LONG - 15m net body strongly bearish ({_net_15m_body:.4f})")
@@ -2942,7 +2955,7 @@ class TradingBot:
             _close20  = df_micro["close"].iloc[-20:]
             _std20    = _close20.std()
             _mean20   = _close20.mean()
-            if _mean20 > 0 and (_std20 / _mean20) < 0.0015:  # std < 0.15% = flat range
+            if _mean20 > 0 and (_std20 / _mean20) < 0.0010:  # std < 0.10% = truly flat range (was 0.15%)
                 if best.direction == 1 and _m2h_pos > 0.50 and not _scenario_entry:
                     if _m2h_pos >= 0.80 and not _direction_flipped:
                         best.direction = -1

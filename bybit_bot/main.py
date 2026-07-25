@@ -3762,6 +3762,8 @@ class TradingBot:
                 return _block(f"skip - score={_score} < {_threshold} (not in 50K HQ scenarios)")
 
             # --- TP VA CONVICTION THEO TIER (3 tiers tu 50K scenarios) ---
+            # TP = TARGET ban dau. risk_manager se clamp TP vao: [fee_floor, 2xATR].
+            # Fee floor = TOTAL_ROUND_TRIP_COST * leverage * 1.5 (luon co loi sau phi).
             # 95-98%: TP 9.8% ROI, avg R:R 5.84, leverage 10.3x
             # 90-95%: TP 9.1% ROI, avg R:R 5.25
             # 85-90%: TP 7.9% ROI, avg R:R 4.61
@@ -3774,9 +3776,10 @@ class TradingBot:
             elif _is_90plus:
                 _tp_by_score = config.TP_ROI_MAX; _conv = 0.90; _tier = "90%+"
             else:
-                # Standard tier: TP scale theo score
+                # Standard tier: TP scale theo score, san 3% (risk_manager tinh fee floor that su)
                 _tp_by_score = config.TP_ROI_MIN + (
-                    ((_score - _threshold) / (100.0 - _threshold)) * 0.10)
+                    (_score - _threshold) / (100.0 - _threshold)
+                ) * (config.TP_ROI_MAX - config.TP_ROI_MIN)
                 _tp_by_score = max(config.TP_ROI_MIN, min(config.TP_ROI_MAX, _tp_by_score))
                 _conv = _score / 100.0; _tier = "standard"
 
@@ -3785,6 +3788,7 @@ class TradingBot:
             best.direction       = _T
             best.tp_roi_override = round(_tp_by_score, 4)
             best.strength        = max(best.strength, min(1.0, _conv))
+            best.gate_score      = float(_score)   # truyen score cho risk_manager tinh von
 
             logger.info(
                 f"{symbol}: SCENARIO v6 PASS | {'L' if _T==1 else 'S'} | "

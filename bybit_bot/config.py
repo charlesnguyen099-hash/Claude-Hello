@@ -66,10 +66,10 @@ DEFAULT_LEVERAGE       = 10
 # VON THEO DO TIEM NANG (potential-scaled), KHONG cap cung tuy tien:
 #   potential thap -> von nho (giu cho cho lenh khac), potential cao -> von lon (an dam).
 # potential = f(consensus, strength) trong [0,1].
-CAPITAL_PCT_MIN = 0.05   # 5% equity - lenh conviction thap nhat (rui ro nho, con nhieu cho)
-CAPITAL_PCT_MAX = 0.90   # 90% equity - lenh conviction CUC CAO (gan all-in nhung chua het,
-                         # de lai buffer tranh 1 lenh thanh ly CA tai khoan).
-MAX_CAPITAL_PCT = 0.90   # tran mem = CAPITAL_PCT_MAX (khong cap cung thap hon nua)
+CAPITAL_PCT_MIN = 0.05   # 5% equity - lenh conviction thap nhat (score=50, rui ro nho)
+CAPITAL_PCT_MAX = 0.95   # 95% equity - lenh conviction CUC CAO (score>=95, gan all-in)
+                         # 5% con lai lam buffer tranh thanh ly toan bo tai khoan khi xui
+MAX_CAPITAL_PCT = 0.95   # tran mem = CAPITAL_PCT_MAX
 # Free margin: 1 lenh dung toi da 95% margin CON TRONG. So lenh TU DIEU TIET:
 # lenh manh an nhieu von -> free giam nhanh -> it lenh song song; lenh yeu an it -> con cho nhieu lenh.
 MAX_FREE_MARGIN_FRAC = 0.95
@@ -95,7 +95,8 @@ ATR_PERIOD        = 14
 # khi dao chieu. Vi du 50x: TP 20% ROI = gia di 0.4% = rat de dat trong 1 lenh dung trend.
 # TP cao (60% cu) can gia di 1.2% -> thuong dao chieu truoc khi toi -> mat lenh loi.
 # SL ROI = min(SL_TP_RATIO x TP, tran an toan thanh ly) - SL khong vuot gia thanh ly.
-TP_ROI_MIN  = 0.12   # TP toi thieu 12% ROI (lenh yeu) - chot nhanh, an toan
+TP_ROI_MIN  = 0.03   # TP san dong: 3% ROI — risk_manager tinh san that su tu fee+leverage
+                     # Gia tri that su = max(fee_breakeven + 1%, ATR-cap) do risk_manager tinh
 TP_ROI_MAX  = 0.25   # TP toi da 25% ROI (lenh manh nhat) - van de dat truoc khi dao chieu
 SL_TP_RATIO = 5.0    # SL muc tieu = 5 x TP (truoc khi clamp thanh ly)
 

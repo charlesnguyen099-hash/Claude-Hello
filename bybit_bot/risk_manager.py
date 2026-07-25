@@ -114,7 +114,7 @@ class RiskManager:
         # Khac ban cu: TP KHONG bi scale xuong theo liq clamp nua (bo tran TP 30% ->
         # TP 60% kha thi: L=66, SL clamp ~60%, ty le nen tu 5:1 ve ~1:1 cho lenh manh).
         # Luon ton tai L hop le: tai L=1 max_sl=0.75 >= tp (tp da clamp <=0.70), fee=0.11%.
-        _min_net_roi = 0.05    # loi rong toi thieu 5% margin sau phi
+        _min_net_roi = 0.01    # loi rong toi thieu 1% margin sau phi — "miễn không lỗ sau phí"
 
         tp_roi = min(tp_roi, 0.70)   # tran cung: dam bao SL >= TP ton tai o L=1 (max_sl=0.75)
 
@@ -186,14 +186,17 @@ class RiskManager:
         def _ceil_qty(q: float) -> float:
             return round(math.ceil(q / qty_step) * qty_step, _qty_decimals)
 
-        # VON THEO DO TIEM NANG LENH - TREN EQUITY THAT:
-        #   capital_pct = CAPITAL_PCT_MIN + potential * (CAPITAL_PCT_MAX - CAPITAL_PCT_MIN)
-        #   -> lenh yeu (potential=0): 5% equity, lenh manh nhat (potential=1): 90% equity
+        # VON THEO GATE SCORE (dong) - TREN EQUITY THAT:
+        #   gate_score (0-100) tu scenario gate -> map truc tiep sang % von:
+        #     score=50 (threshold) -> 5% equity (lenh qua gate vua du)
+        #     score=75             -> 47% equity
+        #     score=90             -> 80% equity
+        #     score=95+            -> 90-95% equity (gan all-in)
+        #   Neu khong co gate_score (lenh khong qua gate) -> dung potential-based cu
         # So lenh KHONG bi chan cung - tu dieu tiet qua free margin:
-        #   1. capital <= equity * MAX_CAPITAL_PCT (tran mem 90%, de lai buffer chong thanh ly ca tk)
+        #   1. capital <= equity * MAX_CAPITAL_PCT (tran mem 95%)
         #   2. FREE MARGIN: capital <= free_margin * MAX_FREE_MARGIN_FRAC (95% free con lai)
-        #      -> lenh manh an nhieu von => free giam => it slot; lenh yeu an it => con nhieu slot
-        #   3. capital <= equity (khong the vuot tong von)
+        #   3. capital <= equity
         MIN_NOTIONAL = 5.0   # Bybit min order value
 
         # Margin dang bi chiem boi cac position dang mo (de tinh free margin)
@@ -207,7 +210,15 @@ class RiskManager:
                 continue
         _free_margin = max(0.0, equity - _used_margin)
 
-        _cap_pct    = config.CAPITAL_PCT_MIN + potential * (config.CAPITAL_PCT_MAX - config.CAPITAL_PCT_MIN)
+        gate_score = getattr(signal, 'gate_score', 0.0)
+        if gate_score >= 50:
+            # Score-to-capital mapping truc tiep: score 50->5%, score 100->95%
+            _score_frac = (gate_score - 50.0) / 50.0   # 0.0 at score=50, 1.0 at score=100
+            _cap_pct = config.CAPITAL_PCT_MIN + _score_frac * (config.CAPITAL_PCT_MAX - config.CAPITAL_PCT_MIN)
+        else:
+            # Fallback: potential-based (lenh khong qua gate hoac gate_score chua set)
+            _cap_pct = config.CAPITAL_PCT_MIN + potential * (config.CAPITAL_PCT_MAX - config.CAPITAL_PCT_MIN)
+
         _cap_target = equity * _cap_pct
         _cap_target = min(_cap_target, equity * config.MAX_CAPITAL_PCT)          # (1) tran mem 90%
         _cap_target = min(_cap_target, _free_margin * config.MAX_FREE_MARGIN_FRAC)  # (2) chua free

@@ -2898,6 +2898,86 @@ class TradingBot:
                         and _sc_pos > 0.20 and adx >= 14):
                     _sc_dir, _sc_strength, _sc_tp, _sc_name = -1, 0.61, 0.0, "sc_rsi_50_cross_short"
 
+            # S51/S52: DEAD-CAT BOUNCE REJECTION (bounce that bai trong downtrend -> SHORT)
+            # Pattern BNCUSDT: downtrend -> bounce len -> bounce mat dong luc -> tiep tuc xuong.
+            # Dieu kien SHORT:
+            #   1. Prior downtrend: fast EMA bearish (EMA20 < EMA50) + macro <= 0
+            #   2. Bounce xay ra: price da tang >= 0.5% trong 15-30 nen (dead-cat len)
+            #   3. Bounce that bai: RSI bat bounce roi quay xuong (RSI peak 48-68, gio < peak-5)
+            #   4. Volume bounce yeu hon volume dump truoc do (bounce khong co conviction)
+            #   5. Price chua vuot EMA50 (con nam duoi EMA trung han)
+            # Dieu kien LONG (doi xung - bear-trap bounce rejection):
+            #   Uptrend -> pullback -> pullback mat dong luc -> tiep tuc len.
+            if _sc_dir == 0 and len(df_micro) >= 35:
+                _dc_ema20 = float(compute_ema(df_micro["close"], 20).iloc[-1])
+                _dc_ema50 = float(compute_ema(df_micro["close"], 50).iloc[-1])
+                _dc_rsi_s = compute_rsi(df_micro["close"], 14)
+                _dc_rsi_now  = float(_dc_rsi_s.iloc[-1])
+                _dc_rsi_peak = float(_dc_rsi_s.iloc[-15:-1].max())  # peak RSI trong 15 nen
+                _dc_rsi_declining = _dc_rsi_now < _dc_rsi_peak - 5  # RSI da quay xuong tu peak
+
+                # Bounce metric: gia da tang bao nhieu % tu day 20 nen qua
+                _dc_lo20 = float(df_micro["low"].iloc[-20:].min())
+                _dc_hi20 = float(df_micro["high"].iloc[-20:].max())
+                _dc_bounce_pct = (_sc_price - _dc_lo20) / _dc_lo20 if _dc_lo20 > 0 else 0.0
+                _dc_pullbk_pct = (_dc_hi20 - _sc_price) / _dc_hi20 if _dc_hi20 > 0 else 0.0
+
+                # Volume check: volume trung binh 5 nen cuoi < volume 10 nen truoc (bounce yeu)
+                _dc_vol_now = float(df_micro["volume"].iloc[-5:].mean()) if len(df_micro) >= 5 else 0
+                _dc_vol_pre = float(df_micro["volume"].iloc[-20:-5].mean()) if len(df_micro) >= 20 else 0
+                _dc_vol_fade = _dc_vol_pre > 0 and _dc_vol_now < _dc_vol_pre * 0.9  # vol giam
+
+                # SHORT: downtrend (fast bearish + macro <=0) + bounce len roi mat dong luc
+                _dc_prior_down = _dc_ema20 < _dc_ema50 and macro_trend <= 0
+                _dc_short_ok = (
+                    _dc_prior_down
+                    and _dc_bounce_pct >= 0.004    # bounce len >= 0.4% tu day
+                    and _dc_rsi_declining          # RSI da quay xuong tu peak bounce
+                    and 35 < _dc_rsi_now < 60      # RSI vung trung (khong oversold, khong mua manh)
+                    and _dc_vol_fade               # volume bounce yeu dan
+                    and _sc_price < _dc_ema50 * 1.002  # price chua vuot EMA50 (bounce yeu)
+                    and not _block_short_24h
+                    and _sc_pos > 0.25             # khong o day mut
+                )
+                # LONG: uptrend (fast bullish + macro >=0) + pullback roi mat dong luc
+                _dc_prior_up = _dc_ema20 > _dc_ema50 and macro_trend >= 0
+                _dc_long_ok = (
+                    _dc_prior_up
+                    and _dc_pullbk_pct >= 0.004    # pullback xuong >= 0.4% tu dinh
+                    and _dc_rsi_declining          # RSI tiep tuc giam trong pullback
+                    and 40 < _dc_rsi_now < 65      # RSI khong oversold
+                    and _dc_vol_fade               # volume pullback yeu
+                    and _sc_price > _dc_ema50 * 0.998  # price con tren EMA50 (pullback nong)
+                    and not _block_long_24h
+                    and _sc_pos < 0.75
+                )
+                if _dc_short_ok and _sc_vol_surge >= 0.6 and adx >= 12:
+                    _sc_dir, _sc_strength, _sc_tp, _sc_name = -1, 0.66, 0.0, "sc_dead_cat_reject_short"
+                elif _dc_long_ok and _sc_vol_surge >= 0.6 and adx >= 12:
+                    _sc_dir, _sc_strength, _sc_tp, _sc_name = 1, 0.66, 0.0, "sc_bear_trap_reject_long"
+
+            # S53/S54: TREND RESUMPTION AFTER CONSOLIDATION
+            # Sau khi trend manh, gia sideway 10-20 nen roi pha ra cung chieu -> tiep tuc trend.
+            # Khac S39 (macro continuation): S53 tap trung vao pattern sideway -> pha ra (breakout nho).
+            # Dieu kien: macro trend ro rang + 10 nen vua roi sideway (ATR nho, range hep)
+            #            + nen hien tai pha ra cung chieu voi volume tang.
+            if _sc_dir == 0 and len(df_micro) >= 25 and _atrm > 0:
+                _tr_hi10 = float(df_micro["high"].iloc[-12:-2].max())
+                _tr_lo10 = float(df_micro["low"].iloc[-12:-2].min())
+                _tr_range10 = (_tr_hi10 - _tr_lo10) / _atrm  # range 10 nen tinh bang ATR
+                _tr_sideway = _tr_range10 < 1.5              # range hep = dang consolidate
+                _tr_break_up   = _sc_price > _tr_hi10 and _sc_last_green
+                _tr_break_down = _sc_price < _tr_lo10 and _sc_last_red
+                _tr_vol_ok = _sc_vol_surge >= 1.2           # volume pha ra phai cao hon binh thuong
+                if (_tr_sideway and _tr_break_up and macro_trend >= 1 and scalp_trend >= 1
+                        and not _block_long_24h and 35 < rsi_now < 72 and _tr_vol_ok
+                        and _sc_pos < 0.82 and adx >= 14):
+                    _sc_dir, _sc_strength, _sc_tp, _sc_name = 1, 0.67, 0.0, "sc_trend_resume_long"
+                elif (_tr_sideway and _tr_break_down and macro_trend <= -1 and scalp_trend <= -1
+                        and not _block_short_24h and 28 < rsi_now < 65 and _tr_vol_ok
+                        and _sc_pos > 0.18 and adx >= 14):
+                    _sc_dir, _sc_strength, _sc_tp, _sc_name = -1, 0.67, 0.0, "sc_trend_resume_short"
+
             if _sc_dir == 0:
                 return False
 
@@ -3154,9 +3234,12 @@ class TradingBot:
                 _pump_exh_30 = (_pnow - _p30) / _p30 if _p30 > 0 else 0.0
             _can_pump_exh_short = (
                 _pump_exh_30 > 0.005        # +0.5% trong 30 nen = co pump xay ra truoc do
-                and _m2h_pos > 0.55         # price o nua tren cua 2h range (vung dinh)
+                and _m2h_pos > 0.65         # price phai o vung DINH THAT SU (>65%, ketat hon 55%)
                 and not _is_gradual_uptrend # khong phai uptrend lien tuc (do la continuation)
                 and not (macro_trend == 1 and macro_4h == 1)  # khong co macro bull manh
+                and _fast_tr_pre != 1       # fast EMA KHONG bullish = pump khong co nen tang
+                                            # Neu fast=+1 = EMA20>EMA50 = uptrend con manh
+                                            # -> KHONG flip short, tranh short giua uptrend dang chay
                 and len(signals) >= 2       # consensus >= 2
                 and not _scenario_entry     # scenario tu xu ly rieng ben duoi
             )
@@ -3199,9 +3282,12 @@ class TradingBot:
                 _dump_exh_30 = (_p30d - _pnowd) / _p30d if _p30d > 0 else 0.0
             _can_dump_exh_long = (
                 _dump_exh_30 > 0.005         # da dump > 0.5% trong 30 nen
-                and _m2h_pos < 0.45          # price o nua duoi cua 2h range (vung day)
+                and _m2h_pos < 0.35          # price phai o vung day THAT SU (<35%, ketat hon 45%)
                 and not _is_gradual_downtrend
                 and not (macro_trend == -1 and macro_4h == -1)
+                and _fast_tr_pre != -1       # fast EMA KHONG bearish = bounce co nen tang
+                                             # Neu fast=-1 = EMA20<EMA50 = xu huong van xuong
+                                             # -> bounce chi la dead-cat, KHONG flip sang LONG
                 and len(signals) >= 2
                 and not _scenario_entry
             )

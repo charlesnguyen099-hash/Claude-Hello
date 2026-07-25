@@ -2979,6 +2979,238 @@ class TradingBot:
                         and _sc_pos > 0.18 and adx >= 14):
                     _sc_dir, _sc_strength, _sc_tp, _sc_name = -1, 0.67, 0.0, "sc_trend_resume_short"
 
+            # ==============================================================
+            # S55/S56: POST-SPIKE EXHAUSTION SHORT / POST-DUMP EXHAUSTION LONG
+            # Single candle > 3 ATR, 2-5 nen sau price reversing + vol fade -> short.
+            # AWEUSDT pattern: spike 1 nen xong dao chieu ngay. Bot phai bat SHORT chu khong LONG.
+            if _sc_dir == 0 and len(df_micro) >= 10 and _atrm > 0:
+                _ps_window = df_micro.iloc[-8:-1]   # 7 nen gan nhat
+                _ps_spike_idx = -1
+                _ps_spike_dir = 0
+                for _pi in range(len(_ps_window)):
+                    _pc = _ps_window.iloc[_pi]
+                    _p_rng = float(_pc["high"]) - float(_pc["low"])
+                    _p_body = float(_pc["close"]) - float(_pc["open"])
+                    if _p_rng > 3.0 * _atrm:
+                        _ps_spike_idx = _pi
+                        _ps_spike_dir = 1 if _p_body > 0 else -1
+                if _ps_spike_idx >= 0:
+                    _ps_spike_c   = _ps_window.iloc[_ps_spike_idx]
+                    _ps_spike_hi  = float(_ps_spike_c["high"])
+                    _ps_spike_lo  = float(_ps_window["low"].min())
+                    _ps_spike_rng = _ps_spike_hi - _ps_spike_lo
+                    _ps_vol_spike = float(_ps_spike_c["volume"])
+                    _ps_vol_after = float(df_micro["volume"].iloc[-4:].mean()) if len(df_micro) >= 4 else 0
+                    _ps_vol_fade  = _ps_vol_after < _ps_vol_spike * 0.6   # vol sau spike < 60% vol spike
+                    _ps_pos       = (_sc_price - _ps_spike_lo) / _ps_spike_rng if _ps_spike_rng > 0 else 0.5
+                    # Pump spike + price dang giam tu dinh spike -> SHORT
+                    if (_ps_spike_dir == 1 and _ps_pos > 0.45 and _ps_vol_fade
+                            and _sc_last_red and not _block_short_24h
+                            and _fast_tr_pre != 1 and 30 < rsi_now < 72):
+                        _sc_dir, _sc_strength, _sc_tp, _sc_name = -1, 0.68, 0.0, "sc_post_spike_short"
+                    # Dump spike + price dang phuc hoi tu day spike -> LONG
+                    elif (_ps_spike_dir == -1 and _ps_pos < 0.55 and _ps_vol_fade
+                            and _sc_last_green and not _block_long_24h
+                            and _fast_tr_pre != -1 and 28 < rsi_now < 70):
+                        _sc_dir, _sc_strength, _sc_tp, _sc_name = 1, 0.68, 0.0, "sc_post_dump_long"
+
+            # S57/S58: RSI DIVERGENCE
+            # Price new high + RSI thap hon peak truoc -> bearish divergence -> SHORT.
+            # Price new low + RSI cao hon trough truoc -> bullish divergence -> LONG.
+            if _sc_dir == 0 and len(df_micro) >= 40:
+                _div_rsi  = compute_rsi(df_micro["close"], 14)
+                _div_rsi_now  = float(_div_rsi.iloc[-1])
+                _div_price_hi20 = float(df_micro["high"].iloc[-20:].max())
+                _div_price_hi40 = float(df_micro["high"].iloc[-40:-20].max())
+                _div_price_lo20 = float(df_micro["low"].iloc[-20:].min())
+                _div_price_lo40 = float(df_micro["low"].iloc[-40:-20].min())
+                _div_rsi_hi20   = float(_div_rsi.iloc[-20:].max())
+                _div_rsi_hi40   = float(_div_rsi.iloc[-40:-20].max())
+                _div_rsi_lo20   = float(_div_rsi.iloc[-20:].min())
+                _div_rsi_lo40   = float(_div_rsi.iloc[-40:-20].min())
+                # Bearish divergence: price new high, RSI lower high
+                _div_bear = (_div_price_hi20 > _div_price_hi40 * 1.001
+                             and _div_rsi_hi20 < _div_rsi_hi40 - 5
+                             and _div_rsi_now > 55 and _sc_pos > 0.65)
+                # Bullish divergence: price new low, RSI higher low
+                _div_bull = (_div_price_lo20 < _div_price_lo40 * 0.999
+                             and _div_rsi_lo20 > _div_rsi_lo40 + 5
+                             and _div_rsi_now < 45 and _sc_pos < 0.35)
+                if _div_bear and not _block_short_24h and _sc_vol_surge >= 0.5 and adx >= 12:
+                    _sc_dir, _sc_strength, _sc_tp, _sc_name = -1, 0.65, 0.0, "sc_rsi_bearish_div"
+                elif _div_bull and not _block_long_24h and _sc_vol_surge >= 0.5 and adx >= 12:
+                    _sc_dir, _sc_strength, _sc_tp, _sc_name = 1, 0.65, 0.0, "sc_rsi_bullish_div"
+
+            # S59/S60: EMA COMPRESSION BREAKOUT
+            # EMA20 va EMA50 sat nhau (< 0.3% cach nhau) = gia dang ngo -> pha ra = co hoi lon.
+            if _sc_dir == 0 and len(df_micro) >= 55:
+                _ec_ema20 = float(compute_ema(df_micro["close"], 20).iloc[-1])
+                _ec_ema50 = float(compute_ema(df_micro["close"], 50).iloc[-1])
+                _ec_gap   = abs(_ec_ema20 - _ec_ema50) / _ec_ema50 if _ec_ema50 > 0 else 1.0
+                _ec_compress = _ec_gap < 0.003   # EMA20/50 sat nhau < 0.3%
+                _ec_break_up   = _sc_price > max(_ec_ema20, _ec_ema50) * 1.001 and _sc_last_green
+                _ec_break_down = _sc_price < min(_ec_ema20, _ec_ema50) * 0.999 and _sc_last_red
+                if _ec_compress and _sc_vol_surge >= 1.3:
+                    if (_ec_break_up and macro_trend >= 0 and not _block_long_24h
+                            and 38 < rsi_now < 70 and _sc_pos < 0.80 and adx >= 14):
+                        _sc_dir, _sc_strength, _sc_tp, _sc_name = 1, 0.66, 0.0, "sc_ema_compress_breakup"
+                    elif (_ec_break_down and macro_trend <= 0 and not _block_short_24h
+                            and 30 < rsi_now < 62 and _sc_pos > 0.20 and adx >= 14):
+                        _sc_dir, _sc_strength, _sc_tp, _sc_name = -1, 0.66, 0.0, "sc_ema_compress_breakdn"
+
+            # S61/S62: CONSECUTIVE WICK REJECTION (repeated rejection at S/R)
+            # 3+ nen co upper/lower wick dai tai cung muc gia -> S/R manh.
+            # Wicks dai = buyers/sellers co mat nhung bi ap dao -> quay dau.
+            if _sc_dir == 0 and len(df_micro) >= 8 and _atrm > 0:
+                _wr_c5 = df_micro.iloc[-6:-1]
+                _wr_upper_wicks = [(float(r["high"]) - max(float(r["close"]), float(r["open"]))) / _atrm
+                                   for _, r in _wr_c5.iterrows()]
+                _wr_lower_wicks = [(min(float(r["close"]), float(r["open"])) - float(r["low"])) / _atrm
+                                   for _, r in _wr_c5.iterrows()]
+                _wr_upper_cnt = sum(1 for w in _wr_upper_wicks if w > 0.5)   # wick > 0.5 ATR
+                _wr_lower_cnt = sum(1 for w in _wr_lower_wicks if w > 0.5)
+                _wr_hi5 = float(_wr_c5["high"].max())
+                _wr_lo5 = float(_wr_c5["low"].min())
+                # Upper wick rejections: price repeatedly rejected at top -> SHORT
+                if (_wr_upper_cnt >= 3 and _sc_last_red
+                        and _sc_price > _wr_hi5 * 0.995  # price van gan dinh bi reject
+                        and not _block_short_24h and rsi_now > 45
+                        and _sc_vol_surge >= 0.5 and adx >= 10):
+                    _sc_dir, _sc_strength, _sc_tp, _sc_name = -1, 0.64, 0.0, "sc_wick_reject_short"
+                # Lower wick rejections: price repeatedly finds buyers at bottom -> LONG
+                elif (_wr_lower_cnt >= 3 and _sc_last_green
+                        and _sc_price < _wr_lo5 * 1.005  # price van gan day tim duoc nguoi mua
+                        and not _block_long_24h and rsi_now < 55
+                        and _sc_vol_surge >= 0.5 and adx >= 10):
+                    _sc_dir, _sc_strength, _sc_tp, _sc_name = 1, 0.64, 0.0, "sc_wick_reject_long"
+
+            # S63/S64: LIQUIDATION CASCADE REVERSAL
+            # Rapid 3-candle move > 4 ATR (cascade liquidation) + volume spike + dung lai ->
+            # khi cascades done, bounce manh nguoc lai (shorts/longs da bi thanh ly het).
+            if _sc_dir == 0 and len(df_micro) >= 10 and _atrm > 0:
+                _lc_c3     = df_micro.iloc[-4:-1]
+                _lc_move   = (float(_lc_c3["high"].max()) - float(_lc_c3["low"].min())) / _atrm
+                _lc_vol3   = float(_lc_c3["volume"].mean())
+                _lc_vol_bg = float(df_micro["volume"].iloc[-20:-4].mean()) if len(df_micro) >= 20 else _lc_vol3
+                _lc_vol_spike = _lc_vol3 > _lc_vol_bg * 2.5  # cascade = volume boc len 2.5x
+                _lc_price_dir = 1 if float(_lc_c3["close"].iloc[-1]) > float(_lc_c3["open"].iloc[0]) else -1
+                # Cascade xuong + gia on dinh (nen cuoi nho hon) -> LONG bounce
+                _lc_last_body_abs = abs(float(df_micro["close"].iloc[-2]) - float(df_micro["open"].iloc[-2])) / _atrm
+                _lc_stabilize = _lc_last_body_abs < 0.8  # nen cuoi nho = dang on dinh
+                if _lc_move >= 4.0 and _lc_vol_spike and _lc_stabilize:
+                    if (_lc_price_dir == -1 and not _block_long_24h
+                            and rsi_now < 38 and _sc_pos < 0.35 and _sc_last_green):
+                        _sc_dir, _sc_strength, _sc_tp, _sc_name = 1, 0.69, 0.0, "sc_liq_cascade_long"
+                    elif (_lc_price_dir == 1 and not _block_short_24h
+                            and rsi_now > 62 and _sc_pos > 0.65 and _sc_last_red):
+                        _sc_dir, _sc_strength, _sc_tp, _sc_name = -1, 0.69, 0.0, "sc_liq_cascade_short"
+
+            # S65/S66: EMA STACK RECOVERY / DETERIORATION
+            # EMA20 > EMA50 > EMA100 (bullish stack confirmed) + price > stack = tren da len manh.
+            # EMA20 < EMA50 < EMA100 (bearish stack confirmed) + price < stack = tren da xuong manh.
+            # Chi trade khi stack moi hinh thanh (< 15 nen truc tiep stack day du).
+            if _sc_dir == 0 and len(df_micro) >= 110:
+                _es_ema20  = compute_ema(df_micro["close"], 20)
+                _es_ema50  = compute_ema(df_micro["close"], 50)
+                _es_ema100 = compute_ema(df_micro["close"], 100)
+                _es_e20v   = float(_es_ema20.iloc[-1])
+                _es_e50v   = float(_es_ema50.iloc[-1])
+                _es_e100v  = float(_es_ema100.iloc[-1])
+                # Stack bullish: EMA20 > EMA50 > EMA100
+                _es_bull_stack = _es_e20v > _es_e50v > _es_e100v
+                _es_bear_stack = _es_e20v < _es_e50v < _es_e100v
+                # Kiem tra stack moi hinh thanh (8 nen truoc chua co)
+                _es_e20_8 = float(_es_ema20.iloc[-8])
+                _es_e50_8 = float(_es_ema50.iloc[-8])
+                _es_e100_8 = float(_es_ema100.iloc[-8])
+                _es_bull_new = _es_bull_stack and not (_es_e20_8 > _es_e50_8 > _es_e100_8)
+                _es_bear_new = _es_bear_stack and not (_es_e20_8 < _es_e50_8 < _es_e100_8)
+                if _es_bull_new and _sc_price > _es_e20v and not _block_long_24h:
+                    if _sc_vol_surge >= 1.0 and 38 < rsi_now < 72 and _sc_pos < 0.85 and adx >= 14:
+                        _sc_dir, _sc_strength, _sc_tp, _sc_name = 1, 0.68, 0.0, "sc_ema_stack_bull"
+                elif _es_bear_new and _sc_price < _es_e20v and not _block_short_24h:
+                    if _sc_vol_surge >= 1.0 and 28 < rsi_now < 62 and _sc_pos > 0.15 and adx >= 14:
+                        _sc_dir, _sc_strength, _sc_tp, _sc_name = -1, 0.68, 0.0, "sc_ema_stack_bear"
+
+            # S67/S68: FAILED BREAKDOWN / FAILED BREAKOUT (bull/bear trap)
+            # Price breaks key level nhung KHONG sustain -> reverse nhanh = bull/bear trap.
+            # Failed breakdown: pha day nhung dong lai tren day (nen co long lower wick) -> LONG.
+            # Failed breakout: pha dinh nhung dong lai duoi dinh (nen co long upper wick) -> SHORT.
+            if _sc_dir == 0 and len(df_micro) >= 20 and _atrm > 0:
+                _fb_lo20  = float(df_micro["low"].iloc[-20:-2].min())   # day 20 nen (tru 2 nen cuoi)
+                _fb_hi20  = float(df_micro["high"].iloc[-20:-2].max())  # dinh 20 nen
+                _fb_prev_l = float(df_micro["low"].iloc[-2])   # nen truoc
+                _fb_prev_h = float(df_micro["high"].iloc[-2])
+                _fb_cur_c  = float(df_micro["close"].iloc[-1])
+                _fb_cur_o  = float(df_micro["open"].iloc[-1])
+                # Failed breakdown: nen truoc pha day (low < _fb_lo20) nhung close tren day -> LONG
+                _fb_break_dn = _fb_prev_l < _fb_lo20 * 0.999  # pha day that su
+                _fb_recover  = _fb_cur_c > _fb_lo20 and _fb_cur_c > _fb_cur_o  # phuc hoi len tren day
+                # Failed breakout: nen truoc pha dinh nhung close duoi dinh -> SHORT
+                _fb_break_up = _fb_prev_h > _fb_hi20 * 1.001  # pha dinh that su
+                _fb_reject   = _fb_cur_c < _fb_hi20 and _fb_cur_c < _fb_cur_o  # bi day xuong duoi dinh
+                if (_fb_break_dn and _fb_recover and not _block_long_24h
+                        and rsi_now < 50 and _sc_pos < 0.45 and _sc_vol_surge >= 0.8 and adx >= 10):
+                    _sc_dir, _sc_strength, _sc_tp, _sc_name = 1, 0.67, 0.0, "sc_failed_breakdown_long"
+                elif (_fb_break_up and _fb_reject and not _block_short_24h
+                        and rsi_now > 50 and _sc_pos > 0.55 and _sc_vol_surge >= 0.8 and adx >= 10):
+                    _sc_dir, _sc_strength, _sc_tp, _sc_name = -1, 0.67, 0.0, "sc_failed_breakout_short"
+
+            # S69/S70: MOMENTUM DECELERATION (luc cang mat dan -> dao chieu)
+            # 3 nen lien tiep: body[0] > body[1] > body[2] = momentum giam dan
+            # Sau khi da di nhieu -> sap het nang luong -> trade nguoc chieu.
+            if _sc_dir == 0 and len(df_micro) >= 6 and _atrm > 0:
+                _md_b1 = float(df_micro["close"].iloc[-4]) - float(df_micro["open"].iloc[-4])
+                _md_b2 = float(df_micro["close"].iloc[-3]) - float(df_micro["open"].iloc[-3])
+                _md_b3 = float(df_micro["close"].iloc[-2]) - float(df_micro["open"].iloc[-2])
+                # 3 nen tang giam dan -> mat da tang -> SHORT
+                _md_bull_decel = (_md_b1 > _atrm * 0.3 and _md_b2 > 0 and _md_b3 > 0
+                                  and _md_b1 > _md_b2 > _md_b3)
+                # 3 nen giam giam dan -> mat da giam -> LONG
+                _md_bear_decel = (_md_b1 < -_atrm * 0.3 and _md_b2 < 0 and _md_b3 < 0
+                                  and _md_b1 < _md_b2 < _md_b3)
+                if (_md_bull_decel and not _block_short_24h
+                        and rsi_now > 58 and _sc_pos > 0.65 and _sc_vol_surge >= 0.5 and adx >= 12):
+                    _sc_dir, _sc_strength, _sc_tp, _sc_name = -1, 0.63, 0.0, "sc_momentum_decel_short"
+                elif (_md_bear_decel and not _block_long_24h
+                        and rsi_now < 42 and _sc_pos < 0.35 and _sc_vol_surge >= 0.5 and adx >= 12):
+                    _sc_dir, _sc_strength, _sc_tp, _sc_name = 1, 0.63, 0.0, "sc_momentum_decel_long"
+
+            # S71/S72: PRICE-VOLUME DIVERGENCE (accumulation / distribution detect)
+            # Volume tang nhung gia it bien dong = ai do dang tich luy/xa hang im lang.
+            if _sc_dir == 0 and len(df_micro) >= 20 and _atrm > 0:
+                _pvd_vol10  = float(df_micro["volume"].iloc[-10:].mean())
+                _pvd_vol_bg = float(df_micro["volume"].iloc[-30:-10].mean()) if len(df_micro) >= 30 else _pvd_vol10
+                _pvd_vol_up = _pvd_vol10 > _pvd_vol_bg * 1.3  # volume tang 30%
+                _pvd_rng10  = (float(df_micro["high"].iloc[-10:].max()) -
+                               float(df_micro["low"].iloc[-10:].min())) / _atrm
+                _pvd_tight  = _pvd_rng10 < 1.2  # range hep trong khi volume tang = tich luy/xa hang
+                _pvd_trend  = float(df_micro["close"].iloc[-1]) - float(df_micro["close"].iloc[-10])
+                # Volume cao + gia khong tang (khong ro uptrend) + macro bullish = tich luy -> LONG
+                if (_pvd_vol_up and _pvd_tight and macro_trend >= 1
+                        and _pvd_trend >= 0 and not _block_long_24h
+                        and 35 < rsi_now < 62 and _sc_pos < 0.65 and adx >= 10):
+                    _sc_dir, _sc_strength, _sc_tp, _sc_name = 1, 0.62, 0.0, "sc_accum_breakout_long"
+                elif (_pvd_vol_up and _pvd_tight and macro_trend <= -1
+                        and _pvd_trend <= 0 and not _block_short_24h
+                        and 38 < rsi_now < 65 and _sc_pos > 0.35 and adx >= 10):
+                    _sc_dir, _sc_strength, _sc_tp, _sc_name = -1, 0.62, 0.0, "sc_distrib_breakdn_short"
+
+            # S73/S74: ATR EXPANSION BREAKOUT (volatility squeeze -> explosion)
+            # ATR5 << ATR20: thi truong ngu -> bung no. Trade huong bung no khi xac nhan.
+            if _sc_dir == 0 and len(df_micro) >= 25 and _atrm > 0:
+                _ae_atr5  = float(compute_atr(df_micro, 5).iloc[-1])  if len(df_micro) >= 5  else _atrm
+                _ae_atr20 = float(compute_atr(df_micro, 20).iloc[-1]) if len(df_micro) >= 20 else _atrm
+                _ae_expanding = _ae_atr5 > _ae_atr20 * 1.5  # ATR hien tai gian ra manh
+                _ae_was_tight = _ae_atr20 < _atrm * 0.85    # truoc do ATR nho hon binh thuong
+                if _ae_expanding and _ae_was_tight and _sc_vol_surge >= 1.4:
+                    if (_sc_last_green and macro_trend >= 0 and not _block_long_24h
+                            and 35 < rsi_now < 72 and _sc_pos < 0.82 and adx >= 15):
+                        _sc_dir, _sc_strength, _sc_tp, _sc_name = 1, 0.68, 0.0, "sc_atr_expand_long"
+                    elif (_sc_last_red and macro_trend <= 0 and not _block_short_24h
+                            and 28 < rsi_now < 65 and _sc_pos > 0.18 and adx >= 15):
+                        _sc_dir, _sc_strength, _sc_tp, _sc_name = -1, 0.68, 0.0, "sc_atr_expand_short"
+
             if _sc_dir == 0:
                 return False
 
@@ -3927,6 +4159,107 @@ class TradingBot:
                 return _block(
                     f"skip SHORT (universal) - 3c dump {_ub_run_dn:.1f}ATR last={_ub_last_r:.1f}ATR (du day)"
                 )
+
+        # --- UNIVERSAL BLOCK C: SINGLE-CANDLE SPIKE (bat AWEUSDT pattern) ---
+        # BLOCK B chi kiem 3 nen body lien tiep. Neu spike xay ra 1 nen > 3 ATR
+        # trong 8 nen gan nhat va gia hien tai van o trong vung spike -> du dinh/du day.
+        # Truong hop dien hinh: spike xong, price retrace 1-2 nen, bot vao cung chieu spike.
+        _trade_dir = best.direction
+        if not _high_conviction and _atrm > 0 and len(df_micro) >= 10:
+            _ubc_window = df_micro.iloc[-9:-1]   # 8 nen gan nhat (tru nen hien tai)
+            for _ubc_i in range(len(_ubc_window)):
+                _ubc_c   = _ubc_window.iloc[_ubc_i]
+                _ubc_rng = float(_ubc_c["high"]) - float(_ubc_c["low"])
+                if _ubc_rng > 3.0 * _atrm:
+                    _ubc_hi = float(_ubc_c["high"])
+                    _ubc_lo = float(_ubc_c["low"])
+                    _ubc_cur = float(df_micro["close"].iloc[-1])
+                    _ubc_pos = (_ubc_cur - _ubc_lo) / _ubc_rng if _ubc_rng > 0 else 0.5
+                    # Long khi gia van o top 55% cua spike range (bao gom retrace) -> du dinh spike
+                    if _trade_dir == 1 and _ubc_pos > 0.55:
+                        _ub_full_bull_c = (_fast_tr_pre == 1 and scalp_trend == 1 and macro_trend >= 1)
+                        if not _ub_full_bull_c:
+                            return _block(
+                                f"skip LONG - spike {_ubc_rng/_atrm:.1f}ATR (nen {8-_ubc_i} truoc) "
+                                f"price tai {_ubc_pos:.0%} spike zone (du dinh spike don doc)"
+                            )
+                    # Short khi gia van o bottom 45% cua spike range -> du day spike
+                    if _trade_dir == -1 and _ubc_pos < 0.45:
+                        _ub_full_bear_c = (_fast_tr_pre == -1 and scalp_trend == -1 and macro_trend <= -1)
+                        if not _ub_full_bear_c:
+                            return _block(
+                                f"skip SHORT - dump spike {_ubc_rng/_atrm:.1f}ATR (nen {8-_ubc_i} truoc) "
+                                f"price tai {_ubc_pos:.0%} spike zone (du day spike don doc)"
+                            )
+                    break   # chi kiem spike lon nhat / dau tien
+
+        # --- UNIVERSAL BLOCK D: EMA OVER-EXTENSION (chase qua xa EMA) ---
+        # Price > 4% tren EMA20 khi LONG, hoac > 4% duoi EMA20 khi SHORT ->
+        # da di qua xa, mean-revert kha nang cao, khong co do tro san.
+        if not _high_conviction and len(df_micro) >= 25:
+            _ubd_ema20 = float(compute_ema(df_micro["close"], 20).iloc[-1])
+            _ubd_cur   = float(df_micro["close"].iloc[-1])
+            if _ubd_ema20 > 0:
+                _ubd_ext = (_ubd_cur - _ubd_ema20) / _ubd_ema20
+                if _trade_dir == 1 and _ubd_ext > 0.04:
+                    return _block(
+                        f"skip LONG - price {_ubd_ext*100:.1f}% tren EMA20 (qua xa, du dinh xa EMA)"
+                    )
+                if _trade_dir == -1 and _ubd_ext < -0.04:
+                    return _block(
+                        f"skip SHORT - price {abs(_ubd_ext)*100:.1f}% duoi EMA20 (qua xa, du day xa EMA)"
+                    )
+
+        # --- UNIVERSAL BLOCK E: RSI EXTREME AT ENTRY ---
+        # RSI > 78 khi LONG (overbought extreme), RSI < 22 khi SHORT (oversold extreme).
+        # Vung nay mean-revert manh, ty le thanh cong rat thap.
+        if not _high_conviction:
+            _ube_rsi = rsi_now   # rsi_now da duoc tinh o tren
+            if _trade_dir == 1 and _ube_rsi > 78:
+                return _block(f"skip LONG - RSI={_ube_rsi:.0f} > 78 (overbought extreme, du dinh RSI)")
+            if _trade_dir == -1 and _ube_rsi < 22:
+                return _block(f"skip SHORT - RSI={_ube_rsi:.0f} < 22 (oversold extreme, du day RSI)")
+
+        # --- UNIVERSAL BLOCK F: VOLUME SPIKE REVERSAL INDICATOR ---
+        # Spike candle trong 3 nen vua qua co volume >> binh thuong + nen hien tai dao chieu.
+        # Dau hieu: ai do xa hang (selling into pump) hoac mua vao (buying into dump) = reversal.
+        if not _high_conviction and len(df_micro) >= 10 and _atrm > 0:
+            _ubf_c3_vols = df_micro["volume"].iloc[-4:-1].values   # 3 nen truoc
+            _ubf_bg_vol  = float(df_micro["volume"].iloc[-20:-4].mean()) if len(df_micro) >= 20 else 1.0
+            _ubf_max_vol_idx = int(_ubf_c3_vols.argmax())
+            _ubf_max_vol = float(_ubf_c3_vols[_ubf_max_vol_idx])
+            if _ubf_bg_vol > 0 and _ubf_max_vol > _ubf_bg_vol * 3.0:   # volume spike > 3x
+                _ubf_spike_c  = df_micro.iloc[-4 + _ubf_max_vol_idx]
+                _ubf_spike_body = float(_ubf_spike_c["close"]) - float(_ubf_spike_c["open"])
+                _ubf_cur_body   = float(df_micro["close"].iloc[-2]) - float(df_micro["open"].iloc[-2])
+                # Spike candle tang manh, nen tiep theo dao chieu: ai do dang xa hang
+                if _ubf_spike_body > _atrm * 1.0 and _ubf_cur_body < -_atrm * 0.3:
+                    if _trade_dir == 1:  # tiep tuc LONG sau khi da co dau hieu dao chieu -> block
+                        return _block(
+                            f"skip LONG - vol spike {_ubf_max_vol/_ubf_bg_vol:.1f}x + reversal candle "
+                            f"(xa hang trong pump, du dinh vol spike)"
+                        )
+                # Spike candle giam manh, nen tiep theo dao chieu: ai do dang mua vao
+                if _ubf_spike_body < -_atrm * 1.0 and _ubf_cur_body > _atrm * 0.3:
+                    if _trade_dir == -1:  # tiep tuc SHORT sau khi co dau hieu reversal -> block
+                        return _block(
+                            f"skip SHORT - vol spike {_ubf_max_vol/_ubf_bg_vol:.1f}x + reversal candle "
+                            f"(mua vao trong dump, du day vol spike)"
+                        )
+
+        # --- UNIVERSAL BLOCK G: CHOPPY RANGE NO-TRADE ZONE ---
+        # 20 nen gia dao dong qua lai khong co huong ro (range < 1.5 ATR) + ADX thap ->
+        # moi signal trong vung nay deu rat de bi stop out boi range chop.
+        if not _high_conviction and len(df_micro) >= 22 and _atrm > 0:
+            _ubg_rng = (float(df_micro["high"].iloc[-20:].max()) -
+                        float(df_micro["low"].iloc[-20:].min())) / _atrm
+            if _ubg_rng < 1.5 and adx < 18:   # range rat hep + ADX yeu = choppy
+                _ubg_full_trend = (abs(_fast_tr_pre) + abs(scalp_trend) + abs(macro_trend)) >= 3
+                if not _ubg_full_trend:
+                    return _block(
+                        f"skip - choppy no-trend zone: 20c range={_ubg_rng:.1f}ATR ADX={adx:.0f} "
+                        f"(khong co trend ro, de bi chop ra)"
+                    )
 
         # ======================================================================
         # |  TRUE-DIRECTION GATE - chi trade khi trend RO + DUNG chieu           |

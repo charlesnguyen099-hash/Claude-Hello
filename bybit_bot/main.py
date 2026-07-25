@@ -3340,8 +3340,10 @@ class TradingBot:
                 _lr_e = df_micro["low"].iloc[-8:].min();   _lp_e = df_micro["low"].iloc[-15:-8].min()
                 if   _hr_e > _hp_e and _lr_e > _lp_e: _hh_ll_early = 1
                 elif _hr_e < _hp_e and _lr_e < _lp_e: _hh_ll_early = -1
-            if adx < 15 and _hh_ll_early == 0 and _vrat_early < 1.5:
-                return _block(f"skip - ranging market ADX={adx:.0f}<15 no-structure vol={_vrat_early:.2f}x")
+            # Ranging block: cần TẤT CẢ 3 điều kiện cùng lúc (tránh block trend mới hình thành)
+            # ADX rất thấp (<12) + hoàn toàn không có structure + volume collapse nhẹ (<1.2x)
+            if adx < 12 and _hh_ll_early == 0 and _vrat_early < 1.2:
+                return _block(f"skip - ranging market ADX={adx:.0f}<12 no-structure vol={_vrat_early:.2f}x")
 
             # --- ABSOLUTE BLOCK 2: RSI EXTREME 15/85 ---
             if not math.isnan(rsi_now):
@@ -3388,10 +3390,11 @@ class TradingBot:
                 else:                _s_adx = -5   # ADX 8-15: choppy penalty
             else:                    _s_adx = 0
 
-            # S5: Volume direction
-            if _vwt_dir == _T and _vwt_str >= 0.4:    _s_vol_dir = 8
-            elif _vwt_dir == -_T and _vwt_str >= 0.4: _s_vol_dir = -10
-            else:                                       _s_vol_dir = 0
+            # S5: Volume direction — require current vol >= 50% avg to avoid stale OBV bonus
+            _vol_dir_active = _vrat_early >= 0.50
+            if _vwt_dir == _T and _vwt_str >= 0.4 and _vol_dir_active:    _s_vol_dir = 8
+            elif _vwt_dir == -_T and _vwt_str >= 0.4:                     _s_vol_dir = -10
+            else:                                                            _s_vol_dir = 0
 
             # S6: RSI zone penalty/bonus (30/70 range)
             if not math.isnan(rsi_now):
@@ -3622,8 +3625,9 @@ class TradingBot:
             _stoch_pts = 0; _stoch_cat = "neutral"
             try:
                 if len(df_micro) >= 17:
-                    _sk_s = df_micro["close"].rolling(14).apply(
-                        lambda x: 100 * (x.iloc[-1] - x.min()) / max(x.max() - x.min(), 1e-12), raw=False)
+                    _roll_hi = df_micro["high"].rolling(14).max()
+                    _roll_lo = df_micro["low"].rolling(14).min()
+                    _sk_s = 100 * (df_micro["close"] - _roll_lo) / (_roll_hi - _roll_lo + 1e-12)
                     _sd_s = _sk_s.rolling(3).mean()
                     _sk = float(_sk_s.iloc[-1]); _sd = float(_sd_s.iloc[-1])
                     _sk_p = float(_sk_s.iloc[-2]) if len(_sk_s) >= 2 else float("nan")

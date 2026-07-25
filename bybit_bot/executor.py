@@ -386,7 +386,7 @@ class Executor:
             saved_tp    = self._tp_price.get(symbol, 0.0)
             exchange_sl = _fval(pos, "stopLoss")
             exchange_tp = _fval(pos, "takeProfit")
-            _pos_lev    = max(10.0, _fval(pos, "leverage", 10.0))
+            _pos_lev    = max(1.0, _fval(pos, "leverage", 10.0))
 
             # Fallback SL/TP neu ca saved lan exchange deu khong co (restart + SL mat)
             # CLAMP liq-safe: 5:1 tho o leverage cao (vd 100x -> SL dist 0.6% > liq 0.45%)

@@ -156,15 +156,16 @@ def _rsi_zone(rsi: float, df=None) -> str:
     if rsi < 40: return "near_oversold"
     if rsi > 70: return "overbought"
     if rsi > 60: return "near_overbought"
-    # Divergence detection: price vs RSI trong 15 nen
-    if df is not None and len(df) >= 15:
+    # Divergence detection: price vs RSI trong 20 nen — yeu cau bien dong gia >= 1%
+    # va RSI phai o vung ho tro huong divergence (khong chi neutral)
+    if df is not None and len(df) >= 20:
         _price_now = float(df["close"].iloc[-1])
-        _price_15  = float(df["close"].iloc[-15])
-        _chg = (_price_now - _price_15) / max(abs(_price_15), 1e-12)
-        # Bullish div: price giam nhung RSI khong giam (dang o neutral/above oversold)
-        if _chg < -0.003 and rsi > 40: return "bull_divergence"
-        # Bearish div: price tang nhung RSI khong tang (dang o neutral/below overbought)
-        if _chg > 0.003 and rsi < 60: return "bear_divergence"
+        _price_20  = float(df["close"].iloc[-20])
+        _chg = (_price_now - _price_20) / max(abs(_price_20), 1e-12)
+        # Bullish div: price giam >= 1% nhung RSI van >= 45 (RSI khong confirm suy yeu)
+        if _chg < -0.010 and 45 <= rsi <= 60: return "bull_divergence"
+        # Bearish div: price tang >= 1% nhung RSI van <= 55 (RSI khong confirm suc manh)
+        if _chg > 0.010 and 40 <= rsi <= 55: return "bear_divergence"
     return "neutral"
 
 
@@ -202,7 +203,12 @@ def _detect_divergence_50k(price_series, indicator_series, lookback=30, tol=0.00
         base_p = max(abs(p_p_low), 1e-12); base_ph = max(abs(p_p_high), 1e-12)
         base_il = max(abs(i_p_low),  1e-12); base_ih = max(abs(i_p_high), 1e-12)
         # Regular bull: price LL + indicator HL (classic oversold div)
-        result["regular_bull"] = (p_r_low  < p_p_low  * (1 - tol)) and (i_r_low  > i_p_low  * (1 + tol) or (i_p_low < 0 and i_r_low > i_p_low + abs(i_p_low) * tol))
+        # For negative indicator values, use absolute-distance comparison (not ratio — ratio inverts sign)
+        if i_p_low >= 0:
+            _reg_bull_ind = i_r_low > i_p_low * (1 + tol)
+        else:
+            _reg_bull_ind = i_r_low > i_p_low + abs(i_p_low) * tol  # i_r_low less negative than i_p_low
+        result["regular_bull"] = (p_r_low < p_p_low * (1 - tol)) and _reg_bull_ind
         # Regular bear: price HH + indicator LH
         result["regular_bear"] = (p_r_high > p_p_high * (1 + tol)) and (i_r_high < i_p_high * (1 - tol))
         # Hidden bull: price HL + indicator LL (#1 signal in 95-98% tier)
@@ -285,7 +291,7 @@ def _stoch_state_50k(k, d, k_prev=None, d_prev=None):
     if k < 20:                return "oversold"
     if k > 80:                return "overbought"
     if 20 <= k <= 50:         return "rising_midzone"
-    if 50 <  k <= 80:         return "falling_midzone"
+    if 50 <  k <= 80:         return "upper_midzone"   # K=50-80 trong uptrend = embedded strength
     return "neutral"
 
 
@@ -357,9 +363,9 @@ class TradingBot:
         logger.info("Bybit Auto Trading Bot starting...")
         # === VERSION BANNER - de XAC NHAN dang chay code MOI (khong phai code cu) ===
         # Neu ban KHONG thay dong nay khi khoi dong -> bot dang chay code CU, PHAI restart.
-        logger.info(">>> SCENARIO GATE v5 : 10,000 HQ Scenario Matcher — 90%+ priority tier <<<")
-        logger.info(">>> 10-factor confluence scoring (0-100) — trade khi score>=65 — Excel-aligned <<<")
-        print(">>> [SCENARIO GATE v5] 10,000 HQ Scenario Matcher ACTIVE — 90%+ priority, 70-90% standard <<<", flush=True)
+        logger.info(">>> SCENARIO GATE v6+ : 50K HQ Scenario Matcher — 3-tier TP, dynamic exit <<<")
+        logger.info(">>> 10-factor confluence scoring (0-100) — trade khi score>=50 — Excel-aligned <<<")
+        print(">>> [SCENARIO GATE v6+] 50K HQ Scenario Matcher ACTIVE — 95-98% / 90-95% / 85-90% tiers <<<", flush=True)
         logger.info(f"Mode: {'TESTNET' if config.TESTNET else 'MAINNET (LIVE)'}")
         logger.info(f"TP range: {config.TP_ROI_MIN*100:.0f}%-{config.TP_ROI_MAX*100:.0f}% ROI | SL={config.SL_TP_RATIO:.0f}xTP")
         logger.info(f"Scan budget per tick: TOP{config.TOP20_COUNT}={config.SCAN_BUDGET_TOP20_SEC}s + REST={config.SCAN_BUDGET_REST_SEC}s")
@@ -995,8 +1001,10 @@ class TradingBot:
         lower_wick = (min(o, c) - l) / rngc
         upper_wick = (h - max(o, c)) / rngc
         # Dau hieu dao chieu tai cuc doan (de FLIP thay vi chi block)
-        reject = (body < 0) or (upper_wick > 0.5) or (rsi_now > 68)
-        bounce = (body > 0) or (lower_wick > 0.5) or (rsi_now < 32)
+        # body phai co nghia (>= 20% range cua nen) de tranh doji nho kich hoat flip
+        _body_meaningful = abs(body) / rngc >= 0.20
+        reject = (_body_meaningful and body < 0) or (upper_wick > 0.5) or (rsi_now > 68)
+        bounce = (_body_meaningful and body > 0) or (lower_wick > 0.5) or (rsi_now < 32)
         # QUY TAC: KHONG trade trong 25% CUC DOAN (dinh/day) - "dinh hoac gan dinh, day hoac gan day".
         # Trend vao lenh o vung giua (25-75%): long tren pullback, short tren bounce - entry dep hon,
         # khong bao gio mua sat/gan dinh / ban sat/gan day. Tai cuc doan: flip neu dao chieu, else skip.
@@ -1575,6 +1583,7 @@ class TradingBot:
                 and _emg_low_recent >= _emg_low_prior
                 and _emg_grn >= 7
                 and not _spike_pump_60c
+                and not _spike_dump_60c   # tranh dead-cat bounce sau dump spike
             )
             _emerging_downtrend = (
                 _ppd_hi_age >= 8
@@ -3441,10 +3450,11 @@ class TradingBot:
                 else:                _s_adx = -5   # ADX 8-15: choppy penalty
             else:                    _s_adx = 0
 
-            # S5: Volume direction — require current vol >= 50% avg to avoid stale OBV bonus
+            # S5: Volume direction — require current vol >= 50% avg for BOTH bonus and penalty
+            # to avoid stale/noise OBV signals in low-volume consolidation
             _vol_dir_active = _vrat_early >= 0.50
             if _vwt_dir == _T and _vwt_str >= 0.4 and _vol_dir_active:    _s_vol_dir = 8
-            elif _vwt_dir == -_T and _vwt_str >= 0.4:                     _s_vol_dir = -10
+            elif _vwt_dir == -_T and _vwt_str >= 0.4 and _vol_dir_active: _s_vol_dir = -10
             else:                                                            _s_vol_dir = 0
 
             # S6: RSI zone penalty/bonus (30/70 range)
@@ -3584,14 +3594,14 @@ class TradingBot:
             # --- SIGNAL 2: MACD STATE (22 pts max) + Hidden Divergence bonus ---
             _macd_cat = _macd_state(_macd_hist, _prev_hist)
             _MACD_MAP = {
-                "bull_divergence":  (1,  22),
-                "bear_divergence":  (-1, 22),
-                "bull_crossover":   (1,  20),
-                "bear_crossover":   (-1, 20),
-                "hist_up":          (1,  18),
+                "bull_crossover":   (1,  22),   # zero-line cross = strongest
+                "bear_crossover":   (-1, 22),
+                "hist_up":          (1,  18),   # above 0, improving momentum
                 "hist_down":        (-1, 18),
-                "above0_bull":      (1,  14),
-                "below0_bear":      (-1, 14),
+                "bull_divergence":  (1,  14),   # below 0 but improving — weaker than above-zero hist_up
+                "bear_divergence":  (-1, 14),
+                "above0_bull":      (1,  12),
+                "below0_bear":      (-1, 12),
                 "neutral":          (0,  0),
             }
             _macd_dir_v, _macd_base = _MACD_MAP.get(_macd_cat, (0, 0))
@@ -3661,10 +3671,11 @@ class TradingBot:
                 _vol_cat = "normal"
                 _vol_pts = 4
 
-            # --- SIGNAL 5: BOS / CHoCH (12 pts max) — CHoCH boosted per 50K ---
-            # CHoCH: 10087x in 50K, 757/3650=21% in 95-98% tier
+            # --- SIGNAL 5: BOS / CHoCH (12 pts max) — directional scoring ---
+            # BOS confirms trade direction (+12). CHoCH = structure flipping AGAINST direction = penalty.
+            # 50K: CHoCH 757/3650=21% in 95-98% WHEN it matches direction; opposing CHoCH = stop signal.
             if _hh_ll == _T:    _bos_cat = "bos";     _bos_pts = 12
-            elif _hh_ll == -_T: _bos_cat = "choch";   _bos_pts = 10  # boosted 8->10
+            elif _hh_ll == -_T: _bos_cat = "choch";   _bos_pts = -8  # structure flipping against us
             else:               _bos_cat = "neutral";  _bos_pts = 3
 
             # --- SIGNAL 6: CANDLE PATTERN (8 pts max) — expanded with 50K patterns ---
@@ -3690,8 +3701,8 @@ class TradingBot:
                         "embedded_overbought_cross": (-1,  8),  # 429/3650=12%
                         "oversold":                  (1,   5),
                         "overbought":                (-1,  5),
-                        "rising_midzone":            (1,   3),
-                        "falling_midzone":           (-1,  3),
+                        "rising_midzone":            (1,   3),   # K=20-50: building momentum
+                        "upper_midzone":             (0,   0),   # K=50-80: embedded strength, neutral (not bearish)
                         "neutral":                   (0,   0),
                     }
                     _stoch_dir_v, _stoch_base = _STOCH_MAP.get(_stoch_cat, (0, 0))

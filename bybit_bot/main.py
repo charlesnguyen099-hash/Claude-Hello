@@ -260,11 +260,12 @@ def _macd_state_50k(df, lookback: int = 40):
     if hist_prev >= 0 > hist_now:
         return "bear_crossover", -1
 
-    # 4. Histogram momentum turn: hist dang tang tu -3 den 0 / giam tu 3 den 0
+    # 4. Histogram momentum turn
     if hist_now < 0 and hist_now > hist_prev3:
         return "below0_forming_bull", 1   # building bullish below zero
     if hist_now > 0 and hist_now < hist_prev3:
-        return "above0_forming_bear", -1  # weakening above zero
+        return "above0_forming_bear", 0   # MACD still above 0 = uptrend intact, just consolidating
+                                           # direction=0 (neutral) NOT -1: normal pullback in uptrend
 
     # 5. Expanding momentum
     if hist_now > 0 and hist_now > hist_prev:
@@ -301,12 +302,14 @@ def _rsi_state_50k(rsi: float, df=None, lookback: int = 30):
                 if div["regular_bear"]:  return "regular_bear_div", -1
 
     # Zone-based classification
+    # RSI 45-60 = momentum zone (neutral, not penalized for either direction)
+    # RSI 55-65 in uptrend is HEALTHY momentum, NOT a warning sign
     if rsi < 25:    return "extreme_oversold", 1
     if rsi < 35:    return "oversold", 1
     if rsi < 45:    return "near_oversold", 1
-    if rsi > 75:    return "extreme_overbought", -1
-    if rsi > 65:    return "overbought", -1
-    if rsi > 55:    return "near_overbought", -1
+    if rsi > 78:    return "extreme_overbought", -1   # raised from 75
+    if rsi > 68:    return "overbought", -1            # raised from 65
+    if rsi > 60:    return "near_overbought", -1       # raised from 55, tighter zone
     return "neutral", 0
 
 
@@ -418,20 +421,20 @@ def _session_category():
         # London-NY Overlap: 13:00-17:00 UTC (31% of 50K top-tier trades)
         if 13 <= h < 17:
             return "london_ny_overlap", 12
-        # NY Open: 13:00-15:00 UTC (highest volatility)
+        # NY Open: 12:00-13:00 UTC (highest volatility)
         if 12 <= h < 13:
-            return "ny_premarket", 9
+            return "ny_premarket", 10
         # London Open: 08:00-12:00 UTC
         if 8 <= h < 12:
-            return "london_open", 8
+            return "london_open", 9
         # NY Regular: 17:00-21:00 UTC
         if 17 <= h < 21:
-            return "ny_regular", 6
-        # Asian: 00:00-08:00 UTC
+            return "ny_regular", 8
+        # Asian: 00:00-08:00 UTC - still valid trades, raised from 4
         if 0 <= h < 8:
-            return "asian", 4
+            return "asian", 7
         # Off-hours: 21:00-00:00 UTC
-        return "off_hours", 2
+        return "off_hours", 6
     except Exception:
         return "unknown", 5
 
@@ -3505,9 +3508,9 @@ class TradingBot:
                 else:           _s_adx = -4
             else:               _s_adx = 0
 
-            # P5: Volume direction (weight-tracked)
-            if _vwt_dir == _T and _vwt_str >= 0.4:    _s_vol_dir = 7
-            elif _vwt_dir == -_T and _vwt_str >= 0.4: _s_vol_dir = -8
+            # P5: Volume direction (weight-tracked) - lowered threshold 0.4->0.3
+            if _vwt_dir == _T and _vwt_str >= 0.3:    _s_vol_dir = 7
+            elif _vwt_dir == -_T and _vwt_str >= 0.3: _s_vol_dir = -8
             else:                                       _s_vol_dir = 0
 
             # P6: Extension penalty (EMA21 distance)
@@ -3581,7 +3584,7 @@ class TradingBot:
                 "bull_crossover":      (1,  20),  # signal line cross
                 "bear_crossover":      (-1, 20),
                 "below0_forming_bull": (1,  18),  # building momentum below 0
-                "above0_forming_bear": (-1, 18),
+                "above0_forming_bear": (0,   0),  # MACD above 0 weakening = neutral (normal consolidation)
                 "hist_expanding_bull": (1,  15),  # expanding momentum
                 "hist_expanding_bear": (-1, 15),
                 "above0_bull":         (1,  10),
@@ -3589,9 +3592,14 @@ class TradingBot:
                 "neutral":             (0,   0),
             }
             _macd_dir_v, _macd_base = _MACD_MAP_50K.get(_macd_cat, (0, 0))
-            if _macd_dir_v == _T:    _macd_pts = _macd_base
-            elif _macd_dir_v == -_T: _macd_pts = -10
-            else:                    _macd_pts = 0
+            if _macd_dir_v == _T:        _macd_pts = _macd_base
+            elif _macd_dir_v == 0:       _macd_pts = 0    # neutral (above0_forming_bear = normal pullback)
+            elif _macd_cat in ("above0_forming_bear", "hist_expanding_bear") and _T == 1:
+                _macd_pts = 0   # MACD above 0 weakening in uptrend = normal consolidation, not penalty
+            elif _macd_cat in ("below0_forming_bull", "hist_expanding_bull") and _T == -1:
+                _macd_pts = 0   # MACD below 0 strengthening in downtrend = normal bounce, not penalty
+            else:
+                _macd_pts = -10  # clear opposing signal (crossover, hidden/regular div against us)
 
             # --- SIG 2: EMA STATE (max 25 pts) ---
             _ema_cat, _ema_dir = _ema_state_50k(df_micro)
@@ -3636,13 +3644,10 @@ class TradingBot:
             }
             _rsi_dir_v, _rsi_base = _RSI_MAP_50K.get(_rsi_cat, (0, 0))
             if _rsi_dir_v == _T:    _rsi_pts = _rsi_base
-            elif _rsi_dir_v == -_T: _rsi_pts = -7
+            elif _rsi_dir_v == -_T: _rsi_pts = -4   # reduced from -7: RSI zone <= MACD in severity
             else:                   _rsi_pts = 0
-
-            # Penalty: LONG within overbought zone, SHORT within oversold zone
-            if not math.isnan(rsi_now):
-                if _T == 1 and rsi_now > 65:    _rsi_pts = min(_rsi_pts, -4)
-                if _T == -1 and rsi_now < 35:   _rsi_pts = min(_rsi_pts, -4)
+            # NOTE: no extra RSI penalty - the zone classification already handles it.
+            # Overwriting hidden_div (22pts) with a penalty would destroy the #1 50K signal.
 
             # --- SIG 4: VOLUME (max 20 pts) - spike>2x is #1 volume signal ---
             if _vrat >= 3.0:
@@ -3663,8 +3668,8 @@ class TradingBot:
 
             # --- SIG 5: BOS / CHoCH market structure (max 15 pts) ---
             if _hh_ll == _T:    _bos_cat = "bos";     _bos_pts = 15
-            elif _hh_ll == -_T: _bos_cat = "choch";   _bos_pts = 9   # CHoCH reversal
-            else:               _bos_cat = "neutral";  _bos_pts = 2
+            elif _hh_ll == -_T: _bos_cat = "choch";   _bos_pts = 6   # CHoCH reversal
+            else:               _bos_cat = "neutral";  _bos_pts = 5   # raised from 2
 
             # --- SIG 6: SESSION TIMING (max 12 pts) ---
             _sess_cat, _sess_pts = _session_category()
@@ -3744,8 +3749,11 @@ class TradingBot:
             # 85-90%: single div or full stack momentum
             _tier_8590 = (_macd_div or _rsi_div or _full_stack or _vol_spike)
 
-            # Threshold: 55 (higher than v6 but signal classifier is much richer)
-            _threshold = 55
+            # Threshold: 48 - realistic baseline after scoring analysis:
+            # Typical uptrend (MACD consolidating, RSI 50-60, normal vol, Asian session):
+            # signal ~37-45 pts + pre_clamped 20 = 57-65. Threshold 48 leaves buffer for
+            # weaker-signal cases while still blocking noisy/low-conviction setups.
+            _threshold = 48
             if _score < _threshold:
                 logger.info(
                     f"{symbol}: GATE v7 skip - score={_score}/100 < {_threshold} | "

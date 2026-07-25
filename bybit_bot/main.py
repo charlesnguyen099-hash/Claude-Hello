@@ -597,7 +597,8 @@ class TradingBot:
                         if equity <= 0:
                             return True
                 except Exception as e:
-                    logger.warning(f"Error processing {symbol}: {str(e).encode('ascii','replace').decode()}")
+                    import traceback as _tb
+                    logger.warning(f"Error processing {symbol}: {str(e).encode('ascii','replace').decode()}\n{_tb.format_exc()}")
             logger.debug(f"[TICK] {label}: analyzed {_analyzed}/{len(symbols)} coins, traded {_traded}")
             return False
 
@@ -2454,6 +2455,8 @@ class TradingBot:
             if not df_micro.empty and len(df_micro) >= 120:
                 _sc_close  = df_micro["close"]
                 _sc_price  = _range_live_price if _range_live_price > 0 else _sc_close.iloc[-1]
+                # _atrm: ATR cho tinh toan trong scenario engine (S53-S84 dung de scale move/wick)
+                _atrm = float(compute_atr(df_micro, 14).iloc[-1]) if len(df_micro) >= 14 else (_atr_for_sl if _atr_for_sl > 0 else 0.001)
                 _sc_last_green = _sc_close.iloc[-1] > df_micro["open"].iloc[-1]
                 _sc_last_red   = _sc_close.iloc[-1] < df_micro["open"].iloc[-1]
                 _sc_hi_prior = df_micro["high"].iloc[-120:-3].max()   # range TRUOC 3 nen: break phai MOI

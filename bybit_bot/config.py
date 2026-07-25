@@ -126,7 +126,7 @@ MAX_CONCURRENT_POSITIONS = 0  # 0 = khong gioi han so lenh (potential + free-mar
 # CHI bat path TREND-FOLLOWING (chat nhat). Tat cac path nhieu/rui ro cao:
 ENABLE_BREAKOUT_PATH = False  # breakout hay vao false-breakout -> tat
 ENABLE_REVERSAL_PATH = False  # reversal = bat dao chieu (bat dao roi) -> tat
-ENABLE_SCENARIO_PATH = False  # scenario mean-revert trong range -> tat
+ENABLE_SCENARIO_PATH = True   # bat tat ca scenario path (S1-S40+)
 
 # --- DYNAMIC EXIT (bot phan tich lien tuc -> dong lenh chu dong, khong cho SL/TP chet) ---
 # Bot analyze moi tick -> hieu market hon 2 moc SL/TP tinh. SL/TP chi la luoi an toan cuoi.

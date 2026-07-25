@@ -2413,9 +2413,9 @@ class TradingBot:
             # SCENARIO ENGINE - TAT theo config.ENABLE_SCENARIO_PATH (chi trade trend-following)
             if not config.ENABLE_SCENARIO_PATH:
                 return False
-            # ANTI-CHOP cho SCENARIO: chi bat scenario khi co TREND RO (ADX>=20).
-            if math.isnan(adx) or adx < 20.0:
-                logger.debug(f"{symbol}: scenario skip - ADX={adx:.1f} < 20 (chop, khong trend)")
+            # ANTI-CHOP cho SCENARIO: chi bat scenario khi co TREND NHAT DINH (ADX>=14).
+            if math.isnan(adx) or adx < 14.0:
+                logger.debug(f"{symbol}: scenario skip - ADX={adx:.1f} < 14 (chop, khong trend)")
                 return False
             # == SCENARIO ENGINE - bat lenh tiem nang khi strategies im lang ======
             # Strategies (EMA/RSI-based) co lag co huu - nhieu setup tiem nang RO RANG
@@ -2494,10 +2494,413 @@ class TradingBot:
                       and _sc_last_red and not _block_short_24h):
                     _sc_dir, _sc_strength, _sc_tp, _sc_name = -1, 0.58, 0.12, "sc_range_top"
 
+            # ================================================================
+            # S9-S40: EXTENDED SCENARIO ENGINE
+            # Moi nhom S9+ chay tuan tu (if _sc_dir == 0) sau khi S1-S8 that bai.
+            # Moi nhom co guard chong du-dinh: RSI, price_pos, macro alignment.
+            # ================================================================
+
+            # S9/S10: EMA21/50 GOLDEN/DEATH CROSS tren 1m
+            # Golden: EMA21 vua vuot EMA50 tu duoi len (trong 6 nen), xac nhan macro >= 0
+            # Anti-du-dinh: price khong cach cross point > 1.5%, RSI < 75
+            if _sc_dir == 0 and len(df_micro) >= 55:
+                _e21s = compute_ema(df_micro["close"], 21)
+                _e50s = compute_ema(df_micro["close"], 50)
+                _x_up  = _e21s.iloc[-1] > _e50s.iloc[-1] and any(
+                    _e21s.iloc[i] <= _e50s.iloc[i] for i in range(-7, -1))
+                _x_dn  = _e21s.iloc[-1] < _e50s.iloc[-1] and any(
+                    _e21s.iloc[i] >= _e50s.iloc[i] for i in range(-7, -1))
+                _e50v   = _e50s.iloc[-1]
+                _dist50 = abs(_sc_price - _e50v) / _e50v if _e50v > 0 else 1.0
+                if (_x_up and not _block_long_24h and 30 < rsi_now < 75
+                        and macro_4h >= 0 and _sc_vol_surge >= 0.9 and _dist50 < 0.015
+                        and _sc_pos < 0.82):
+                    _sc_dir, _sc_strength, _sc_tp, _sc_name = 1, 0.63, 0.0, "sc_ema_golden_cross"
+                elif (_x_dn and not _block_short_24h and 25 < rsi_now < 70
+                        and macro_4h <= 0 and _sc_vol_surge >= 0.9 and _dist50 < 0.015
+                        and _sc_pos > 0.18):
+                    _sc_dir, _sc_strength, _sc_tp, _sc_name = -1, 0.63, 0.0, "sc_ema_death_cross"
+
+            # S11/S12: 4 TIMEFRAME ALIGNMENT (micro + scalp + macro + macro_4h tat ca dong long)
+            # Day la signal manh nhat: tat ca khung thoi gian cung chieu
+            if _sc_dir == 0:
+                _4tf_long  = (micro_up and scalp_trend == 1 and macro_trend == 1 and macro_4h == 1
+                              and not _block_long_24h and 35 < rsi_now < 78
+                              and _sc_vol_surge >= 0.7 and _sc_pos < 0.82)
+                _4tf_short = (micro_down and scalp_trend == -1 and macro_trend == -1 and macro_4h == -1
+                              and not _block_short_24h and 22 < rsi_now < 65
+                              and _sc_vol_surge >= 0.7 and _sc_pos > 0.18)
+                if _4tf_long:
+                    _sc_dir, _sc_strength, _sc_tp, _sc_name = 1, 0.70, 0.0, "sc_4tf_aligned_long"
+                elif _4tf_short:
+                    _sc_dir, _sc_strength, _sc_tp, _sc_name = -1, 0.70, 0.0, "sc_4tf_aligned_short"
+
+            # S13/S14: MOMENTUM BURST - 5+ nen lien tiep cung chieu, volume tang dan
+            # Anti-du-dinh: _sc_pos < 0.85 (khong o dinh range), RSI < 78
+            if _sc_dir == 0 and len(df_micro) >= 12:
+                _mb8c = df_micro["close"].iloc[-8:].values
+                _mb8o = df_micro["open"].iloc[-8:].values
+                _mb8v = df_micro["volume"].iloc[-8:].values
+                _mb_cg = 0; _mb_cr = 0
+                for _mbi in range(7, -1, -1):
+                    if _mb8c[_mbi] > _mb8o[_mbi]: _mb_cg += 1
+                    else: break
+                for _mbi in range(7, -1, -1):
+                    if _mb8c[_mbi] < _mb8o[_mbi]: _mb_cr += 1
+                    else: break
+                _mb_vacc = _mb8v[-3:].mean() >= _mb8v[-6:-3].mean() * 0.85
+                if (_mb_cg >= 5 and not _block_long_24h and rsi_now < 78 and _mb_vacc
+                        and macro_trend >= 0 and _sc_vol_surge >= 0.7 and _sc_pos < 0.85):
+                    _sc_dir, _sc_strength, _sc_tp, _sc_name = 1, 0.62, 0.0, "sc_momentum_burst_long"
+                elif (_mb_cr >= 5 and not _block_short_24h and rsi_now > 22 and _mb_vacc
+                        and macro_trend <= 0 and _sc_vol_surge >= 0.7 and _sc_pos > 0.15):
+                    _sc_dir, _sc_strength, _sc_tp, _sc_name = -1, 0.62, 0.0, "sc_momentum_burst_short"
+
+            # S15/S16: BOLLINGER SQUEEZE RELEASE
+            # BB cang dat (width thap) roi mo rong dot ngot + break band = breakout tin cy cao
+            if _sc_dir == 0 and len(df_micro) >= 35:
+                _bb_c   = df_micro["close"]
+                _bb_m   = _bb_c.rolling(20).mean()
+                _bb_s   = _bb_c.rolling(20).std()
+                _bb_w   = (2 * _bb_s / _bb_m.replace(0, float("nan")))
+                _bb_now = float(_bb_w.iloc[-1]) if not _bb_w.iloc[-1:].isna().any() else 1.0
+                _bb_min = float(_bb_w.iloc[-20:-1].min()) if len(_bb_w) >= 20 else 1.0
+                _bb_up  = float((_bb_m + 2 * _bb_s).iloc[-1])
+                _bb_lo  = float((_bb_m - 2 * _bb_s).iloc[-1])
+                _sq_was = _bb_min < 0.025   # was squeezed
+                _sq_now = _bb_now > _bb_min * 1.4  # now expanding
+                if (_sq_was and _sq_now and _sc_price >= _bb_up * 0.997 and not _block_long_24h
+                        and rsi_now < 80 and macro_trend >= 0 and _sc_vol_surge >= 1.2
+                        and _sc_pos < 0.88):
+                    _sc_dir, _sc_strength, _sc_tp, _sc_name = 1, 0.64, 0.0, "sc_bb_squeeze_up"
+                elif (_sq_was and _sq_now and _sc_price <= _bb_lo * 1.003 and not _block_short_24h
+                        and rsi_now > 20 and macro_trend <= 0 and _sc_vol_surge >= 1.2
+                        and _sc_pos > 0.12):
+                    _sc_dir, _sc_strength, _sc_tp, _sc_name = -1, 0.64, 0.0, "sc_bb_squeeze_down"
+
+            # S17/S18: VWAP RECLAIM - gia cắt qua VWAP voi volume
+            # VWAP tinh tren 200 nen = session anchor, moc quan trong
+            if _sc_dir == 0 and len(df_micro) >= 50:
+                _vw_n = min(200, len(df_micro))
+                _vw_df = df_micro.iloc[-_vw_n:]
+                _vw_den = float(_vw_df["volume"].sum())
+                _vwap_v = float((_vw_df["close"] * _vw_df["volume"]).sum()) / _vw_den if _vw_den > 0 else 0.0
+                if _vwap_v > 0:
+                    _vw_above_now  = _sc_price > _vwap_v
+                    _vw_above_p4   = float(df_micro["close"].iloc[-5]) > _vwap_v
+                    _vw_dist       = abs(_sc_price - _vwap_v) / _vwap_v
+                    _just_cross_up = _vw_above_now and not _vw_above_p4
+                    _just_cross_dn = not _vw_above_now and _vw_above_p4
+                    if (_just_cross_up and not _block_long_24h and rsi_now < 72 and macro_trend >= 0
+                            and _sc_vol_surge >= 1.1 and _vw_dist < 0.010 and _sc_pos < 0.80):
+                        _sc_dir, _sc_strength, _sc_tp, _sc_name = 1, 0.62, 0.0, "sc_vwap_reclaim_long"
+                    elif (_just_cross_dn and not _block_short_24h and rsi_now > 28 and macro_trend <= 0
+                            and _sc_vol_surge >= 1.1 and _vw_dist < 0.010 and _sc_pos > 0.20):
+                        _sc_dir, _sc_strength, _sc_tp, _sc_name = -1, 0.62, 0.0, "sc_vwap_reclaim_short"
+
+            # S19/S20: RSI RECOVERY TRONG TREND (RSI dip roi bat len trong uptrend)
+            # Pattern: uptrend -> RSI pullback < 45 -> RSI bat len >= 48 = entry tot
+            if _sc_dir == 0 and len(df_micro) >= 25:
+                _rsr = compute_rsi(df_micro["close"], 14)
+                _rsr_now  = float(_rsr.iloc[-1])
+                _rsr_min  = float(_rsr.iloc[-12:-1].min())
+                _rsr_prev = float(_rsr.iloc[-4])
+                _rsr_rising  = _rsr_now > _rsr_prev + 1.5
+                _rsr_falling = _rsr_now < _rsr_prev - 1.5
+                if (macro_trend == 1 and macro_4h >= 0 and _rsr_min < 45 and _rsr_now >= 48
+                        and _rsr_rising and _sc_pos < 0.75 and not _block_long_24h
+                        and _sc_vol_surge >= 0.6):
+                    _sc_dir, _sc_strength, _sc_tp, _sc_name = 1, 0.61, 0.0, "sc_rsi_recovery_long"
+                elif (macro_trend == -1 and macro_4h <= 0 and _rsr_min > 55 and _rsr_now <= 52
+                        and _rsr_falling and _sc_pos > 0.25 and not _block_short_24h
+                        and _sc_vol_surge >= 0.6):
+                    _sc_dir, _sc_strength, _sc_tp, _sc_name = -1, 0.61, 0.0, "sc_rsi_recovery_short"
+
+            # S21/S22: EMA100/200 LEVEL BOUNCE (key support/resistance tren 1m)
+            # Price cham EMA100 hoac EMA200 + nen xac nhan quay dau = entry chinh xac
+            if _sc_dir == 0 and len(df_micro) >= 205:
+                _el_e100 = float(compute_ema(df_micro["close"], 100).iloc[-1])
+                _el_e200 = float(compute_ema(df_micro["close"], 200).iloc[-1])
+                _el_atr  = float(compute_atr(df_micro, 14).iloc[-1])
+                _el_tol  = _el_atr * 0.8
+                _at_e100_sup = abs(_sc_price - _el_e100) < _el_tol and macro_trend >= 0
+                _at_e200_sup = abs(_sc_price - _el_e200) < _el_tol and macro_trend >= 0
+                _at_e100_res = abs(_sc_price - _el_e100) < _el_tol and macro_trend <= 0
+                _at_e200_res = abs(_sc_price - _el_e200) < _el_tol and macro_trend <= 0
+                _lc2 = df_micro.iloc[-2]
+                _lc2_hammer  = (_lc2["close"] > _lc2["open"] and
+                                 (min(_lc2["close"], _lc2["open"]) - _lc2["low"])
+                                 > abs(_lc2["close"] - _lc2["open"]) * 1.5)
+                _lc2_star    = (_lc2["close"] < _lc2["open"] and
+                                 (_lc2["high"] - max(_lc2["close"], _lc2["open"]))
+                                 > abs(_lc2["close"] - _lc2["open"]) * 1.5)
+                if ((_at_e100_sup or _at_e200_sup) and _lc2_hammer and not _block_long_24h
+                        and rsi_now < 70 and _sc_vol_surge >= 0.8):
+                    _sc_dir, _sc_strength, _sc_tp, _sc_name = 1, 0.63, 0.0, "sc_ema_level_bounce_long"
+                elif ((_at_e100_res or _at_e200_res) and _lc2_star and not _block_short_24h
+                        and rsi_now > 30 and _sc_vol_surge >= 0.8):
+                    _sc_dir, _sc_strength, _sc_tp, _sc_name = -1, 0.63, 0.0, "sc_ema_level_bounce_short"
+
+            # S23/S24: THREE WHITE SOLDIERS / THREE BLACK CROWS
+            # 3 nen lien tiep day du than (body > 60% range), moi nen cao/thap hon nen truoc
+            if _sc_dir == 0 and len(df_micro) >= 10:
+                _tw_c = df_micro["close"].iloc[-4:-1].values
+                _tw_o = df_micro["open"].iloc[-4:-1].values
+                _tw_h = df_micro["high"].iloc[-4:-1].values
+                _tw_l = df_micro["low"].iloc[-4:-1].values
+                _tw_v = df_micro["volume"].iloc[-4:-1].values
+                _tw_avg = float(df_micro["volume"].iloc[-10:-4].mean()) if len(df_micro) >= 10 else 1.0
+                _tw_3g  = all(_tw_c[i] > _tw_o[i] for i in range(3))
+                _tw_3r  = all(_tw_c[i] < _tw_o[i] for i in range(3))
+                _tw_cli = _tw_c[0] < _tw_c[1] < _tw_c[2]
+                _tw_drp = _tw_c[0] > _tw_c[1] > _tw_c[2]
+                _tw_bod = [abs(_tw_c[i] - _tw_o[i]) / ((_tw_h[i] - _tw_l[i]) + 1e-9) for i in range(3)]
+                _tw_fbody = all(b > 0.55 for b in _tw_bod)
+                _tw_vok   = _tw_v.mean() >= _tw_avg * 0.65
+                if (_tw_3g and _tw_cli and _tw_fbody and _tw_vok and not _block_long_24h
+                        and rsi_now < 78 and macro_trend >= 0 and _sc_pos < 0.85):
+                    _sc_dir, _sc_strength, _sc_tp, _sc_name = 1, 0.63, 0.0, "sc_three_soldiers"
+                elif (_tw_3r and _tw_drp and _tw_fbody and _tw_vok and not _block_short_24h
+                        and rsi_now > 22 and macro_trend <= 0 and _sc_pos > 0.15):
+                    _sc_dir, _sc_strength, _sc_tp, _sc_name = -1, 0.63, 0.0, "sc_three_crows"
+
+            # S25/S26: INSIDE BAR CONSOLIDATION BREAK
+            # 7 nen trong tam range chat (< 0.8% hoac < 1.5x ATR), sau do break pha vo voi vol
+            if _sc_dir == 0 and len(df_micro) >= 15:
+                _ib_hi = float(df_micro["high"].iloc[-8:-1].max())
+                _ib_lo = float(df_micro["low"].iloc[-8:-1].min())
+                _ib_rng = _ib_hi - _ib_lo
+                _ib_atr = float(compute_atr(df_micro, 14).iloc[-1]) if len(df_micro) >= 14 else 0.0
+                _ib_tight = ((_ib_rng / _sc_price < 0.008 if _sc_price > 0 else False)
+                             or (_ib_atr > 0 and _ib_rng < _ib_atr * 1.5))
+                _ib_break_up = _sc_price > _ib_hi * 1.001 and _sc_last_green
+                _ib_break_dn = _sc_price < _ib_lo * 0.999 and _sc_last_red
+                if (_ib_tight and _ib_break_up and not _block_long_24h and rsi_now < 80
+                        and _sc_vol_surge >= 1.3 and macro_trend >= 0 and _sc_pos < 0.86):
+                    _sc_dir, _sc_strength, _sc_tp, _sc_name = 1, 0.64, 0.0, "sc_inside_bar_break_up"
+                elif (_ib_tight and _ib_break_dn and not _block_short_24h and rsi_now > 20
+                        and _sc_vol_surge >= 1.3 and macro_trend <= 0 and _sc_pos > 0.14):
+                    _sc_dir, _sc_strength, _sc_tp, _sc_name = -1, 0.64, 0.0, "sc_inside_bar_break_down"
+
+            # S27/S28: BULLISH/BEARISH ENGULFING tai muc gia co y nghia
+            # Nen hien tai bao tron nen truoc (body lon hon) + volume xac nhan
+            if _sc_dir == 0 and len(df_micro) >= 8:
+                _eg_c1 = float(df_micro["close"].iloc[-2]); _eg_o1 = float(df_micro["open"].iloc[-2])
+                _eg_c0 = float(df_micro["close"].iloc[-1]); _eg_o0 = float(df_micro["open"].iloc[-1])
+                _eg_bh1 = max(_eg_c1, _eg_o1); _eg_bl1 = min(_eg_c1, _eg_o1)
+                _eg_bh0 = max(_eg_c0, _eg_o0); _eg_bl0 = min(_eg_c0, _eg_o0)
+                _eg_body1 = abs(_eg_c1 - _eg_o1); _eg_body0 = abs(_eg_c0 - _eg_o0)
+                _eg_bull = (_eg_c0 > _eg_o0 and _eg_bh0 > _eg_bh1 and _eg_bl0 < _eg_bl1
+                            and _eg_body0 > _eg_body1 * 1.2 and _eg_c1 < _eg_o1)
+                _eg_bear = (_eg_c0 < _eg_o0 and _eg_bh0 > _eg_bh1 and _eg_bl0 < _eg_bl1
+                            and _eg_body0 > _eg_body1 * 1.2 and _eg_c1 > _eg_o1)
+                _eg_vok  = float(df_micro["volume"].iloc[-1]) >= float(df_micro["volume"].iloc[-6:-1].mean()) * 1.2
+                if (_eg_bull and _eg_vok and not _block_long_24h and rsi_now < 72 and macro_trend >= 0
+                        and _sc_pos < 0.82):
+                    _sc_dir, _sc_strength, _sc_tp, _sc_name = 1, 0.61, 0.0, "sc_bull_engulf"
+                elif (_eg_bear and _eg_vok and not _block_short_24h and rsi_now > 28 and macro_trend <= 0
+                        and _sc_pos > 0.18):
+                    _sc_dir, _sc_strength, _sc_tp, _sc_name = -1, 0.61, 0.0, "sc_bear_engulf"
+
+            # S29/S30: MACD ZERO LINE CROSS (MACD cat duong 0 - xac nhan doi pha)
+            # MACD cat len/xuong 0 = moment doi phe manh nhat, cho phep entry som
+            if _sc_dir == 0 and len(df_micro) >= 45:
+                _mz_line, _mz_sig, _mz_hist = compute_macd(df_micro["close"])
+                _mz_cross_up = float(_mz_line.iloc[-1]) > 0 and float(_mz_line.iloc[-5]) < 0
+                _mz_cross_dn = float(_mz_line.iloc[-1]) < 0 and float(_mz_line.iloc[-5]) > 0
+                _mz_rising   = float(_mz_hist.iloc[-1]) > float(_mz_hist.iloc[-2])
+                _mz_falling  = float(_mz_hist.iloc[-1]) < float(_mz_hist.iloc[-2])
+                if (_mz_cross_up and _mz_rising and not _block_long_24h and rsi_now < 72
+                        and macro_trend >= 0 and _sc_vol_surge >= 0.8 and _sc_pos < 0.82 and adx >= 12):
+                    _sc_dir, _sc_strength, _sc_tp, _sc_name = 1, 0.61, 0.0, "sc_macd_zero_cross_long"
+                elif (_mz_cross_dn and _mz_falling and not _block_short_24h and rsi_now > 28
+                        and macro_trend <= 0 and _sc_vol_surge >= 0.8 and _sc_pos > 0.18 and adx >= 12):
+                    _sc_dir, _sc_strength, _sc_tp, _sc_name = -1, 0.61, 0.0, "sc_macd_zero_cross_short"
+
+            # S31/S32: HAMMER / SHOOTING STAR tai vung ho tro/khang cu
+            # Hammer (wick duoi dai) tai day range, Shooting star (wick tren dai) tai dinh
+            if _sc_dir == 0 and len(df_micro) >= 8:
+                _hs_lc = df_micro.iloc[-2]
+                _hs_rng = float(_hs_lc["high"]) - float(_hs_lc["low"])
+                if _hs_rng > 0:
+                    _hs_body   = abs(float(_hs_lc["close"]) - float(_hs_lc["open"]))
+                    _hs_lo_wk  = min(float(_hs_lc["close"]), float(_hs_lc["open"])) - float(_hs_lc["low"])
+                    _hs_hi_wk  = float(_hs_lc["high"]) - max(float(_hs_lc["close"]), float(_hs_lc["open"]))
+                    _hs_hammer = (_hs_body > 0 and _hs_lo_wk >= _hs_body * 2.0
+                                  and _hs_hi_wk < _hs_body * 0.6 and _sc_pos < 0.42)
+                    _hs_star   = (_hs_body > 0 and _hs_hi_wk >= _hs_body * 2.0
+                                  and _hs_lo_wk < _hs_body * 0.6 and _sc_pos > 0.58)
+                    _hs_cfg    = float(df_micro["close"].iloc[-1]) > float(df_micro["open"].iloc[-1])
+                    _hs_cfr    = float(df_micro["close"].iloc[-1]) < float(df_micro["open"].iloc[-1])
+                    if (_hs_hammer and _hs_cfg and not _block_long_24h and rsi_now < 65 and macro_4h >= 0
+                            and _sc_vol_surge >= 0.8):
+                        _sc_dir, _sc_strength, _sc_tp, _sc_name = 1, 0.60, 0.0, "sc_hammer_bounce"
+                    elif (_hs_star and _hs_cfr and not _block_short_24h and rsi_now > 35 and macro_4h <= 0
+                            and _sc_vol_surge >= 0.8):
+                        _sc_dir, _sc_strength, _sc_tp, _sc_name = -1, 0.60, 0.0, "sc_shooting_star"
+
+            # S33/S34: DOUBLE BOTTOM / DOUBLE TOP (W-pattern / M-pattern)
+            # Hai day/dinh xap xi nhau trong 60 nen, day thu 2 co RSI cao hon (bull div)
+            if _sc_dir == 0 and len(df_micro) >= 65:
+                _db_lo1 = float(df_micro["low"].iloc[-60:-35].min())
+                _db_lo2 = float(df_micro["low"].iloc[-30:].min())
+                _db_hi1 = float(df_micro["high"].iloc[-60:-35].max())
+                _db_hi2 = float(df_micro["high"].iloc[-30:].max())
+                _db_mid_hi = float(df_micro["high"].iloc[-45:-15].max())  # swing high giua 2 day
+                _db_mid_lo = float(df_micro["low"].iloc[-45:-15].min())   # swing low giua 2 dinh
+                _db_rsi = compute_rsi(df_micro["close"], 14)
+                _db_lo1_i = int(df_micro["low"].iloc[-60:-35].argmin())
+                _db_lo2_i = int(df_micro["low"].iloc[-30:].argmin())
+                _db_rsi1  = float(_db_rsi.iloc[-60 + _db_lo1_i]) if len(_db_rsi) >= 60 else 50.0
+                _db_rsi2  = float(_db_rsi.iloc[-30 + _db_lo2_i]) if len(_db_rsi) >= 30 else 50.0
+                _db_match  = _db_lo1 > 0 and abs(_db_lo2 - _db_lo1) / _db_lo1 < 0.006
+                _dt_match  = _db_hi1 > 0 and abs(_db_hi2 - _db_hi1) / _db_hi1 < 0.006
+                _db_rsi_bul = _db_rsi2 > _db_rsi1 + 2
+                _db_break_up   = _sc_price >= _db_mid_hi * 0.999 and _sc_last_green
+                _db_break_down = _sc_price <= _db_mid_lo * 1.001 and _sc_last_red
+                if (_db_match and _db_rsi_bul and _db_break_up and not _block_long_24h
+                        and rsi_now < 72 and macro_4h >= 0 and _sc_vol_surge >= 1.0):
+                    _sc_dir, _sc_strength, _sc_tp, _sc_name = 1, 0.64, 0.0, "sc_double_bottom"
+                elif (_dt_match and not _db_rsi_bul and _db_break_down and not _block_short_24h
+                        and rsi_now > 28 and macro_4h <= 0 and _sc_vol_surge >= 1.0):
+                    _sc_dir, _sc_strength, _sc_tp, _sc_name = -1, 0.64, 0.0, "sc_double_top"
+
+            # S35/S36: VOLUME ACCELERATION BURST (volume tang dan + cung chieu)
+            # 4 nen lien tiep: moi nen volume lon hon nen truoc, tat ca cung chieu
+            if _sc_dir == 0 and len(df_micro) >= 12:
+                _va_v = df_micro["volume"].iloc[-5:].values
+                _va_c = df_micro["close"].iloc[-5:].values
+                _va_o = df_micro["open"].iloc[-5:].values
+                _va_avg = float(df_micro["volume"].iloc[-15:-5].mean()) if len(df_micro) >= 15 else 0.0
+                _va_green = all(_va_c[i] > _va_o[i] for i in range(5))
+                _va_red   = all(_va_c[i] < _va_o[i] for i in range(5))
+                _va_acc   = (_va_v[1] > _va_v[0] and _va_v[2] > _va_v[1] and _va_v[3] > _va_v[2])
+                _va_hi    = _va_avg > 0 and _va_v[-3:].mean() >= _va_avg * 1.4
+                if (_va_green and _va_acc and _va_hi and not _block_long_24h and rsi_now < 78
+                        and macro_trend >= 0 and _sc_pos < 0.84):
+                    _sc_dir, _sc_strength, _sc_tp, _sc_name = 1, 0.65, 0.0, "sc_vol_acceleration_long"
+                elif (_va_red and _va_acc and _va_hi and not _block_short_24h and rsi_now > 22
+                        and macro_trend <= 0 and _sc_pos > 0.16):
+                    _sc_dir, _sc_strength, _sc_tp, _sc_name = -1, 0.65, 0.0, "sc_vol_acceleration_short"
+
+            # S37/S38: TREND CHANNEL BOUNCE (EMA50 +/- 2xATR = Keltner channel)
+            # Gia cham day kenh roi quay dau = mean-revert trong trend
+            if _sc_dir == 0 and len(df_micro) >= 60:
+                _kc_e50 = float(compute_ema(df_micro["close"], 50).iloc[-1])
+                _kc_atr = float(compute_atr(df_micro, 14).iloc[-1])
+                _kc_lo  = _kc_e50 - 2.0 * _kc_atr
+                _kc_hi  = _kc_e50 + 2.0 * _kc_atr
+                _kc_at_lo = _sc_price <= _kc_lo * 1.005
+                _kc_at_hi = _sc_price >= _kc_hi * 0.995
+                if (_kc_at_lo and _sc_last_green and macro_trend >= 0 and not _block_long_24h
+                        and rsi_now < 65 and _sc_vol_surge >= 0.7):
+                    _sc_dir, _sc_strength, _sc_tp, _sc_name = 1, 0.60, 0.0, "sc_channel_bounce_long"
+                elif (_kc_at_hi and _sc_last_red and macro_trend <= 0 and not _block_short_24h
+                        and rsi_now > 35 and _sc_vol_surge >= 0.7):
+                    _sc_dir, _sc_strength, _sc_tp, _sc_name = -1, 0.60, 0.0, "sc_channel_bounce_short"
+
+            # S39/S40: MACRO TREND CONTINUATION (ca 3 TF vung chac + pullback ket thuc)
+            # 3 TF cao cung chieu + micro bat dau quay theo = entry pullback chinh xac
+            if _sc_dir == 0:
+                _mc_long  = (scalp_trend == 1 and macro_trend == 1 and macro_4h == 1
+                             and micro_up and not _block_long_24h and 38 < rsi_now < 75
+                             and _sc_vol_surge >= 0.7 and _sc_pos < 0.80 and adx >= 16)
+                _mc_short = (scalp_trend == -1 and macro_trend == -1 and macro_4h == -1
+                             and micro_down and not _block_short_24h and 25 < rsi_now < 62
+                             and _sc_vol_surge >= 0.7 and _sc_pos > 0.20 and adx >= 16)
+                if _mc_long:
+                    _sc_dir, _sc_strength, _sc_tp, _sc_name = 1, 0.67, 0.0, "sc_macro_cont_long"
+                elif _mc_short:
+                    _sc_dir, _sc_strength, _sc_tp, _sc_name = -1, 0.67, 0.0, "sc_macro_cont_short"
+
+            # S41/S42: STOCHASTIC CROSS trong vung trung tinh (20-80)
+            # Stoch K cat duong D, khong o vung cuc doan = signal on dinh
+            if _sc_dir == 0 and len(df_micro) >= 20:
+                _stk_lo = float(df_micro["low"].iloc[-14:].min())
+                _stk_rn = float(df_micro["high"].iloc[-14:].max()) - _stk_lo
+                _stk_k  = ((float(df_micro["close"].iloc[-1]) - _stk_lo) / _stk_rn * 100) if _stk_rn > 0 else 50
+                _stk_k2 = ((float(df_micro["close"].iloc[-3]) - _stk_lo) / _stk_rn * 100) if _stk_rn > 0 else 50
+                _stk_d  = (_stk_k + _stk_k2 + ((float(df_micro["close"].iloc[-5]) - _stk_lo) / _stk_rn * 100 if _stk_rn > 0 else 50)) / 3
+                _stk_cross_up = _stk_k > _stk_d and _stk_k2 <= _stk_d and 20 < _stk_k < 75
+                _stk_cross_dn = _stk_k < _stk_d and _stk_k2 >= _stk_d and 25 < _stk_k < 80
+                if (_stk_cross_up and macro_trend >= 0 and not _block_long_24h and rsi_now < 72
+                        and _sc_vol_surge >= 0.7 and _sc_pos < 0.80):
+                    _sc_dir, _sc_strength, _sc_tp, _sc_name = 1, 0.60, 0.0, "sc_stoch_cross_long"
+                elif (_stk_cross_dn and macro_trend <= 0 and not _block_short_24h and rsi_now > 28
+                        and _sc_vol_surge >= 0.7 and _sc_pos > 0.20):
+                    _sc_dir, _sc_strength, _sc_tp, _sc_name = -1, 0.60, 0.0, "sc_stoch_cross_short"
+
+            # S43/S44: POST-FLAT LAUNCH (range compression then explosive move)
+            # Gia o vung rat flat (std < 0.08%) roi bat ngo tang/giam manh = thoat khoi range
+            if _sc_dir == 0 and len(df_micro) >= 20:
+                _pf_c10 = df_micro["close"].iloc[-12:-2]
+                _pf_std = float(_pf_c10.std())
+                _pf_mn  = float(_pf_c10.mean())
+                _pf_flat = _pf_mn > 0 and _pf_std / _pf_mn < 0.0008
+                _pf_cur_body = abs(float(df_micro["close"].iloc[-1]) - float(df_micro["open"].iloc[-1]))
+                _pf_avg_body = float(abs(df_micro["close"].iloc[-12:-2] - df_micro["open"].iloc[-12:-2]).mean())
+                _pf_burst = _pf_cur_body > _pf_avg_body * 2.5 if _pf_avg_body > 0 else False
+                if (_pf_flat and _pf_burst and _sc_last_green and not _block_long_24h and rsi_now < 78
+                        and _sc_vol_surge >= 1.5 and macro_trend >= 0 and _sc_pos < 0.84):
+                    _sc_dir, _sc_strength, _sc_tp, _sc_name = 1, 0.64, 0.0, "sc_post_flat_launch_long"
+                elif (_pf_flat and _pf_burst and _sc_last_red and not _block_short_24h and rsi_now > 22
+                        and _sc_vol_surge >= 1.5 and macro_trend <= 0 and _sc_pos > 0.16):
+                    _sc_dir, _sc_strength, _sc_tp, _sc_name = -1, 0.64, 0.0, "sc_post_flat_launch_short"
+
+            # S45/S46: OBV (ON-BALANCE VOLUME) TREND BREAK
+            # OBV tang len qua dinh truoc = mua tich luy, gia se theo sau
+            if _sc_dir == 0 and len(df_micro) >= 50:
+                _obv = (df_micro["volume"] * df_micro["close"].diff().apply(
+                    lambda x: 1 if x > 0 else (-1 if x < 0 else 0))).cumsum()
+                _obv_now  = float(_obv.iloc[-1])
+                _obv_peak = float(_obv.iloc[-30:-5].max())
+                _obv_trou = float(_obv.iloc[-30:-5].min())
+                _obv_rising  = _obv_now > _obv_peak and float(_obv.iloc[-5]) > float(_obv.iloc[-15])
+                _obv_falling = _obv_now < _obv_trou and float(_obv.iloc[-5]) < float(_obv.iloc[-15])
+                if (_obv_rising and macro_trend >= 0 and not _block_long_24h and rsi_now < 75
+                        and _sc_vol_surge >= 0.8 and _sc_pos < 0.82):
+                    _sc_dir, _sc_strength, _sc_tp, _sc_name = 1, 0.62, 0.0, "sc_obv_breakout_long"
+                elif (_obv_falling and macro_trend <= 0 and not _block_short_24h and rsi_now > 25
+                        and _sc_vol_surge >= 0.8 and _sc_pos > 0.18):
+                    _sc_dir, _sc_strength, _sc_tp, _sc_name = -1, 0.62, 0.0, "sc_obv_breakout_short"
+
+            # S47/S48: HIGHER HIGH / LOWER LOW STRUCTURE (market structure confirmation)
+            # 3 HH lien tiep (moi dinh cao hon) = uptrend da xac nhan; 3 LL = downtrend
+            if _sc_dir == 0 and len(df_micro) >= 30:
+                _hh_h = [float(df_micro["high"].iloc[-25:-15].max()),
+                         float(df_micro["high"].iloc[-15:-8].max()),
+                         float(df_micro["high"].iloc[-8:].max())]
+                _ll_l = [float(df_micro["low"].iloc[-25:-15].min()),
+                         float(df_micro["low"].iloc[-15:-8].min()),
+                         float(df_micro["low"].iloc[-8:].min())]
+                _3hh = _hh_h[0] < _hh_h[1] < _hh_h[2]
+                _3ll = _ll_l[0] > _ll_l[1] > _ll_l[2]
+                if (_3hh and micro_up and not _block_long_24h and rsi_now < 75 and macro_trend >= 0
+                        and _sc_vol_surge >= 0.7 and _sc_pos < 0.82):
+                    _sc_dir, _sc_strength, _sc_tp, _sc_name = 1, 0.63, 0.0, "sc_higher_highs_long"
+                elif (_3ll and micro_down and not _block_short_24h and rsi_now > 25 and macro_trend <= 0
+                        and _sc_vol_surge >= 0.7 and _sc_pos > 0.18):
+                    _sc_dir, _sc_strength, _sc_tp, _sc_name = -1, 0.63, 0.0, "sc_lower_lows_short"
+
+            # S49/S50: RSI MIDZONE MOMENTUM (RSI cat 50 xac nhan doi phe)
+            # RSI cat len/xuong 50 = doi phe ro rang, khong co lag EMA
+            if _sc_dir == 0 and len(df_micro) >= 20:
+                _rm_rsi = compute_rsi(df_micro["close"], 14)
+                _rm_now = float(_rm_rsi.iloc[-1])
+                _rm_p5  = float(_rm_rsi.iloc[-6])
+                _rm_x_up = _rm_now > 50 and _rm_p5 < 50 and _rm_now < 72
+                _rm_x_dn = _rm_now < 50 and _rm_p5 > 50 and _rm_now > 28
+                if (_rm_x_up and macro_trend >= 0 and not _block_long_24h and _sc_vol_surge >= 0.8
+                        and _sc_pos < 0.80 and adx >= 14):
+                    _sc_dir, _sc_strength, _sc_tp, _sc_name = 1, 0.61, 0.0, "sc_rsi_50_cross_long"
+                elif (_rm_x_dn and macro_trend <= 0 and not _block_short_24h and _sc_vol_surge >= 0.8
+                        and _sc_pos > 0.20 and adx >= 14):
+                    _sc_dir, _sc_strength, _sc_tp, _sc_name = -1, 0.61, 0.0, "sc_rsi_50_cross_short"
+
             if _sc_dir == 0:
                 return False
 
-            # VOLUME COLLAPSE GUARD (chay cho TAT CA scenario paths S1-S8):
+            # VOLUME COLLAPSE GUARD (chay cho TAT CA scenario paths S1-S50):
             # Neu volume hien tai < 20% trung binh 30c -> post-pump/dump exhaustion.
             # Bat ky scenario nao vao luc nay cung la fake: khong co ai giao dich nua.
             # TNSR pattern: vol 6.56K vs MA10 116K = 5.6% -> phai bi chan o day.
@@ -3424,6 +3827,13 @@ class TradingBot:
                     return _block(f"skip SHORT - RSI {rsi_now:.0f}<15 (extreme oversold)")
                 if _T == 1 and rsi_now > 85:
                     return _block(f"skip LONG - RSI {rsi_now:.0f}>85 (extreme overbought)")
+                # ANTI-DU-DINH: RSI >= 78 + gia o dinh range 2h = du dinh long / short o day
+                # Khong high_conviction: se ban o day / mua o dinh - rui ro cao, bo qua
+                if not _high_conviction:
+                    if _T == 1 and rsi_now >= 78 and _m2h_pos >= 0.82:
+                        return _block(f"skip LONG - RSI {rsi_now:.0f}>=78 + 2h top {_m2h_pos:.0%} (du dinh)")
+                    if _T == -1 and rsi_now <= 22 and _m2h_pos <= 0.18:
+                        return _block(f"skip SHORT - RSI {rsi_now:.0f}<=22 + 2h bottom {_m2h_pos:.0%} (short o day)")
 
             # --- ABSOLUTE BLOCK 3: FRESH MOVE EXTREME (>3.0 ATR) ---
             _live_p = _range_live_price if _range_live_price > 0 else float(df_micro["close"].iloc[-1])

@@ -3146,24 +3146,21 @@ class TradingBot:
                             f"{symbol}: TREND skip LONG - micro pump {_mv5:.2f}ATR/5n (spike len, doi pullback)")
                         return _block(f"skip LONG - micro pump {_mv5:.2f}ATR/5n (spike exhaustion)")
 
-            # --- BUOC 5.7: RSI EXTREME BLOCK (GATE V3 RIENG) --------------------
-            # RSI <25 trong xu huong SHORT = da ban qua da, bounce sap xay ra.
-            # RSI >75 trong xu huong LONG  = da mua qua da, dump sap xay ra.
-            # Exhaustion check (sau) dung RSI tai cuc doan RANGE (45 nen); check nay khac:
-            #   - Doc lap voi vi tri trong range (bat khi RSI extreme ke ca gia o GIUA range)
-            #   - CRV pattern: RSI <25 ma gia o 50% range -> exhaustion KHONG chan -> bot SHORT -> LO
-            # Nguong co tinh: <25/>75 (khac is_reversal dung <30/>70 cho path rieng).
+            # --- BUOC 5.7: RSI EXTREME BLOCK ------------------------------------
+            # Fix 5: Tighten RSI threshold 25/75 -> 30/70 (gray zone bounce risk).
+            # RSI 28 SHORT va RSI 22 SHORT co bounce probability tuong duong nhau ->
+            # false precision cua nguong 25. Dung 30/70 de bao phu ca gray zone.
             if not math.isnan(rsi_now):
-                if _T == -1 and rsi_now < 25:
+                if _T == -1 and rsi_now < 30:
                     logger.info(
-                        f"{symbol}: TREND skip SHORT - RSI oversold ({rsi_now:.0f}<25) "
+                        f"{symbol}: TREND skip SHORT - RSI oversold ({rsi_now:.0f}<30) "
                         f"trong xu huong SHORT, bounce likely")
-                    return _block(f"skip SHORT - RSI {rsi_now:.0f}<25 (oversold, bounce incoming)")
-                if _T == 1 and rsi_now > 75:
+                    return _block(f"skip SHORT - RSI {rsi_now:.0f}<30 (oversold, bounce incoming)")
+                if _T == 1 and rsi_now > 70:
                     logger.info(
-                        f"{symbol}: TREND skip LONG - RSI overbought ({rsi_now:.0f}>75) "
+                        f"{symbol}: TREND skip LONG - RSI overbought ({rsi_now:.0f}>70) "
                         f"trong xu huong LONG, dump likely")
-                    return _block(f"skip LONG - RSI {rsi_now:.0f}>75 (overbought, dump incoming)")
+                    return _block(f"skip LONG - RSI {rsi_now:.0f}>70 (overbought, dump incoming)")
 
             # --- BUOC 5.8: LARGE SINGLE CANDLE EXHAUSTION -----------------------
             # Neu nen HIEN TAI co than (body) > 1.5 ATR CUNG CHIEU _T:
@@ -3222,9 +3219,9 @@ class TradingBot:
                     return _block("skip LONG - gia break day 10 nen (dump nguoc)")
 
             # ================================================================
-            # GATE v4 - 100-DIEM SCORING (1248 SCENARIOS >=70% CERTAINTY)
-            # Map tu 10,000 kich ban Excel: chi trade khi score >= 65 diem
-            # (tuong duong >=70% do chac chan trong file phan tich).
+            # GATE v4.1 - 100-DIEM SCORING (5-FIX REFINED)
+            # Nguong thich ung: base=65, tang len 70/72 khi co warning signals.
+            # MACD la DIEU KIEN CAN (bat buoc phai co diem duong tu MACD).
             # ================================================================
             # Tinh MACD, candle pattern, volume ratio cho scoring
             _macd_line, _macd_sig, _macd_hist = compute_macd(df_micro["close"])
@@ -3236,82 +3233,83 @@ class TradingBot:
             _cpat = _candle_pattern(df_micro)   # +1 bull, -1 bear, 0 neutral
             _vrat = _volume_ratio(df_micro)      # ratio vs 20-bar avg
 
+            # Fix 1: MACD crossover + volume thap = fakeout -> hard block truoc khi scoring
+            if not math.isnan(_macd_hist) and not math.isnan(_prev_hist) and _prev_hist != 0:
+                _is_crossover = ((_T == 1  and _prev_hist < 0 and _macd_hist > 0) or
+                                 (_T == -1 and _prev_hist > 0 and _macd_hist < 0))
+                if _is_crossover and _vrat < 0.7:
+                    logger.info(
+                        f"{symbol}: GATE v4 skip - MACD crossover ({_prev_hist:.4f}->{_macd_hist:.4f}) "
+                        f"nhung volume thap ({_vrat:.2f}x) = fakeout risk")
+                    return _block(f"skip - MACD crossover + low volume ({_vrat:.2f}x) = fakeout")
+
             _score = 0
+            _macd_score = 0   # track rieng de enforce MACD required condition
 
             # --- LOC 1: EMA ALIGNMENT (0-25 diem) ---
-            # Full stack (F=T, M1=T, M2=T): +15 (tat ca 3 TF dong thuan)
-            # Partial stack (F=T + 1 macro): +10
-            # Fast only (F=T): +6
-            # Bonus macro confirms: M1==T +5, M2==T +5 (them vao partial/full)
             if _fast_tr == _T and macro_trend == _T and macro_4h == _T:
-                _score += 15   # full 3-TF alignment
+                _score += 15
             elif _fast_tr == _T and (macro_trend == _T or macro_4h == _T):
-                _score += 10   # fast + 1 macro
+                _score += 10
             elif _fast_tr == _T:
-                _score += 6    # fast only
+                _score += 6
             elif _fast_tr == 0:
-                # F=0 nhung ca 2 macro dong thuan (da qua buoc 1 gate)
-                if macro_trend == _T: _score += 5
-                if macro_4h   == _T: _score += 5
-            # Extra macro bonus khi fast xac nhan
+                # Fix 2: F=0 transition -> EMA points giam (chi half) va nguong tang len 72
+                if macro_trend == _T: _score += 3   # giam tu +5 -> +3
+                if macro_4h   == _T: _score += 3
             if _fast_tr == _T:
                 if macro_trend == _T and macro_4h != _T: _score += 3
                 if macro_4h   == _T and macro_trend != _T: _score += 3
 
-            # --- LOC 2: MACD (0-20 diem) ---
-            # MACD xuat hien trong MOI kich ban xac suat cao -> trong so cao nhat sau EMA
+            # --- LOC 2: MACD (0-20 diem) - DIEU KIEN CAN ---
             if not math.isnan(_macd_hist) and not math.isnan(_macd_line):
                 _hist_dir = 1 if _macd_hist > 0 else (-1 if _macd_hist < 0 else 0)
-                # Histogram cung chieu _T va dang tang (slope cung chieu)
                 if _hist_dir == _T:
                     if not math.isnan(_prev_hist):
                         _hist_slope_ok = (_T == 1 and _macd_hist > _prev_hist) or \
                                          (_T == -1 and _macd_hist < _prev_hist)
-                        _score += 8 if _hist_slope_ok else 5
+                        _macd_score += 8 if _hist_slope_ok else 5
                     else:
-                        _score += 5
-                # Crossover: histogram doi dau cung chieu _T (tin hieu manh nhat)
+                        _macd_score += 5
                 if not math.isnan(_prev_hist) and _prev_hist != 0:
                     _cross = ((_T == 1  and _prev_hist < 0 and _macd_hist > 0) or
                               (_T == -1 and _prev_hist > 0 and _macd_hist < 0))
                     if _cross:
-                        _score += 7   # thi them 7 (co the cong voi histogram diem)
-                # Divergence (gia nguoc MACD): dieu kien dac biet, uu tien cao
-                # Simplified: RSI va MACD diverge khi gia tiep tuc nhung MACD nguoc
+                        _macd_score += 7
                 _div_bull = (_T == 1  and _macd_hist < 0 and not math.isnan(rsi_now) and rsi_now < 40)
                 _div_bear = (_T == -1 and _macd_hist > 0 and not math.isnan(rsi_now) and rsi_now > 60)
                 if _div_bull or _div_bear:
-                    _score += 8
+                    _macd_score += 8
+            _score += _macd_score
 
             # --- LOC 3: VOLUME MAGNITUDE (0-20 diem) ---
             if _vrat >= 2.0:
-                # Volume spike: xac nhan manh nhat
                 if _vwt_dir == _T:  _score += 20
-                else:               _score += 4   # spike nguoc: khong them nhieu
+                else:               _score += 4
             elif _vrat >= 1.5:
-                # Volume cao
                 if _vwt_dir == _T:  _score += 14
-                else:               _score += 8   # cao nhung neutral
+                else:               _score += 8
             elif _vrat >= 0.7:
-                _score += 5    # volume binh thuong
-            # else: _vrat < 0.7 -> low volume -> 0 diem (block gate v3 phai xet rieng)
+                _score += 5
 
             # --- LOC 4: IMM MOMENTUM + BOS/CHoCH (0-15 diem) ---
-            # _imm da xac nhan == _T o buoc 6 gate, nen luon co +5
-            _score += 5    # imm confirmed (buoc 6 da pass)
-            # BOS/CHoCH (HH/HL structure)
+            _score += 5    # imm confirmed (buoc 6 gate da pass)
+            _bos_opposing = False
             if _hh_ll == _T:
-                _score += 7    # BOS cung chieu (Higher Highs + Higher Lows)
+                _score += 7
             elif _hh_ll == -_T:
-                _score -= 3    # CHoCH nguoc (canh bao dao chieu)
+                _score -= 3
+                _bos_opposing = True
             elif _hh_ll == 0:
-                _score += 3    # Structure neutral (CHoCH khong ro)
+                _score += 3
 
-            # --- LOC 5: CANDLE PATTERN (0-10 diem) ---
+            # --- LOC 5: CANDLE PATTERN (+10 / -5 diem) ---
+            _cpat_opposing = False
             if _cpat == _T:
-                _score += 10   # Engulfing/Hammer/Marubozu cung chieu
+                _score += 10
             elif _cpat == -_T:
-                _score -= 5    # Pattern nguoc chieu (canh bao reversal)
+                _score -= 5
+                _cpat_opposing = True
 
             # --- LOC 6: ADX + ENTRY QUALITY (0-10 diem) ---
             if not math.isnan(adx):
@@ -3319,26 +3317,49 @@ class TradingBot:
                 elif adx >= 25: _score += 4
                 elif adx >= 15: _score += 2
             _ext_abs = abs(_ext)
-            if _ext_abs <= 0.3:   _score += 4   # entry rat gan EMA21 (ideal)
-            elif _ext_abs <= 0.7: _score += 2   # entry gan EMA21
+            if _ext_abs <= 0.3:   _score += 4
+            elif _ext_abs <= 0.7: _score += 2
 
-            # Clamp score [0, 100]
             _score = max(0, min(100, _score))
 
-            # NGUONG: >=65 = tuong duong >=70% do chac chan trong 10000 kich ban Excel
-            # <65 = cac kich ban co xac suat <70% -> SKIP (thua lo nhieu hon thang)
-            if _score < 65:
+            # MACD REQUIRED CONDITION (diem mau chot):
+            # MACD xuat hien trong MOI kich ban >=70% certainty trong Excel.
+            # Neu khong co MACD duong -> scenario khong nam trong 1248 -> skip.
+            if _macd_score <= 0:
                 logger.info(
-                    f"{symbol}: GATE v4 SKIP - score={_score}/100 < 65 "
-                    f"(khong nam trong 1248 kich ban >=70% certainty)"
-                )
-                return _block(f"skip - score={_score}/100 < 65 (duoi nguong 70% certainty)")
+                    f"{symbol}: GATE v4 skip - MACD=0 (dieu kien can, xuat hien trong moi "
+                    f"kich ban >=70% certainty nhung absent/nguoc o day)")
+                return _block("skip - MACD khong dong thuan (dieu kien can cua 1248 scenarios)")
+
+            # NGUONG THICH UNG (Fix 2+3+4):
+            # Base: 65 (>=70% certainty). Tang len khi co warning signals:
+            #   F=0 transition: +7 (can nhieu tin hieu khac bu dap)
+            #   BOS nguoc (CHoCH): +5 (structure distribution risk)
+            #   Candle pattern nguoc: +5 (realtime reversal signal)
+            # Cac warning co the cong don: F=0 + BOS nguoc + Candle nguoc = +17 -> nguong 82
+            _threshold = 65
+            _warnings = []
+            if _fast_tr == 0:
+                _threshold += 7
+                _warnings.append(f"F=0(+7)")
+            if _bos_opposing:
+                _threshold += 5
+                _warnings.append(f"BOS_nguoc(+5)")
+            if _cpat_opposing:
+                _threshold += 5
+                _warnings.append(f"candle_nguoc(+5)")
+
+            if _score < _threshold:
+                _warn_str = " ".join(_warnings) if _warnings else "none"
+                logger.info(
+                    f"{symbol}: GATE v4 SKIP - score={_score}/100 < {_threshold} "
+                    f"(warnings: {_warn_str})")
+                return _block(f"skip - score={_score} < {_threshold} (warnings: {_warn_str})")
 
             # TP scale theo score: score=65 -> TP=12%, score=100 -> TP=25%
             _tp_by_score = config.TP_ROI_MIN + (((_score - 65) / 35.0) * (config.TP_ROI_MAX - config.TP_ROI_MIN))
             _tp_by_score = max(config.TP_ROI_MIN, min(config.TP_ROI_MAX, _tp_by_score))
 
-            # Conviction cho capital scaling: score/100
             _conv = _score / 100.0
 
             if best.direction != _T:
@@ -3347,10 +3368,12 @@ class TradingBot:
             best.tp_roi_override = round(_tp_by_score, 4)
             best.strength = max(best.strength, min(1.0, _conv))
 
+            _warn_log = f" warn=[{' '.join(_warnings)}]" if _warnings else ""
             logger.info(
-                f"{symbol}: GATE v4 PASS | {'L' if _T==1 else 'S'} | score={_score}/100 | "
+                f"{symbol}: GATE v4.1 PASS | {'L' if _T==1 else 'S'} | "
+                f"score={_score}/100 >= {_threshold}{_warn_log} | "
                 f"F={_fast_tr} M1={macro_trend} M2={macro_4h} I={_imm} | "
-                f"MACD_hist={_macd_hist:.4f} vrat={_vrat:.1f} cpat={_cpat} | "
+                f"MACD={_macd_score}pts hist={_macd_hist:.4f} vrat={_vrat:.1f} cpat={_cpat} | "
                 f"ADX={adx:.0f} ext={_ext:.2f} HH_LL={_hh_ll} | "
                 f"TP={_tp_by_score*100:.1f}% conv={_conv:.2f}"
             )

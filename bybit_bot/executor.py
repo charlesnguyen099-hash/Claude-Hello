@@ -38,6 +38,7 @@ class Executor:
         self._tick_size:  dict[str, float] = {}
         self._executing:  set               = set()  # symbols dang trong qua trinh execute (lock)
         self._open_symbols: set             = set()  # symbols co open position theo executor (guard stale list)
+        self._restored_symbols: set         = set()  # symbols duoc restore tu exchange khi restart - khong dong boi signal
 
     def execute_signal(
         self,
@@ -81,6 +82,12 @@ class Executor:
             pos_side    = existing[0]["side"]
             signal_side = "Buy" if signal.direction == 1 else "Sell"
             if pos_side == signal_side:
+                return
+
+            # Lenh duoc restore tu exchange khi restart -> KHONG dong boi signal reversal.
+            # Chi SL/TP exchange hoac dynamic exit moi duoc dong lenh nay.
+            if symbol in self._restored_symbols:
+                logger.info(f"{symbol}: Signal reversal - SKIP (restored on restart, chi dong boi SL/TP/dynamic exit)")
                 return
 
             # Anti-whipsaw: khong force-close neu position mo < 30 phut
@@ -391,11 +398,11 @@ class Executor:
                         logger.info(f"{symbol}: Re-applied SL/TP with LastPrice trigger on restore")
                     except Exception as _re:
                         logger.warning(f"{symbol}: Re-apply SL/TP on restore failed: {_re!r}")
-                # Dat _open_time = now (thoi diem phat hien, khong phai thoi diem tao lenh).
-                # Neu dung created_ms (gio thuc), held_seconds sau restart = nhieu gio ->
-                # anti-whipsaw 300s pass -> signal nguoc chieu dong lenh ngay khi restart.
-                # Dung now: lenh duoc bao ve 300s tu khi bot bat dau chay (khong dong khi restart).
                 self._open_time[symbol] = time.time()
+                # Danh dau: lenh nay duoc restore tu exchange khi restart.
+                # Signal reversal se KHONG dong lenh nay - chi SL/TP exchange hoac dynamic exit.
+                self._restored_symbols.add(symbol)
+                logger.info(f"{symbol}: marked as restored-on-restart - signal reversal blocked")
                 if symbol not in self._tick_size:
                     try:
                         info = self.client.get_instrument_info(symbol)
@@ -519,6 +526,7 @@ class Executor:
         self._open_time.pop(symbol, None)
         self._open_symbols.discard(symbol)
         self._tick_size.pop(symbol, None)
+        self._restored_symbols.discard(symbol)
 
     def _close_position(self, position: dict):
         symbol = position["symbol"]

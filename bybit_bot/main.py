@@ -669,10 +669,11 @@ class TradingBot:
             # macro_4h == 0 (trung tinh): van tin macro_trend.
             macro_dir   = macro_trend if (macro_trend != 0 and macro_4h != -macro_trend) else 0
 
-            # Nguong chot loi phai TRU phi DONG lenh (theo ROI = exit_fee * leverage) +
-            # buffer funding -> chot la LOI RONG that su, khong hoa/lo vi phi o don bay cao.
-            # unrealisedPnl cua Bybit la GROSS (chua tru phi dong) nen phai cong nguong len.
-            _exit_cost_roi = (config.EXIT_FEE + config.FUNDING_FEE_BUFFER) * _lev
+            # Nguong chot loi phai TRU TOAN BO phi khu hoi (vao+ra+funding) theo ROI.
+            # unrealisedPnl cua Bybit la GROSS (chua tru phi nao) nen phai dat nguong tren tong phi.
+            # TOTAL_ROUND_TRIP_COST = entry_fee + exit_fee + funding_buffer -> dam bao moi exit
+            # deu cover du phi -> khong bao gio chot loi ma hoa ra lo sau phi.
+            _exit_cost_roi = config.TOTAL_ROUND_TRIP_COST * _lev   # entry+exit+funding (toan bo phi)
             _lock_thresh   = max(config.DYN_PROFIT_LOCK_ROI, _exit_cost_roi + 0.02)  # +2% net toi thieu
 
             # 1) PROFIT-LOCK: dang loi (sau phi dong) ma market quay dau nguoc -> chot ngay

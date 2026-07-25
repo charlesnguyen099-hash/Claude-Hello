@@ -391,9 +391,11 @@ class Executor:
                         logger.info(f"{symbol}: Re-applied SL/TP with LastPrice trigger on restore")
                     except Exception as _re:
                         logger.warning(f"{symbol}: Re-apply SL/TP on restore failed: {_re!r}")
-                created_ms = int(pos.get("createdTime", 0))
-                if created_ms > 0:
-                    self._open_time[symbol] = created_ms / 1000
+                # Dat _open_time = now (thoi diem phat hien, khong phai thoi diem tao lenh).
+                # Neu dung created_ms (gio thuc), held_seconds sau restart = nhieu gio ->
+                # anti-whipsaw 300s pass -> signal nguoc chieu dong lenh ngay khi restart.
+                # Dung now: lenh duoc bao ve 300s tu khi bot bat dau chay (khong dong khi restart).
+                self._open_time[symbol] = time.time()
                 if symbol not in self._tick_size:
                     try:
                         info = self.client.get_instrument_info(symbol)

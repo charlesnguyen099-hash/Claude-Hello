@@ -1,16 +1,15 @@
 """
-Market Scanner - Tat ca coin co TRENDING (khong gioi han so luong).
+Market Scanner - TOAN BO coin Bybit USDT perpetual (khong bo coin nao).
 
 Dinh nghia TRENDING (4 tieu chi, score 0-100):
-  1. Price Momentum  (40%): % thay doi gia 24h - coin dang tang/giam manh
-  2. Volume Surge    (30%): volume so voi nguong toi thieu - dong tien dang do vao
-  3. Liquidity       (20%): spread nho = thanh khoan tot = de vao/ra
-  4. Volume size     (10%): tong volume 24h - coin dang active
+  1. Price Momentum  (40%): % thay doi gia 24h
+  2. Volume Surge    (30%): volume surge ratio
+  3. Liquidity       (20%): spread nho = thanh khoan tot
+  4. Volume size     (10%): tong volume 24h
 
-Tra ve TAT CA coin qua filter, sap xep theo trending_score giam dan.
-Coin score cao nhat duoc phan tich truoc trong moi tick.
-Loai tru: coin pump/dump > 25% 24h (move da xong), leverage token, volume < 100K,
-          coin nho (vol<10M) khong co momentum (|chg|<1%) hoac spread > 0.5%.
+Tra ve TAT CA coin USDT (tru leverage token va stable), sap xep theo trending_score.
+Khong co quality gate theo volume hay momentum - bat toan bo thi truong.
+Chi loai: leverage token (3L/3S/UP/DOWN/BULL/BEAR), stablecoin pairs (USDC/BUSD/TUSD).
 """
 
 import logging
@@ -69,20 +68,8 @@ class MarketScanner:
 
                 vol_surge = vol / max(config.MIN_VOLUME_USDT_24H, 1)
 
-                if vol < config.MIN_VOLUME_USDT_24H or price <= 0:
-                    continue
-
-                # Quality gate cho coin nho (vol < 10M):
-                # phai co momentum ro rang va spread du chat luong
-                if vol < 10_000_000:
-                    if abs(raw_chg) < 1.0:   # gia phai di chuyen it nhat 1% trong 24h
-                        continue
-                    if spread > 0.5:          # spread > 0.5% = kho execute, bo qua
-                        continue
-
-                # Loai coin pump/dump xong (>25% trong 24h - momentum can)
-                if abs(raw_chg) > 25:
-                    logger.debug(f"Scanner skip {sym}: 24h change={raw_chg:.1f}% > 25%")
+                # Chi loai coin thuc su chet (gia = 0, hoac volume duoi nguong rat thap)
+                if price <= 0 or vol < config.MIN_VOLUME_USDT_24H:
                     continue
 
                 symbols.append(SymbolInfo(
@@ -132,7 +119,7 @@ class MarketScanner:
             for _, r in sorted_df.head(5).iterrows()
         )
         logger.info(
-            f"Scanner: {n} coins eligible (sorted by trend score) | "
+            f"Scanner: {n} coins (TOAN BO Bybit USDT, sorted by trend score) | "
             f"Top5: {top5_info}"
         )
         return self.trending_symbols

@@ -10,11 +10,10 @@ API_SECRET = os.getenv("BYBIT_API_SECRET", "YOUR_API_SECRET_HERE")
 TESTNET    = os.getenv("BYBIT_TESTNET", "false").lower() == "true"
 
 # --- Market Scanner -----------------------------------------------------------
-MIN_VOLUME_USDT_24H  = 1_000_000     # min 1M USDT/24h - mo rong de scan nhieu coin hon.
-                                     # Coin 1-10M: phai co momentum >=1% va spread <=0.5% (quality gate scanner).
-                                     # Coin >=10M (HIGH_VOL_THRESHOLD): duoc phan tich tan suat cao hon.
+MIN_VOLUME_USDT_24H  = 50_000        # 50K USDT/24h - nguong sap san de bat toan bo coin Bybit
+                                     # Chi loai coin chet hoan toan (0 giao dich). Giu het phan con lai.
 HIGH_VOL_THRESHOLD   = 10_000_000    # nguong volume cao: coin >= nguong nay scan tan suat cao (cooldown ngan)
-SCAN_INTERVAL_SEC    = 30            # cap nhat danh sach trending moi 30s (giam API call)
+SCAN_INTERVAL_SEC    = 60            # cap nhat danh sach trending moi 60s
 
 # --- Multi-Timeframe Analysis -------------------------------------------------
 # 1m  x 500  = ~8h   - MAIN signal + entry timing
@@ -145,12 +144,11 @@ MAX_SPREAD_PCT_ALT   = 0.0015   # 0.15% cho altcoin
 
 # --- Execution ----------------------------------------------------------------
 LOOP_INTERVAL_SEC      = 1    # minimum pause giua cac tick (rate limit only)
-SYMBOL_COOLDOWN_SEC    = 10   # cooldown cho coin thuong (giam tu 30s -> 10s)
-TOP20_COOLDOWN_SEC     = 5    # top 20 trending: re-analyze moi 5s (gan nhu moi tick)
-TOP20_COUNT            = 30   # so coin trending cao nhat duoc uu tien (mo rong 20->30:
-                              # tap trung nhom trending lon - nhieu lenh tiem nang nhat)
-SCAN_BUDGET_TOP20_SEC  = 150.0 # budget cho nhom trending top (tang 120->150: uu tien scan sau)
-SCAN_BUDGET_REST_SEC   = 90.0  # budget phan con lai (giam 120->90: don thoi gian cho nhom trending)
+SYMBOL_COOLDOWN_SEC    = 60    # REST coins: re-analyze moi 60s (toan bo ~400 coin covered trong 1 phut)
+TOP20_COOLDOWN_SEC     = 5     # HIGH-VOL top coins: re-analyze moi 5s (nhanh nhat)
+TOP20_COUNT            = 50    # so coin HIGH-VOL duoc uu tien (tang 30->50)
+SCAN_BUDGET_TOP20_SEC  = 300.0  # budget HIGH-VOL: du cho 50 coin x ~1s/coin
+SCAN_BUDGET_REST_SEC   = 600.0  # budget REST: du cho toan bo ~400 coin con lai x ~1s/coin
 
 # --- Logging ------------------------------------------------------------------
 LOG_FILE        = "trading_bot.log"

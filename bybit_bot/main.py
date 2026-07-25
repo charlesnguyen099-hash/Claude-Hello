@@ -1397,8 +1397,8 @@ class TradingBot:
             h1_rng  = h1_high - h1_low
             if h1_rng > 0:
                 h1_pos = (_range_price - h1_low) / h1_rng
-                _h1_long_thresh  = 0.70 if (is_priority and macro_trend >= 1) else 0.60
-                _h1_short_thresh = 0.30 if (is_priority and macro_trend <= -1) else 0.40
+                _h1_long_thresh  = 0.80 if (is_priority and macro_trend >= 1) else 0.70
+                _h1_short_thresh = 0.20 if (is_priority and macro_trend <= -1) else 0.30
                 if h1_pos > _h1_long_thresh:
                     # BTC bull chi bypass o vung giua (60-85%), extreme top (>85%) luon block
                     if not _btc_bull_rng or h1_pos > 0.85:
@@ -3749,9 +3749,18 @@ class TradingBot:
             )
 
             _threshold = 50
-            if _score < _threshold:
+            # HIGH-CONVICTION FAST PATH: F+M1+M2 all aligned + ADX>=25 + vol>=1.5x
+            # Lower threshold to 35 ("90%+ chac chan co loi") - bot self-trade outside scenarios
+            _high_conviction = (
+                _fast_tr == _T and macro_trend == _T and macro_4h == _T
+                and adx >= 25
+                and _vrat_early >= 1.5
+            )
+            _effective_threshold = 35 if _high_conviction else _threshold
+            if _score < _effective_threshold:
                 logger.info(
-                    f"{symbol}: SCENARIO v6+ skip - score={_score}/100 < {_threshold} | "
+                    f"{symbol}: SCENARIO v6+ skip - score={_score}/100 < {_effective_threshold}"
+                    f"{'(high-conv 35)' if _high_conviction else '(std 50)'} | "
                     f"scenario={_scenario_pts} pre={_pre_clamped} | "
                     f"EMA={_ema_cat}({_ema_pts}) MACD={_macd_cat}({_macd_pts})[hid={_macd_hidden_cat}] "
                     f"RSI={_rsi_cat}({_rsi_pts})[hid={_rsi_hidden_div}] vol={_vol_cat}({_vol_pts}) "
@@ -3759,7 +3768,7 @@ class TradingBot:
                     f"stoch={_stoch_cat}({_stoch_pts}) sess={_sess_cat}({_sess_pts}) | "
                     f"F={_fast_tr}({_s_fast}) M1={macro_trend}({_s_m1}) ADX={adx:.0f}({_s_adx}) "
                     f"imm={_imm}({_s_imm}) ext={_ext:.1f}({_s_ext}) fresh={_s_fresh}")
-                return _block(f"skip - score={_score} < {_threshold} (not in 50K HQ scenarios)")
+                return _block(f"skip - score={_score} < {_effective_threshold} (not in 50K HQ scenarios)")
 
             # --- TP VA CONVICTION THEO TIER (3 tiers tu 50K scenarios) ---
             # TP = TARGET ban dau. risk_manager se clamp TP vao: [fee_floor, 2xATR].

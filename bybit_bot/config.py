@@ -103,7 +103,8 @@ SL_TP_RATIO = 5.0    # SL muc tieu = 5 x TP (truoc khi clamp thanh ly)
 # --- Signal sensitivity -------------------------------------------------------
 MIN_SIGNAL_STRENGTH = 0.50   # Giam tu 0.55: bat them lenh - signal yeu gio duoc size nho (5% equity)
                              # nen rui ro da duoc kiem soat bang capital scaling, khong can chan som
-MIN_ADX             = 12     # ADX >= 12 cho 1m scalp - 18 qua cao, block het trong sideway/Asian session
+MIN_ADX             = 8      # ADX >= 8 cho 1m scalp — nhat quan voi gate ADX<8 absolute block
+                             # ADX 8-12 van co the trade neu scenario gate pass (score>=50)
 MIN_CONSENSUS          = 2   # 2/7 strategies dong thuan - du voi 10+ AEQ gate downstream
 MIN_CONSENSUS_TRENDING = 2   # Dong bo voi MIN_CONSENSUS
 MIN_ATR_PCT         = 0.0005 # 0.05% cho 1m (ATR 1m nho hon 15m, largecap BTC ~0.03-0.08%)

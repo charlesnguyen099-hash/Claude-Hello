@@ -95,9 +95,14 @@ ATR_PERIOD        = 14
 # khi dao chieu. Vi du 50x: TP 20% ROI = gia di 0.4% = rat de dat trong 1 lenh dung trend.
 # TP cao (60% cu) can gia di 1.2% -> thuong dao chieu truoc khi toi -> mat lenh loi.
 # SL ROI = min(SL_TP_RATIO x TP, tran an toan thanh ly) - SL khong vuot gia thanh ly.
-TP_ROI_MIN  = 0.12   # TP toi thieu 12% ROI (lenh yeu) - chot nhanh, an toan
-TP_ROI_MAX  = 0.25   # TP toi da 25% ROI (lenh manh nhat) - van de dat truoc khi dao chieu
-SL_TP_RATIO = 5.0    # SL muc tieu = 5 x TP (truoc khi clamp thanh ly)
+# TP calibrated tu 50K HQ Scenarios (avg R:R=5.01):
+#   95-98%: TP=9.98% ROI, SL=1.72%, R:R=5.84, leverage=10.3x
+#   90-95%: TP=9.10% ROI, R:R=5.25
+#   85-90%: TP=7.93% ROI, R:R=4.61
+# TP_ROI_MIN = standard tier floor (below 85-90%), TP_ROI_MAX = 95-98% hard cap
+TP_ROI_MIN  = 0.060  # 6% ROI floor (standard tier)
+TP_ROI_MAX  = 0.099  # 9.9% ROI cap (95-98% tier max)
+SL_TP_RATIO = 5.0    # avg R:R ~5.0 theo 50K scenarios
 
 # --- Signal sensitivity -------------------------------------------------------
 MIN_SIGNAL_STRENGTH = 0.50   # Giam tu 0.55: bat them lenh - signal yeu gio duoc size nho (5% equity)

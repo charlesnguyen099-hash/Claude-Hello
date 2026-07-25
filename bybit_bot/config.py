@@ -153,6 +153,9 @@ DYN_TP_CEIL_ROI      = 0.20    # tran TP dong: toi da 20% ROI tu entry (khong ke
 # Largecap (BTC/ETH): 0.05%, Altcoin: 0.15%
 MAX_SPREAD_PCT_LARGE = 0.0005   # 0.05% cho BTC/ETH
 MAX_SPREAD_PCT_ALT   = 0.0015   # 0.15% cho altcoin
+# LOI RONG TOI THIEU SAU PHI+SPREAD tai TP: lenh bi ABORT neu du tinh loi rong < nguong nay.
+# 5% ROI net = du dem cho slippage fill, bien dong funding, gia tri trade thuc su.
+MIN_SAFE_NET_ROI     = 0.05     # 5% ROI net toi thieu tai TP (sau phi khu hoi + spread)
 
 # --- Execution ----------------------------------------------------------------
 LOOP_INTERVAL_SEC      = 1    # minimum pause giua cac tick (rate limit only)

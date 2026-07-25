@@ -114,7 +114,7 @@ class RiskManager:
         # Khac ban cu: TP KHONG bi scale xuong theo liq clamp nua (bo tran TP 30% ->
         # TP 60% kha thi: L=66, SL clamp ~60%, ty le nen tu 5:1 ve ~1:1 cho lenh manh).
         # Luon ton tai L hop le: tai L=1 max_sl=0.75 >= tp (tp da clamp <=0.70), fee=0.11%.
-        _min_net_roi = 0.01    # loi rong toi thieu 1% margin sau phi — "miễn không lỗ sau phí"
+        _min_net_roi = getattr(config, "MIN_SAFE_NET_ROI", 0.05)  # loi rong toi thieu sau phi (5% default)
 
         tp_roi = min(tp_roi, 0.70)   # tran cung: dam bao SL >= TP ton tai o L=1 (max_sl=0.75)
 

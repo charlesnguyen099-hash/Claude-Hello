@@ -134,6 +134,25 @@ class Executor:
                 logger.warning(f"{symbol}: ABORT - spread={spread_pct*100:.3f}% > {max_spread*100:.3f}%")
                 return
 
+            # KIEM TRA LOI RONG TAI TP TRUOC KHI VAO LENH (pre-entry profitability guard):
+            # gross ROI tai TP = (tp_dist / entry) * leverage = tp1_pct/100 * leverage
+            # phi ROI = TOTAL_ROUND_TRIP_COST * leverage  (entry+exit+funding, amplified by lev)
+            # spread ROI = spread_pct * leverage           (spread an nhu phi, amplified by lev)
+            # net ROI tai TP = gross - phi - spread -> phai >= MIN_SAFE_NET_ROI de dam bao co loi that su
+            _lev_f         = float(params.leverage)
+            _gross_roi_tp  = (params.tp1_pct / 100.0) * _lev_f
+            _fee_roi       = config.TOTAL_ROUND_TRIP_COST * _lev_f
+            _spread_roi    = spread_pct * _lev_f
+            _net_roi_tp    = _gross_roi_tp - _fee_roi - _spread_roi
+            _min_net       = getattr(config, "MIN_SAFE_NET_ROI", 0.05)
+            if _net_roi_tp < _min_net:
+                logger.warning(
+                    f"{symbol}: ABORT - pre-entry profitability FAIL: "
+                    f"gross_roi={_gross_roi_tp*100:.1f}% - fee={_fee_roi*100:.1f}% - spread={_spread_roi*100:.2f}% "
+                    f"= net={_net_roi_tp*100:.1f}% < {_min_net*100:.0f}% (khong du co loi an toan tai TP)"
+                )
+                return
+
             tick_size = 0.0
             try:
                 info      = self.client.get_instrument_info(symbol)

@@ -703,7 +703,8 @@ class TradingBot:
 
             # 1c) DYNAMIC TP RAISE: momentum van manh cung chieu lenh -> nang TP tren san.
             # TP chi duoc tang (trailing theo huong loi), khong bao gio HA xuong.
-            if getattr(config, "DYN_TP_RAISE_ENABLE", True) and pnl_roi > 0:
+            # Chi nang TP khi da CO LOI NET (pnl_roi > phi khu hoi) - khong nang khi con lo.
+            if getattr(config, "DYN_TP_RAISE_ENABLE", True) and pnl_roi > _exit_cost_roi:
                 if imm == pos_dir and macro_dir == pos_dir:
                     _entry_px = _sf(pos.get("avgPrice", 0))
                     _cur_tp   = self.executor._tp_price.get(symbol, 0.0)

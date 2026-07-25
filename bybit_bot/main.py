@@ -690,7 +690,7 @@ class TradingBot:
             # 1b) SOFT PROFIT LOCK: co loi nho nhung BOTH imm+macro quay nguoc -> dong som.
             # Bat case vao lenh giua dao dong (mid-oscillation entry): gia di nguoc ngay sau entry,
             # co chut loi gross nhung se mat het sau phi neu tiep tuc xau -> dong khi con loi.
-            if getattr(config, "DYN_TP_ENABLE", True) and 0 < pnl_roi < _lock_thresh:
+            if getattr(config, "DYN_TP_ENABLE", True) and _exit_cost_roi < pnl_roi < _lock_thresh:
                 if imm == -pos_dir and macro_dir == -pos_dir:
                     logger.warning(
                         f"[DYN-TP] {symbol} {side}: SOFT LOCK roi=+{pnl_roi*100:.2f}% "
@@ -733,7 +733,7 @@ class TradingBot:
                                     logger.debug(f"[DYN-TP] {symbol}: raise TP failed: {_dtp_err!r}")
 
             # 2) SMART CUT-LOSS: dang lo + trend lon nguoc han -> khong the phuc hoi
-            if pnl_roi < 0 and macro_dir == -pos_dir:
+            if pnl_roi < -_exit_cost_roi and macro_dir == -pos_dir:
                 if imm == pos_dir:
                     # co bounce nguoc ve phia minh = luc LO IT NHAT -> dong ngay
                     logger.warning(

@@ -387,6 +387,8 @@ class TradingBot:
         self._equity_day_date: str = ""
         # Per-symbol cooldown: tranh re-analyze cung coin trong SYMBOL_COOLDOWN_SEC
         self._last_analyzed: dict[str, float] = {}
+        # Dynamic TP: TP price da duoc nang theo momentum (chi tang, khong giam)
+        self._dyn_tp_raised: dict[str, float] = {}
 
     # -- Main loop ------------------------------------------------------------
 
@@ -477,6 +479,7 @@ class TradingBot:
         if closed_by_exchange:
             for sym in closed_by_exchange:
                 self.executor.clear_position_state(sym)
+                self._dyn_tp_raised.pop(sym, None)
                 # Chi xoa cooldown neu da du 30s ke tu lan trade cuoi
                 # Tranh truong hop exchange cham ghi nhan lenh moi -> bi coi la "closed" -> double entry
                 _last_trade = self._last_analyzed.get(sym, 0)
@@ -675,7 +678,53 @@ class TradingBot:
                         f"| market quay dau (imm={imm} macro={macro_dir} pos={pos_dir}) -> chot ngay"
                     )
                     self.executor._close_position(pos)
+                    self._dyn_tp_raised.pop(symbol, None)
                     continue
+
+            # 1b) SOFT PROFIT LOCK: co loi nho nhung BOTH imm+macro quay nguoc -> dong som.
+            # Bat case vao lenh giua dao dong (mid-oscillation entry): gia di nguoc ngay sau entry,
+            # co chut loi gross nhung se mat het sau phi neu tiep tuc xau -> dong khi con loi.
+            if getattr(config, "DYN_TP_ENABLE", True) and 0 < pnl_roi < _lock_thresh:
+                if imm == -pos_dir and macro_dir == -pos_dir:
+                    logger.warning(
+                        f"[DYN-TP] {symbol} {side}: SOFT LOCK roi=+{pnl_roi*100:.2f}% "
+                        f"| imm={imm} macro={macro_dir} ca hai quay nguoc -> dong truoc khi mat loi"
+                    )
+                    self.executor._close_position(pos)
+                    self._dyn_tp_raised.pop(symbol, None)
+                    continue
+
+            # 1c) DYNAMIC TP RAISE: momentum van manh cung chieu lenh -> nang TP tren san.
+            # TP chi duoc tang (trailing theo huong loi), khong bao gio HA xuong.
+            if getattr(config, "DYN_TP_RAISE_ENABLE", True) and pnl_roi > 0:
+                if imm == pos_dir and macro_dir == pos_dir:
+                    _entry_px = _sf(pos.get("avgPrice", 0))
+                    _cur_tp   = self.executor._tp_price.get(symbol, 0.0)
+                    if _entry_px > 0 and _cur_tp > 0:
+                        _tick      = self.executor._tick_size.get(symbol, 0.0)
+                        _tp_ceil   = getattr(config, "DYN_TP_CEIL_ROI", 0.20)
+                        _tp_ceil_px = _entry_px + pos_dir * _tp_ceil * _entry_px / _lev
+                        _mark      = float(df["close"].iloc[-1])
+                        _step      = getattr(config, "DYN_TP_RAISE_STEP", 0.30)
+                        _remaining = (_tp_ceil_px - _mark) * pos_dir
+                        if _remaining > 0:
+                            _new_tp = _mark + pos_dir * _remaining * _step
+                            _prev   = self._dyn_tp_raised.get(symbol, _cur_tp)
+                            # TP chi duoc nang: Long TP phai tang, Short TP phai giam
+                            _raised = (pos_dir == 1 and _new_tp > _prev + 1e-9) or \
+                                      (pos_dir == -1 and _new_tp < _prev - 1e-9)
+                            if _raised:
+                                _new_tp_r = self.client.round_to_tick(_new_tp, _tick) if _tick > 0 else round(_new_tp, 6)
+                                try:
+                                    self.client.update_take_profit(symbol, _new_tp_r, tick_size=_tick)
+                                    self._dyn_tp_raised[symbol] = _new_tp_r
+                                    self.executor._tp_price[symbol] = _new_tp_r
+                                    logger.info(
+                                        f"[DYN-TP] {symbol} {side}: RAISE TP {_cur_tp:.6f} -> {_new_tp_r:.6f} "
+                                        f"roi=+{pnl_roi*100:.1f}% imm={imm} macro={macro_dir}"
+                                    )
+                                except Exception as _dtp_err:
+                                    logger.debug(f"[DYN-TP] {symbol}: raise TP failed: {_dtp_err!r}")
 
             # 2) SMART CUT-LOSS: dang lo + trend lon nguoc han -> khong the phuc hoi
             if pnl_roi < 0 and macro_dir == -pos_dir:
@@ -686,6 +735,7 @@ class TradingBot:
                         f"| trend nguoc (macro={macro_dir}) + bounce (imm={imm}) -> dong luc lo it nhat"
                     )
                     self.executor._close_position(pos)
+                    self._dyn_tp_raised.pop(symbol, None)
                     continue
                 if pnl_roi <= -config.DYN_HARD_CUT_ROI:
                     # lo qua sau, khong co bounce -> cat luon, khong cho cham SL banh chanh
@@ -694,6 +744,7 @@ class TradingBot:
                         f"| trend nguoc + khong bounce -> cat, chan lo them"
                     )
                     self.executor._close_position(pos)
+                    self._dyn_tp_raised.pop(symbol, None)
                     continue
 
     def _btc_correlated(self, df_coin, lookback: int = 100, threshold: float = 0.5) -> bool:

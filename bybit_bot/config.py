@@ -137,6 +137,16 @@ DYN_PROFIT_LOCK_ROI = 0.05   # dang loi >= 5% ROI ma momentum quay dau nguoc -> 
 DYN_HARD_CUT_ROI    = 0.35   # dang lo >= 35% ROI + trend nguoc, khong co bounce -> cat luon (chan banh chanh)
 DYN_MIN_HOLD_SEC    = 60     # cho lenh 'tho' 60s dau, tranh churn theo nhieu ngan han
 
+# --- DYNAMIC TP (bot dieu chinh TP dong dua tren momentum sau khi vao lenh) ---------
+# 1. SOFT PROFIT LOCK: co loi nho nhung BOTH imm+macro quay nguoc -> dong truoc khi mat loi.
+#    Xu ly case vao lenh giua dao dong (entry at mid-oscillation) nhu BLESSUSDT SHORT.
+# 2. TP RAISE: momentum van manh (imm+macro cung chieu lenh) -> nang TP de bat xu huong lon hon.
+#    TP chi duoc NANG, khong bao gio HA (trailing theo huong co loi).
+DYN_TP_ENABLE        = True    # bat SOFT PROFIT LOCK
+DYN_TP_RAISE_ENABLE  = True    # bat TP RAISE khi momentum manh
+DYN_TP_RAISE_STEP    = 0.30    # nang TP len 30% khoang con lai tu gia hien tai den tran TP
+DYN_TP_CEIL_ROI      = 0.20    # tran TP dong: toi da 20% ROI tu entry (khong keo qua dai)
+
 # Max spread: neu bid-ask spread > nguong nay -> khong entry (thanh khoan kem)
 # Largecap (BTC/ETH): 0.05%, Altcoin: 0.15%
 MAX_SPREAD_PCT_LARGE = 0.0005   # 0.05% cho BTC/ETH

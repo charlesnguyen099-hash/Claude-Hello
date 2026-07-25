@@ -1340,12 +1340,16 @@ class TradingBot:
             logger.debug(f"{symbol}: skip - 1m ADX={adx:.1f} < {min_adx} (sideway)")
             return False
 
-        # 24h directional move filter: tranh chase sau khi coin da pump/dump > 20% trong 24h
+        # 24h directional move filter: tranh chase sau khi coin da pump/dump trong 24h
         # 1440 nen 1m = 1440 phut = 24h chinh xac (chinh xac hon 96x15m vi du lieu 1m granular)
         _W24H = 1440
         _block_long_24h  = False
         _block_short_24h = False
         _change_24h = 0.0
+        _24h_pos    = 0.5   # vi tri gia trong 24h range [0..1], 1=dinh, 0=day
+        _24h_hi     = 0.0
+        _24h_lo     = 0.0
+        _24h_rng    = 0.0
         if len(df_signal) >= _W24H:
             _ref_24h = df_signal["close"].iloc[-_W24H]
             if _ref_24h > 0:
@@ -1353,12 +1357,27 @@ class TradingBot:
                 if abs(_change_24h) > 30:
                     logger.info(f"{symbol}: 24h change={_change_24h:.1f}% > 30% -> HARD SKIP (extreme move)")
                     return False
-                if _change_24h > 20:
+                if _change_24h > 15:
                     _block_long_24h = True
                     logger.debug(f"{symbol}: 24h change=+{_change_24h:.1f}% -> block LONG (pump exhausted)")
-                elif _change_24h < -20:
+                elif _change_24h < -15:
                     _block_short_24h = True
                     logger.debug(f"{symbol}: 24h change={_change_24h:.1f}% -> block SHORT (dump exhausted)")
+            # Vi tri gia trong 24h high/low range: quan trong hon % change vi bat duoc truong hop
+            # coin da pump tu truoc 24h nhung hien tai van o dinh (nhu HUSDT +24% multi-day).
+            # HUSDT: 24h change chi +9.75% (duoi nguong 20%) nhung price o 98% 24h range = dinh tuyet doi.
+            _24h_hi = float(df_signal["high"].iloc[-_W24H:].max())
+            _24h_lo = float(df_signal["low"].iloc[-_W24H:].min())
+            _24h_rng = _24h_hi - _24h_lo
+            _cur_p24  = float(df_signal["close"].iloc[-1])
+            if _24h_rng > 0:
+                _24h_pos = (_cur_p24 - _24h_lo) / _24h_rng
+                if _24h_pos > 0.88:
+                    _block_long_24h = True
+                    logger.debug(f"{symbol}: 24h range pos={_24h_pos:.0%} > 88% -> block LONG (gan dinh tuyet doi ngay)")
+                elif _24h_pos < 0.12:
+                    _block_short_24h = True
+                    logger.debug(f"{symbol}: 24h range pos={_24h_pos:.0%} < 12% -> block SHORT (gan day tuyet doi ngay)")
 
         # RSI tren 1m: 2000 nen du de tinh on dinh, chinh xac hon RSI 15m (granular hon)
         rsi_now = compute_rsi(df_signal["close"]).iloc[-1] if not df_signal.empty and len(df_signal) >= 14 else 50.0
@@ -3211,6 +3230,103 @@ class TradingBot:
                             and 28 < rsi_now < 65 and _sc_pos > 0.18 and adx >= 15):
                         _sc_dir, _sc_strength, _sc_tp, _sc_name = -1, 0.68, 0.0, "sc_atr_expand_short"
 
+            # S75/S76: 24H RANGE TOP SHORT / BOTTOM LONG (HUSDT pattern)
+            # Coin o 90%+ cua 24h range + volume giam + macro da len nhieu -> SHORT.
+            # Day la nghich dao cua du dinh: thay vi block long, ta BAT SHORT o dinh ngay.
+            if _sc_dir == 0 and _24h_rng > 0:
+                _rp_pos = _24h_pos   # da tinh o tren: vi tri trong 24h range
+                _rp_vol_fade = _sc_vol_surge < 0.8  # volume hien tai thap hon binh thuong
+                # SHORT khi gia o dinh ngay + volume fade + da tang nhieu
+                if (_rp_pos > 0.90 and _rp_vol_fade and _change_24h > 5
+                        and not _block_short_24h and rsi_now > 55
+                        and scalp_trend >= 0 and _sc_last_red and adx >= 10):
+                    _sc_dir, _sc_strength, _sc_tp, _sc_name = -1, 0.67, 0.12, "sc_24h_top_short"
+                # LONG khi gia o day ngay + volume fade + da giam nhieu
+                elif (_rp_pos < 0.10 and _rp_vol_fade and _change_24h < -5
+                        and not _block_long_24h and rsi_now < 45
+                        and scalp_trend <= 0 and _sc_last_green and adx >= 10):
+                    _sc_dir, _sc_strength, _sc_tp, _sc_name = 1, 0.67, 0.12, "sc_24h_bottom_long"
+
+            # S77/S78: MULTI-DAY PUMP EXHAUSTION SHORT / DUMP EXHAUSTION LONG
+            # Coin da tang > 12% trong 72h va hien tai dang dao chieu -> SHORT.
+            if _sc_dir == 0 and len(df_signal) >= 4320:
+                _me_ref72 = float(df_signal["close"].iloc[-4320])
+                _me_cur   = float(df_signal["close"].iloc[-1])
+                if _me_ref72 > 0:
+                    _me_ch72 = (_me_cur - _me_ref72) / _me_ref72 * 100
+                    _me_rsi_declining = rsi_now < float(compute_rsi(df_signal["close"], 14).iloc[-10:-1].max()) - 8
+                    # Pump > 12% trong 3 ngay + RSI dang quay xuong + price o dinh = SHORT
+                    if (_me_ch72 > 12 and _me_rsi_declining and _24h_pos > 0.75
+                            and not _block_short_24h and _sc_last_red
+                            and macro_trend <= 0 and _sc_vol_surge >= 0.5 and adx >= 12):
+                        _sc_dir, _sc_strength, _sc_tp, _sc_name = -1, 0.68, 0.12, "sc_multiday_pump_exhaust"
+                    # Dump > 12% trong 3 ngay + RSI dang phuc hoi + price o day = LONG
+                    elif (_me_ch72 < -12 and not _me_rsi_declining and _24h_pos < 0.25
+                            and not _block_long_24h and _sc_last_green
+                            and macro_trend >= 0 and _sc_vol_surge >= 0.5 and adx >= 12):
+                        _sc_dir, _sc_strength, _sc_tp, _sc_name = 1, 0.68, 0.12, "sc_multiday_dump_exhaust"
+
+            # S79/S80: VOLUME DECLINING AT EXTREME PRICE (distribution / accumulation confirm)
+            # Volume liên tuc giam 5 nen lien tiep trong khi gia o dinh/day -> xa hang / gom hang xong.
+            if _sc_dir == 0 and len(df_micro) >= 8:
+                _vd_vols = df_micro["volume"].iloc[-6:-1].values
+                _vd_declining = all(_vd_vols[i] > _vd_vols[i+1] for i in range(len(_vd_vols)-1))
+                _vd_rising = all(_vd_vols[i] < _vd_vols[i+1] for i in range(len(_vd_vols)-1))
+                if _vd_declining and _24h_pos > 0.82 and not _block_short_24h:
+                    if rsi_now > 55 and _sc_last_red and adx >= 10:
+                        _sc_dir, _sc_strength, _sc_tp, _sc_name = -1, 0.65, 0.0, "sc_vol_fade_at_top"
+                elif _vd_declining and _24h_pos < 0.18 and not _block_long_24h:
+                    if rsi_now < 45 and _sc_last_green and adx >= 10:
+                        _sc_dir, _sc_strength, _sc_tp, _sc_name = 1, 0.65, 0.0, "sc_vol_fade_at_bottom"
+
+            # S81/S82: HIGHER HIGH LOWER RSI = BEARISH DIV (confirm tren 1m chi tiet hon S57)
+            # S57 dung 20/40 nen, S81 dung 10/20 nen (ngau chuan hon cho scalp 1m)
+            if _sc_dir == 0 and len(df_micro) >= 22:
+                _hd_rsi  = compute_rsi(df_micro["close"], 14)
+                _hd_hi10 = float(df_micro["high"].iloc[-10:].max())
+                _hd_hi20 = float(df_micro["high"].iloc[-20:-10].max())
+                _hd_lo10 = float(df_micro["low"].iloc[-10:].min())
+                _hd_lo20 = float(df_micro["low"].iloc[-20:-10].min())
+                _hd_rsi10_max = float(_hd_rsi.iloc[-10:].max())
+                _hd_rsi20_max = float(_hd_rsi.iloc[-20:-10].max())
+                _hd_rsi10_min = float(_hd_rsi.iloc[-10:].min())
+                _hd_rsi20_min = float(_hd_rsi.iloc[-20:-10].min())
+                # Bearish div: price high moi nhung RSI thap hon
+                if (_hd_hi10 > _hd_hi20 * 1.0005 and _hd_rsi10_max < _hd_rsi20_max - 4
+                        and not _block_short_24h and rsi_now > 52 and _sc_pos > 0.62
+                        and _sc_last_red and _sc_vol_surge >= 0.4 and adx >= 10):
+                    _sc_dir, _sc_strength, _sc_tp, _sc_name = -1, 0.64, 0.0, "sc_bearish_div_short"
+                # Bullish div: price low moi nhung RSI cao hon
+                elif (_hd_lo10 < _hd_lo20 * 0.9995 and _hd_rsi10_min > _hd_rsi20_min + 4
+                        and not _block_long_24h and rsi_now < 48 and _sc_pos < 0.38
+                        and _sc_last_green and _sc_vol_surge >= 0.4 and adx >= 10):
+                    _sc_dir, _sc_strength, _sc_tp, _sc_name = 1, 0.64, 0.0, "sc_bullish_div_long"
+
+            # S83/S84: SWING HIGH/LOW REJECTION (Wyckoff re-test)
+            # Price test lai swing high/low truoc do va bi day nguoc lai -> S/R confirmed.
+            if _sc_dir == 0 and len(df_micro) >= 30 and _atrm > 0:
+                # Tim swing high 10-25 nen truoc
+                _sh_window = df_micro.iloc[-26:-3]
+                _sh_swing_hi = float(_sh_window["high"].max())
+                _sh_swing_lo = float(_sh_window["low"].min())
+                _sh_cur_hi = float(df_micro["high"].iloc[-2])
+                _sh_cur_lo = float(df_micro["low"].iloc[-2])
+                _sh_close  = float(df_micro["close"].iloc[-1])
+                # Re-test swing high + bi reject (touch nhung dong lai duoi) -> SHORT
+                _sh_test_hi = (_sh_cur_hi >= _sh_swing_hi * 0.998 and
+                               _sh_close < _sh_swing_hi * 0.998 and
+                               float(df_micro["open"].iloc[-1]) < _sh_swing_hi)
+                # Re-test swing low + bi bounce (touch nhung dong lai tren) -> LONG
+                _sh_test_lo = (_sh_cur_lo <= _sh_swing_lo * 1.002 and
+                               _sh_close > _sh_swing_lo * 1.002 and
+                               float(df_micro["open"].iloc[-1]) > _sh_swing_lo)
+                if (_sh_test_hi and not _block_short_24h and rsi_now > 48
+                        and _sc_vol_surge >= 0.5 and _sc_last_red and adx >= 10):
+                    _sc_dir, _sc_strength, _sc_tp, _sc_name = -1, 0.66, 0.0, "sc_swing_hi_reject"
+                elif (_sh_test_lo and not _block_long_24h and rsi_now < 52
+                        and _sc_vol_surge >= 0.5 and _sc_last_green and adx >= 10):
+                    _sc_dir, _sc_strength, _sc_tp, _sc_name = 1, 0.66, 0.0, "sc_swing_lo_bounce"
+
             if _sc_dir == 0:
                 return False
 
@@ -4246,6 +4362,46 @@ class TradingBot:
                             f"skip SHORT - vol spike {_ubf_max_vol/_ubf_bg_vol:.1f}x + reversal candle "
                             f"(mua vao trong dump, du day vol spike)"
                         )
+
+        # --- UNIVERSAL BLOCK H: 24H RANGE TOP/BOTTOM (HUSDT pattern) ---
+        # _block_long/short_24h duoc set khi price > 88% / < 12% cua 24h range.
+        # Nhung cac guard AEQ / scenario co the bypass flag do.
+        # Universal block nay dam bao KHONG lenh nao vao long o dinh ngay / short o day ngay.
+        # Ngoai le duy nhat: _high_conviction (F+M1+M2 aligned + ADX>=25 + vol>=1.5x).
+        _trade_dir = best.direction
+        if not _high_conviction and _24h_rng > 0 and _24h_hi > 0:
+            _ubh_cur = float(df_micro["close"].iloc[-1]) if not df_micro.empty else 0.0
+            _ubh_pos = (_ubh_cur - _24h_lo) / _24h_rng if _ubh_cur > 0 else _24h_pos
+            if _trade_dir == 1 and _ubh_pos > 0.88:
+                return _block(
+                    f"skip LONG - price {_ubh_pos:.0%} of 24h range "
+                    f"(24hH={_24h_hi:.6f} 24hL={_24h_lo:.6f}) (du dinh tuyet doi ngay - HUSDT pattern)"
+                )
+            if _trade_dir == -1 and _ubh_pos < 0.12:
+                return _block(
+                    f"skip SHORT - price {_ubh_pos:.0%} of 24h range "
+                    f"(24hH={_24h_hi:.6f} 24hL={_24h_lo:.6f}) (du day tuyet doi ngay)"
+                )
+
+        # --- UNIVERSAL BLOCK I: MULTI-DAY PUMP AT ENTRY ---
+        # Coin pump > 15% trong 72h (3 ngay) + hien tai o top 75% range = exhausted.
+        # HUSDT: pump tu 0.054160 (3 ngay truoc) len 0.067220 = +24% -> long o top la ngu.
+        if not _high_conviction and len(df_signal) >= 4320:
+            _W72H = 4320  # 72h = 4320 nen 1m
+            _ref_72h = float(df_signal["close"].iloc[-_W72H])
+            _cur_72h = float(df_signal["close"].iloc[-1])
+            if _ref_72h > 0:
+                _change_72h = (_cur_72h - _ref_72h) / _ref_72h * 100
+                if _change_72h > 15 and _24h_pos > 0.75 and _trade_dir == 1:
+                    return _block(
+                        f"skip LONG - 72h pump={_change_72h:.1f}% + 24h pos={_24h_pos:.0%} "
+                        f"(coin da tang nhieu ngay, entry o gan dinh multi-day)"
+                    )
+                if _change_72h < -15 and _24h_pos < 0.25 and _trade_dir == -1:
+                    return _block(
+                        f"skip SHORT - 72h dump={_change_72h:.1f}% + 24h pos={_24h_pos:.0%} "
+                        f"(coin da giam nhieu ngay, entry o gan day multi-day)"
+                    )
 
         # --- UNIVERSAL BLOCK G: CHOPPY RANGE NO-TRADE ZONE ---
         # 20 nen gia dao dong qua lai khong co huong ro (range < 1.5 ATR) + ADX thap ->

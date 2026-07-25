@@ -3858,6 +3858,76 @@ class TradingBot:
             # else: default potential scaling
 
         # ======================================================================
+        # UNIVERSAL ABSOLUTE BLOCKS - KHONG CO EXCEPTION NAO (ke ca scenario/flip)
+        # Chay cho TAT CA lenh truoc khi vao gate. Ngan cac truong hop "ngu ngoc" ma
+        # tat ca cac guard AEQ/scenario/flip deu co the bo qua.
+        # ======================================================================
+
+        # --- UNIVERSAL BLOCK A: CHASING LARGE RECENT MOVE (vao cuoi song lon) ---
+        # 30c range >= 3 ATR + price o top 80% (LONG) hoac bottom 20% (SHORT) = du dinh/du day.
+        # Gap lon nhat: scenario entry va direction_flipped bypass tat ca AEQ guards ngoai tru
+        # HARD BLOCK micro. Guard nay dong lai gap do - khong co bypass nao ca.
+        # Ngoai le DUY NHAT:
+        #   1. HIGH_CONVICTION (F+M1+M2+ADX25+vol1.5x) = breakout momentum that su
+        #   2. Full trend + moderate move: ca 3 TF cung chieu (fast/scalp/macro) + move < 5 ATR
+        #      = continuation trong confirmed trend, khong phai chasing spike
+        if not _high_conviction and len(df_micro) >= 32 and _atrm > 0:
+            _ub_r30_hi  = float(df_micro["high"].iloc[-30:].max())
+            _ub_r30_lo  = float(df_micro["low"].iloc[-30:].min())
+            _ub_r30_rng = _ub_r30_hi - _ub_r30_lo
+            _ub_move_atr = _ub_r30_rng / _atrm
+            if _ub_move_atr >= 3.0 and _ub_r30_rng > 0:
+                _ub_cur_p = float(df_micro["close"].iloc[-1])
+                _ub_pos   = (_ub_cur_p - _ub_r30_lo) / _ub_r30_rng
+                # Volume ratio tinh truc tiep (khong dung _sc_vol_surge co the chua set)
+                _ub_vrat = (df_micro["volume"].iloc[-5:].mean() /
+                            (df_micro["volume"].iloc[-20:-5].mean() + 1e-9)
+                            if len(df_micro) >= 20 else 1.0)
+                _ub_full_bull = (_fast_tr_pre == 1  and scalp_trend == 1  and macro_trend >= 1)
+                _ub_full_bear = (_fast_tr_pre == -1 and scalp_trend == -1 and macro_trend <= -1)
+                _ub_mod_move  = _ub_move_atr < 5.0  # khong phai extreme spike
+
+                _trade_dir = best.direction   # dung direction hien tai (co the da flip)
+                if _trade_dir == 1 and _ub_pos > 0.80:
+                    # LONG khi gia o top 80% cua 30c range co 3+ ATR move
+                    _ub_ok = (_ub_full_bull and _ub_mod_move) or (_ub_pos >= 0.95 and _ub_vrat >= 1.5)
+                    if not _ub_ok:
+                        return _block(
+                            f"skip LONG - 30c move {_ub_move_atr:.1f}ATR at top {_ub_pos:.0%} "
+                            f"(du dinh: fast={_fast_tr_pre} scalp={scalp_trend} macro={macro_trend})"
+                        )
+                if _trade_dir == -1 and _ub_pos < 0.20:
+                    # SHORT khi gia o bottom 20% cua 30c range co 3+ ATR move
+                    _ub_ok = (_ub_full_bear and _ub_mod_move) or (_ub_pos <= 0.05 and _ub_vrat >= 1.5)
+                    if not _ub_ok:
+                        return _block(
+                            f"skip SHORT - 30c move {_ub_move_atr:.1f}ATR at bottom {_ub_pos:.0%} "
+                            f"(du day: fast={_fast_tr_pre} scalp={scalp_trend} macro={macro_trend})"
+                        )
+
+        # --- UNIVERSAL BLOCK B: CANDLE EXHAUSTION (vao cuoi song - ap dung CA scenario) ---
+        # Phien ban nang cap cua BLOCK 4 (BLOCK 4 chi chay cho non-scenario trong gate).
+        # Scenario entry co the vao CUOI nen lon vi BLOCK 4 bi skip.
+        # Guard nay dong lai gap do.
+        if not _high_conviction and _atrm > 0 and len(df_micro) >= 5:
+            _ub_c3      = df_micro.iloc[-4:-1]
+            _ub_bodies  = (_ub_c3["close"] - _ub_c3["open"]).values
+            _ub_run_up  = sum(float(b) for b in _ub_bodies if b > 0) / _atrm
+            _ub_run_dn  = sum(-float(b) for b in _ub_bodies if b < 0) / _atrm
+            _ub_last    = float(df_micro["close"].iloc[-2]) - float(df_micro["open"].iloc[-2])
+            _ub_last_g  = max(0.0, _ub_last) / _atrm
+            _ub_last_r  = max(0.0, -_ub_last) / _atrm
+            _trade_dir  = best.direction
+            if _trade_dir == 1 and (_ub_run_up >= 1.5 or _ub_last_g >= 2.0):
+                return _block(
+                    f"skip LONG (universal) - 3c pump {_ub_run_up:.1f}ATR last={_ub_last_g:.1f}ATR (du dinh)"
+                )
+            if _trade_dir == -1 and (_ub_run_dn >= 1.5 or _ub_last_r >= 2.0):
+                return _block(
+                    f"skip SHORT (universal) - 3c dump {_ub_run_dn:.1f}ATR last={_ub_last_r:.1f}ATR (du day)"
+                )
+
+        # ======================================================================
         # |  TRUE-DIRECTION GATE - chi trade khi trend RO + DUNG chieu           |
         # ======================================================================
         # REU: long khi trend quay xuong -> lo. MORPHO: short trong range choppy -> lo.

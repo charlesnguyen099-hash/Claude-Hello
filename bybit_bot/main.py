@@ -3146,7 +3146,7 @@ class TradingBot:
         #  = quay ve chieu ma phan tich truoc do da ket luan la SAI)
         _pump_exhaustion_flip = False
         if (best.direction == 1 and micro_down and not _btc_bull_long_ok
-                and not _direction_flipped and not _scenario_entry):
+                and not _direction_flipped):
             _pump_exh_30 = 0.0
             if not df_micro.empty and len(df_micro) >= 30:
                 _p30  = df_micro["close"].iloc[-30]
@@ -3158,6 +3158,7 @@ class TradingBot:
                 and not _is_gradual_uptrend # khong phai uptrend lien tuc (do la continuation)
                 and not (macro_trend == 1 and macro_4h == 1)  # khong co macro bull manh
                 and len(signals) >= 2       # consensus >= 2
+                and not _scenario_entry     # scenario tu xu ly rieng ben duoi
             )
             if _can_pump_exh_short:
                 best.direction = -1
@@ -3169,7 +3170,18 @@ class TradingBot:
                 )
                 # Do NOT return - continue with direction=-1
             elif _high_conviction:
-                pass  # HIGH-CONVICTION: F+M1+M2 cung chieu + ADX>=25 + vol>=1.5x -> cho phep entry du micro nguoc
+                pass  # HIGH-CONVICTION: F+M1+M2 cung chieu + ADX>=25 + vol>=1.5x -> cho phep entry
+            elif _scenario_entry:
+                # SCENARIO LONG khi micro bearish: chi cho phep neu dung o day that su.
+                # Khong the LONG giua downtrend chi vi scenario fire - LAUSDT pattern.
+                # Dieu kien cho phep: o vung day 2h (m2h<0.30) VA fast_tr khong bearish manh.
+                # Neu fast_tr==-1 VA khong o day = trend dang xuong, scenario LONG la sai chieu.
+                _sc_long_ok = _m2h_pos < 0.30 and _fast_tr_pre != -1
+                if not _sc_long_ok:
+                    return _block(
+                        f"HARD BLOCK LONG (scenario) - micro bearish + fast={_fast_tr_pre} "
+                        f"+ 2h_pos={_m2h_pos:.0%} > 30% (khong o day thuc su)"
+                    )
             else:
                 return _block(
                     f"HARD BLOCK LONG - 1m BEARISH (micro=-1, gia dang giam) "
@@ -3179,7 +3191,7 @@ class TradingBot:
         # Khi SHORT bi HARD BLOCK vi micro_up nhung gia vua dump xuong day -> flip sang LONG
         _dump_exhaustion_flip = False
         if (best.direction == -1 and micro_up and not _btc_bear_short_ok
-                and not _direction_flipped and not _scenario_entry):
+                and not _direction_flipped):
             _dump_exh_30 = 0.0
             if not df_micro.empty and len(df_micro) >= 30:
                 _p30d  = df_micro["close"].iloc[-30]
@@ -3191,6 +3203,7 @@ class TradingBot:
                 and not _is_gradual_downtrend
                 and not (macro_trend == -1 and macro_4h == -1)
                 and len(signals) >= 2
+                and not _scenario_entry
             )
             if _can_dump_exh_long:
                 best.direction = 1
@@ -3200,7 +3213,15 @@ class TradingBot:
                     f"dump30={_dump_exh_30*100:.1f}% m2h={_m2h_pos:.0%} scalp={scalp_trend}"
                 )
             elif _high_conviction:
-                pass  # HIGH-CONVICTION: F+M1+M2 cung chieu + ADX>=25 + vol>=1.5x -> cho phep entry du micro nguoc
+                pass  # HIGH-CONVICTION: F+M1+M2 cung chieu + ADX>=25 + vol>=1.5x -> cho phep entry
+            elif _scenario_entry:
+                # SCENARIO SHORT khi micro bullish: chi cho phep neu dung o dinh that su.
+                _sc_short_ok = _m2h_pos > 0.70 and _fast_tr_pre != 1
+                if not _sc_short_ok:
+                    return _block(
+                        f"HARD BLOCK SHORT (scenario) - micro bullish + fast={_fast_tr_pre} "
+                        f"+ 2h_pos={_m2h_pos:.0%} < 70% (khong o dinh thuc su)"
+                    )
             else:
                 return _block(
                     f"HARD BLOCK SHORT - 1m BULLISH (micro=+1, gia dang tang) "

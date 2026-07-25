@@ -3537,14 +3537,6 @@ class TradingBot:
             elif _vwt_dir == -_T and _vwt_str >= 0.3:                  _s_vol_dir = -8
             else:                                                        _s_vol_dir = 0
 
-            # P5b: 24h trend penalty - khong trade manh nguoc macro 24h
-            # 50K scenarios: BTC Dom Falling (bull alts) + OI short squeeze -> 24h uptrend = LONG bias
-            _s_24h = 0
-            if _change_24h > 15 and _T == -1:   _s_24h = -14  # SHORT khi coin tang 15%+ 24h
-            elif _change_24h > 10 and _T == -1: _s_24h = -8   # SHORT khi coin tang 10%+ 24h
-            elif _change_24h < -15 and _T == 1: _s_24h = -14  # LONG khi coin giam 15%+ 24h
-            elif _change_24h < -10 and _T == 1: _s_24h = -8   # LONG khi coin giam 10%+ 24h
-
             # P6: Extension penalty (EMA21 distance)
             _ema21m = float(compute_ema(df_micro["close"], 21).iloc[-1])
             _ext = (_price_now - _ema21m) / _atrm if _atrm > 0 else 0.0
@@ -3584,7 +3576,7 @@ class TradingBot:
             else:              _s_struct = -5
 
             _pre_score = (_s_fast + _s_m1 + _s_m2 + _s_adx +
-                          _s_vol_dir + _s_24h + _s_ext + _s_fresh + _s_imm + _s_struct)
+                          _s_vol_dir + _s_ext + _s_fresh + _s_imm + _s_struct)
 
             # Hard floor: qua nhieu tin hieu xau -> khong co scenario nao dat duoc threshold
             if _pre_score < -35:

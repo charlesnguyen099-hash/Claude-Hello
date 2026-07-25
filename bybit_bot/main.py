@@ -3121,9 +3121,13 @@ class TradingBot:
                 if macro_trend == -_T:
                     logger.info(f"{symbol}: TREND skip - M1={macro_trend} nguoc fast={_fast_tr} (trend dang dao chieu)")
                     return _block("skip - macro nguoc fast EMA (trend dao chieu)")
+                # M2 chi block khi CA HAI M1 va M2 cung nguoc (truoc day chi can M2 nguoc).
+                # Neu M2 nguoc nhung M1 dong thuan -> warn nhung cho qua (conflict nhe).
+                if macro_4h == -_T and macro_trend == -_T:
+                    logger.info(f"{symbol}: TREND skip - M1={macro_trend} M2={macro_4h} ca hai nguoc fast={_fast_tr}")
+                    return _block("skip - M1 va M2 ca hai nguoc fast EMA (conflict manh)")
                 if macro_4h == -_T:
-                    logger.info(f"{symbol}: TREND skip - M2={macro_4h} nguoc fast={_fast_tr} (4h trend chong fast)")
-                    return _block("skip - macro_4h nguoc fast EMA (4h conflict)")
+                    logger.info(f"{symbol}: TREND warn - M2={macro_4h} nguoc fast={_fast_tr} nhung M1={macro_trend} ok, cho qua")
             else:
                 # F=0: EMA20 ~ EMA50, dang crossing hoac sideway.
                 # Khi F=0, CA HAI macro phai dong thuan (M1 == M2).
@@ -3197,25 +3201,25 @@ class TradingBot:
                 if len(df_micro) >= 11:
                     _ref10 = float(df_micro["close"].iloc[-11])
                     _mv10  = (_live_p - _ref10) / _atrm
-                    if _T == -1 and _mv10 < -1.0:
+                    if _T == -1 and _mv10 < -1.8:
                         logger.info(
                             f"{symbol}: TREND skip SHORT - fresh dump {_mv10:.2f}ATR/10n live={_live_p:.6f} "
                             f"(vua dump manh, chase day - ORDI/CRV pattern)")
                         return _block(f"skip SHORT - fresh dump {_mv10:.2f}ATR/10n (doi bounce)")
-                    if _T == 1 and _mv10 > 1.0:
+                    if _T == 1 and _mv10 > 1.8:
                         logger.info(
                             f"{symbol}: TREND skip LONG - fresh pump {_mv10:.2f}ATR/10n live={_live_p:.6f} "
                             f"(vua pump manh, chase dinh)")
                         return _block(f"skip LONG - fresh pump {_mv10:.2f}ATR/10n (doi pullback)")
-                # 5-candle window - phat hien micro-spike cuc manh (nguong thap hon: 0.7 ATR)
+                # 5-candle window - phat hien micro-spike cuc manh (nguong 1.2 ATR)
                 if len(df_micro) >= 6:
                     _ref5 = float(df_micro["close"].iloc[-6])
                     _mv5  = (_live_p - _ref5) / _atrm
-                    if _T == -1 and _mv5 < -0.7:
+                    if _T == -1 and _mv5 < -1.2:
                         logger.info(
                             f"{symbol}: TREND skip SHORT - micro dump {_mv5:.2f}ATR/5n (spike do, doi bounce)")
                         return _block(f"skip SHORT - micro dump {_mv5:.2f}ATR/5n (spike exhaustion)")
-                    if _T == 1 and _mv5 > 0.7:
+                    if _T == 1 and _mv5 > 1.2:
                         logger.info(
                             f"{symbol}: TREND skip LONG - micro pump {_mv5:.2f}ATR/5n (spike len, doi pullback)")
                         return _block(f"skip LONG - micro pump {_mv5:.2f}ATR/5n (spike exhaustion)")
@@ -3256,12 +3260,10 @@ class TradingBot:
                         f"spike xanh xong, doi nen tiep theo)")
                     return _block(f"skip LONG - large green candle body {_lc_body:.2f}ATR (spike exhaustion)")
 
-            # --- BUOC 6: IMMEDIATE MOMENTUM phai CUNG CHIEU _T ----------------
-            # imm == 0 (chop) HOAC imm == -_T (nguoc) -> KHONG vao.
-            # Chi trade khi gia DANG di DUNG HUONG NGAY LUC NAY.
-            if _imm != _T:
-                logger.info(f"{symbol}: TREND skip - imm={_imm} != T={_T} (chua resume hoac nguoc)")
-                return _block("skip - imm chua xac nhan trend (chop hoac nguoc)")
+            # --- BUOC 6: IMMEDIATE MOMENTUM - soft penalty, khong hard block ----
+            # Truoc day: hard block neu imm != _T -> catch-22 voi Step 5.5.
+            # Gio: convert thanh score penalty trong Scenario Gate (xu ly duoi).
+            # _imm_penalty duoc ap dung sau khi tinh _score.
 
             # --- BUOC 7: CANDLE STRUCTURE (HH/HL) ----------------------------
             # Kiem tra 15 nen gan nhat: HH+HL = bullish, LH+LL = bearish.
@@ -3341,13 +3343,16 @@ class TradingBot:
             elif _macd_dir_v == -_T:     _macd_pts = -8
             else:                        _macd_pts = 0
 
-            # MACD la dieu kien can: xuat hien trong TAT CA 10000 scenarios.
-            # Neu MACD absent hoac nguoc -> khong khop scenario -> skip.
-            if _macd_pts <= 0:
+            # MACD la dieu kien can: chi block khi MACD CO CROSSOVER RO RANG nguoc chieu.
+            # _macd_pts == -8 (hist_down/up opposing, above0/below0 opposing) = soft penalty, cho qua.
+            # Chi block khi -2 crossover nguoc (bear_crossover cho LONG, bull_crossover cho SHORT)
+            # = _macd_pts cap nhat: nguoc crossover = -8, nhung ta chi block < -15.
+            # Thay doi tu "<= 0" sang "< -15": bat duoc scenarios co MACD neutral/mild opposing.
+            if _macd_pts < -15:
                 logger.info(
-                    f"{symbol}: SCENARIO skip - MACD={_macd_cat} nguoc/absent "
-                    f"(dieu kien can trong 10000 HQ scenarios)")
-                return _block(f"skip - MACD {_macd_cat} khong dong thuan voi {'+1' if _T==1 else '-1'}")
+                    f"{symbol}: SCENARIO skip - MACD={_macd_cat} crossover nguoc ro rang "
+                    f"(block chi khi crossover phan doi manh, pts={_macd_pts})")
+                return _block(f"skip - MACD {_macd_cat} crossover nguoc (pts={_macd_pts})")
 
             # --- SIGNAL 3: RSI ZONE (18 pts max) ---
             _rsi_cat = _rsi_zone(rsi_now, df_micro)
@@ -3387,9 +3392,14 @@ class TradingBot:
             elif _cpat == -_T: _candle_pts = -5  # Pattern nguoc: penalty
             else:              _candle_pts = 0
 
+            # --- IMMEDIATE MOMENTUM PENALTY (thay the Step 6 hard block) ---
+            _imm_pen = 0
+            if _imm == -_T:   _imm_pen = -12   # imm nguoc chieu: penalty nang
+            elif _imm == 0:   _imm_pen = -6    # imm neutral (chop): penalty nhe
+
             # --- TONG DIEM ---
             _score = max(0, min(100,
-                _ema_pts + _macd_pts + _rsi_pts + _vol_pts + _bos_pts + _candle_pts))
+                _ema_pts + _macd_pts + _rsi_pts + _vol_pts + _bos_pts + _candle_pts + _imm_pen))
 
             # --- XAC DINH TIER: 90%+ vs 70-90% ---
             # Tu phan tich Excel: 90%+ = MACD div (48%) + RSI div (60%) + Volume spike (74%)
@@ -3416,7 +3426,7 @@ class TradingBot:
                     f"{symbol}: SCENARIO v5 skip - score={_score}/100 < {_threshold} | "
                     f"EMA={_ema_cat}({_ema_pts}) MACD={_macd_cat}({_macd_pts}) "
                     f"RSI={_rsi_cat}({_rsi_pts}) vol={_vol_cat}({_vol_pts}) "
-                    f"BOS={_bos_cat}({_bos_pts}) candle={_cpat}({_candle_pts})")
+                    f"BOS={_bos_cat}({_bos_pts}) candle={_cpat}({_candle_pts}) imm={_imm}({_imm_pen})")
                 return _block(f"skip - score={_score} < {_threshold} (not in 10000 HQ scenarios)")
 
             # --- TP VA CONVICTION THEO TIER ---
@@ -3444,7 +3454,7 @@ class TradingBot:
                 f"tier={_tier} score={_score}/100 | "
                 f"EMA={_ema_cat}({_ema_pts}) MACD={_macd_cat}({_macd_pts}) "
                 f"RSI={_rsi_cat}({_rsi_pts}) vol={_vol_cat}[{_vrat:.1f}x]({_vol_pts}) "
-                f"BOS={_bos_cat}({_bos_pts}) candle={_cpat}({_candle_pts}) | "
+                f"BOS={_bos_cat}({_bos_pts}) candle={_cpat}({_candle_pts}) imm={_imm}({_imm_pen}) | "
                 f"90%+={_is_90plus} TP={_tp_by_score*100:.1f}% conv={_conv:.2f}"
             )
 

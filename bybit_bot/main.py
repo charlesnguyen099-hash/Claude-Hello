@@ -2224,13 +2224,20 @@ class TradingBot:
                     _sc_dir, _sc_strength, _sc_tp, _sc_name = -1, 0.65, 0.0, "sc_breakout_down"
                 # S5/S6 - PULLBACK CONTINUATION: trend da xac nhan, gia hoi ve vung
                 # EMA21-EMA50 1m roi co nen resume; RSI trung tinh (khong extreme)
+                # GUARD THEM (TNSR pattern): loai bo pullback sau pump/dump manh:
+                #   1. volume khong bi collapse: _sc_vol_surge >= 0.35
+                #   2. khong co pump/dump lon truoc do trong 30c (> 2.5% so EMA21)
                 elif ((macro_trend == 1 and macro_4h >= 0) or (_is_gradual_uptrend and scalp_trend == 1)) \
                         and _emg_ema50 > 0 and _emg_ema50 * 0.999 <= _sc_price <= _emg_ema21 * 1.0015 \
-                        and _sc_last_green and 35 <= rsi_now <= 65 and not _block_long_24h:
+                        and _sc_last_green and 35 <= rsi_now <= 65 and not _block_long_24h \
+                        and _sc_vol_surge >= 0.35 \
+                        and (_emg_ema21 <= 0 or df_micro["high"].iloc[-30:].max() <= _emg_ema21 * 1.025):
                     _sc_dir, _sc_strength, _sc_tp, _sc_name = 1, 0.60, 0.0, "sc_pullback_up"
                 elif ((macro_trend == -1 and macro_4h <= 0) or (_is_gradual_downtrend and scalp_trend == -1)) \
                         and _emg_ema21 > 0 and _emg_ema21 * 0.9985 <= _sc_price <= _emg_ema50 * 1.001 \
-                        and _sc_last_red and 35 <= rsi_now <= 65 and not _block_short_24h:
+                        and _sc_last_red and 35 <= rsi_now <= 65 and not _block_short_24h \
+                        and _sc_vol_surge >= 0.35 \
+                        and (_emg_ema21 <= 0 or df_micro["low"].iloc[-30:].min() >= _emg_ema21 * 0.975):
                     _sc_dir, _sc_strength, _sc_tp, _sc_name = -1, 0.60, 0.0, "sc_pullback_down"
                 # S7/S8 - RANGE EXTREME mean-revert: range du rong (>=1.2%*_sp),
                 # gia cham day/dinh (<=12% / >=88%), khong co trend manh/emerging NGUOC chieu,
@@ -2246,6 +2253,17 @@ class TradingBot:
 
             if _sc_dir == 0:
                 return False
+
+            # VOLUME COLLAPSE GUARD (chay cho TAT CA scenario paths S1-S8):
+            # Neu volume hien tai < 20% trung binh 30c -> post-pump/dump exhaustion.
+            # Bat ky scenario nao vao luc nay cung la fake: khong co ai giao dich nua.
+            # TNSR pattern: vol 6.56K vs MA10 116K = 5.6% -> phai bi chan o day.
+            if _sc_vol_surge < 0.20:
+                logger.info(
+                    f"{symbol}: [SCENARIO] {_sc_name} BLOCKED - volume collapse "
+                    f"(vol_surge={_sc_vol_surge:.2f} < 0.20, post-pump/dump exhaustion)")
+                return False
+
             _scenario_entry = True
             _scenario_name  = _sc_name
             signals = [Signal(

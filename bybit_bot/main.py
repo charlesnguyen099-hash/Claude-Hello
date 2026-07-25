@@ -83,8 +83,7 @@ def _candle_pattern(df, n: int = 3) -> int:
 
 def _volume_ratio(df, lookback: int = 20) -> float:
     """Tinh ty le volume trung binh 3 nen cuoi / volume trung binh lookback nen.
-    > 2.0 = spike manh; 1.5-2.0 = cao; 0.7-1.5 = binh thuong; < 0.7 = thap.
-    Dung trong Gate V4 de chot volume magnitude (khi la volume cung chieu tren spike)."""
+    > 2.0 = spike manh; 1.5-2.0 = cao; 0.7-1.5 = binh thuong; < 0.7 = thap."""
     if df is None or df.empty or len(df) < lookback:
         return 1.0
     vol = df["volume"]
@@ -95,15 +94,89 @@ def _volume_ratio(df, lookback: int = 20) -> float:
     return avg_recent / avg_base
 
 
+def _ema_state(df, lookback_cross: int = 6) -> str:
+    """Phan loai trang thai EMA theo 6 category cua 10000 HQ Scenarios.
+    Returns: bullish_stack | bearish_stack | golden_cross | death_cross |
+             price_cross_up | price_cross_down | neutral"""
+    if df is None or len(df) < 10:
+        return "neutral"
+    close = df["close"]
+    price = float(close.iloc[-1])
+    e20 = compute_ema(close, 20); e50 = compute_ema(close, 50)
+    e20v = float(e20.iloc[-1]); e50v = float(e50.iloc[-1])
+
+    # Full stack (uu tien: 90%+ heavy)
+    if len(df) >= 200:
+        e200v = float(compute_ema(close, 200).iloc[-1])
+        if price > e20v > e50v > e200v: return "bullish_stack"
+        if price < e20v < e50v < e200v: return "bearish_stack"
+
+    # Golden/Death cross: EMA20 cat EMA50 trong lookback_cross nen gan nhat
+    _lb = min(lookback_cross, len(df) - 1)
+    e20p = float(e20.iloc[-_lb]); e50p = float(e50.iloc[-_lb])
+    if e20p < e50p and e20v >= e50v: return "golden_cross"
+    if e20p > e50p and e20v <= e50v: return "death_cross"
+
+    # Price cat EMA20
+    pricep = float(close.iloc[-_lb])
+    if pricep < e20p and price >= e20v: return "price_cross_up"
+    if pricep > e20p and price <= e20v: return "price_cross_down"
+    return "neutral"
+
+
+def _macd_state(hist: float, prev_hist: float) -> str:
+    """Phan loai MACD theo 8 category cua 10000 HQ Scenarios.
+    Returns: bull_divergence | bear_divergence | bull_crossover | bear_crossover |
+             hist_up | hist_down | above0_bull | below0_bear | neutral"""
+    if math.isnan(hist): return "neutral"
+    ph = prev_hist if not math.isnan(prev_hist) else hist
+    # Crossover (hai dau hieu manh nhat theo Excel)
+    if ph < 0 and hist > 0: return "bull_crossover"
+    if ph > 0 and hist < 0: return "bear_crossover"
+    # Divergence: histogram nguoc voi nen 0 nhung dang dao chieu
+    # "MACD below 0 & bullish div": hist < 0 nhung dang tang (momentum reversing)
+    if hist < 0 and hist > ph: return "bull_divergence"
+    # "MACD above 0 & bearish div": hist > 0 nhung dang giam
+    if hist > 0 and hist < ph: return "bear_divergence"
+    # Histogram tang/giam ro rang
+    if hist > 0 and hist >= ph: return "hist_up"
+    if hist < 0 and hist <= ph: return "hist_down"
+    if hist > 0: return "above0_bull"
+    if hist < 0: return "below0_bear"
+    return "neutral"
+
+
+def _rsi_zone(rsi: float, df=None) -> str:
+    """Phan loai RSI zone theo 6 category cua 10000 HQ Scenarios.
+    Returns: oversold | near_oversold | overbought | near_overbought |
+             bull_divergence | bear_divergence | neutral"""
+    if math.isnan(rsi): return "neutral"
+    # Extreme zones (uu tien check truoc divergence)
+    if rsi < 30: return "oversold"
+    if rsi < 40: return "near_oversold"
+    if rsi > 70: return "overbought"
+    if rsi > 60: return "near_overbought"
+    # Divergence detection: price vs RSI trong 15 nen
+    if df is not None and len(df) >= 15:
+        _price_now = float(df["close"].iloc[-1])
+        _price_15  = float(df["close"].iloc[-15])
+        _chg = (_price_now - _price_15) / max(abs(_price_15), 1e-12)
+        # Bullish div: price giam nhung RSI khong giam (dang o neutral/above oversold)
+        if _chg < -0.003 and rsi > 40: return "bull_divergence"
+        # Bearish div: price tang nhung RSI khong tang (dang o neutral/below overbought)
+        if _chg > 0.003 and rsi < 60: return "bear_divergence"
+    return "neutral"
+
+
 class TradingBot:
     def __init__(self):
         logger.info("="*60)
         logger.info("Bybit Auto Trading Bot starting...")
         # === VERSION BANNER - de XAC NHAN dang chay code MOI (khong phai code cu) ===
         # Neu ban KHONG thay dong nay khi khoi dong -> bot dang chay code CU, PHAI restart.
-        logger.info(">>> SCENARIO-GATE v4 : 1248-scenario scoring (>=70% certainty) + MACD+Vol+Candle <<<")
+        logger.info(">>> SCENARIO GATE v5 : 10,000 HQ Scenario Matcher — 90%+ priority tier <<<")
         logger.info(">>> 10-factor confluence scoring (0-100) — trade khi score>=65 — Excel-aligned <<<")
-        print(">>> [SCENARIO-GATE v4] 1248-scenario framework ACTIVE — MACD+Volume+Candle+BOS <<<", flush=True)
+        print(">>> [SCENARIO GATE v5] 10,000 HQ Scenario Matcher ACTIVE — 90%+ priority, 70-90% standard <<<", flush=True)
         logger.info(f"Mode: {'TESTNET' if config.TESTNET else 'MAINNET (LIVE)'}")
         logger.info(f"TP range: {config.TP_ROI_MIN*100:.0f}%-{config.TP_ROI_MAX*100:.0f}% ROI | SL={config.SL_TP_RATIO:.0f}xTP")
         logger.info(f"Scan budget per tick: TOP{config.TOP20_COUNT}={config.SCAN_BUDGET_TOP20_SEC}s + REST={config.SCAN_BUDGET_REST_SEC}s")
@@ -3066,9 +3139,10 @@ class TradingBot:
                     return _block("skip - fast EMA neutral, khong du xac nhan huong (F=0 transition risk)")
 
             # --- BUOC 2: ADX - trend phai du manh de trade --------------------
-            if math.isnan(adx) or adx < 20.0:
-                logger.info(f"{symbol}: TREND skip - ADX={adx:.1f}<20 (chop/sideway)")
-                return _block("skip - ADX<20 (chop)")
+            # Giam tu 20->15 de khong bo lo cac scenarios hop le trong Excel
+            if math.isnan(adx) or adx < 15.0:
+                logger.info(f"{symbol}: TREND skip - ADX={adx:.1f}<15 (chop/sideway)")
+                return _block("skip - ADX<15 (chop)")
 
             # --- BUOC 3: VOLUME khong duoc nguoc trend xac lap ----------------
             if _vwt_dir == -_T and _vwt_str >= 0.45:
@@ -3219,163 +3293,159 @@ class TradingBot:
                     return _block("skip LONG - gia break day 10 nen (dump nguoc)")
 
             # ================================================================
-            # GATE v4.1 - 100-DIEM SCORING (5-FIX REFINED)
-            # Nguong thich ung: base=65, tang len 70/72 khi co warning signals.
-            # MACD la DIEU KIEN CAN (bat buoc phai co diem duong tu MACD).
+            # SCENARIO GATE v5 - 10,000 HQ SCENARIO MATCHER
+            # Phan loai thi truong thanh CHINH XAC cac category trong file Excel.
+            # Moi signal -> label -> direction check -> score.
+            # 90%+ tier: uu tien cao nhat, TP = max, capital = cao nhat.
+            # Threshold 50: dam bao luon bat duoc cac scenarios hop le.
             # ================================================================
-            # Tinh MACD, candle pattern, volume ratio cho scoring
             _macd_line, _macd_sig, _macd_hist = compute_macd(df_micro["close"])
             _prev_hist = float("nan")
             if len(df_micro) >= 28:
-                _prev_close = df_micro["close"].iloc[:-1]
-                _, _, _ph = compute_macd(_prev_close)
-                _prev_hist = _ph
-            _cpat = _candle_pattern(df_micro)   # +1 bull, -1 bear, 0 neutral
-            _vrat = _volume_ratio(df_micro)      # ratio vs 20-bar avg
+                _, _, _prev_hist = compute_macd(df_micro["close"].iloc[:-1])
+            _cpat = _candle_pattern(df_micro)
+            _vrat = _volume_ratio(df_micro)
 
-            # Fix 1: MACD crossover + volume thap = fakeout -> hard block truoc khi scoring
-            if not math.isnan(_macd_hist) and not math.isnan(_prev_hist) and _prev_hist != 0:
-                _is_crossover = ((_T == 1  and _prev_hist < 0 and _macd_hist > 0) or
-                                 (_T == -1 and _prev_hist > 0 and _macd_hist < 0))
-                if _is_crossover and _vrat < 0.7:
-                    logger.info(
-                        f"{symbol}: GATE v4 skip - MACD crossover ({_prev_hist:.4f}->{_macd_hist:.4f}) "
-                        f"nhung volume thap ({_vrat:.2f}x) = fakeout risk")
-                    return _block(f"skip - MACD crossover + low volume ({_vrat:.2f}x) = fakeout")
+            # --- SIGNAL 1: EMA STATE (25 pts max) ---
+            _ema_cat = _ema_state(df_micro)
+            # Direction & score map (theo tan suat xuat hien trong Excel 90%+)
+            _EMA_MAP = {
+                "bullish_stack":   (1,  25),   # EMA full stack bull: 740/2510 = 29%
+                "bearish_stack":   (-1, 25),   # EMA full stack bear: 757/2510 = 30%
+                "golden_cross":    (1,  20),   # EMA20 cat EMA50 len
+                "death_cross":     (-1, 20),   # EMA20 cat EMA50 xuong
+                "price_cross_up":  (1,  15),   # Price cat EMA20 len
+                "price_cross_down":(-1, 15),   # Price cat EMA20 xuong
+                "neutral":         (0,  3),
+            }
+            _ema_dir_v, _ema_base = _EMA_MAP.get(_ema_cat, (0, 0))
+            if _ema_dir_v == _T:         _ema_pts = _ema_base
+            elif _ema_dir_v == -_T:      _ema_pts = -12   # EMA nguoc chieu = penalty nang
+            else:                        _ema_pts = _ema_base  # neutral: giu base nho
 
-            _score = 0
-            _macd_score = 0   # track rieng de enforce MACD required condition
+            # --- SIGNAL 2: MACD STATE (22 pts max) - DIEU KIEN CAN ---
+            _macd_cat = _macd_state(_macd_hist, _prev_hist)
+            _MACD_MAP = {
+                "bull_divergence":  (1,  22),  # "MACD below 0 & bullish div": 612/2510=24%
+                "bear_divergence":  (-1, 22),  # "MACD above 0 & bearish div": 602/2510=24%
+                "bull_crossover":   (1,  20),  # "MACD Bullish crossover (signal line)"
+                "bear_crossover":   (-1, 20),  # "MACD Bearish crossover (signal line)"
+                "hist_up":          (1,  18),  # "MACD Histogram increasing (momentum up)"
+                "hist_down":        (-1, 18),  # "MACD Histogram decreasing (momentum down)"
+                "above0_bull":      (1,  14),  # "MACD above 0 & bullish"
+                "below0_bear":      (-1, 14),  # "MACD below 0 & bearish"
+                "neutral":          (0,  0),
+            }
+            _macd_dir_v, _macd_base = _MACD_MAP.get(_macd_cat, (0, 0))
+            if _macd_dir_v == _T:        _macd_pts = _macd_base
+            elif _macd_dir_v == -_T:     _macd_pts = -8
+            else:                        _macd_pts = 0
 
-            # --- LOC 1: EMA ALIGNMENT (0-25 diem) ---
-            if _fast_tr == _T and macro_trend == _T and macro_4h == _T:
-                _score += 15
-            elif _fast_tr == _T and (macro_trend == _T or macro_4h == _T):
-                _score += 10
-            elif _fast_tr == _T:
-                _score += 6
-            elif _fast_tr == 0:
-                # Fix 2: F=0 transition -> EMA points giam (chi half) va nguong tang len 72
-                if macro_trend == _T: _score += 3   # giam tu +5 -> +3
-                if macro_4h   == _T: _score += 3
-            if _fast_tr == _T:
-                if macro_trend == _T and macro_4h != _T: _score += 3
-                if macro_4h   == _T and macro_trend != _T: _score += 3
+            # MACD la dieu kien can: xuat hien trong TAT CA 10000 scenarios.
+            # Neu MACD absent hoac nguoc -> khong khop scenario -> skip.
+            if _macd_pts <= 0:
+                logger.info(
+                    f"{symbol}: SCENARIO skip - MACD={_macd_cat} nguoc/absent "
+                    f"(dieu kien can trong 10000 HQ scenarios)")
+                return _block(f"skip - MACD {_macd_cat} khong dong thuan voi {'+1' if _T==1 else '-1'}")
 
-            # --- LOC 2: MACD (0-20 diem) - DIEU KIEN CAN ---
-            if not math.isnan(_macd_hist) and not math.isnan(_macd_line):
-                _hist_dir = 1 if _macd_hist > 0 else (-1 if _macd_hist < 0 else 0)
-                if _hist_dir == _T:
-                    if not math.isnan(_prev_hist):
-                        _hist_slope_ok = (_T == 1 and _macd_hist > _prev_hist) or \
-                                         (_T == -1 and _macd_hist < _prev_hist)
-                        _macd_score += 8 if _hist_slope_ok else 5
-                    else:
-                        _macd_score += 5
-                if not math.isnan(_prev_hist) and _prev_hist != 0:
-                    _cross = ((_T == 1  and _prev_hist < 0 and _macd_hist > 0) or
-                              (_T == -1 and _prev_hist > 0 and _macd_hist < 0))
-                    if _cross:
-                        _macd_score += 7
-                _div_bull = (_T == 1  and _macd_hist < 0 and not math.isnan(rsi_now) and rsi_now < 40)
-                _div_bear = (_T == -1 and _macd_hist > 0 and not math.isnan(rsi_now) and rsi_now > 60)
-                if _div_bull or _div_bear:
-                    _macd_score += 8
-            _score += _macd_score
+            # --- SIGNAL 3: RSI ZONE (18 pts max) ---
+            _rsi_cat = _rsi_zone(rsi_now, df_micro)
+            _RSI_MAP = {
+                "bull_divergence":  (1,  18),  # RSI Bullish Div: 778/2510=31% trong 90%+
+                "bear_divergence":  (-1, 18),
+                "oversold":         (1,  12),  # RSI <30: Oversold -> LONG
+                "overbought":       (-1, 12),  # RSI >70: Overbought -> SHORT
+                "near_oversold":    (1,   8),  # RSI 30-40
+                "near_overbought":  (-1,  8),  # RSI 60-70
+                "neutral":          (0,   0),
+            }
+            _rsi_dir_v, _rsi_base = _RSI_MAP.get(_rsi_cat, (0, 0))
+            if _rsi_dir_v == _T:         _rsi_pts = _rsi_base
+            elif _rsi_dir_v == -_T:      _rsi_pts = -5
+            else:                        _rsi_pts = 0
 
-            # --- LOC 3: VOLUME MAGNITUDE (0-20 diem) ---
+            # --- SIGNAL 4: VOLUME (18 pts max) ---
             if _vrat >= 2.0:
-                if _vwt_dir == _T:  _score += 20
-                else:               _score += 4
+                _vol_cat = "spike"
+                _vol_pts = 18 if _vwt_dir == _T else 5   # "Volume spike (>2x avg) confirming"
             elif _vrat >= 1.5:
-                if _vwt_dir == _T:  _score += 14
-                else:               _score += 8
-            elif _vrat >= 0.7:
-                _score += 5
+                _vol_cat = "high"
+                _vol_pts = 12 if _vwt_dir == _T else 4   # "High volume (1.5-2x avg)"
+            else:
+                _vol_cat = "normal"
+                _vol_pts = 4   # "Volume spike on reversal candle" = ta khong phan biet dc
 
-            # --- LOC 4: IMM MOMENTUM + BOS/CHoCH (0-15 diem) ---
-            _score += 5    # imm confirmed (buoc 6 gate da pass)
-            _bos_opposing = False
-            if _hh_ll == _T:
-                _score += 7
-            elif _hh_ll == -_T:
-                _score -= 3
-                _bos_opposing = True
-            elif _hh_ll == 0:
-                _score += 3
+            # --- SIGNAL 5: BOS / CHoCH (12 pts max) ---
+            # Cac category tu Excel: BOS continuation, CHoCH reversal, HH/HL, LH/LL
+            if _hh_ll == _T:   _bos_cat = "bos";    _bos_pts = 12   # HH+HL (uptrend) = BOS
+            elif _hh_ll == -_T: _bos_cat = "choch"; _bos_pts = 8    # CHoCH: valid reversal
+            else:               _bos_cat = "neutral"; _bos_pts = 3
 
-            # --- LOC 5: CANDLE PATTERN (+10 / -5 diem) ---
-            _cpat_opposing = False
-            if _cpat == _T:
-                _score += 10
-            elif _cpat == -_T:
-                _score -= 5
-                _cpat_opposing = True
+            # --- SIGNAL 6: CANDLE PATTERN (8 pts max) ---
+            if _cpat == _T:   _candle_pts = 8    # Hammer/Engulfing/Marubozu cung chieu
+            elif _cpat == -_T: _candle_pts = -5  # Pattern nguoc: penalty
+            else:              _candle_pts = 0
 
-            # --- LOC 6: ADX + ENTRY QUALITY (0-10 diem) ---
-            if not math.isnan(adx):
-                if adx >= 35:   _score += 6
-                elif adx >= 25: _score += 4
-                elif adx >= 15: _score += 2
-            _ext_abs = abs(_ext)
-            if _ext_abs <= 0.3:   _score += 4
-            elif _ext_abs <= 0.7: _score += 2
+            # --- TONG DIEM ---
+            _score = max(0, min(100,
+                _ema_pts + _macd_pts + _rsi_pts + _vol_pts + _bos_pts + _candle_pts))
 
-            _score = max(0, min(100, _score))
+            # --- XAC DINH TIER: 90%+ vs 70-90% ---
+            # Tu phan tich Excel: 90%+ = MACD div (48%) + RSI div (60%) + Volume spike (74%)
+            # hoac: Full EMA stack + Volume spike + MACD crossover/hist
+            _div_combo = (
+                _macd_cat in ("bull_divergence", "bear_divergence") and _macd_dir_v == _T and
+                _vrat >= 2.0 and _vwt_dir == _T
+            )
+            _rsi_div_aligned = (_rsi_cat in ("bull_divergence", "bear_divergence") and _rsi_dir_v == _T)
+            _stack_momentum = (
+                _ema_cat in ("bullish_stack", "bearish_stack") and _ema_dir_v == _T and
+                _vrat >= 2.0 and _vwt_dir == _T and
+                _macd_cat in ("bull_crossover", "bear_crossover", "hist_up", "hist_down") and _macd_dir_v == _T
+            )
+            _is_90plus = _div_combo or _stack_momentum or (
+                _div_combo and _rsi_div_aligned   # triple divergence = highest tier
+            )
 
-            # MACD REQUIRED CONDITION (diem mau chot):
-            # MACD xuat hien trong MOI kich ban >=70% certainty trong Excel.
-            # Neu khong co MACD duong -> scenario khong nam trong 1248 -> skip.
-            if _macd_score <= 0:
-                logger.info(
-                    f"{symbol}: GATE v4 skip - MACD=0 (dieu kien can, xuat hien trong moi "
-                    f"kich ban >=70% certainty nhung absent/nguoc o day)")
-                return _block("skip - MACD khong dong thuan (dieu kien can cua 1248 scenarios)")
-
-            # NGUONG THICH UNG (Fix 2+3+4):
-            # Base: 65 (>=70% certainty). Tang len khi co warning signals:
-            #   F=0 transition: +7 (can nhieu tin hieu khac bu dap)
-            #   BOS nguoc (CHoCH): +5 (structure distribution risk)
-            #   Candle pattern nguoc: +5 (realtime reversal signal)
-            # Cac warning co the cong don: F=0 + BOS nguoc + Candle nguoc = +17 -> nguong 82
-            _threshold = 65
-            _warnings = []
-            if _fast_tr == 0:
-                _threshold += 7
-                _warnings.append(f"F=0(+7)")
-            if _bos_opposing:
-                _threshold += 5
-                _warnings.append(f"BOS_nguoc(+5)")
-            if _cpat_opposing:
-                _threshold += 5
-                _warnings.append(f"candle_nguoc(+5)")
-
+            # NGUONG: 50 diem = dam bao bat duoc cac scenarios hop le trong Excel
+            # (thap hon v4 vi classifier chinh xac hon - khong can boi so nhieu)
+            _threshold = 50
             if _score < _threshold:
-                _warn_str = " ".join(_warnings) if _warnings else "none"
                 logger.info(
-                    f"{symbol}: GATE v4 SKIP - score={_score}/100 < {_threshold} "
-                    f"(warnings: {_warn_str})")
-                return _block(f"skip - score={_score} < {_threshold} (warnings: {_warn_str})")
+                    f"{symbol}: SCENARIO v5 skip - score={_score}/100 < {_threshold} | "
+                    f"EMA={_ema_cat}({_ema_pts}) MACD={_macd_cat}({_macd_pts}) "
+                    f"RSI={_rsi_cat}({_rsi_pts}) vol={_vol_cat}({_vol_pts}) "
+                    f"BOS={_bos_cat}({_bos_pts}) candle={_cpat}({_candle_pts})")
+                return _block(f"skip - score={_score} < {_threshold} (not in 10000 HQ scenarios)")
 
-            # TP scale theo score: score=65 -> TP=12%, score=100 -> TP=25%
-            _tp_by_score = config.TP_ROI_MIN + (((_score - 65) / 35.0) * (config.TP_ROI_MAX - config.TP_ROI_MIN))
-            _tp_by_score = max(config.TP_ROI_MIN, min(config.TP_ROI_MAX, _tp_by_score))
-
-            _conv = _score / 100.0
+            # --- TP VA CONVICTION THEO TIER ---
+            if _is_90plus:
+                # 90%+ tier: uu tien toi da, TP = cap tren, capital lon
+                _tp_by_score = config.TP_ROI_MAX     # 25%
+                _conv        = 0.90
+                _tier        = "90%+"
+            else:
+                # 70-90% tier: TP scale theo score [12%, 22%]
+                _tp_by_score = config.TP_ROI_MIN + (
+                    ((_score - _threshold) / (100.0 - _threshold)) * 0.10)
+                _tp_by_score = max(config.TP_ROI_MIN, min(0.22, _tp_by_score))
+                _conv        = _score / 100.0
+                _tier        = "70-90%"
 
             if best.direction != _T:
                 logger.info(f"{symbol}: TREND override -> {'LONG' if _T==1 else 'SHORT'} (signal={best.direction})")
-            best.direction = _T
+            best.direction       = _T
             best.tp_roi_override = round(_tp_by_score, 4)
-            best.strength = max(best.strength, min(1.0, _conv))
+            best.strength        = max(best.strength, min(1.0, _conv))
 
-            _warn_log = f" warn=[{' '.join(_warnings)}]" if _warnings else ""
             logger.info(
-                f"{symbol}: GATE v4.1 PASS | {'L' if _T==1 else 'S'} | "
-                f"score={_score}/100 >= {_threshold}{_warn_log} | "
-                f"F={_fast_tr} M1={macro_trend} M2={macro_4h} I={_imm} | "
-                f"MACD={_macd_score}pts hist={_macd_hist:.4f} vrat={_vrat:.1f} cpat={_cpat} | "
-                f"ADX={adx:.0f} ext={_ext:.2f} HH_LL={_hh_ll} | "
-                f"TP={_tp_by_score*100:.1f}% conv={_conv:.2f}"
+                f"{symbol}: SCENARIO v5 PASS | {'L' if _T==1 else 'S'} | "
+                f"tier={_tier} score={_score}/100 | "
+                f"EMA={_ema_cat}({_ema_pts}) MACD={_macd_cat}({_macd_pts}) "
+                f"RSI={_rsi_cat}({_rsi_pts}) vol={_vol_cat}[{_vrat:.1f}x]({_vol_pts}) "
+                f"BOS={_bos_cat}({_bos_pts}) candle={_cpat}({_candle_pts}) | "
+                f"90%+={_is_90plus} TP={_tp_by_score*100:.1f}% conv={_conv:.2f}"
             )
 
         # ======================================================================

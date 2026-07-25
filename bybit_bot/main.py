@@ -3319,12 +3319,29 @@ class TradingBot:
                 logger.info(f"{symbol}: GATE skip - F=M1=M2=0, thi truong sideway hoan toan")
                 return _block("skip - F=M1=M2=0 (no direction signal)")
 
+            # --- ABSOLUTE BLOCK 0: VOLUME COLLAPSE (khong co ai trade) ---
+            _vrat_early = _volume_ratio(df_micro)
+            if _vrat_early < 0.25:
+                return _block(f"skip - volume collapse {_vrat_early:.2f}x (no liquidity)")
+
             # --- ABSOLUTE BLOCK 1: ADX < 8 (thi truong chet) ---
             _atrm = _atr_for_sl if _atr_for_sl > 0 else float(
                 (df_micro["high"].iloc[-14:] - df_micro["low"].iloc[-14:]).mean())
             if math.isnan(adx) or adx < 8.0:
                 logger.info(f"{symbol}: GATE skip - ADX={adx:.1f}<8 (thi truong chet flat)")
                 return _block("skip - ADX<8 (dead flat)")
+
+            # --- ABSOLUTE BLOCK 1b: RANGING MARKET (TNSRUSDT-type) ---
+            # Ranging = ADX thap + khong co cau truc HH/HL + volume thap.
+            # Khong co scenario nao trong 50K xay ra trong flat range. Block.
+            _hh_ll_early = 0
+            if len(df_micro) >= 15:
+                _hr_e = df_micro["high"].iloc[-8:].max();  _hp_e = df_micro["high"].iloc[-15:-8].max()
+                _lr_e = df_micro["low"].iloc[-8:].min();   _lp_e = df_micro["low"].iloc[-15:-8].min()
+                if   _hr_e > _hp_e and _lr_e > _lp_e: _hh_ll_early = 1
+                elif _hr_e < _hp_e and _lr_e < _lp_e: _hh_ll_early = -1
+            if adx < 15 and _hh_ll_early == 0 and _vrat_early < 1.5:
+                return _block(f"skip - ranging market ADX={adx:.0f}<15 no-structure vol={_vrat_early:.2f}x")
 
             # --- ABSOLUTE BLOCK 2: RSI EXTREME 15/85 ---
             if not math.isnan(rsi_now):
@@ -3409,14 +3426,29 @@ class TradingBot:
                     if _mv5_dir > 1.8:   _s_fresh = min(_s_fresh, -15)
                     elif _mv5_dir > 1.0: _s_fresh = min(_s_fresh, -8)
 
-            # S9: Large candle exhaustion (body > 2.0 ATR cung chieu)
+            # S9: Large candle exhaustion — check BOTH current candle AND recent window
+            # LRCUSDT-type: pump spike 5 candles ago, current candle small → old check misses it
             _s_candle_body = 0
             if len(df_micro) >= 2 and _atrm > 0:
+                # Check candle cuoi (original)
                 _lc_o = float(df_micro["open"].iloc[-1])
                 _lc_c = float(df_micro["close"].iloc[-1])
                 _lc_body_dir = ((_lc_c - _lc_o) / _atrm) * _T
-                if _lc_body_dir > 2.0:   _s_candle_body = -10  # spike khong lo, doi nen tiep
+                if _lc_body_dir > 2.0:   _s_candle_body = -10
                 elif _lc_body_dir > 1.5: _s_candle_body = -5
+                # NEW: check recent spike AGAINST trade direction (last 10 candles)
+                # Neu co spike lon NGUOC chieu trong 10 nen gan nhat → penalty
+                if len(df_micro) >= 10:
+                    _recent10 = df_micro.iloc[-10:]
+                    _max_counter_body = 0.0
+                    for _ri in range(len(_recent10)):
+                        _rb = (float(_recent10["close"].iloc[_ri]) - float(_recent10["open"].iloc[_ri])) / _atrm
+                        if _rb * (-_T) > _max_counter_body:
+                            _max_counter_body = _rb * (-_T)
+                    if _max_counter_body > 2.5:
+                        _s_candle_body = min(_s_candle_body, -12)  # spike lon nguoc chieu
+                    elif _max_counter_body > 1.8:
+                        _s_candle_body = min(_s_candle_body, -6)
 
             # S10: IMM momentum
             if _imm == _T:       _s_imm = 8
@@ -3425,11 +3457,7 @@ class TradingBot:
 
             # S11: HH/HL candle structure
             _hh_ll = 0
-            if len(df_micro) >= 15:
-                _hr = df_micro["high"].iloc[-8:].max();  _hp = df_micro["high"].iloc[-15:-8].max()
-                _lr = df_micro["low"].iloc[-8:].min();   _lp = df_micro["low"].iloc[-15:-8].min()
-                if   _hr > _hp and _lr > _lp: _hh_ll = 1
-                elif _hr < _hp and _lr < _lp: _hh_ll = -1
+            _hh_ll = _hh_ll_early  # reuse from ranging block above
             if _hh_ll == _T:     _s_struct = 6
             elif _hh_ll == 0:    _s_struct = 0
             else:                _s_struct = -6
@@ -3469,7 +3497,7 @@ class TradingBot:
             if len(df_micro) >= 28:
                 _, _, _prev_hist = compute_macd(df_micro["close"].iloc[:-1])
             _cpat = _candle_pattern_v2(df_micro)
-            _vrat = _volume_ratio(df_micro)
+            _vrat = _vrat_early  # reuse from absolute block check above
 
             # --- SIGNAL 1: EMA STATE (25 pts max) — expanded with 50K EMA50/200 signals ---
             _ema_cat, _ema_dir_v = _ema_state_v2(df_micro)

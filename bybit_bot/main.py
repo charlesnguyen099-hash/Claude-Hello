@@ -168,6 +168,189 @@ def _rsi_zone(rsi: float, df=None) -> str:
     return "neutral"
 
 
+# ===========================================================================
+# NEW UTILITY FUNCTIONS — 50K SCENARIO ADDITIONS
+# ===========================================================================
+
+def compute_macd_series(close, fast=12, slow=26, signal=9):
+    """Returns (macd_line, sig_line, histogram) as pd.Series for divergence detection."""
+    ema_fast = close.ewm(span=fast, adjust=False).mean()
+    ema_slow = close.ewm(span=slow, adjust=False).mean()
+    macd_line = ema_fast - ema_slow
+    sig_line  = macd_line.ewm(span=signal, adjust=False).mean()
+    return macd_line, sig_line, macd_line - sig_line
+
+
+def _detect_divergence_50k(price_series, indicator_series, lookback=30, tol=0.003):
+    """Detect regular and hidden divergence between price and indicator.
+    Hidden Bull: price HL + indicator LL = trend continuation signal (#1 in 50K 95-98% tier).
+    Returns dict with regular_bull/bear, hidden_bull/bear keys."""
+    result = {"regular_bull": False, "regular_bear": False,
+              "hidden_bull": False,  "hidden_bear": False}
+    try:
+        if len(price_series) < lookback or len(indicator_series) < lookback:
+            return result
+        ps  = price_series.dropna().iloc[-lookback:]
+        ind = indicator_series.dropna().iloc[-lookback:]
+        if len(ps) < lookback // 2 or len(ind) < lookback // 2:
+            return result
+        half = len(ps) // 2
+        p_p_low  = float(ps.iloc[:half].min());  p_r_low  = float(ps.iloc[half:].min())
+        p_p_high = float(ps.iloc[:half].max());  p_r_high = float(ps.iloc[half:].max())
+        i_p_low  = float(ind.iloc[:half].min()); i_r_low  = float(ind.iloc[half:].min())
+        i_p_high = float(ind.iloc[:half].max()); i_r_high = float(ind.iloc[half:].max())
+        base_p = max(abs(p_p_low), 1e-12); base_ph = max(abs(p_p_high), 1e-12)
+        base_il = max(abs(i_p_low),  1e-12); base_ih = max(abs(i_p_high), 1e-12)
+        # Regular bull: price LL + indicator HL (classic oversold div)
+        result["regular_bull"] = (p_r_low  < p_p_low  * (1 - tol)) and (i_r_low  > i_p_low  * (1 + tol) or (i_p_low < 0 and i_r_low > i_p_low + abs(i_p_low) * tol))
+        # Regular bear: price HH + indicator LH
+        result["regular_bear"] = (p_r_high > p_p_high * (1 + tol)) and (i_r_high < i_p_high * (1 - tol))
+        # Hidden bull: price HL + indicator LL (#1 signal in 95-98% tier)
+        result["hidden_bull"]  = (p_r_low  > p_p_low  * (1 + tol)) and (i_r_low  < i_p_low  * (1 - tol) or (i_p_low > 0 and i_r_low < i_p_low - i_p_low * tol))
+        # Hidden bear: price LH + indicator HH
+        result["hidden_bear"]  = (p_r_high < p_p_high * (1 - tol)) and (i_r_high > i_p_high * (1 + tol))
+    except Exception:
+        pass
+    return result
+
+
+def _ema_state_v2(df, lookback_cross=6):
+    """Expanded EMA state from 50K scenarios — includes EMA50/200 cross, bounce, pullback.
+    Returns (category, direction) where direction: 1=bull, -1=bear, 0=neutral."""
+    if df is None or len(df) < 10:
+        return "neutral", 0
+    close = df["close"]
+    price = float(close.iloc[-1])
+    e20 = compute_ema(close, 20); e50 = compute_ema(close, 50)
+    e20v = float(e20.iloc[-1]);   e50v = float(e50.iloc[-1])
+    _lb  = min(lookback_cross, len(df) - 1)
+    e20p = float(e20.iloc[-_lb]); e50p_lb = float(e50.iloc[-_lb])
+    pricep = float(close.iloc[-_lb])
+
+    if len(df) >= 200:
+        e200  = compute_ema(close, 200)
+        e200v = float(e200.iloc[-1]); e200p = float(e200.iloc[-_lb])
+        e50p2 = float(e50.iloc[-_lb])
+
+        # Full bull/bear stack (highest conviction)
+        if price > e20v > e50v > e200v: return "bullish_stack", 1
+        if price < e20v < e50v < e200v: return "bearish_stack", -1
+
+        # EMA50/200 Classic Golden/Death Cross — 469+409=878 in 95-98% tier
+        if e50p2 < e200p and e50v >= e200v: return "ema50_200_golden", 1
+        if e50p2 > e200p and e50v <= e200v: return "ema50_200_death",  -1
+
+        # Price crossing EMA200 (major signal — 3393+3344 in 50K)
+        if pricep < e200p and price >= e200v: return "price_cross_ema200_up",   1
+        if pricep > e200p and price <= e200v: return "price_cross_ema200_down", -1
+
+        # Pullback to EMA20 in trend (Price > EMA50 > EMA200, touching EMA20)
+        if price > e50v > e200v and price <= e20v * 1.008:
+            return "pullback_ema20_bull", 1
+        if price < e50v < e200v and price >= e20v * 0.992:
+            return "pullback_ema20_bear", -1
+
+        # EMA200 bounce/rejection (within 0.6%)
+        if e200v > 0 and abs(price - e200v) / e200v < 0.006:
+            if price >= e200v and e50v > e200v: return "price_bounce_ema200",  1
+            if price <= e200v and e50v < e200v: return "price_reject_ema200", -1
+
+        # EMA50 bounce/rejection (within 0.6%)
+        if e50v > 0 and abs(price - e50v) / e50v < 0.006:
+            if price >= e50v and e20v > e50v: return "price_bounce_ema50",  1
+            if price <= e50v and e20v < e50v: return "price_reject_ema50", -1
+
+    # EMA20/50 Golden/Death Cross (original)
+    if e20p < e50p_lb and e20v >= e50v: return "golden_cross", 1
+    if e20p > e50p_lb and e20v <= e50v: return "death_cross",  -1
+
+    # Price crossing EMA20
+    if pricep < e20p and price >= e20v: return "price_cross_up",   1
+    if pricep > e20p and price <= e20v: return "price_cross_down", -1
+
+    return "neutral", 0
+
+
+def _stoch_state_50k(k, d, k_prev=None, d_prev=None):
+    """Classify stochastic state per 50K scenarios.
+    Returns category string."""
+    if math.isnan(k) or math.isnan(d):
+        return "neutral"
+    cross_up   = k_prev is not None and not math.isnan(k_prev) and k_prev < d and k >= d
+    cross_down = k_prev is not None and not math.isnan(k_prev) and k_prev > d and k <= d
+    if k < 20 and cross_up:   return "oversold_cross_up"      # 449 in 95-98%
+    if k > 80 and cross_down: return "overbought_cross_down"  # 465 in 95-98%
+    if k < 20 and k > d:      return "embedded_oversold_cross"  # just crossed from embedded oversold
+    if k > 80 and k < d:      return "embedded_overbought_cross"
+    if k < 20:                return "oversold"
+    if k > 80:                return "overbought"
+    if 20 <= k <= 50:         return "rising_midzone"
+    if 50 <  k <= 80:         return "falling_midzone"
+    return "neutral"
+
+
+def _session_score_50k():
+    """Session timing score per 50K scenario distribution.
+    Returns (category, score). London-NY Overlap = 31% of 95-98% tier."""
+    h = datetime.utcnow().hour
+    if 13 <= h < 17: return "london_ny_overlap", 12  # 1129/3650 = 31%
+    if 12 <= h < 13: return "ny_premarket",       9
+    if 8  <= h < 12: return "london_open",         9  # 646+641/3650 = 35% combined London window
+    if 17 <= h < 21: return "ny_regular",          8  # 623/3650 = 17%
+    if 0  <= h < 8:  return "asian",               5
+    return "off_hours", 4
+
+
+def _candle_pattern_v2(df, n: int = 3) -> int:
+    """Expanded candle pattern detection — adds 50K patterns: Three White Soldiers,
+    Three Black Crows, Tweezer Top/Bottom, Bullish/Bearish Harami, Piercing Line, Dark Cloud.
+    Returns: 1=bullish, -1=bearish, 0=neutral"""
+    # First check original patterns
+    result = _candle_pattern(df, n)
+    if result != 0:
+        return result
+    if df is None or len(df) < 4:
+        return 0
+    o = df["open"]; h = df["high"]; l = df["low"]; c = df["close"]
+    try:
+        # Three White Soldiers: 3 consecutive bullish candles with higher closes
+        if (c.iloc[-1] > c.iloc[-2] > c.iloc[-3] and
+            c.iloc[-1] > o.iloc[-1] and c.iloc[-2] > o.iloc[-2] and c.iloc[-3] > o.iloc[-3]):
+            return 1
+        # Three Black Crows: 3 consecutive bearish candles with lower closes
+        if (c.iloc[-1] < c.iloc[-2] < c.iloc[-3] and
+            c.iloc[-1] < o.iloc[-1] and c.iloc[-2] < o.iloc[-2] and c.iloc[-3] < o.iloc[-3]):
+            return -1
+        # Tweezer Bottom: two candles with same low, second bullish
+        tw_tol = (h.iloc[-1] - l.iloc[-1]) * 0.1 + 1e-12
+        if abs(l.iloc[-1] - l.iloc[-2]) < tw_tol and c.iloc[-1] > o.iloc[-1]:
+            return 1
+        # Tweezer Top: two candles with same high, second bearish
+        if abs(h.iloc[-1] - h.iloc[-2]) < tw_tol and c.iloc[-1] < o.iloc[-1]:
+            return -1
+        # Bullish Harami: large bearish candle then small bullish inside
+        prev_bear = c.iloc[-2] < o.iloc[-2]
+        curr_inside = o.iloc[-1] > c.iloc[-2] and c.iloc[-1] < o.iloc[-2]
+        if prev_bear and curr_inside and c.iloc[-1] > o.iloc[-1]:
+            return 1
+        # Bearish Harami: large bullish candle then small bearish inside
+        prev_bull = c.iloc[-2] > o.iloc[-2]
+        curr_inside_b = o.iloc[-1] < c.iloc[-2] and c.iloc[-1] > o.iloc[-2]
+        if prev_bull and curr_inside_b and c.iloc[-1] < o.iloc[-1]:
+            return -1
+        # Piercing Line: bearish then bullish that closes > midpoint of previous
+        if (c.iloc[-2] < o.iloc[-2] and c.iloc[-1] > o.iloc[-1] and
+                o.iloc[-1] < c.iloc[-2] and c.iloc[-1] > (o.iloc[-2] + c.iloc[-2]) / 2):
+            return 1
+        # Dark Cloud Cover: bullish then bearish that closes < midpoint of previous
+        if (c.iloc[-2] > o.iloc[-2] and c.iloc[-1] < o.iloc[-1] and
+                o.iloc[-1] > c.iloc[-2] and c.iloc[-1] < (o.iloc[-2] + c.iloc[-2]) / 2):
+            return -1
+    except Exception:
+        pass
+    return 0
+
+
 class TradingBot:
     def __init__(self):
         logger.info("="*60)
@@ -3285,136 +3468,223 @@ class TradingBot:
             _prev_hist = float("nan")
             if len(df_micro) >= 28:
                 _, _, _prev_hist = compute_macd(df_micro["close"].iloc[:-1])
-            _cpat = _candle_pattern(df_micro)
+            _cpat = _candle_pattern_v2(df_micro)
             _vrat = _volume_ratio(df_micro)
 
-            # --- SIGNAL 1: EMA STATE (25 pts max) ---
-            _ema_cat = _ema_state(df_micro)
-            # Direction & score map (theo tan suat xuat hien trong Excel 90%+)
+            # --- SIGNAL 1: EMA STATE (25 pts max) — expanded with 50K EMA50/200 signals ---
+            _ema_cat, _ema_dir_v = _ema_state_v2(df_micro)
             _EMA_MAP = {
-                "bullish_stack":   (1,  25),   # EMA full stack bull: 740/2510 = 29%
-                "bearish_stack":   (-1, 25),   # EMA full stack bear: 757/2510 = 30%
-                "golden_cross":    (1,  20),   # EMA20 cat EMA50 len
-                "death_cross":     (-1, 20),   # EMA20 cat EMA50 xuong
-                "price_cross_up":  (1,  15),   # Price cat EMA20 len
-                "price_cross_down":(-1, 15),   # Price cat EMA20 xuong
-                "neutral":         (0,  3),
+                # Original 10K signals
+                "bullish_stack":          (1,  25),  # 436/3650 = 12% in 95-98%
+                "bearish_stack":          (-1, 25),  # 453/3650 = 12%
+                "golden_cross":           (1,  20),  # EMA20/50 cross
+                "death_cross":            (-1, 20),
+                "price_cross_up":         (1,  15),
+                "price_cross_down":       (-1, 15),
+                # NEW from 50K: EMA50/200 signals
+                "ema50_200_golden":       (1,  23),  # Classic Golden Cross: 469/3650=13% #1 EMA in 95-98%
+                "ema50_200_death":        (-1, 23),  # Classic Death Cross: 409/3650=11%
+                "price_cross_ema200_up":  (1,  20),  # Major signal: 3393 in 50K
+                "price_cross_ema200_down":(-1, 20),
+                "pullback_ema20_bull":    (1,  18),  # Pullback to EMA20 in uptrend: 3513 in 50K
+                "pullback_ema20_bear":    (-1, 18),
+                "price_bounce_ema200":    (1,  16),  # EMA200 bounce: 3444 in 50K
+                "price_reject_ema200":    (-1, 16),
+                "price_bounce_ema50":     (1,  14),  # EMA50 bounce in uptrend: 3387 in 50K
+                "price_reject_ema50":     (-1, 14),
+                "neutral":                (0,   3),
             }
-            _ema_dir_v, _ema_base = _EMA_MAP.get(_ema_cat, (0, 0))
-            if _ema_dir_v == _T:         _ema_pts = _ema_base
-            elif _ema_dir_v == -_T:      _ema_pts = -12   # EMA nguoc chieu = penalty nang
-            else:                        _ema_pts = _ema_base  # neutral: giu base nho
+            _ema_base = _EMA_MAP.get(_ema_cat, (0, 0))[1]
+            if _ema_dir_v == _T:    _ema_pts = _ema_base
+            elif _ema_dir_v == -_T: _ema_pts = -12
+            else:                   _ema_pts = _ema_base
 
-            # --- SIGNAL 2: MACD STATE (22 pts max) - DIEU KIEN CAN ---
+            # --- SIGNAL 2: MACD STATE (22 pts max) + Hidden Divergence bonus ---
             _macd_cat = _macd_state(_macd_hist, _prev_hist)
             _MACD_MAP = {
-                "bull_divergence":  (1,  22),  # "MACD below 0 & bullish div": 612/2510=24%
-                "bear_divergence":  (-1, 22),  # "MACD above 0 & bearish div": 602/2510=24%
-                "bull_crossover":   (1,  20),  # "MACD Bullish crossover (signal line)"
-                "bear_crossover":   (-1, 20),  # "MACD Bearish crossover (signal line)"
-                "hist_up":          (1,  18),  # "MACD Histogram increasing (momentum up)"
-                "hist_down":        (-1, 18),  # "MACD Histogram decreasing (momentum down)"
-                "above0_bull":      (1,  14),  # "MACD above 0 & bullish"
-                "below0_bear":      (-1, 14),  # "MACD below 0 & bearish"
+                "bull_divergence":  (1,  22),
+                "bear_divergence":  (-1, 22),
+                "bull_crossover":   (1,  20),
+                "bear_crossover":   (-1, 20),
+                "hist_up":          (1,  18),
+                "hist_down":        (-1, 18),
+                "above0_bull":      (1,  14),
+                "below0_bear":      (-1, 14),
                 "neutral":          (0,  0),
             }
             _macd_dir_v, _macd_base = _MACD_MAP.get(_macd_cat, (0, 0))
-            if _macd_dir_v == _T:        _macd_pts = _macd_base
-            elif _macd_dir_v == -_T:     _macd_pts = -8
-            else:                        _macd_pts = 0
+            if _macd_dir_v == _T:    _macd_pts = _macd_base
+            elif _macd_dir_v == -_T: _macd_pts = -8
+            else:                    _macd_pts = 0
 
-            # MACD: khong hard block. Chi la score component.
+            # NEW: MACD Hidden Divergence bonus — #1 signal in 95-98% tier (881+784=1665)
+            _macd_hidden_div = False
+            _macd_hidden_cat = "none"
+            try:
+                if len(df_micro) >= 50:
+                    _ml_s, _, _mh_s = compute_macd_series(df_micro["close"])
+                    _macd_div = _detect_divergence_50k(df_micro["close"], _ml_s, lookback=30)
+                    if _T == 1 and _macd_div["hidden_bull"]:
+                        _macd_hidden_div = True; _macd_hidden_cat = "hidden_bull"
+                        _macd_pts = max(_macd_pts, 22)  # at least regular div score
+                    elif _T == -1 and _macd_div["hidden_bear"]:
+                        _macd_hidden_div = True; _macd_hidden_cat = "hidden_bear"
+                        _macd_pts = max(_macd_pts, 22)
+            except Exception:
+                pass
 
-            # --- SIGNAL 3: RSI ZONE (18 pts max) ---
+            # --- SIGNAL 3: RSI ZONE (18 pts max) + Hidden Divergence bonus ---
             _rsi_cat = _rsi_zone(rsi_now, df_micro)
             _RSI_MAP = {
-                "bull_divergence":  (1,  18),  # RSI Bullish Div: 778/2510=31% trong 90%+
+                "bull_divergence":  (1,  18),
                 "bear_divergence":  (-1, 18),
-                "oversold":         (1,  12),  # RSI <30: Oversold -> LONG
-                "overbought":       (-1, 12),  # RSI >70: Overbought -> SHORT
-                "near_oversold":    (1,   8),  # RSI 30-40
-                "near_overbought":  (-1,  8),  # RSI 60-70
+                "oversold":         (1,  12),
+                "overbought":       (-1, 12),
+                "near_oversold":    (1,   8),
+                "near_overbought":  (-1,  8),
                 "neutral":          (0,   0),
             }
             _rsi_dir_v, _rsi_base = _RSI_MAP.get(_rsi_cat, (0, 0))
-            if _rsi_dir_v == _T:         _rsi_pts = _rsi_base
-            elif _rsi_dir_v == -_T:      _rsi_pts = -5
-            else:                        _rsi_pts = 0
+            if _rsi_dir_v == _T:    _rsi_pts = _rsi_base
+            elif _rsi_dir_v == -_T: _rsi_pts = -5
+            else:                   _rsi_pts = 0
 
-            # --- SIGNAL 4: VOLUME (18 pts max) ---
+            # NEW: RSI Hidden Divergence — 597+567=1164 in 95-98% tier
+            _rsi_hidden_div = False
+            try:
+                if len(df_micro) >= 30:
+                    _rsi_s = compute_rsi(df_micro["close"], 14)
+                    _rsi_div = _detect_divergence_50k(df_micro["close"], _rsi_s, lookback=25)
+                    if _T == 1 and _rsi_div["hidden_bull"]:
+                        _rsi_hidden_div = True
+                        _rsi_pts = max(_rsi_pts, 18)
+                    elif _T == -1 and _rsi_div["hidden_bear"]:
+                        _rsi_hidden_div = True
+                        _rsi_pts = max(_rsi_pts, 18)
+            except Exception:
+                pass
+
+            # --- SIGNAL 4: VOLUME (18 pts max) — adds volume climax reversal ---
             if _vrat >= 2.0:
                 _vol_cat = "spike"
-                _vol_pts = 18 if _vwt_dir == _T else 5   # "Volume spike (>2x avg) confirming"
+                _vol_pts = 18 if _vwt_dir == _T else 5
             elif _vrat >= 1.5:
                 _vol_cat = "high"
-                _vol_pts = 12 if _vwt_dir == _T else 4   # "High volume (1.5-2x avg)"
+                _vol_pts = 12 if _vwt_dir == _T else 4
+            elif _vrat >= 0.7 and _vwt_dir == _T:
+                # NEW: "Above-average volume at support/resistance test" — 7850 in 50K
+                _vol_cat = "above_avg"
+                _vol_pts = 7
             else:
                 _vol_cat = "normal"
-                _vol_pts = 4   # "Volume spike on reversal candle" = ta khong phan biet dc
+                _vol_pts = 4
 
-            # --- SIGNAL 5: BOS / CHoCH (12 pts max) ---
-            # Cac category tu Excel: BOS continuation, CHoCH reversal, HH/HL, LH/LL
-            if _hh_ll == _T:   _bos_cat = "bos";    _bos_pts = 12   # HH+HL (uptrend) = BOS
-            elif _hh_ll == -_T: _bos_cat = "choch"; _bos_pts = 8    # CHoCH: valid reversal
-            else:               _bos_cat = "neutral"; _bos_pts = 3
+            # --- SIGNAL 5: BOS / CHoCH (12 pts max) — CHoCH boosted per 50K ---
+            # CHoCH: 10087x in 50K, 757/3650=21% in 95-98% tier
+            if _hh_ll == _T:    _bos_cat = "bos";     _bos_pts = 12
+            elif _hh_ll == -_T: _bos_cat = "choch";   _bos_pts = 10  # boosted 8->10
+            else:               _bos_cat = "neutral";  _bos_pts = 3
 
-            # --- SIGNAL 6: CANDLE PATTERN (8 pts max) ---
-            if _cpat == _T:   _candle_pts = 8    # Hammer/Engulfing/Marubozu cung chieu
-            elif _cpat == -_T: _candle_pts = -5  # Pattern nguoc: penalty
+            # --- SIGNAL 6: CANDLE PATTERN (8 pts max) — expanded with 50K patterns ---
+            if _cpat == _T:    _candle_pts = 8
+            elif _cpat == -_T: _candle_pts = -5
             else:              _candle_pts = 0
 
+            # --- SIGNAL 7 (NEW): STOCHASTIC (10 pts max) — 50K: oversold/overbought cross ---
+            _stoch_pts = 0; _stoch_cat = "neutral"
+            try:
+                if len(df_micro) >= 17:
+                    _sk_s = df_micro["close"].rolling(14).apply(
+                        lambda x: 100 * (x.iloc[-1] - x.min()) / max(x.max() - x.min(), 1e-12), raw=False)
+                    _sd_s = _sk_s.rolling(3).mean()
+                    _sk = float(_sk_s.iloc[-1]); _sd = float(_sd_s.iloc[-1])
+                    _sk_p = float(_sk_s.iloc[-2]) if len(_sk_s) >= 2 else float("nan")
+                    _stoch_cat = _stoch_state_50k(_sk, _sd, _sk_p)
+                    _STOCH_MAP = {
+                        "oversold_cross_up":        (1,  10),  # 449/3650=12% in 95-98%
+                        "overbought_cross_down":     (-1, 10),  # 465/3650=13%
+                        "embedded_oversold_cross":   (1,   8),  # 469/3650=13%
+                        "embedded_overbought_cross": (-1,  8),  # 429/3650=12%
+                        "oversold":                  (1,   5),
+                        "overbought":                (-1,  5),
+                        "rising_midzone":            (1,   3),
+                        "falling_midzone":           (-1,  3),
+                        "neutral":                   (0,   0),
+                    }
+                    _stoch_dir_v, _stoch_base = _STOCH_MAP.get(_stoch_cat, (0, 0))
+                    if _stoch_dir_v == _T:    _stoch_pts = _stoch_base
+                    elif _stoch_dir_v == -_T: _stoch_pts = -4
+                    else:                     _stoch_pts = 0
+                    # Stoch Divergence bonus — 479+453=932 in 95-98% tier
+                    if len(df_micro) >= 30:
+                        _stoch_div = _detect_divergence_50k(df_micro["close"], _sk_s.dropna(), lookback=20)
+                        if _T == 1 and (_stoch_div["regular_bull"] or _stoch_div["hidden_bull"]):
+                            _stoch_pts = max(_stoch_pts, 8)
+                        elif _T == -1 and (_stoch_div["regular_bear"] or _stoch_div["hidden_bear"]):
+                            _stoch_pts = max(_stoch_pts, 8)
+            except Exception:
+                pass
+
+            # --- SIGNAL 8 (NEW): SESSION TIMING (12 pts max) — London-NY=31% of 95-98% tier ---
+            _sess_cat, _sess_pts = _session_score_50k()
+
             # --- TONG DIEM: scenario signals + pre_score context ---
-            # pre_score da bao gom: EMA/macro alignment, ADX, vol dir, RSI zone,
-            # extension, fresh move, candle body, imm, HH/HL, anti-breakout.
-            # Clamp pre_score [-30, 30] de khong overwhelm scenario signals.
-            _pre_clamped = max(-30, min(30, _pre_score))
-            _scenario_pts = _ema_pts + _macd_pts + _rsi_pts + _vol_pts + _bos_pts + _candle_pts
+            _pre_clamped  = max(-30, min(30, _pre_score))
+            _scenario_pts = (_ema_pts + _macd_pts + _rsi_pts + _vol_pts +
+                             _bos_pts + _candle_pts + _stoch_pts + _sess_pts)
             _score = max(0, min(100, _scenario_pts + _pre_clamped))
 
-            # --- XAC DINH TIER: 90%+ vs 70-90% ---
-            # Tu phan tich Excel: 90%+ = MACD div (48%) + RSI div (60%) + Volume spike (74%)
-            # hoac: Full EMA stack + Volume spike + MACD crossover/hist
-            _div_combo = (
-                _macd_cat in ("bull_divergence", "bear_divergence") and _macd_dir_v == _T and
-                _vrat >= 2.0 and _vwt_dir == _T
+            # --- XAC DINH TIER: 95-98% vs 90-95% vs 85-90% ---
+            # 95-98%: MACD hidden div + RSI hidden div + vol spike (top combo from 50K)
+            # 90-95%: regular MACD div OR RSI div + vol spike
+            # 85-90%: single strong signal (EMA50/200 cross, full stack + momentum)
+            _macd_any_div = _macd_hidden_div or _macd_cat in ("bull_divergence", "bear_divergence") and _macd_dir_v == _T
+            _rsi_any_div  = _rsi_hidden_div  or _rsi_cat  in ("bull_divergence", "bear_divergence") and _rsi_dir_v == _T
+            _vol_spike    = _vrat >= 2.0 and _vwt_dir == _T
+            _is_9598 = _macd_hidden_div and _rsi_hidden_div and _vol_spike
+            _is_9095 = not _is_9598 and (_macd_any_div or _rsi_any_div) and _vol_spike
+            _is_8590 = not _is_9598 and not _is_9095 and (
+                _ema_cat in ("bullish_stack", "bearish_stack", "ema50_200_golden", "ema50_200_death") and _ema_dir_v == _T
             )
-            _rsi_div_aligned = (_rsi_cat in ("bull_divergence", "bear_divergence") and _rsi_dir_v == _T)
+            _is_90plus = _is_9598 or _is_9095
+            _div_combo = _macd_any_div and _vol_spike
+            _rsi_div_aligned = _rsi_any_div
             _stack_momentum = (
                 _ema_cat in ("bullish_stack", "bearish_stack") and _ema_dir_v == _T and
-                _vrat >= 2.0 and _vwt_dir == _T and
-                _macd_cat in ("bull_crossover", "bear_crossover", "hist_up", "hist_down") and _macd_dir_v == _T
-            )
-            _is_90plus = _div_combo or _stack_momentum or (
-                _div_combo and _rsi_div_aligned   # triple divergence = highest tier
+                _vol_spike and _macd_cat in ("bull_crossover","bear_crossover","hist_up","hist_down") and _macd_dir_v == _T
             )
 
-            # NGUONG: 50 diem = dam bao bat duoc cac scenarios hop le trong Excel
-            # (thap hon v4 vi classifier chinh xac hon - khong can boi so nhieu)
             _threshold = 50
             if _score < _threshold:
                 logger.info(
-                    f"{symbol}: SCENARIO v6 skip - score={_score}/100 < {_threshold} | "
+                    f"{symbol}: SCENARIO v6+ skip - score={_score}/100 < {_threshold} | "
                     f"scenario={_scenario_pts} pre={_pre_clamped} | "
-                    f"EMA={_ema_cat}({_ema_pts}) MACD={_macd_cat}({_macd_pts}) "
-                    f"RSI={_rsi_cat}({_rsi_pts}) vol={_vol_cat}({_vol_pts}) "
-                    f"BOS={_bos_cat}({_bos_pts}) candle={_cpat}({_candle_pts}) | "
+                    f"EMA={_ema_cat}({_ema_pts}) MACD={_macd_cat}({_macd_pts})[hid={_macd_hidden_cat}] "
+                    f"RSI={_rsi_cat}({_rsi_pts})[hid={_rsi_hidden_div}] vol={_vol_cat}({_vol_pts}) "
+                    f"BOS={_bos_cat}({_bos_pts}) candle={_cpat}({_candle_pts}) "
+                    f"stoch={_stoch_cat}({_stoch_pts}) sess={_sess_cat}({_sess_pts}) | "
                     f"F={_fast_tr}({_s_fast}) M1={macro_trend}({_s_m1}) ADX={adx:.0f}({_s_adx}) "
                     f"imm={_imm}({_s_imm}) ext={_ext:.1f}({_s_ext}) fresh={_s_fresh}")
-                return _block(f"skip - score={_score} < {_threshold} (not in 10000 HQ scenarios)")
+                return _block(f"skip - score={_score} < {_threshold} (not in 50K HQ scenarios)")
 
-            # --- TP VA CONVICTION THEO TIER ---
-            if _is_90plus:
-                # 90%+ tier: uu tien toi da, TP = cap tren, capital lon
-                _tp_by_score = config.TP_ROI_MAX     # 25%
-                _conv        = 0.90
-                _tier        = "90%+"
+            # --- TP VA CONVICTION THEO TIER (3 tiers tu 50K scenarios) ---
+            # 95-98%: TP 9.8% ROI, avg R:R 5.84, leverage 10.3x
+            # 90-95%: TP 9.1% ROI, avg R:R 5.25
+            # 85-90%: TP 7.9% ROI, avg R:R 4.61
+            if _is_9598:
+                _tp_by_score = 0.098; _conv = 0.97; _tier = "95-98%"
+            elif _is_9095:
+                _tp_by_score = 0.091; _conv = 0.92; _tier = "90-95%"
+            elif _is_8590:
+                _tp_by_score = 0.079; _conv = 0.87; _tier = "85-90%"
+            elif _is_90plus:
+                _tp_by_score = config.TP_ROI_MAX; _conv = 0.90; _tier = "90%+"
             else:
-                # 70-90% tier: TP scale theo score [12%, 22%]
+                # Standard tier: TP scale theo score
                 _tp_by_score = config.TP_ROI_MIN + (
                     ((_score - _threshold) / (100.0 - _threshold)) * 0.10)
-                _tp_by_score = max(config.TP_ROI_MIN, min(0.22, _tp_by_score))
-                _conv        = _score / 100.0
-                _tier        = "70-90%"
+                _tp_by_score = max(config.TP_ROI_MIN, min(config.TP_ROI_MAX, _tp_by_score))
+                _conv = _score / 100.0; _tier = "standard"
 
             if best.direction != _T:
                 logger.info(f"{symbol}: TREND override -> {'LONG' if _T==1 else 'SHORT'} (signal={best.direction})")

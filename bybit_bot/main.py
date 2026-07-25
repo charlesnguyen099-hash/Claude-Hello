@@ -2729,7 +2729,7 @@ class TradingBot:
             # S29/S30: MACD ZERO LINE CROSS (MACD cat duong 0 - xac nhan doi pha)
             # MACD cat len/xuong 0 = moment doi phe manh nhat, cho phep entry som
             if _sc_dir == 0 and len(df_micro) >= 45:
-                _mz_line, _mz_sig, _mz_hist = compute_macd(df_micro["close"])
+                _mz_line, _mz_sig, _mz_hist = compute_macd_series(df_micro["close"])
                 _mz_cross_up = float(_mz_line.iloc[-1]) > 0 and float(_mz_line.iloc[-5]) < 0
                 _mz_cross_dn = float(_mz_line.iloc[-1]) < 0 and float(_mz_line.iloc[-5]) > 0
                 _mz_rising   = float(_mz_hist.iloc[-1]) > float(_mz_hist.iloc[-2])

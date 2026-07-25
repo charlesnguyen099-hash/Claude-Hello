@@ -3455,6 +3455,24 @@ class TradingBot:
                 logger.info(f"{symbol}: GATE v7 skip - F=M1=M2=0 sideway")
                 return _block("skip - F=M1=M2=0 (no direction signal)")
 
+            # --- ABSOLUTE BLOCK 0: VOLUME COLLAPSE (truoc moi thu) ---
+            # Tat ca 50K scenarios deu co volume binh thuong hoac spike. Volume collapse
+            # = post-spike exhaustion, khong co momentum de vao lenh.
+            # _vrat = 3 nen cuoi / trung binh 20 nen (hien tai)
+            _vrat_early = _volume_ratio(df_micro)
+            if _vrat_early < 0.25:
+                return _block(f"skip - volume collapse {_vrat_early:.2f}x (post-spike exhaustion, no 50K scenario)")
+
+            # --- SPIKE FLIP DETECTION: fast EMA nguoc ca M1 lan M2 ---
+            # Neu fast EMA flip nguoc chieu CA hai macro (M1 va M2 dong thuan voi nhau
+            # nhung nguoc fast) -> day la spike flip tam thoi (1 cay nen lon dao chieu EMA ngan)
+            # khong phai trend change that su. Dung tin fast EMA trong truong hop nay.
+            _spike_flip = (
+                _fast_tr != 0 and
+                macro_trend != 0 and macro_trend != _fast_tr and
+                macro_4h    != 0 and macro_4h    != _fast_tr
+            )
+
             # --- ABSOLUTE BLOCK 1: ADX < 8 ---
             _atrm = _atr_for_sl if _atr_for_sl > 0 else float(
                 (df_micro["high"].iloc[-14:] - df_micro["low"].iloc[-14:]).mean())
@@ -3486,7 +3504,9 @@ class TradingBot:
             _price_now = _live_p
 
             # P1: Fast EMA direction
-            if _fast_tr == _T:    _s_fast = 18
+            # Spike flip (fast nguoc CA M1 va M2) -> bonus giam 18->5, vi day la fake flip
+            if _fast_tr == _T:
+                _s_fast = 5 if _spike_flip else 18
             elif _fast_tr == 0:   _s_fast = 0
             else:                 _s_fast = -14
 
@@ -3508,10 +3528,22 @@ class TradingBot:
                 else:           _s_adx = -4
             else:               _s_adx = 0
 
-            # P5: Volume direction (weight-tracked) - lowered threshold 0.4->0.3
-            if _vwt_dir == _T and _vwt_str >= 0.3:    _s_vol_dir = 7
-            elif _vwt_dir == -_T and _vwt_str >= 0.3: _s_vol_dir = -8
-            else:                                       _s_vol_dir = 0
+            # P5: Volume direction - chi tin _vwt_dir khi current volume KHONG collapsed
+            # _vwt_dir co the stale (tinh tu dump/pump candles cu) -> neu volume hien tai
+            # da sut giam (<50% avg) thi _vwt_dir khong con phan anh momentum hien tai
+            _vrat = _vrat_early  # reuse gia tri da tinh
+            _vol_dir_ok = _vrat >= 0.50   # current vol >= 50% avg = con momentum
+            if _vwt_dir == _T and _vwt_str >= 0.3 and _vol_dir_ok:    _s_vol_dir = 7
+            elif _vwt_dir == -_T and _vwt_str >= 0.3:                  _s_vol_dir = -8
+            else:                                                        _s_vol_dir = 0
+
+            # P5b: 24h trend penalty - khong trade manh nguoc macro 24h
+            # 50K scenarios: BTC Dom Falling (bull alts) + OI short squeeze -> 24h uptrend = LONG bias
+            _s_24h = 0
+            if _change_24h > 15 and _T == -1:   _s_24h = -14  # SHORT khi coin tang 15%+ 24h
+            elif _change_24h > 10 and _T == -1: _s_24h = -8   # SHORT khi coin tang 10%+ 24h
+            elif _change_24h < -15 and _T == 1: _s_24h = -14  # LONG khi coin giam 15%+ 24h
+            elif _change_24h < -10 and _T == 1: _s_24h = -8   # LONG khi coin giam 10%+ 24h
 
             # P6: Extension penalty (EMA21 distance)
             _ema21m = float(compute_ema(df_micro["close"], 21).iloc[-1])
@@ -3552,7 +3584,7 @@ class TradingBot:
             else:              _s_struct = -5
 
             _pre_score = (_s_fast + _s_m1 + _s_m2 + _s_adx +
-                          _s_vol_dir + _s_ext + _s_fresh + _s_imm + _s_struct)
+                          _s_vol_dir + _s_24h + _s_ext + _s_fresh + _s_imm + _s_struct)
 
             # Hard floor: qua nhieu tin hieu xau -> khong co scenario nao dat duoc threshold
             if _pre_score < -35:
@@ -3572,7 +3604,8 @@ class TradingBot:
             # ================================================================
 
             _cpat = _candle_pattern(df_micro)
-            _vrat = _volume_ratio(df_micro)
+            # _vrat da tinh o tren (_vrat_early) - reuse, khong goi lai
+            # _vrat < 0.25 da bi block o tren, day >= 0.25
 
             # --- SIG 1: MACD (max 30 pts) - #1 signal by frequency ---
             _macd_cat, _macd_dir = _macd_state_50k(df_micro)
@@ -3667,9 +3700,26 @@ class TradingBot:
                 _vol_pts = 3
 
             # --- SIG 5: BOS / CHoCH market structure (max 15 pts) ---
-            if _hh_ll == _T:    _bos_cat = "bos";     _bos_pts = 15
-            elif _hh_ll == -_T: _bos_cat = "choch";   _bos_pts = 6   # CHoCH reversal
-            else:               _bos_cat = "neutral";  _bos_pts = 5   # raised from 2
+            # Kiem tra spike BOS: neu extreme candle (wick > 70% range) tao ra LL/HH
+            # thi do la spike BOS gia, giam diem.
+            _bos_spike = False
+            if len(df_micro) >= 2 and _hh_ll != 0:
+                _ext_c = df_micro.iloc[-8:]
+                _ext_range = _ext_c["high"] - _ext_c["low"]
+                _ext_body  = (_ext_c["close"] - _ext_c["open"]).abs()
+                _spike_candles = ((_ext_body / (_ext_range + 1e-12)) < 0.25).sum()
+                if _spike_candles >= 2:  # >= 2 nen co wick lon = spike-driven BOS
+                    _bos_spike = True
+
+            if _hh_ll == _T:
+                _bos_cat = "bos"
+                _bos_pts = 8 if _bos_spike else 15   # giam neu spike-driven
+            elif _hh_ll == -_T:
+                _bos_cat = "choch"
+                _bos_pts = 6
+            else:
+                _bos_cat = "neutral"
+                _bos_pts = 5
 
             # --- SIG 6: SESSION TIMING (max 12 pts) ---
             _sess_cat, _sess_pts = _session_category()

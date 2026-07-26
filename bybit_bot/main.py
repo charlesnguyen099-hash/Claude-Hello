@@ -2658,6 +2658,7 @@ class TradingBot:
             _sc_strength = 0.0
             _sc_tp       = 0.0
             _sc_name     = ""
+            _fast_tr_pre = 0  # default; overwritten at line ~3800 before gate section
             if not df_micro.empty and len(df_micro) >= 120:
                 _sc_close  = df_micro["close"]
                 _sc_price  = _range_live_price if _range_live_price > 0 else _sc_close.iloc[-1]

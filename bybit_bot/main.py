@@ -1357,26 +1357,22 @@ class TradingBot:
             if direction == 1 and _hi30 > 0 and price >= _hi30 * (1 - _qg3_pct):
                 return False, f"QG3:within {_qg3_pct*100:.2f}% of 30m high={_hi30:.6g}(->block LONG)"
 
-        # QG-4: Immediate momentum conflict
-        # Chi bypass khi trend_confirmed (ca 2 TF xac nhan) VA momentum KHÔNG qua nguong nang:
-        #   - trend_confirmed + imm nhe nguoc chieu: co the la pullback entry -> bypass
-        #   - trend_confirmed + imm MANH nguoc chieu (> 2x thresh): van block (PEOPLEUSDT pattern)
-        #   - khong co trend_confirmed: bat buoc imm phai cung chieu
-        # Removed: "skip in HF mode" - QG4 bypass in HF was causing PEOPLEUSDT-type losses
-        if not is_reversal and len(df_micro) >= 10:
+        # QG-4: Immediate momentum - chi block khi gia DANG GIAM MANH THUC SU (PEOPLEUSDT pattern)
+        # HF mode: threshold cao hon (5x) tranh block micro-pullback trong trend
+        # trend_confirmed: bypass hoan toan (pullback trong confirmed trend = ok)
+        # Chi block: gia giam NHANH va MANH lien tuc (khong phai dip 1-2 nen)
+        if not is_reversal and not trend_confirmed and len(df_micro) >= 10:
             _c5  = float(df_micro["close"].iloc[-5:].mean())
             _c10 = float(df_micro["close"].iloc[-10:-5].mean())
             if _c10 > 0:
                 _imm = (_c5 - _c10) / _c10
-                _thresh = 0.002 * sp  # 0.1% largecap, 0.15% midcap, 0.2% altcoin
-                _strong_against = abs(_imm) > _thresh * 2   # imm manh nguoc chieu = PEOPLEUSDT pattern
-                # Bypass QG4 chi khi: trend_confirmed + imm nhe (co the la pullback trong trend)
-                _qg4_bypass = trend_confirmed and not _strong_against
-                if not _qg4_bypass:
-                    if direction == -1 and _imm > _thresh:
-                        return False, f"QG4:imm_mom=+{_imm*100:.3f}%(bouncing->block SHORT)"
-                    if direction == 1 and _imm < -_thresh:
-                        return False, f"QG4:imm_mom={_imm*100:.3f}%(falling->block LONG)"
+                # HF: nguong 0.5% largecap / 0.75% midcap / 1% altcoin - chi bat PEOPLEUSDT kieu giam 6 phut lien
+                # Non-HF: nguong 0.1% cu
+                _thresh = 0.010 * sp if _hf else 0.002 * sp
+                if direction == -1 and _imm > _thresh:
+                    return False, f"QG4:imm_mom=+{_imm*100:.3f}%(bouncing->block SHORT)"
+                if direction == 1 and _imm < -_thresh:
+                    return False, f"QG4:imm_mom={_imm*100:.3f}%(falling->block LONG)"
 
         # QG-5: EMA21 overstretch (HF: loosen to 3%/6% so only extreme cases block)
         if len(df_micro) >= 21:
@@ -5291,17 +5287,18 @@ class TradingBot:
                     f"FINAL-CHECK L1: LONG trong confirmed downtrend "
                     f"(macro={macro_trend} macro4h={macro_4h}) -> sai chieu"
                 )
-            # Level 2: macro_trend + scalp_trend dong thuan nguoc chieu entry -> sai chieu
-            # Du coin khong du ieu kien all_tfs, 2 TF cung chieu da la du de xac nhan trend
-            if macro_trend == -1 and scalp_trend == -1 and best.direction == 1:
+            # Level 2: CA 3 TF cung chieu nguoc entry -> sai chieu ro rang
+            # Yeu cau macro_4h de tranh block top coin khi scalp/macro flip tam thoi (consolidation)
+            # scalp oscillates trong trending market -> chi block khi macro_4h CUNG xac nhan
+            if macro_trend == -1 and scalp_trend == -1 and macro_4h <= -1 and best.direction == 1:
                 return _block(
-                    f"FINAL-CHECK L2: LONG nhung macro={macro_trend} scalp={scalp_trend} "
-                    f"(ca 2 TF bear) -> sai chieu, bo qua"
+                    f"FINAL-CHECK L2: LONG nhung ca 3 TF bear "
+                    f"(macro={macro_trend} scalp={scalp_trend} macro4h={macro_4h}) -> sai chieu"
                 )
-            if macro_trend == 1 and scalp_trend == 1 and best.direction == -1:
+            if macro_trend == 1 and scalp_trend == 1 and macro_4h >= 1 and best.direction == -1:
                 return _block(
-                    f"FINAL-CHECK L2: SHORT nhung macro={macro_trend} scalp={scalp_trend} "
-                    f"(ca 2 TF bull) -> sai chieu, bo qua"
+                    f"FINAL-CHECK L2: SHORT nhung ca 3 TF bull "
+                    f"(macro={macro_trend} scalp={scalp_trend} macro4h={macro_4h}) -> sai chieu"
                 )
 
         # HIGH-VOL CAPITAL BOOST: coin >= 10M USDT volume + confirmed trend -> cap them von

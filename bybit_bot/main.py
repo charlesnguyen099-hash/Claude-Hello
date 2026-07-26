@@ -1279,6 +1279,87 @@ class TradingBot:
             logger.debug(f"micro_entry_analysis: dir={direction} score={score}/{threshold} n={n} -> skip")
         return ok
 
+    def _quality_gate(self, direction: int, df_micro, rsi_now: float,
+                      sc_pos: float, sp: float,
+                      is_reversal: bool = False,
+                      is_breakout: bool = False) -> tuple[bool, str]:
+        """
+        Universal pre-entry quality gate - ap dung cho TAT CA entry paths.
+        Returns (True, "") neu OK, (False, reason) neu bi block.
+
+        QG-1: RSI extreme - khong short oversold (<25), khong long overbought (>75)
+        QG-2: 2h range position - khong short <15% range, khong long >85% range
+        QG-3: 30m high/low proximity - khong short trong 0.25% cua 30m low (va nguoc lai)
+        QG-4: Immediate momentum conflict - khong short khi bounce, khong long khi dump
+        QG-5: EMA21 overstretch - khong short khi da qua xa duoi EMA21 (va nguoc lai)
+        QG-6: 3-candle body direction strongly against entry
+        """
+        if df_micro is None or df_micro.empty or len(df_micro) < 21:
+            return True, ""
+
+        price = float(df_micro["close"].iloc[-1])
+
+        # QG-1: RSI extreme
+        if direction == -1 and rsi_now < 25:
+            return False, f"QG1:RSI={rsi_now:.0f}<25(oversold→block SHORT)"
+        if direction == 1 and rsi_now > 75:
+            return False, f"QG1:RSI={rsi_now:.0f}>75(overbought→block LONG)"
+
+        # QG-2: 2h range position (skip breakout - breakout IS at range edge)
+        if not is_breakout:
+            if direction == -1 and sc_pos < 0.15:
+                return False, f"QG2:pos={sc_pos*100:.0f}%<15%(2h bottom→block SHORT)"
+            if direction == 1 and sc_pos > 0.85:
+                return False, f"QG2:pos={sc_pos*100:.0f}%>85%(2h top→block LONG)"
+
+        # QG-3: 30m high/low proximity (skip breakout)
+        if not is_breakout and len(df_micro) >= 30:
+            _lo30 = float(df_micro["low"].iloc[-30:].min())
+            _hi30 = float(df_micro["high"].iloc[-30:].max())
+            if direction == -1 and _lo30 > 0 and price <= _lo30 * 1.0025:
+                return False, f"QG3:within 0.25% of 30m low={_lo30:.6g}(→block SHORT)"
+            if direction == 1 and _hi30 > 0 and price >= _hi30 * 0.9975:
+                return False, f"QG3:within 0.25% of 30m high={_hi30:.6g}(→block LONG)"
+
+        # QG-4: Immediate momentum conflict (skip reversal - reversal wants counter-momentum)
+        if not is_reversal and len(df_micro) >= 10:
+            _c5  = float(df_micro["close"].iloc[-5:].mean())
+            _c10 = float(df_micro["close"].iloc[-10:-5].mean())
+            if _c10 > 0:
+                _imm = (_c5 - _c10) / _c10
+                _thresh = 0.0005 * sp  # 0.025% largecap, 0.05% altcoin
+                if direction == -1 and _imm > _thresh:
+                    return False, f"QG4:imm_mom=+{_imm*100:.3f}%(bouncing→block SHORT)"
+                if direction == 1 and _imm < -_thresh:
+                    return False, f"QG4:imm_mom={_imm*100:.3f}%(falling→block LONG)"
+
+        # QG-5: EMA21 overstretch in direction of trade
+        if len(df_micro) >= 21:
+            _ema21 = float(compute_ema(df_micro["close"], 21).iloc[-1])
+            if _ema21 > 0:
+                _stretch = (price - _ema21) / _ema21
+                _lim = (0.025 if is_breakout else 0.012) * sp  # looser for breakout
+                if direction == -1 and _stretch < -_lim:
+                    return False, f"QG5:price {_stretch*100:.2f}% below EMA21(overstretched→block SHORT)"
+                if direction == 1 and _stretch > _lim:
+                    return False, f"QG5:price {_stretch*100:.2f}% above EMA21(overstretched→block LONG)"
+
+        # QG-6: Last 3 candle bodies strongly against direction (skip reversal)
+        if not is_reversal and len(df_micro) >= 4:
+            _bodies = (df_micro["close"].iloc[-3:].values
+                       - df_micro["open"].iloc[-3:].values)
+            _ranges = (df_micro["high"].iloc[-3:].values
+                       - df_micro["low"].iloc[-3:].values)
+            _total_range = float(_ranges.sum())
+            if _total_range > 0:
+                _body_ratio = float(_bodies.sum()) / _total_range
+                if direction == -1 and _body_ratio > 0.55:
+                    return False, f"QG6:3c bullish ratio={_body_ratio:.2f}(→block SHORT)"
+                if direction == 1 and _body_ratio < -0.55:
+                    return False, f"QG6:3c bearish ratio={_body_ratio:.2f}(→block LONG)"
+
+        return True, ""
+
     def _process_symbol(self, symbol: str, equity: float, open_positions: list[dict], is_priority: bool = True, btc_eth_side_map: dict | None = None) -> bool:
         """Phan tich symbol, chay tat ca filter va strategy, tra True neu da trade."""
         # Init gradual trend flags - se duoc tinh chinh xac sau khi co df_micro
@@ -1309,6 +1390,16 @@ class TradingBot:
         _MIDCAP   = {"SOLUSDT", "XRPUSDT", "HYPEUSDT", "BNBUSDT", "DOGEUSDT", "ADAUSDT", "TRXUSDT", "AVAXUSDT", "LINKUSDT", "DOTUSDT"}
         _is_largecap = symbol in _LARGECAP
         _sp = 0.50 if symbol in _LARGECAP else (0.75 if symbol in _MIDCAP else 1.0)
+
+        # 2h range position - tinh som de dung o quality gate cho tat ca paths
+        # (se duoc tinh lai chinh xac hon trong scenario block, nhung gia tri nay dung cho gate)
+        _sc_pos = 0.5
+        if len(df_signal) >= 120:
+            _qg_hi = float(df_signal["high"].iloc[-120:].max())
+            _qg_lo = float(df_signal["low"].iloc[-120:].min())
+            _qg_rng = _qg_hi - _qg_lo
+            if _qg_rng > 0:
+                _sc_pos = (float(df_signal["close"].iloc[-1]) - _qg_lo) / _qg_rng
 
         # STOCK TOKEN BLACKLIST: cac coin nay la tokenized stocks/ETF, theo NASDAQ chu khong theo BTC
         # BTC trend filter ap dung cho crypto - stock token co dynamic hoan toan khac biet
@@ -1883,6 +1974,11 @@ class TradingBot:
                         if _tm_bo.time() - _bo_lts < _flip_cooldown_sec and _bo_ldir != bo_sig.direction:
                             logger.info(f"{symbol}: FLIP-GUARD block BREAKOUT {'LONG' if bo_sig.direction==1 else 'SHORT'}")
                             return False
+                    _bo_qg_ok, _bo_qg_msg = self._quality_gate(
+                        bo_sig.direction, df_micro, rsi_now, _sc_pos, _sp, is_breakout=True)
+                    if not _bo_qg_ok:
+                        logger.info(f"{symbol}: [QUALITY-GATE] BREAKOUT blocked - {_bo_qg_msg}")
+                        return False
                     self.executor.execute_signal(symbol, bo_sig, equity, open_positions, is_priority=is_priority)
                     return True
 
@@ -2291,6 +2387,11 @@ class TradingBot:
                         if _tm_rv.time() - _rv_lts < _flip_cooldown_sec and _rv_ldir != best.direction:
                             logger.info(f"{symbol}: FLIP-GUARD block REVERSAL {'LONG' if best.direction==1 else 'SHORT'}")
                             return False
+                    _rv_qg_ok, _rv_qg_msg = self._quality_gate(
+                        best.direction, df_micro, rsi_now, _sc_pos, _sp, is_reversal=True)
+                    if not _rv_qg_ok:
+                        logger.info(f"{symbol}: [QUALITY-GATE] REVERSAL blocked - {_rv_qg_msg}")
+                        return False
                     self.executor.execute_signal(symbol, best, equity, open_positions, is_priority=is_priority)
                     return True
 
@@ -5019,6 +5120,14 @@ class TradingBot:
                 _rem_flip = int(_last_close_ts + _flip_cooldown_sec - _time_mod2.time())
                 logger.info(f"{symbol}: FLIP-GUARD block {'LONG' if best.direction==1 else 'SHORT'} (last={'LONG' if _last_dir==1 else 'SHORT'}, {_rem_flip}s remaining)")
                 return False
+
+        # UNIVERSAL QUALITY GATE - kiem tra lan cuoi truoc khi bat lenh
+        _mo_qg_ok, _mo_qg_msg = self._quality_gate(
+            best.direction, df_micro, rsi_now, _sc_pos, _sp,
+            is_reversal=False, is_breakout=False)
+        if not _mo_qg_ok:
+            logger.info(f"{symbol}: [QUALITY-GATE] MOMENTUM blocked - {_mo_qg_msg}")
+            return False
 
         self.executor.execute_signal(symbol, best, equity, open_positions, is_priority=is_priority)
         return True

@@ -106,22 +106,26 @@ class MarketScanner:
 
         df["trending_score"] = df["s_momentum"] + df["s_volume"] + df["s_liq"] + df["s_vol24"]
 
-        # Sap xep giam dan theo trending_score - tat ca coin, khong cat gioi han
-        # BTC/ETH duoc ghim len dau: coin lon co thanh khoan cao, luon co co hoi trade.
-        # Momentum score (40%) cua BTC/ETH nho hon altcoin do it bien dong % hon -> bi day xuong cuoi.
-        _PRIORITY_SYMBOLS = ["BTCUSDT", "ETHUSDT"]
-        sorted_df = df.sort_values("trending_score", ascending=False)
-        _priority = [s for s in _PRIORITY_SYMBOLS if s in sorted_df["symbol"].values]
-        _rest     = [s for s in sorted_df["symbol"].tolist() if s not in _PRIORITY_SYMBOLS]
-        self.trending_symbols = _priority + _rest
+        # Sap xep: 2 nhom rieng biet
+        # - HIGH_VOL (>= HIGH_VOL_THRESHOLD): sort theo volume_usdt_24h GIAM DAN
+        #   Ly do: BTC/ETH/SOL co s_momentum thap (it bien dong % hon altcoin) nen bi day xuong cuoi
+        #   khi sort theo trending_score. Sort theo volume dam bao coin lon nhat luon duoc scan truoc.
+        # - REST (<HIGH_VOL_THRESHOLD): sort theo trending_score (momentum quan trong hon voi altcoin nho)
+        _HIGH_VOL_TH = config.HIGH_VOL_THRESHOLD
+        _hv_mask  = df["volume_usdt_24h"] >= _HIGH_VOL_TH
+        _hv_df    = df[_hv_mask].sort_values("volume_usdt_24h", ascending=False)
+        _rest_df  = df[~_hv_mask].sort_values("trending_score", ascending=False)
+        sorted_df = pd.concat([_hv_df, _rest_df], ignore_index=True)
+        self.trending_symbols = sorted_df["symbol"].tolist()
         self.volume_map = dict(zip(df["symbol"], df["volume_usdt_24h"]))
 
+        _hv_count = len(_hv_df)
         top5_info = ", ".join(
-            f"{r['symbol']}({r['price_change_pct']:.1f}%,{r['trending_score']:.0f}pt)"
+            f"{r['symbol']}({r['price_change_pct']:.1f}%,vol={r['volume_usdt_24h']/1e6:.0f}M)"
             for _, r in sorted_df.head(5).iterrows()
         )
         logger.info(
-            f"Scanner: {n} coins (TOAN BO Bybit USDT, sorted by trend score) | "
+            f"Scanner: {n} coins ({_hv_count} high-vol sorted by vol, rest by trend) | "
             f"Top5: {top5_info}"
         )
         return self.trending_symbols

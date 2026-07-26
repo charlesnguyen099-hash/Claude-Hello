@@ -1285,7 +1285,8 @@ class TradingBot:
                       is_breakout: bool = False,
                       pos_24h: float = 0.5,
                       hi_24h: float = 0.0,
-                      lo_24h: float = 0.0) -> tuple[bool, str]:
+                      lo_24h: float = 0.0,
+                      strong_trend: bool = False) -> tuple[bool, str]:
         """
         Universal pre-entry quality gate - ap dung cho TAT CA entry paths.
         Returns (True, "") neu OK, (False, reason) neu bi block.
@@ -1315,15 +1316,19 @@ class TradingBot:
             if direction == 1 and sc_pos > 0.85:
                 return False, f"QG2a:pos={sc_pos*100:.0f}%>85%(2h top→block LONG)"
             # 24h range position - thiet lap kep voi _block_long_24h, bat case borderline
-            if direction == 1 and pos_24h > 0.80:
-                return False, f"QG2b:24h_pos={pos_24h*100:.0f}%>80%(gan dinh 24h→block LONG)"
-            if direction == -1 and pos_24h < 0.20:
-                return False, f"QG2b:24h_pos={pos_24h*100:.0f}%<20%(gan day 24h→block SHORT)"
+            # strong_trend: relax threshold (strong bull trend cho phep long len toi 92% 24h range)
+            _qg2b_long_thresh  = 0.92 if strong_trend else 0.80
+            _qg2b_short_thresh = 0.08 if strong_trend else 0.20
+            _qg2c_margin       = 0.05 if strong_trend else 0.025
+            if direction == 1 and pos_24h > _qg2b_long_thresh:
+                return False, f"QG2b:24h_pos={pos_24h*100:.0f}%>{_qg2b_long_thresh*100:.0f}%(gan dinh 24h→block LONG)"
+            if direction == -1 and pos_24h < _qg2b_short_thresh:
+                return False, f"QG2b:24h_pos={pos_24h*100:.0f}%<{_qg2b_short_thresh*100:.0f}%(gan day 24h→block SHORT)"
             # Distance from 24h absolute high/low
-            if direction == 1 and hi_24h > 0 and price >= hi_24h * 0.975:
-                return False, f"QG2c:within 2.5% of 24h high={hi_24h:.6g}(→block LONG)"
-            if direction == -1 and lo_24h > 0 and price <= lo_24h * 1.025:
-                return False, f"QG2c:within 2.5% of 24h low={lo_24h:.6g}(→block SHORT)"
+            if direction == 1 and hi_24h > 0 and price >= hi_24h * (1 - _qg2c_margin):
+                return False, f"QG2c:within {_qg2c_margin*100:.0f}% of 24h high={hi_24h:.6g}(→block LONG)"
+            if direction == -1 and lo_24h > 0 and price <= lo_24h * (1 + _qg2c_margin):
+                return False, f"QG2c:within {_qg2c_margin*100:.0f}% of 24h low={lo_24h:.6g}(→block SHORT)"
 
         # QG-3: 30m high/low proximity (skip breakout)
         if not is_breakout and len(df_micro) >= 30:
@@ -1521,6 +1526,33 @@ class TradingBot:
         macro_4h    = self._trend_direction(df_signal, fast=300, slow=600)
         # ATR: dung ATR(50) tren 1m thay vi ATR(14) - on dinh hon, it bi anh huong boi spike
         _atr_for_sl = compute_atr(df_signal, 50).iloc[-1] if not df_signal.empty and len(df_signal) >= 50 else 0.0
+
+        # STRONG SUSTAINED TREND detection (QUSDT-pattern: pump +8%+ trong 24h, tat ca EMA aligned
+        # va EMA21 van dang tang / giam nhanh = trend chua ket thuc, khong phai spike da xong).
+        # Dung de: (1) block SHORT trong strong bull trend, (2) uu tien LONG entry pullback-to-EMA.
+        _strong_bull_trend = False
+        _strong_bear_trend = False
+        if len(df_signal) >= 200:
+            _strd_e21    = float(compute_ema(df_signal["close"], 21).iloc[-1])
+            _strd_e50    = float(compute_ema(df_signal["close"], 50).iloc[-1])
+            _strd_e100   = float(compute_ema(df_signal["close"], 100).iloc[-1])
+            _strd_e21_p  = float(compute_ema(df_signal["close"], 21).iloc[-21])  # 21 nen truoc
+            if _strd_e21_p > 0:
+                _strd_accel = (_strd_e21 - _strd_e21_p) / _strd_e21_p
+                # Bull: ca 3 EMA aligned up + EMA21 tang >0.3% trong 21 phut + 24h change > 8%
+                if (macro_trend == 1 and macro_4h == 1
+                        and _change_24h > 8.0
+                        and _strd_e21 > _strd_e50 > _strd_e100
+                        and _strd_accel > 0.003):
+                    _strong_bull_trend = True
+                    logger.debug(f"{symbol}: STRONG_BULL_TREND detected (24h={_change_24h:.1f}% accel={_strd_accel*100:.2f}%)")
+                # Bear: ca 3 EMA aligned down + EMA21 giam > 0.3% + 24h change < -8%
+                elif (macro_trend == -1 and macro_4h == -1
+                        and _change_24h < -8.0
+                        and _strd_e21 < _strd_e50 < _strd_e100
+                        and _strd_accel < -0.003):
+                    _strong_bear_trend = True
+                    logger.debug(f"{symbol}: STRONG_BEAR_TREND detected (24h={_change_24h:.1f}% accel={_strd_accel*100:.2f}%)")
 
         # BTC correlation: coin chay theo BTC thi ap dung BTC filter, khong thi phan tich doc lap
         # BTCUSDT/ETHUSDT luon correlated (dung filter rieng). Stock token da bi skip truoc.
@@ -1995,7 +2027,8 @@ class TradingBot:
                             return False
                     _bo_qg_ok, _bo_qg_msg = self._quality_gate(
                         bo_sig.direction, df_micro, rsi_now, _sc_pos, _sp, is_breakout=True,
-                        pos_24h=_24h_pos, hi_24h=_24h_hi, lo_24h=_24h_lo)
+                        pos_24h=_24h_pos, hi_24h=_24h_hi, lo_24h=_24h_lo,
+                        strong_trend=(_strong_bull_trend and bo_sig.direction == 1) or (_strong_bear_trend and bo_sig.direction == -1))
                     if not _bo_qg_ok:
                         logger.info(f"{symbol}: [QUALITY-GATE] BREAKOUT blocked - {_bo_qg_msg}")
                         return False
@@ -2085,6 +2118,14 @@ class TradingBot:
                 if sig.direction == 1 and _block_long_24h and not is_reversal:
                     continue
                 if sig.direction == -1 and _block_short_24h and not is_reversal:
+                    continue
+
+                # Strong trend guard: trong strong bull/bear trend, block SHORT/LONG tru khi RSI cuc cao/thap
+                if sig.direction == -1 and _strong_bull_trend and rsi_now < 78:
+                    logger.debug(f"{symbol}: strong-trend guard block SHORT in STRONG_BULL_TREND (RSI={rsi_now:.1f})")
+                    continue
+                if sig.direction == 1 and _strong_bear_trend and rsi_now > 22:
+                    logger.debug(f"{symbol}: strong-trend guard block LONG in STRONG_BEAR_TREND (RSI={rsi_now:.1f})")
                     continue
 
                 # Filter short_term_up/down (2/3 nen 1m) da xoa:
@@ -2409,7 +2450,8 @@ class TradingBot:
                             return False
                     _rv_qg_ok, _rv_qg_msg = self._quality_gate(
                         best.direction, df_micro, rsi_now, _sc_pos, _sp, is_reversal=True,
-                        pos_24h=_24h_pos, hi_24h=_24h_hi, lo_24h=_24h_lo)
+                        pos_24h=_24h_pos, hi_24h=_24h_hi, lo_24h=_24h_lo,
+                        strong_trend=(_strong_bull_trend and best.direction == 1) or (_strong_bear_trend and best.direction == -1))
                     if not _rv_qg_ok:
                         logger.info(f"{symbol}: [QUALITY-GATE] REVERSAL blocked - {_rv_qg_msg}")
                         return False
@@ -2673,6 +2715,19 @@ class TradingBot:
                       and not _strong_trend_up and not _emerging_uptrend
                       and _sc_last_red and not _block_short_24h):
                     _sc_dir, _sc_strength, _sc_tp, _sc_name = -1, 0.58, 0.12, "sc_range_top"
+                # S8b/S8c - STRONG TREND PULLBACK: trong xu huong manh (>8% 24h, EMA aligned),
+                # cho gia keo ve EMA21 roi vao long/short theo xu huong. Bypass _block_long/short_24h
+                # vi 24h_pos se cao (~70-92%) trong strong bull. RSI cho ve 30-65 truoc khi entry.
+                elif _strong_bull_trend and _sc_dir == 0:
+                    _near_ema21 = (_emg_ema21 > 0
+                                   and _emg_ema21 * 0.997 <= _sc_price <= _emg_ema21 * 1.008)
+                    if _near_ema21 and _sc_last_green and 30 <= rsi_now <= 65 and _24h_pos < 0.92 and _imm_mom > -0.001:
+                        _sc_dir, _sc_strength, _sc_tp, _sc_name = 1, 0.70, 0.0, "sc_trend_pullback_long"
+                elif _strong_bear_trend and _sc_dir == 0:
+                    _near_ema21_bear = (_emg_ema21 > 0
+                                        and _emg_ema21 * 0.992 <= _sc_price <= _emg_ema21 * 1.003)
+                    if _near_ema21_bear and _sc_last_red and 35 <= rsi_now <= 70 and _24h_pos > 0.08 and _imm_mom < 0.001:
+                        _sc_dir, _sc_strength, _sc_tp, _sc_name = -1, 0.70, 0.0, "sc_trend_pullback_short"
 
             # ================================================================
             # S9-S40: EXTENDED SCENARIO ENGINE
@@ -3956,8 +4011,8 @@ class TradingBot:
                 # Emerging trend / breakout scenario: gia di len tu day 8+ nen -> stoch(14)
                 # luon > 92 (dinh nghia cua rise) - block o day se giet chinh HBAR pattern.
                 # Emerging/breakout da co cau truc xac nhan (higher lows, volume) - bo qua stoch
-                _stoch_bypass_long  = _emerging_uptrend   or _scenario_name in ("sc_breakout_up", "sc_emerging_up")
-                _stoch_bypass_short = _emerging_downtrend or _scenario_name in ("sc_breakout_down", "sc_emerging_down")
+                _stoch_bypass_long  = _emerging_uptrend   or _scenario_name in ("sc_breakout_up", "sc_emerging_up", "sc_trend_pullback_long")
+                _stoch_bypass_short = _emerging_downtrend or _scenario_name in ("sc_breakout_down", "sc_emerging_down", "sc_trend_pullback_short")
                 if best.direction == 1 and _stoch_k > 92 and not _macro_confirm and not _stoch_bypass_long:
                     return _block(f"skip LONG - 5m Stochastic overbought K={_stoch_k:.1f}")
                 if best.direction == -1 and _stoch_k < 8 and not _macro_confirm and not _stoch_bypass_short:
@@ -5146,7 +5201,8 @@ class TradingBot:
         _mo_qg_ok, _mo_qg_msg = self._quality_gate(
             best.direction, df_micro, rsi_now, _sc_pos, _sp,
             is_reversal=False, is_breakout=False,
-            pos_24h=_24h_pos, hi_24h=_24h_hi, lo_24h=_24h_lo)
+            pos_24h=_24h_pos, hi_24h=_24h_hi, lo_24h=_24h_lo,
+            strong_trend=(_strong_bull_trend and best.direction == 1) or (_strong_bear_trend and best.direction == -1))
         if not _mo_qg_ok:
             logger.info(f"{symbol}: [QUALITY-GATE] MOMENTUM blocked - {_mo_qg_msg}")
             return False

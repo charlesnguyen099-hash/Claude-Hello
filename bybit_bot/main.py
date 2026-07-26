@@ -1509,10 +1509,6 @@ class TradingBot:
         if not (0 <= rsi_now <= 100):
             rsi_now = 50.0
 
-        # _atrm: ATR tren df_micro (1m) - se duoc ghi de chinh xac hon trong scenario block.
-        # Khoi tao som tranh UnboundLocalError khi scenario block bi skip (df_micro qua ngan).
-        _atrm = _atr_for_sl if _atr_for_sl > 0 else 0.001
-
         # Lay live mark price mot lan cho range position checks - tranh dung 15m close (stale up to 14m)
         # Tai day la diem dau tien co du context de goi API (sau spike filter da pass)
         # Reuse cho _live_check_price trong 30c block de tranh second API call
@@ -1526,6 +1522,10 @@ class TradingBot:
         macro_4h    = self._trend_direction(df_signal, fast=300, slow=600)
         # ATR: dung ATR(50) tren 1m thay vi ATR(14) - on dinh hon, it bi anh huong boi spike
         _atr_for_sl = compute_atr(df_signal, 50).iloc[-1] if not df_signal.empty and len(df_signal) >= 50 else 0.0
+
+        # _atrm: ATR tren df_micro (1m) - se duoc ghi de chinh xac hon trong scenario block.
+        # Khoi tao som tranh UnboundLocalError khi scenario block bi skip (df_micro qua ngan).
+        _atrm = _atr_for_sl if _atr_for_sl > 0 else 0.001
 
         # STRONG SUSTAINED TREND detection (QUSDT-pattern: pump +8%+ trong 24h, tat ca EMA aligned
         # va EMA21 van dang tang / giam nhanh = trend chua ket thuc, khong phai spike da xong).

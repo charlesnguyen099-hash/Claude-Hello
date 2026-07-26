@@ -1361,7 +1361,7 @@ class TradingBot:
         # HF mode: threshold cao hon (5x) tranh block micro-pullback trong trend
         # trend_confirmed: bypass hoan toan (pullback trong confirmed trend = ok)
         # Chi block: gia giam NHANH va MANH lien tuc (khong phai dip 1-2 nen)
-        if not is_reversal and not trend_confirmed and len(df_micro) >= 10:
+        if not is_reversal and not strong_trend and len(df_micro) >= 10:
             _c5  = float(df_micro["close"].iloc[-5:].mean())
             _c10 = float(df_micro["close"].iloc[-10:-5].mean())
             if _c10 > 0:

@@ -1564,18 +1564,22 @@ class TradingBot:
             _strd_e21_p  = float(compute_ema(df_signal["close"], 21).iloc[-21])  # 21 nen truoc
             if _strd_e21_p > 0:
                 _strd_accel = (_strd_e21 - _strd_e21_p) / _strd_e21_p
-                # Bull: ca 3 EMA aligned up + EMA21 tang >0.3% trong 21 phut + 24h change > 8%
+                # Bull: ca 3 EMA aligned up + EMA21 tang + 24h change > 3%
+                # Nguong 8% cu qua cao: BTC/ETH thuong chi tang 2-5%/ngay -> never trigger
+                # Giam xuong 3% de bat largecap trong normal bull run
+                _bull_24h_min = 3.0 if _is_largecap else 5.0   # largecap: 3%, altcoin: 5%
+                _bear_24h_max = -3.0 if _is_largecap else -5.0
+                _bull_accel_min = 0.001 if _is_largecap else 0.003  # largecap ATR% nho hon
                 if (macro_trend == 1 and macro_4h == 1
-                        and _change_24h > 8.0
+                        and _change_24h > _bull_24h_min
                         and _strd_e21 > _strd_e50 > _strd_e100
-                        and _strd_accel > 0.003):
+                        and _strd_accel > _bull_accel_min):
                     _strong_bull_trend = True
                     logger.debug(f"{symbol}: STRONG_BULL_TREND detected (24h={_change_24h:.1f}% accel={_strd_accel*100:.2f}%)")
-                # Bear: ca 3 EMA aligned down + EMA21 giam > 0.3% + 24h change < -8%
                 elif (macro_trend == -1 and macro_4h == -1
-                        and _change_24h < -8.0
+                        and _change_24h < _bear_24h_max
                         and _strd_e21 < _strd_e50 < _strd_e100
-                        and _strd_accel < -0.003):
+                        and _strd_accel < -_bull_accel_min):
                     _strong_bear_trend = True
                     logger.debug(f"{symbol}: STRONG_BEAR_TREND detected (24h={_change_24h:.1f}% accel={_strd_accel*100:.2f}%)")
 
@@ -1636,8 +1640,10 @@ class TradingBot:
         # Trong uptrend manh, gia LIEN TUC o top of range -> block_long_24h/h1/2h luon True
         # -> bot khong trade gi ca du trend ro rang. Thuc te: price o top = uptrend khoe,
         # KHONG phai pump exhausted (exhausted chi khi 24h change > 22% hoac o sat tuyet dinh).
-        _all_tfs_bull = (macro_trend == 1 and macro_4h == 1)
-        _all_tfs_bear = (macro_trend == -1 and macro_4h == -1)
+        # Largecap (BTC/ETH): macro_4h (EMA 300/600 on 1m) takes hours to flip in new bull run
+        # -> require only macro_trend (EMA 100/250) for largecap to avoid zero largecap trades
+        _all_tfs_bull = (macro_trend == 1 and macro_4h == 1) or (_is_largecap and macro_trend == 1)
+        _all_tfs_bear = (macro_trend == -1 and macro_4h == -1) or (_is_largecap and macro_trend == -1)
         if _all_tfs_bull and _block_long_24h:
             # Chi giu block khi THUC SU spike extreme: pump >22% trong 24h HOAC o 93%+ range
             if _change_24h <= 22.0 and _24h_pos <= 0.93:
@@ -3744,10 +3750,18 @@ class TradingBot:
         # BTC tang lien tuc 25 phut tao ra dinh 2h moi = gradual uptrend, khong phai pump da can kiet
         # Emerging trend: uptrend moi day gia len dinh 2h = trend dang chay, khong flip nguoc
         # Scenario entry: da tu phan tich vi tri (breakout tren dinh la chu dich) - khong flip
+        # _all_tfs_bull/bear bypass: cho phep skip flip trong confirmed trend
+        # NHUNG chi bypass khi KHONG o extreme position (tren 85% hoac duoi 15% 2h range)
+        # Extreme bottom trong downtrend = nguong bounce cao, van flip SHORT->LONG (AKEUSDT pattern)
+        # Extreme top trong uptrend = nguong pullback cao, van flip LONG->SHORT
+        _not_2h_extreme_top = _m2h_pos < 0.85   # khong o extreme dinh 2h
+        _not_2h_extreme_bot = _m2h_pos > 0.15   # khong o extreme day 2h
         _m2h_grad_bypass_long  = (_is_gradual_uptrend   and scalp_trend == 1  and macro_trend == 1) \
-                                 or _emerging_uptrend or _scenario_entry or _all_tfs_bull
+                                 or _emerging_uptrend or _scenario_entry \
+                                 or (_all_tfs_bull and _not_2h_extreme_top)
         _m2h_grad_bypass_short = (_is_gradual_downtrend and scalp_trend == -1 and macro_trend == -1) \
-                                 or _emerging_downtrend or _scenario_entry or _all_tfs_bear
+                                 or _emerging_downtrend or _scenario_entry \
+                                 or (_all_tfs_bear and _not_2h_extreme_bot)
         if _m2h_block_short and best.direction == -1 and not _m2h_grad_bypass_short:
             # Day 2h range: flip SHORT->LONG, TP 12% (day lon, co the tao day moi nhung TP nho du co loi)
             best.direction = 1

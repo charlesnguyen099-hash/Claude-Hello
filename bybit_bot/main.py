@@ -5283,6 +5283,24 @@ class TradingBot:
             logger.info(f"{symbol}: [QUALITY-GATE] MOMENTUM blocked - {_mo_qg_msg}")
             return False
 
+        # FINAL TREND CONSISTENCY CHECK (HF MODE) - bo bao ve cuoi cung.
+        # Van de: signal ban dau LONG -> pass trend-alignment-gate -> cac flip logic doi thanh SHORT
+        # -> execute SHORT trong confirmed uptrend -> NGUOC CHIEU -> LO.
+        # Trend alignment gate chay TRUOC flip (dua tren original direction), khong bao ve flip.
+        # Check nay chay SAU TAT CA flip: neu direction sau flip van nguoc macro trend -> SKIP.
+        # Chi skip neu CA HAI macro TF xac nhan (macro_trend + macro_4h) - tranh over-block.
+        if _hf_mode:
+            if _all_tfs_bull and best.direction == -1:
+                return _block(
+                    f"HF FINAL-CHECK: sau flip van SHORT trong confirmed uptrend "
+                    f"(macro={macro_trend} macro4h={macro_4h}) -> skip, sai chieu"
+                )
+            if _all_tfs_bear and best.direction == 1:
+                return _block(
+                    f"HF FINAL-CHECK: sau flip van LONG trong confirmed downtrend "
+                    f"(macro={macro_trend} macro4h={macro_4h}) -> skip, sai chieu"
+                )
+
         # HIGH-VOL CAPITAL BOOST: high-vol coins + confirmed trend -> cap them von
         # gate_score mac dinh = 0 cho non-scenario -> risk_manager dung potential fallback (~3-5%).
         # Boost gate_score len 70-85 cho coin lon/priority trong trend manh -> cap 4-7% equity.

@@ -65,10 +65,9 @@ DEFAULT_LEVERAGE       = 10
 # VON THEO DO TIEM NANG (potential-scaled), KHONG cap cung tuy tien:
 #   potential thap -> von nho (giu cho cho lenh khac), potential cao -> von lon (an dam).
 # potential = f(consensus, strength) trong [0,1].
-CAPITAL_PCT_MIN = 0.05   # 5% equity - lenh conviction thap nhat (score=50, rui ro nho)
-CAPITAL_PCT_MAX = 0.95   # 95% equity - lenh conviction CUC CAO (score>=95, gan all-in)
-                         # 5% con lai lam buffer tranh thanh ly toan bo tai khoan khi xui
-MAX_CAPITAL_PCT = 0.95   # tran mem = CAPITAL_PCT_MAX
+CAPITAL_PCT_MIN = 0.01   # HF: 1% equity moi lenh (nhieu lenh cung luc, von nho tung lenh)
+CAPITAL_PCT_MAX = 0.05   # HF: toi da 5% equity/lenh - 20 lenh song song = 100% margin
+MAX_CAPITAL_PCT = 0.05   # HF: tran mem = CAPITAL_PCT_MAX
 # Free margin: 1 lenh dung toi da 95% margin CON TRONG. So lenh TU DIEU TIET:
 # lenh manh an nhieu von -> free giam nhanh -> it lenh song song; lenh yeu an it -> con cho nhieu lenh.
 MAX_FREE_MARGIN_FRAC = 0.95
@@ -100,12 +99,10 @@ TP_ROI_MAX  = 0.25   # TP toi da 25% ROI (lenh manh nhat) - van de dat truoc khi
 SL_TP_RATIO = 5.0    # SL muc tieu = 5 x TP (truoc khi clamp thanh ly)
 
 # --- Signal sensitivity -------------------------------------------------------
-MIN_SIGNAL_STRENGTH = 0.50   # Giam tu 0.55: bat them lenh - signal yeu gio duoc size nho (5% equity)
-                             # nen rui ro da duoc kiem soat bang capital scaling, khong can chan som
-MIN_ADX             = 8      # ADX >= 8 cho 1m scalp — nhat quan voi gate ADX<8 absolute block
-                             # ADX 8-12 van co the trade neu scenario gate pass (score>=50)
-MIN_CONSENSUS          = 2   # 2/7 strategies dong thuan - du voi 10+ AEQ gate downstream
-MIN_CONSENSUS_TRENDING = 2   # Dong bo voi MIN_CONSENSUS
+MIN_SIGNAL_STRENGTH = 0.25   # HF: rat thap - bat moi setup co chut signal
+MIN_ADX             = 4      # HF: ADX >= 4 (gan nhu luon pass)
+MIN_CONSENSUS          = 1   # HF: 1 strategy la du
+MIN_CONSENSUS_TRENDING = 1   # HF: dong bo
 MIN_ATR_PCT         = 0.0005 # 0.05% cho 1m (ATR 1m nho hon 15m, largecap BTC ~0.03-0.08%)
 TRADE_SIZE_MULT         = 1    # Khong dung nua - risk-based sizing thay the
 
@@ -134,9 +131,9 @@ ENABLE_SCENARIO_PATH = True   # bat tat ca scenario path (S1-S40+)
 #   2. SMART CUT-LOSS: dang LO ma trend lon da nguoc han (khong the phuc hoi) -> khong cho
 #      cham SL banh chanh, ma dong ngay khi co BOUNCE nguoc ve phia minh (luc lo IT NHAT).
 DYN_EXIT_ENABLE     = True
-DYN_PROFIT_LOCK_ROI = 0.05   # dang loi >= 5% ROI ma momentum quay dau nguoc -> chot ngay
-DYN_HARD_CUT_ROI    = 0.35   # dang lo >= 35% ROI + trend nguoc, khong co bounce -> cat luon (chan banh chanh)
-DYN_MIN_HOLD_SEC    = 60     # cho lenh 'tho' 60s dau, tranh churn theo nhieu ngan han
+DYN_PROFIT_LOCK_ROI = 0.03   # HF: chot loi som o 3% ROI khi quay dau
+DYN_HARD_CUT_ROI    = 0.20   # HF: cat som o 20% ROI (was 35%) - khong de lo sau tren lenh nho
+DYN_MIN_HOLD_SEC    = 20     # HF: 20s min hold (was 60s)
 
 # --- DYNAMIC TP (bot dieu chinh TP dong dua tren momentum sau khi vao lenh) ---------
 # 1. SOFT PROFIT LOCK: co loi nho nhung BOTH imm+macro quay nguoc -> dong truoc khi mat loi.
@@ -160,11 +157,8 @@ MIN_SAFE_NET_ROI     = 0.05     # 5% ROI net toi thieu tai TP (sau phi khu hoi +
 # Sau khi dong lenh LOI tren 1 coin: block re-entry tren coin do trong X giay.
 # Phong "flip-flop": bot vao Long, thua, roi ngay lap tuc Short cung coin -> lo ca 2.
 # 7200s = 2h: du de market on dinh lai, tranh trade revenge/chasing tren coin mat tien.
-LOSS_COOLDOWN_SEC      = 3600   # 1h cooldown sau khi dong lenh lo (giam tu 2h: scalp bot khong nen block lau)
-# Flip-guard: neu lenh truoc tren coin nay la NGUOC chieu voi lenh moi -> block them.
-# NGOAI LE (trong code): _direction_flipped=True (AEQ/VOL-TREND da phan tich dao chieu) -> khong block.
-# Vi du: vua dong Short BANKUSDT (du loi hay lo) -> khong cho Long BANKUSDT trong 30 phut.
-FLIP_COOLDOWN_SEC      = 1800   # 30min block flip direction (giam tu 2h: AEQ flip co phan tich rieng)
+LOSS_COOLDOWN_SEC      = 60     # HF: 1 phut cooldown sau loss (nhanh re-entry)
+FLIP_COOLDOWN_SEC      = 30     # HF: 30 giay flip guard (gan nhu tat)
 
 # --- Execution ----------------------------------------------------------------
 LOOP_INTERVAL_SEC      = 1    # minimum pause giua cac tick (rate limit only)
@@ -178,6 +172,11 @@ SCAN_BUDGET_REST_SEC   = 600.0  # budget REST: du cho toan bo ~400 coin con lai 
 LOG_FILE        = "trading_bot.log"
 LOG_TRADES_FILE = "trades.json"
 LOG_LEVEL       = "INFO"
+
+# --- High-Frequency Mode (aggressive-hf branch) ------------------------------
+# Bat tat ca gate bypass: QG3/4/6, HARD BLOCK, 5-bar-vol, AEQ-VOL, scenario ADX.
+# Chi giu: QG1 (RSI extreme), QG2a (2h extreme), strong_trend filter, IMM-CUT, DYN-EXIT, SL/TP.
+HIGH_FREQ_MODE = True
 
 # --- Telegram (tuy chon) ------------------------------------------------------
 TELEGRAM_TOKEN   = os.getenv("TELEGRAM_TOKEN", "")

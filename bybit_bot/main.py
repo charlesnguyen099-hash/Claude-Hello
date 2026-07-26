@@ -1343,20 +1343,20 @@ class TradingBot:
             if direction == -1 and lo_24h > 0 and price <= lo_24h * (1 + _qg2c_margin):
                 return False, f"QG2c:within {_qg2c_margin*100:.0f}% of 24h low={lo_24h:.6g}(->block SHORT)"
 
-        # QG-3: 30m high/low proximity (skip breakout)
-        if not is_breakout and len(df_micro) >= 30:
+        _hf = getattr(config, "HIGH_FREQ_MODE", False)
+
+        # QG-3: 30m high/low proximity (skip breakout; skip in HF mode)
+        if not _hf and not is_breakout and len(df_micro) >= 30:
             _lo30 = float(df_micro["low"].iloc[-30:].min())
             _hi30 = float(df_micro["high"].iloc[-30:].max())
-            # Scale theo sp: largecap (0.50) -> 0.25%, midcap -> 0.375%, altcoin -> 0.5%
-            # QG3 chi block khi THUC SU sat day/dinh (khong phai trong range nho cua uptrend)
             _qg3_pct = 0.005 * sp  # 0.25% largecap, 0.375% midcap, 0.5% altcoin
             if direction == -1 and _lo30 > 0 and price <= _lo30 * (1 + _qg3_pct):
                 return False, f"QG3:within {_qg3_pct*100:.2f}% of 30m low={_lo30:.6g}(->block SHORT)"
             if direction == 1 and _hi30 > 0 and price >= _hi30 * (1 - _qg3_pct):
                 return False, f"QG3:within {_qg3_pct*100:.2f}% of 30m high={_hi30:.6g}(->block LONG)"
 
-        # QG-4: Immediate momentum conflict (skip reversal - reversal wants counter-momentum)
-        if not is_reversal and len(df_micro) >= 10:
+        # QG-4: Immediate momentum conflict (skip reversal; skip in HF mode)
+        if not _hf and not is_reversal and len(df_micro) >= 10:
             _c5  = float(df_micro["close"].iloc[-5:].mean())
             _c10 = float(df_micro["close"].iloc[-10:-5].mean())
             if _c10 > 0:
@@ -1367,19 +1367,22 @@ class TradingBot:
                 if direction == 1 and _imm < -_thresh:
                     return False, f"QG4:imm_mom={_imm*100:.3f}%(falling->block LONG)"
 
-        # QG-5: EMA21 overstretch in direction of trade
+        # QG-5: EMA21 overstretch (HF: loosen to 3%/6% so only extreme cases block)
         if len(df_micro) >= 21:
             _ema21 = float(compute_ema(df_micro["close"], 21).iloc[-1])
             if _ema21 > 0:
                 _stretch = (price - _ema21) / _ema21
-                _lim = (0.025 if is_breakout else 0.015) * sp  # looser for breakout; 0.75% BTC, 1.5% altcoin
+                if _hf:
+                    _lim = 0.06 * sp  # HF: 3% BTC, 6% altcoin - chi block khi that su qua gian
+                else:
+                    _lim = (0.025 if is_breakout else 0.015) * sp
                 if direction == -1 and _stretch < -_lim:
                     return False, f"QG5:price {_stretch*100:.2f}% below EMA21(overstretched->block SHORT)"
                 if direction == 1 and _stretch > _lim:
                     return False, f"QG5:price {_stretch*100:.2f}% above EMA21(overstretched->block LONG)"
 
-        # QG-6: Last 3 candle bodies strongly against direction (skip reversal)
-        if not is_reversal and len(df_micro) >= 4:
+        # QG-6: Last 3 candle bodies strongly against direction (skip reversal; skip in HF mode)
+        if not _hf and not is_reversal and len(df_micro) >= 4:
             _bodies = (df_micro["close"].iloc[-3:].values
                        - df_micro["open"].iloc[-3:].values)
             _ranges = (df_micro["high"].iloc[-3:].values
@@ -2641,9 +2644,11 @@ class TradingBot:
             # SCENARIO ENGINE - TAT theo config.ENABLE_SCENARIO_PATH (chi trade trend-following)
             if not config.ENABLE_SCENARIO_PATH:
                 return False
-            # ANTI-CHOP cho SCENARIO: chi bat scenario khi co TREND NHAT DINH (ADX>=14).
-            if math.isnan(adx) or adx < 14.0:
-                logger.debug(f"{symbol}: scenario skip - ADX={adx:.1f} < 14 (chop, khong trend)")
+            # ANTI-CHOP cho SCENARIO: HF mode dung nguong thap hon (6), normal >= 14
+            _hf_mode = getattr(config, "HIGH_FREQ_MODE", False)
+            _sc_adx_min = 6.0 if _hf_mode else 14.0
+            if math.isnan(adx) or adx < _sc_adx_min:
+                logger.debug(f"{symbol}: scenario skip - ADX={adx:.1f} < {_sc_adx_min} (chop)")
                 return False
             # == SCENARIO ENGINE - bat lenh tiem nang khi strategies im lang ======
             # Strategies (EMA/RSI-based) co lag co huu - nhieu setup tiem nang RO RANG
@@ -3658,8 +3663,8 @@ class TradingBot:
             if pair_side == signal_side:
                 return _block(f"BTC/ETH correlation: {pair} already {pair_side}, block {signal_side}")
 
-        # Volume pressure filter
-        if not df_micro.empty and len(df_micro) >= 5:
+        # Volume pressure filter (skip in HF mode)
+        if not getattr(config, "HIGH_FREQ_MODE", False) and not df_micro.empty and len(df_micro) >= 5:
             _vbars = df_micro.iloc[-5:]
             _green_vol = _vbars.loc[_vbars["close"] >= _vbars["open"], "volume"].sum()
             _red_vol   = _vbars.loc[_vbars["close"] <  _vbars["open"], "volume"].sum()
@@ -3807,14 +3812,11 @@ class TradingBot:
             and adx >= 25 and _vrat_pre >= 1.5
         )
 
-        # PUMP EXHAUSTION SHORT: khi LONG bi HARD BLOCK vi micro_down,
-        # nhung gia vua pump (o phan tren 2h range) -> flip sang SHORT thay vi bo qua.
-        # Day la "trade short va trade tre hon mot chut" - micro_down = xac nhan reversal bat dau.
-        # Lenh DA flip / scenario entry: khong ap dung hard block + khong flip lan 2
-        # (double-flip bug: POST-TROUGH flip SHORT->LONG roi PUMP-EXH flip lai LONG->SHORT
-        #  = quay ve chieu ma phan tich truoc do da ket luan la SAI)
+        # PUMP EXHAUSTION SHORT: khi LONG bi HARD BLOCK vi micro_down
+        # HF mode: bo qua toan bo HARD BLOCK - cho phep entry theo moi huong
+        _hf_mode = getattr(config, "HIGH_FREQ_MODE", False)
         _pump_exhaustion_flip = False
-        if (best.direction == 1 and micro_down and not _btc_bull_long_ok
+        if (not _hf_mode and best.direction == 1 and micro_down and not _btc_bull_long_ok
                 and not _direction_flipped):
             _pump_exh_30 = 0.0
             if not df_micro.empty and len(df_micro) >= 30:
@@ -3860,9 +3862,8 @@ class TradingBot:
                     f"| 5m={scalp_trend} 15m={macro_trend} 1h={macro_4h}"
                 )
         # DUMP EXHAUSTION LONG: doi xung voi pump_exhaustion_flip
-        # Khi SHORT bi HARD BLOCK vi micro_up nhung gia vua dump xuong day -> flip sang LONG
         _dump_exhaustion_flip = False
-        if (best.direction == -1 and micro_up and not _btc_bear_short_ok
+        if (not _hf_mode and best.direction == -1 and micro_up and not _btc_bear_short_ok
                 and not _direction_flipped):
             _dump_exh_30 = 0.0
             if not df_micro.empty and len(df_micro) >= 30:

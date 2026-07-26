@@ -1348,7 +1348,7 @@ class TradingBot:
             _c10 = float(df_micro["close"].iloc[-10:-5].mean())
             if _c10 > 0:
                 _imm = (_c5 - _c10) / _c10
-                _thresh = 0.0005 * sp  # 0.025% largecap, 0.05% altcoin
+                _thresh = 0.002 * sp  # 0.1% largecap, 0.15% midcap, 0.2% altcoin
                 if direction == -1 and _imm > _thresh:
                     return False, f"QG4:imm_mom=+{_imm*100:.3f}%(bouncing->block SHORT)"
                 if direction == 1 and _imm < -_thresh:
@@ -1359,7 +1359,7 @@ class TradingBot:
             _ema21 = float(compute_ema(df_micro["close"], 21).iloc[-1])
             if _ema21 > 0:
                 _stretch = (price - _ema21) / _ema21
-                _lim = (0.025 if is_breakout else 0.012) * sp  # looser for breakout
+                _lim = (0.025 if is_breakout else 0.020) * sp  # looser for breakout
                 if direction == -1 and _stretch < -_lim:
                     return False, f"QG5:price {_stretch*100:.2f}% below EMA21(overstretched->block SHORT)"
                 if direction == 1 and _stretch > _lim:
@@ -3643,9 +3643,9 @@ class TradingBot:
             _total_vol = _green_vol + _red_vol
             if _total_vol > 0:
                 _buy_ratio = _green_vol / _total_vol
-                if best.direction == -1 and _buy_ratio >= 0.80:
+                if best.direction == -1 and _buy_ratio >= 0.90:
                     return _block(f"skip SHORT - 5-bar volume pressure BUY {_buy_ratio*100:.0f}%")
-                if best.direction == 1 and _buy_ratio <= 0.20:
+                if best.direction == 1 and _buy_ratio <= 0.10:
                     return _block(f"skip LONG - 5-bar volume pressure SELL {(1-_buy_ratio)*100:.0f}%")
 
         # Dual spike (ranging market): block tat ca momentum entry
@@ -3825,11 +3825,11 @@ class TradingBot:
                 # Khong the LONG giua downtrend chi vi scenario fire - LAUSDT pattern.
                 # Dieu kien cho phep: o vung day 2h (m2h<0.30) VA fast_tr khong bearish manh.
                 # Neu fast_tr==-1 VA khong o day = trend dang xuong, scenario LONG la sai chieu.
-                _sc_long_ok = _m2h_pos < 0.30 and _fast_tr_pre != -1
+                _sc_long_ok = _m2h_pos < 0.40 and _fast_tr_pre != -1
                 if not _sc_long_ok:
                     return _block(
                         f"HARD BLOCK LONG (scenario) - micro bearish + fast={_fast_tr_pre} "
-                        f"+ 2h_pos={_m2h_pos:.0%} > 30% (khong o day thuc su)"
+                        f"+ 2h_pos={_m2h_pos:.0%} > 40% (khong o day thuc su)"
                     )
             else:
                 return _block(
@@ -3868,11 +3868,11 @@ class TradingBot:
                 pass  # HIGH-CONVICTION: F+M1+M2 cung chieu + ADX>=25 + vol>=1.5x -> cho phep entry
             elif _scenario_entry:
                 # SCENARIO SHORT khi micro bullish: chi cho phep neu dung o dinh that su.
-                _sc_short_ok = _m2h_pos > 0.70 and _fast_tr_pre != 1
+                _sc_short_ok = _m2h_pos > 0.60 and _fast_tr_pre != 1
                 if not _sc_short_ok:
                     return _block(
                         f"HARD BLOCK SHORT (scenario) - micro bullish + fast={_fast_tr_pre} "
-                        f"+ 2h_pos={_m2h_pos:.0%} < 70% (khong o dinh thuc su)"
+                        f"+ 2h_pos={_m2h_pos:.0%} < 60% (khong o dinh thuc su)"
                     )
             else:
                 return _block(

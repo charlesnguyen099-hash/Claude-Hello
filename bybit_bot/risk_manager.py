@@ -199,7 +199,8 @@ class RiskManager:
         #   1. capital <= equity * MAX_CAPITAL_PCT (tran mem 95%)
         #   2. FREE MARGIN: capital <= free_margin * MAX_FREE_MARGIN_FRAC (95% free con lai)
         #   3. capital <= equity
-        MIN_NOTIONAL = 5.0   # Bybit min order value
+        MIN_NOTIONAL     = 5.0    # Bybit min order value
+        MIN_NOTIONAL_BOT = 50.0   # Bot min notional: lenh < $50 notional = ton resource, phi an het loi
 
         # Margin dang bi chiem boi cac position dang mo (de tinh free margin)
         _used_margin = 0.0
@@ -238,6 +239,14 @@ class RiskManager:
 
         notional     = qty * entry
         capital_used = notional / leverage
+
+        # Bot min notional: lenh qua nho = phi an het loi, ton resource, ngam von vo ich
+        if notional < MIN_NOTIONAL_BOT:
+            logger.info(
+                f"{signal.symbol}: skip - notional {notional:.2f}$ < {MIN_NOTIONAL_BOT}$ "
+                f"(coin qua nho/it thanh khoan, phi/spread an het loi)"
+            )
+            return None
 
         # Neu min-notional/min-qty ep margin vuot free margin -> khong con cho, skip
         # (giu von cho lenh khac thay vi don het vao lenh min-size nay)

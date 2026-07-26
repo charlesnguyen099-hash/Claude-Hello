@@ -10,8 +10,8 @@ API_SECRET = os.getenv("BYBIT_API_SECRET", "YOUR_API_SECRET_HERE")
 TESTNET    = os.getenv("BYBIT_TESTNET", "false").lower() == "true"
 
 # --- Market Scanner -----------------------------------------------------------
-MIN_VOLUME_USDT_24H  = 50_000        # 50K USDT/24h - nguong sap san de bat toan bo coin Bybit
-                                     # Chi loai coin chet hoan toan (0 giao dich). Giu het phan con lai.
+MIN_VOLUME_USDT_24H  = 5_000_000     # 5M USDT/24h - loai coin qua nho/kho spread lon, it co hoi
+                                     # ANTHROPICUSDT pattern: vol <5M -> spread cao, profit nho, ton resource
 HIGH_VOL_THRESHOLD   = 10_000_000    # nguong volume cao: coin >= nguong nay scan tan suat cao (cooldown ngan)
 SCAN_INTERVAL_SEC    = 60            # cap nhat danh sach trending moi 60s
 

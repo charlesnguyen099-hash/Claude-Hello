@@ -39,6 +39,10 @@ class Executor:
         self._executing:  set               = set()  # symbols dang trong qua trinh execute (lock)
         self._open_symbols: set             = set()  # symbols co open position theo executor (guard stale list)
         self._restored_symbols: set         = set()  # symbols duoc restore tu exchange khi restart - khong dong boi signal
+        # Post-loss cooldown: sau khi dong lenh LO, block re-entry tren coin do
+        self._loss_cooldown:  dict[str, float] = {}  # symbol -> timestamp khi dong lenh lo
+        # Flip-guard: block flip direction tren cung coin (Long->Short hoac Short->Long)
+        self._last_direction: dict[str, tuple[int, float]] = {}  # symbol -> (direction, close_time)
 
     def execute_signal(
         self,
@@ -207,6 +211,7 @@ class Executor:
             self._open_time[symbol] = time.time()
             self._tick_size[symbol] = tick_size
             self._open_symbols.add(symbol)
+            self._last_direction[symbol] = (signal.direction, time.time())
 
             # Layer 2: set_trading_stop backup sau khi fill
             time.sleep(1.0)
@@ -374,6 +379,19 @@ class Executor:
         # Sync open_symbols cache voi thuc te exchange
         self._open_symbols = active_symbols.copy()
 
+        # Track last known PnL + direction: de phat hien lenh vua dong o trang thai lo
+        # Khi position bien mat khoi active_symbols (dong boi SL/TP/exchange) ->
+        # check last known PnL de quyet dinh co ghi loss_cooldown hay khong.
+        _live_pnl:   dict[str, float] = {}
+        _live_side:  dict[str, str]   = {}
+        for _lp in open_positions:
+            _lp_sym = _lp.get("symbol", "")
+            if _lp_sym:
+                _margin = _fval(_lp, "positionValue", 0.0) / max(1.0, _fval(_lp, "leverage", 10.0))
+                _upnl   = _fval(_lp, "unrealisedPnl", 0.0)
+                _live_pnl[_lp_sym]  = _upnl / _margin if _margin > 0 else _upnl
+                _live_side[_lp_sym] = _lp.get("side", "")
+
         for pos in open_positions:
             symbol     = pos["symbol"]
             entry      = _fval(pos, "avgPrice")
@@ -516,8 +534,23 @@ class Executor:
                 logger.warning(f"{symbol}: Emergency close - excessive loss")
                 self._close_position(pos)
 
-        # Xoa state stale
+        # Xoa state stale - position da dong (SL/TP hit hoac dong tay)
         for stale_sym in set(self._sl_price.keys()) - active_symbols:
+            _last_pnl_roi = _live_pnl.get(stale_sym, None)  # PnL ROI truoc khi dong
+            _last_side    = _live_side.get(stale_sym, "")
+            _now          = time.time()
+            # Ghi direction da trade (cho flip-guard)
+            if _last_side in ("Buy", "Sell"):
+                _dir = 1 if _last_side == "Buy" else -1
+                self._last_direction[stale_sym] = (_dir, _now)
+            # Neu dong lenh o trang thai LO (pnl_roi < 0): ghi loss cooldown
+            if _last_pnl_roi is not None and _last_pnl_roi < -0.005:  # lo > 0.5% ROI
+                self._loss_cooldown[stale_sym] = _now
+                logger.info(
+                    f"[LOSS-COOLDOWN] {stale_sym}: dong lenh LO "
+                    f"(pnl_roi={_last_pnl_roi*100:.1f}%) - block re-entry "
+                    f"{getattr(config, 'LOSS_COOLDOWN_SEC', 7200)//3600}h"
+                )
             self.clear_position_state(stale_sym)
 
     def clear_position_state(self, symbol: str):
@@ -527,6 +560,7 @@ class Executor:
         self._open_symbols.discard(symbol)
         self._tick_size.pop(symbol, None)
         self._restored_symbols.discard(symbol)
+        # Khong xoa _loss_cooldown va _last_direction - can giu de block re-entry
 
     def _close_position(self, position: dict):
         symbol = position["symbol"]

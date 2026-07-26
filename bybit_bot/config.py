@@ -157,6 +157,16 @@ MAX_SPREAD_PCT_ALT   = 0.0015   # 0.15% cho altcoin
 # 5% ROI net = du dem cho slippage fill, bien dong funding, gia tri trade thuc su.
 MIN_SAFE_NET_ROI     = 0.05     # 5% ROI net toi thieu tai TP (sau phi khu hoi + spread)
 
+# --- Post-loss cooldown -------------------------------------------------------
+# Sau khi dong lenh LOI tren 1 coin: block re-entry tren coin do trong X giay.
+# Phong "flip-flop": bot vao Long, thua, roi ngay lap tuc Short cung coin -> lo ca 2.
+# 7200s = 2h: du de market on dinh lai, tranh trade revenge/chasing tren coin mat tien.
+LOSS_COOLDOWN_SEC      = 7200   # 2h cooldown sau khi dong lenh lo
+# Flip-guard: neu lenh truoc tren coin nay la NGUOC chieu voi lenh moi -> block them.
+# Vi du: vua dong Short BANKUSDT (du loi hay lo) -> khong cho Long BANKUSDT trong 2h.
+# Chi cho phep cung chieu (continuation) sau khi dong lenh.
+FLIP_COOLDOWN_SEC      = 7200   # 2h block flip direction (Long->Short hoac Short->Long)
+
 # --- Execution ----------------------------------------------------------------
 LOOP_INTERVAL_SEC      = 1    # minimum pause giua cac tick (rate limit only)
 SYMBOL_COOLDOWN_SEC    = 60    # REST coins: re-analyze moi 60s (toan bo ~400 coin covered trong 1 phut)

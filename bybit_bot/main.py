@@ -1341,6 +1341,18 @@ class TradingBot:
             logger.debug(f"{symbol}: skip - 1m ADX={adx:.1f} < {min_adx} (sideway)")
             return False
 
+        # --- Post-loss cooldown & flip-guard ------------------------------------------
+        import time as _time_mod
+        _now_ts = _time_mod.time()
+        _loss_cooldown_sec = getattr(config, "LOSS_COOLDOWN_SEC", 7200)
+        _flip_cooldown_sec = getattr(config, "FLIP_COOLDOWN_SEC", 7200)
+        _loss_ts = self.executor._loss_cooldown.get(symbol, 0.0)
+        if _now_ts - _loss_ts < _loss_cooldown_sec:
+            _rem = int(_loss_ts + _loss_cooldown_sec - _now_ts)
+            logger.debug(f"{symbol}: skip - loss cooldown ({_rem}s remaining)")
+            return False
+        # ------------------------------------------------------------------------------
+
         # 24h directional move filter: tranh chase sau khi coin da pump/dump trong 24h
         # 1440 nen 1m = 1440 phut = 24h chinh xac (chinh xac hon 96x15m vi du lieu 1m granular)
         _W24H = 1440
@@ -1864,6 +1876,13 @@ class TradingBot:
                         f"{'LONG' if bo_sig.direction==1 else 'SHORT'} "
                         f"strength={bo_sig.strength:.2f} | {bo_sig.reason}"
                     )
+                    _bo_last = self.executor._last_direction.get(symbol)
+                    if _bo_last is not None:
+                        import time as _tm_bo
+                        _bo_ldir, _bo_lts = _bo_last
+                        if _tm_bo.time() - _bo_lts < _flip_cooldown_sec and _bo_ldir != bo_sig.direction:
+                            logger.info(f"{symbol}: FLIP-GUARD block BREAKOUT {'LONG' if bo_sig.direction==1 else 'SHORT'}")
+                            return False
                     self.executor.execute_signal(symbol, bo_sig, equity, open_positions, is_priority=is_priority)
                     return True
 
@@ -2265,6 +2284,13 @@ class TradingBot:
                         f"{'LONG' if best.direction==1 else 'SHORT'} "
                         f"strength={best.strength:.2f} TP_override={best.tp_roi_override*100:.0f}% | {best.reason}"
                     )
+                    _rv_last = self.executor._last_direction.get(symbol)
+                    if _rv_last is not None:
+                        import time as _tm_rv
+                        _rv_ldir, _rv_lts = _rv_last
+                        if _tm_rv.time() - _rv_lts < _flip_cooldown_sec and _rv_ldir != best.direction:
+                            logger.info(f"{symbol}: FLIP-GUARD block REVERSAL {'LONG' if best.direction==1 else 'SHORT'}")
+                            return False
                     self.executor.execute_signal(symbol, best, equity, open_positions, is_priority=is_priority)
                     return True
 
@@ -2475,9 +2501,10 @@ class TradingBot:
                                              - df_micro["open"].iloc[-5:].values).max()) / _sc_price
 
                 # S1/S2 - EMERGING TREND (uu tien cao nhat - chinh la HBAR pattern)
-                if _emerging_uptrend and not _block_long_24h:
+                # _sc_pos guard: tranh long o gan dinh 2h range (>82%) hoac short o gan day (< 18%)
+                if _emerging_uptrend and not _block_long_24h and _sc_pos < 0.82:
                     _sc_dir, _sc_strength, _sc_tp, _sc_name = 1, 0.62, 0.0, "sc_emerging_up"
-                elif _emerging_downtrend and not _block_short_24h:
+                elif _emerging_downtrend and not _block_short_24h and _sc_pos > 0.18:
                     _sc_dir, _sc_strength, _sc_tp, _sc_name = -1, 0.62, 0.0, "sc_emerging_down"
                 # S3/S4 - BREAKOUT 2h range + volume >= 1.5x, break 0.1-0.7% (khong chase),
                 # khong co nen spike > 2%*_sp trong 5c, macro lon khong chong lai
@@ -4975,6 +5002,16 @@ class TradingBot:
             f"{'LONG' if best.direction==1 else 'SHORT'} "
             f"strength={best.strength:.2f}{_tp_log} | {best.reason}"
         )
+
+        # Flip-guard: block neu chieu moi NGUOC voi lenh truoc trong FLIP_COOLDOWN_SEC
+        _last_dir_info = self.executor._last_direction.get(symbol)
+        if _last_dir_info is not None:
+            _last_dir, _last_close_ts = _last_dir_info
+            import time as _time_mod2
+            if _time_mod2.time() - _last_close_ts < _flip_cooldown_sec and _last_dir != best.direction:
+                _rem_flip = int(_last_close_ts + _flip_cooldown_sec - _time_mod2.time())
+                logger.info(f"{symbol}: FLIP-GUARD block {'LONG' if best.direction==1 else 'SHORT'} (last={'LONG' if _last_dir==1 else 'SHORT'}, {_rem_flip}s remaining)")
+                return False
 
         self.executor.execute_signal(symbol, best, equity, open_positions, is_priority=is_priority)
         return True

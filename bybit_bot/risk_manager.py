@@ -154,7 +154,12 @@ class RiskManager:
         # Neu TP-bu-phi VUOT tam-voi (coin volatility qua thap) -> KHONG the lai sau phi -> SKIP.
         _atr = signal.atr if signal.atr > 0 else 0.0
         if _atr > 0:
-            _tp_cap   = 2.0 * _atr                                 # tran: trong tam voi (~2 nen)
+            # ATR multiplier: largecap (BTC/ETH) ATR% nho hon altcoin -> can nhieu ATR de cover phi.
+            # altcoin 2x, largecap 8x: BTC ATR ~0.04%/nen, fee ~0.14%*42 = 5.88%, can ~6ATR% cover.
+            _LARGECAP = {"BTCUSDT", "ETHUSDT"}
+            _MIDCAP   = {"SOLUSDT", "BNBUSDT", "XRPUSDT", "DOGEUSDT", "ADAUSDT", "HYPEUSDT"}
+            _atr_mult = 8.0 if signal.symbol in _LARGECAP else (5.0 if signal.symbol in _MIDCAP else 2.0)
+            _tp_cap   = _atr_mult * _atr
             # san TP (price dist): phi khu hoi + loi rong toi thieu (_min_net_roi) -> hit TP luon LOI RONG.
             # Phi (theo price dist): TOTAL_ROUND_TRIP_COST * entry (khong phu thuoc leverage vi phi = % notional)
             # Loi rong toi thieu (theo price dist): _min_net_roi * entry / leverage
@@ -163,7 +168,7 @@ class RiskManager:
             if _tp_floor > _tp_cap:
                 logger.info(
                     f"{signal.symbol}: SKIP - volatility qua thap (ATR={_atr:.6f}), TP bu phi "
-                    f"({_tp_floor:.6f}) vuot tam voi (2xATR={_tp_cap:.6f}) -> khong lai sau phi"
+                    f"({_tp_floor:.6f}) vuot tam voi ({_atr_mult:.0f}xATR={_tp_cap:.6f}) -> khong lai sau phi"
                 )
                 return None
             _tp_target = max(_tp_floor, min(tp_dist, _tp_cap))

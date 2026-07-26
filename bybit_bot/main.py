@@ -1305,39 +1305,39 @@ class TradingBot:
 
         # QG-1: RSI extreme
         if direction == -1 and rsi_now < 25:
-            return False, f"QG1:RSI={rsi_now:.0f}<25(oversold→block SHORT)"
+            return False, f"QG1:RSI={rsi_now:.0f}<25(oversold->block SHORT)"
         if direction == 1 and rsi_now > 75:
-            return False, f"QG1:RSI={rsi_now:.0f}>75(overbought→block LONG)"
+            return False, f"QG1:RSI={rsi_now:.0f}>75(overbought->block LONG)"
 
         # QG-2: 2h range position + 24h range position (skip breakout)
         if not is_breakout:
             if direction == -1 and sc_pos < 0.15:
-                return False, f"QG2a:pos={sc_pos*100:.0f}%<15%(2h bottom→block SHORT)"
+                return False, f"QG2a:pos={sc_pos*100:.0f}%<15%(2h bottom->block SHORT)"
             if direction == 1 and sc_pos > 0.85:
-                return False, f"QG2a:pos={sc_pos*100:.0f}%>85%(2h top→block LONG)"
+                return False, f"QG2a:pos={sc_pos*100:.0f}%>85%(2h top->block LONG)"
             # 24h range position - thiet lap kep voi _block_long_24h, bat case borderline
             # strong_trend: relax threshold (strong bull trend cho phep long len toi 92% 24h range)
             _qg2b_long_thresh  = 0.92 if strong_trend else 0.80
             _qg2b_short_thresh = 0.08 if strong_trend else 0.20
             _qg2c_margin       = 0.05 if strong_trend else 0.025
             if direction == 1 and pos_24h > _qg2b_long_thresh:
-                return False, f"QG2b:24h_pos={pos_24h*100:.0f}%>{_qg2b_long_thresh*100:.0f}%(gan dinh 24h→block LONG)"
+                return False, f"QG2b:24h_pos={pos_24h*100:.0f}%>{_qg2b_long_thresh*100:.0f}%(gan dinh 24h->block LONG)"
             if direction == -1 and pos_24h < _qg2b_short_thresh:
-                return False, f"QG2b:24h_pos={pos_24h*100:.0f}%<{_qg2b_short_thresh*100:.0f}%(gan day 24h→block SHORT)"
+                return False, f"QG2b:24h_pos={pos_24h*100:.0f}%<{_qg2b_short_thresh*100:.0f}%(gan day 24h->block SHORT)"
             # Distance from 24h absolute high/low
             if direction == 1 and hi_24h > 0 and price >= hi_24h * (1 - _qg2c_margin):
-                return False, f"QG2c:within {_qg2c_margin*100:.0f}% of 24h high={hi_24h:.6g}(→block LONG)"
+                return False, f"QG2c:within {_qg2c_margin*100:.0f}% of 24h high={hi_24h:.6g}(->block LONG)"
             if direction == -1 and lo_24h > 0 and price <= lo_24h * (1 + _qg2c_margin):
-                return False, f"QG2c:within {_qg2c_margin*100:.0f}% of 24h low={lo_24h:.6g}(→block SHORT)"
+                return False, f"QG2c:within {_qg2c_margin*100:.0f}% of 24h low={lo_24h:.6g}(->block SHORT)"
 
         # QG-3: 30m high/low proximity (skip breakout)
         if not is_breakout and len(df_micro) >= 30:
             _lo30 = float(df_micro["low"].iloc[-30:].min())
             _hi30 = float(df_micro["high"].iloc[-30:].max())
             if direction == -1 and _lo30 > 0 and price <= _lo30 * 1.0025:
-                return False, f"QG3:within 0.25% of 30m low={_lo30:.6g}(→block SHORT)"
+                return False, f"QG3:within 0.25% of 30m low={_lo30:.6g}(->block SHORT)"
             if direction == 1 and _hi30 > 0 and price >= _hi30 * 0.9975:
-                return False, f"QG3:within 0.25% of 30m high={_hi30:.6g}(→block LONG)"
+                return False, f"QG3:within 0.25% of 30m high={_hi30:.6g}(->block LONG)"
 
         # QG-4: Immediate momentum conflict (skip reversal - reversal wants counter-momentum)
         if not is_reversal and len(df_micro) >= 10:
@@ -1347,9 +1347,9 @@ class TradingBot:
                 _imm = (_c5 - _c10) / _c10
                 _thresh = 0.0005 * sp  # 0.025% largecap, 0.05% altcoin
                 if direction == -1 and _imm > _thresh:
-                    return False, f"QG4:imm_mom=+{_imm*100:.3f}%(bouncing→block SHORT)"
+                    return False, f"QG4:imm_mom=+{_imm*100:.3f}%(bouncing->block SHORT)"
                 if direction == 1 and _imm < -_thresh:
-                    return False, f"QG4:imm_mom={_imm*100:.3f}%(falling→block LONG)"
+                    return False, f"QG4:imm_mom={_imm*100:.3f}%(falling->block LONG)"
 
         # QG-5: EMA21 overstretch in direction of trade
         if len(df_micro) >= 21:
@@ -1358,9 +1358,9 @@ class TradingBot:
                 _stretch = (price - _ema21) / _ema21
                 _lim = (0.025 if is_breakout else 0.012) * sp  # looser for breakout
                 if direction == -1 and _stretch < -_lim:
-                    return False, f"QG5:price {_stretch*100:.2f}% below EMA21(overstretched→block SHORT)"
+                    return False, f"QG5:price {_stretch*100:.2f}% below EMA21(overstretched->block SHORT)"
                 if direction == 1 and _stretch > _lim:
-                    return False, f"QG5:price {_stretch*100:.2f}% above EMA21(overstretched→block LONG)"
+                    return False, f"QG5:price {_stretch*100:.2f}% above EMA21(overstretched->block LONG)"
 
         # QG-6: Last 3 candle bodies strongly against direction (skip reversal)
         if not is_reversal and len(df_micro) >= 4:
@@ -1372,9 +1372,9 @@ class TradingBot:
             if _total_range > 0:
                 _body_ratio = float(_bodies.sum()) / _total_range
                 if direction == -1 and _body_ratio > 0.55:
-                    return False, f"QG6:3c bullish ratio={_body_ratio:.2f}(→block SHORT)"
+                    return False, f"QG6:3c bullish ratio={_body_ratio:.2f}(->block SHORT)"
                 if direction == 1 and _body_ratio < -0.55:
-                    return False, f"QG6:3c bearish ratio={_body_ratio:.2f}(→block LONG)"
+                    return False, f"QG6:3c bearish ratio={_body_ratio:.2f}(->block LONG)"
 
         return True, ""
 
@@ -4818,7 +4818,7 @@ class TradingBot:
                     elif _mv5_dir > 1.0: _s_fresh = min(_s_fresh, -8)
 
             # S9: Large candle exhaustion — check BOTH current candle AND recent window
-            # LRCUSDT-type: pump spike 5 candles ago, current candle small → old check misses it
+            # LRCUSDT-type: pump spike 5 candles ago, current candle small -> old check misses it
             _s_candle_body = 0
             if len(df_micro) >= 2 and _atrm > 0:
                 # Check candle cuoi (original)
@@ -4828,7 +4828,7 @@ class TradingBot:
                 if _lc_body_dir > 2.0:   _s_candle_body = -10
                 elif _lc_body_dir > 1.5: _s_candle_body = -5
                 # NEW: check recent spike AGAINST trade direction (last 10 candles)
-                # Neu co spike lon NGUOC chieu trong 10 nen gan nhat → penalty
+                # Neu co spike lon NGUOC chieu trong 10 nen gan nhat -> penalty
                 if len(df_micro) >= 10:
                     _recent10 = df_micro.iloc[-10:]
                     _max_counter_body = 0.0

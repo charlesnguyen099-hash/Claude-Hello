@@ -3736,21 +3736,35 @@ class TradingBot:
         # tuong tu KHONG long khi gia da o dinh range (>70%). Scenario entry tu phan tich - bo qua.
         if not _direction_flipped and not _scenario_entry:
             if best.direction == 1 and _post_peak_decline_long and _m2h_pos > 0.30:
-                best.direction = -1
-                best.tp_roi_override = 0.10
-                _direction_flipped = True
-                logger.info(
-                    f"{symbol}: POST-PEAK flip LONG->SHORT - {_ppd_drop*100:.1f}% below 60c high "
-                    f"({_ppd_hi_age}c ago, EMA lag) scalp={scalp_trend}, TP=10%"
-                )
+                # Guard: only flip when macro confirms downtrend OR scalp already bearish
+                # Prevents flipping to SHORT on a real bounce in uptrend (REUSDT/GWEIUSDT pattern)
+                if macro_trend <= 0 or scalp_trend == -1:
+                    best.direction = -1
+                    best.tp_roi_override = 0.10
+                    _direction_flipped = True
+                    logger.info(
+                        f"{symbol}: POST-PEAK flip LONG->SHORT - {_ppd_drop*100:.1f}% below 60c high "
+                        f"({_ppd_hi_age}c ago, EMA lag) scalp={scalp_trend} macro={macro_trend}, TP=10%"
+                    )
+                else:
+                    # scalp==1 AND macro>0 means real uptrend still active, skip entry entirely
+                    return _block(
+                        f"POST-PEAK block LONG (uptrend bounce) - scalp={scalp_trend} macro={macro_trend}"
+                    )
             elif best.direction == -1 and _post_trough_rise_short and _m2h_pos < 0.70:
-                best.direction = 1
-                best.tp_roi_override = 0.10
-                _direction_flipped = True
-                logger.info(
-                    f"{symbol}: POST-TROUGH flip SHORT->LONG - {_ppd_rise*100:.1f}% above 60c low "
-                    f"({_ppd_lo_age}c ago, EMA lag) scalp={scalp_trend}, TP=10%"
-                )
+                # Guard: only flip when macro confirms uptrend OR scalp already bullish
+                if macro_trend >= 0 or scalp_trend == 1:
+                    best.direction = 1
+                    best.tp_roi_override = 0.10
+                    _direction_flipped = True
+                    logger.info(
+                        f"{symbol}: POST-TROUGH flip SHORT->LONG - {_ppd_rise*100:.1f}% above 60c low "
+                        f"({_ppd_lo_age}c ago, EMA lag) scalp={scalp_trend} macro={macro_trend}, TP=10%"
+                    )
+                else:
+                    return _block(
+                        f"POST-TROUGH block SHORT (downtrend bounce) - scalp={scalp_trend} macro={macro_trend}"
+                    )
 
         # == EMERGING TREND OVERRIDE - HBAR fix ===================================
         # Signal NGUOC chieu voi trend dang hinh thanh -> flip THEO trend:

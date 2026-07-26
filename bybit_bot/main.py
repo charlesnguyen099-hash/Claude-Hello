@@ -1659,13 +1659,17 @@ class TradingBot:
         # Altcoin nho: van can ca 2 TF de tranh false signal
         _all_tfs_bull = (macro_trend == 1 and macro_4h == 1) or (_is_high_vol and macro_trend == 1)
         _all_tfs_bear = (macro_trend == -1 and macro_4h == -1) or (_is_high_vol and macro_trend == -1)
-        if _all_tfs_bull and _block_long_24h:
-            # Chi giu block khi THUC SU spike extreme: pump >22% trong 24h HOAC o 93%+ range
-            if _change_24h <= 22.0 and _24h_pos <= 0.93:
+        # HIGH-VOL fast bypass: scalp_trend (EMA9/21/50) flip nhanh hon macro (EMA100/250)
+        # Cho phep relax 24h block som hon khi scalp xac nhan + macro khong nguoc
+        _hv_scalp_bull = _is_high_vol and scalp_trend == 1 and macro_trend >= 0
+        _hv_scalp_bear = _is_high_vol and scalp_trend == -1 and macro_trend <= 0
+        if (_all_tfs_bull or _hv_scalp_bull) and _block_long_24h:
+            # Chi giu block khi THUC SU spike extreme: pump >25% trong 24h HOAC o 95%+ range
+            if _change_24h <= 25.0 and _24h_pos <= 0.95:
                 _block_long_24h = False
                 logger.debug(f"{symbol}: TREND-RELAX block_long_24h cleared (macro=bull pos={_24h_pos:.0%} chg={_change_24h:.1f}%)")
-        if _all_tfs_bear and _block_short_24h:
-            if _change_24h >= -22.0 and _24h_pos >= 0.07:
+        if (_all_tfs_bear or _hv_scalp_bear) and _block_short_24h:
+            if _change_24h >= -25.0 and _24h_pos >= 0.05:
                 _block_short_24h = False
                 logger.debug(f"{symbol}: TREND-RELAX block_short_24h cleared (macro=bear pos={_24h_pos:.0%} chg={_change_24h:.1f}%)")
 
@@ -1880,10 +1884,13 @@ class TradingBot:
             # Chi set dump flag khi scalp_trend KHONG phai bearish (tuc la dump nay la spike, khong phai trend)
             if len(df_micro) >= 14:
                 _micro_rsi = compute_rsi(df_micro["close"]).iloc[-1]
-                if _micro_rsi < 20 and not _micro_spike_pump and scalp_trend != -1:
+                # HIGH-VOL: RSI 80-90 la BINH THUONG trong strong uptrend -> chi block tai 90+
+                _rsi_ob_thresh = 90 if _is_high_vol else 80
+                _rsi_os_thresh = 10 if _is_high_vol else 20
+                if _micro_rsi < _rsi_os_thresh and not _micro_spike_pump and scalp_trend != -1:
                     _micro_spike_dump = True
                     logger.debug(f"{symbol}: 1m RSI={_micro_rsi:.1f} extreme oversold (5m not bearish) -> dump flag")
-                elif _micro_rsi > 80 and not _micro_spike_dump and scalp_trend != 1:
+                elif _micro_rsi > _rsi_ob_thresh and not _micro_spike_dump and scalp_trend != 1:
                     _micro_spike_pump = True
                     logger.debug(f"{symbol}: 1m RSI={_micro_rsi:.1f} extreme overbought (5m not bullish) -> pump flag")
 
@@ -3727,10 +3734,14 @@ class TradingBot:
         # Spike trong trend = sustained move (BTC pump 1%+ trong uptrend), khong phai isolated spike
         # QUAN TRONG: scalp_trend==1 don doc KHONG du - no co the bi push boi chinh cai spike do.
         # Phai co THEM macro_trend==1 (15m EMA) xac nhan trend ton tai truoc spike.
+        # HIGH-VOL (>=10M): macro_trend lag 100+ phut sau khi pump bat dau -> miss toan bo move
+        # -> Chi can scalp_trend xac nhan + macro_trend KHONG nguoc chieu la du cho coin lon
         _pump_spike_in_trend = micro_up and (_is_gradual_uptrend or _emerging_uptrend
-                                             or (scalp_trend == 1 and macro_trend == 1))
+                                             or (scalp_trend == 1 and macro_trend == 1)
+                                             or (_is_high_vol and scalp_trend == 1 and macro_trend >= 0))
         _dump_spike_in_trend = micro_down and (_is_gradual_downtrend or _emerging_downtrend
-                                               or (scalp_trend == -1 and macro_trend == -1))
+                                               or (scalp_trend == -1 and macro_trend == -1)
+                                               or (_is_high_vol and scalp_trend == -1 and macro_trend <= 0))
         # Breakout scenario: nen breakout > 1.5x ATR la BINH THUONG (da co volume + close
         # tren range confirm) - khong block nhu isolated spike
         if (_micro_spike_pump and best.direction == 1 and not _pump_spike_in_trend
@@ -3742,11 +3753,15 @@ class TradingBot:
 
         # 1h range block (5h range extreme) -> BLOCK (khong flip: flip gay sai chieu)
         # Dinh/day 5h range trong trend khong xac nhan -> block hoan toan, khong dao chieu
+        # HIGH-VOL bypass: coin lon co the trend lien tuc o top/bottom range 5h
+        # Chi can scalp_trend xac nhan + macro KHONG nguoc chieu la du
+        _h1_hv_bull_bypass = _is_high_vol and scalp_trend == 1 and macro_trend >= 0
+        _h1_hv_bear_bypass = _is_high_vol and scalp_trend == -1 and macro_trend <= 0
         if _h1_block_long and best.direction == 1 and not _emerging_uptrend and not _scenario_entry:
-            if not _all_tfs_bull:
+            if not _all_tfs_bull and not _h1_hv_bull_bypass:
                 return _block(f"5h range top ({_h1_pos:.0%}) block LONG - trend chua xac nhan, skip")
         if _h1_block_short and best.direction == -1 and not _emerging_downtrend and not _scenario_entry:
-            if not _all_tfs_bear:
+            if not _all_tfs_bear and not _h1_hv_bear_bypass:
                 return _block(f"5h range bottom ({_h1_pos:.0%}) block SHORT - trend chua xac nhan, skip")
 
         # 2h range block
@@ -3754,18 +3769,17 @@ class TradingBot:
         # BTC tang lien tuc 25 phut tao ra dinh 2h moi = gradual uptrend, khong phai pump da can kiet
         # Emerging trend: uptrend moi day gia len dinh 2h = trend dang chay, khong flip nguoc
         # Scenario entry: da tu phan tich vi tri (breakout tren dinh la chu dich) - khong flip
-        # _all_tfs_bull/bear bypass: cho phep skip flip trong confirmed trend
-        # NHUNG chi bypass khi KHONG o extreme position (tren 85% hoac duoi 15% 2h range)
-        # Extreme bottom trong downtrend = nguong bounce cao, van flip SHORT->LONG (AKEUSDT pattern)
-        # Extreme top trong uptrend = nguong pullback cao, van flip LONG->SHORT
+        # HIGH-VOL bypass: coin lon trend lien tuc o top/bot 2h range - scalp xac nhan la du
         _not_2h_extreme_top = _m2h_pos < 0.85   # khong o extreme dinh 2h
         _not_2h_extreme_bot = _m2h_pos > 0.15   # khong o extreme day 2h
         _m2h_grad_bypass_long  = (_is_gradual_uptrend   and scalp_trend == 1  and macro_trend == 1) \
                                  or _emerging_uptrend or _scenario_entry \
-                                 or (_all_tfs_bull and _not_2h_extreme_top)
+                                 or (_all_tfs_bull and _not_2h_extreme_top) \
+                                 or (_is_high_vol and scalp_trend == 1 and macro_trend >= 0 and _not_2h_extreme_top)
         _m2h_grad_bypass_short = (_is_gradual_downtrend and scalp_trend == -1 and macro_trend == -1) \
                                  or _emerging_downtrend or _scenario_entry \
-                                 or (_all_tfs_bear and _not_2h_extreme_bot)
+                                 or (_all_tfs_bear and _not_2h_extreme_bot) \
+                                 or (_is_high_vol and scalp_trend == -1 and macro_trend <= 0 and _not_2h_extreme_bot)
         if _m2h_block_short and best.direction == -1 and not _m2h_grad_bypass_short:
             return _block(f"2h range bottom ({_m2h_pos:.0%}) block SHORT - skip, khong flip sai chieu")
         if _m2h_block_long and best.direction == 1 and not _m2h_grad_bypass_long:

@@ -3813,8 +3813,28 @@ class TradingBot:
         )
 
         # PUMP EXHAUSTION SHORT: khi LONG bi HARD BLOCK vi micro_down
-        # HF mode: bo qua toan bo HARD BLOCK - cho phep entry theo moi huong
+        # TREND ALIGNMENT GATE (chay ca trong HF mode):
+        # Block khi CA 2 macro TF deu NGUOC CHIEU signal -> sai trend ro rang.
+        # Chi block khi CA HAI (macro_trend va macro_4h) nguoc, tranh block khi chi 1 TF conflict.
+        # VD: LONG khi macro_trend=-1 va macro_4h=-1 = dang trong downtrend ro rang -> block.
         _hf_mode = getattr(config, "HIGH_FREQ_MODE", False)
+        if _hf_mode:
+            # Block khi CA 2 macro TF deu NGUOC va fast EMA cung chua flip:
+            # - macro_trend=-1 AND macro_4h=-1 AND fast_tr=-1: downtrend ro rang ca ngan+dai han -> block LONG
+            # - Neu fast_tr==+1 (da flip): emerging uptrend, cho phep (EMA dai lag, EMAs 20/50 da bullish)
+            _macro_strongly_against_long  = (macro_trend == -1 and macro_4h == -1 and _fast_tr_pre == -1)
+            _macro_strongly_against_short = (macro_trend ==  1 and macro_4h ==  1 and _fast_tr_pre ==  1)
+            if best.direction == 1 and _macro_strongly_against_long:
+                return _block(
+                    f"HF TREND-ALIGN BLOCK LONG: fast={_fast_tr_pre} macro={macro_trend} macro4h={macro_4h} "
+                    f"tat ca bearish -> sai trend ro rang (adx={adx:.0f})"
+                )
+            if best.direction == -1 and _macro_strongly_against_short:
+                return _block(
+                    f"HF TREND-ALIGN BLOCK SHORT: fast={_fast_tr_pre} macro={macro_trend} macro4h={macro_4h} "
+                    f"tat ca bullish -> sai trend ro rang (adx={adx:.0f})"
+                )
+
         _pump_exhaustion_flip = False
         if (not _hf_mode and best.direction == 1 and micro_down and not _btc_bull_long_ok
                 and not _direction_flipped):

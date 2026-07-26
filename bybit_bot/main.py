@@ -1282,7 +1282,10 @@ class TradingBot:
     def _quality_gate(self, direction: int, df_micro, rsi_now: float,
                       sc_pos: float, sp: float,
                       is_reversal: bool = False,
-                      is_breakout: bool = False) -> tuple[bool, str]:
+                      is_breakout: bool = False,
+                      pos_24h: float = 0.5,
+                      hi_24h: float = 0.0,
+                      lo_24h: float = 0.0) -> tuple[bool, str]:
         """
         Universal pre-entry quality gate - ap dung cho TAT CA entry paths.
         Returns (True, "") neu OK, (False, reason) neu bi block.
@@ -1305,12 +1308,22 @@ class TradingBot:
         if direction == 1 and rsi_now > 75:
             return False, f"QG1:RSI={rsi_now:.0f}>75(overbought→block LONG)"
 
-        # QG-2: 2h range position (skip breakout - breakout IS at range edge)
+        # QG-2: 2h range position + 24h range position (skip breakout)
         if not is_breakout:
             if direction == -1 and sc_pos < 0.15:
-                return False, f"QG2:pos={sc_pos*100:.0f}%<15%(2h bottom→block SHORT)"
+                return False, f"QG2a:pos={sc_pos*100:.0f}%<15%(2h bottom→block SHORT)"
             if direction == 1 and sc_pos > 0.85:
-                return False, f"QG2:pos={sc_pos*100:.0f}%>85%(2h top→block LONG)"
+                return False, f"QG2a:pos={sc_pos*100:.0f}%>85%(2h top→block LONG)"
+            # 24h range position - thiet lap kep voi _block_long_24h, bat case borderline
+            if direction == 1 and pos_24h > 0.80:
+                return False, f"QG2b:24h_pos={pos_24h*100:.0f}%>80%(gan dinh 24h→block LONG)"
+            if direction == -1 and pos_24h < 0.20:
+                return False, f"QG2b:24h_pos={pos_24h*100:.0f}%<20%(gan day 24h→block SHORT)"
+            # Distance from 24h absolute high/low
+            if direction == 1 and hi_24h > 0 and price >= hi_24h * 0.975:
+                return False, f"QG2c:within 2.5% of 24h high={hi_24h:.6g}(→block LONG)"
+            if direction == -1 and lo_24h > 0 and price <= lo_24h * 1.025:
+                return False, f"QG2c:within 2.5% of 24h low={lo_24h:.6g}(→block SHORT)"
 
         # QG-3: 30m high/low proximity (skip breakout)
         if not is_breakout and len(df_micro) >= 30:
@@ -1476,12 +1489,14 @@ class TradingBot:
             _cur_p24  = float(df_signal["close"].iloc[-1])
             if _24h_rng > 0:
                 _24h_pos = (_cur_p24 - _24h_lo) / _24h_rng
-                if _24h_pos > 0.88:
+                # Giam nguong tu 88%/12% xuong 82%/18% de bat case nhu PEOPLEUSDT
+                # (bot vao long tai 88.1% cua 24h range - chi vuot nguong cu 0.1%)
+                if _24h_pos > 0.82:
                     _block_long_24h = True
-                    logger.debug(f"{symbol}: 24h range pos={_24h_pos:.0%} > 88% -> block LONG (gan dinh tuyet doi ngay)")
-                elif _24h_pos < 0.12:
+                    logger.debug(f"{symbol}: 24h range pos={_24h_pos:.0%} > 82% -> block LONG (gan dinh 24h)")
+                elif _24h_pos < 0.18:
                     _block_short_24h = True
-                    logger.debug(f"{symbol}: 24h range pos={_24h_pos:.0%} < 12% -> block SHORT (gan day tuyet doi ngay)")
+                    logger.debug(f"{symbol}: 24h range pos={_24h_pos:.0%} < 18% -> block SHORT (gan day 24h)")
 
         # RSI tren 1m: 2000 nen du de tinh on dinh, chinh xac hon RSI 15m (granular hon)
         rsi_now = compute_rsi(df_signal["close"]).iloc[-1] if not df_signal.empty and len(df_signal) >= 14 else 50.0
@@ -1979,7 +1994,8 @@ class TradingBot:
                             logger.info(f"{symbol}: FLIP-GUARD block BREAKOUT {'LONG' if bo_sig.direction==1 else 'SHORT'}")
                             return False
                     _bo_qg_ok, _bo_qg_msg = self._quality_gate(
-                        bo_sig.direction, df_micro, rsi_now, _sc_pos, _sp, is_breakout=True)
+                        bo_sig.direction, df_micro, rsi_now, _sc_pos, _sp, is_breakout=True,
+                        pos_24h=_24h_pos, hi_24h=_24h_hi, lo_24h=_24h_lo)
                     if not _bo_qg_ok:
                         logger.info(f"{symbol}: [QUALITY-GATE] BREAKOUT blocked - {_bo_qg_msg}")
                         return False
@@ -2392,7 +2408,8 @@ class TradingBot:
                             logger.info(f"{symbol}: FLIP-GUARD block REVERSAL {'LONG' if best.direction==1 else 'SHORT'}")
                             return False
                     _rv_qg_ok, _rv_qg_msg = self._quality_gate(
-                        best.direction, df_micro, rsi_now, _sc_pos, _sp, is_reversal=True)
+                        best.direction, df_micro, rsi_now, _sc_pos, _sp, is_reversal=True,
+                        pos_24h=_24h_pos, hi_24h=_24h_hi, lo_24h=_24h_lo)
                     if not _rv_qg_ok:
                         logger.info(f"{symbol}: [QUALITY-GATE] REVERSAL blocked - {_rv_qg_msg}")
                         return False
@@ -5128,7 +5145,8 @@ class TradingBot:
         # UNIVERSAL QUALITY GATE - kiem tra lan cuoi truoc khi bat lenh
         _mo_qg_ok, _mo_qg_msg = self._quality_gate(
             best.direction, df_micro, rsi_now, _sc_pos, _sp,
-            is_reversal=False, is_breakout=False)
+            is_reversal=False, is_breakout=False,
+            pos_24h=_24h_pos, hi_24h=_24h_hi, lo_24h=_24h_lo)
         if not _mo_qg_ok:
             logger.info(f"{symbol}: [QUALITY-GATE] MOMENTUM blocked - {_mo_qg_msg}")
             return False

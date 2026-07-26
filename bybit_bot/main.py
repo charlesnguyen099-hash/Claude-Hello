@@ -1558,6 +1558,9 @@ class TradingBot:
         #   macro_4h:    EMA(300/600) tren 1m ~ EMA(20/40) tren 15m = long trend   ~5h/~10h
         macro_trend = self._trend_direction(df_signal, fast=100, slow=250)
         macro_4h    = self._trend_direction(df_signal, fast=300, slow=600)
+        # scalp_trend tinh som (EMA9/21/50 tren 1m) - can cho TREND-RELAX 24h truoc khi scan range
+        # (se duoc ghi lai o _micro_trend bên duoi, ket qua giong nhau vi cung df)
+        scalp_trend = self._micro_trend(df_signal)
         # ATR: dung ATR(50) tren 1m thay vi ATR(14) - on dinh hon, it bi anh huong boi spike
         _atr_for_sl = compute_atr(df_signal, 50).iloc[-1] if not df_signal.empty and len(df_signal) >= 50 else 0.0
 
@@ -1664,6 +1667,8 @@ class TradingBot:
         # -> giu block 24h chi khi THUC SU extreme (>25% trong 24h hoac o 95%+ range)
         # Ap dung cho TAT CA coin (khong chi high-vol): neu scalp confirm uptrend,
         # gia o top 24h range = uptrend manh, khong phai pump exhausted
+        # scalp_trend-based relax (EMA9/21/50 nhanh hon macro 100/250)
+        # Post-peak/trough chua co o day -> chi dung simple version (se duoc dung day du o entry gate)
         _scalp_relax_bull = scalp_trend == 1  and macro_trend >= 0
         _scalp_relax_bear = scalp_trend == -1 and macro_trend <= 0
         if (_all_tfs_bull or _scalp_relax_bull) and _block_long_24h:
@@ -3735,10 +3740,19 @@ class TradingBot:
 
         # 1m spike filter - cho phep khi spike la phan cua confirmed trend
         # scalp_trend (EMA9/21/50) flip trong 5-10 phut - nhanh hon macro (EMA100/250 = 100+ phut)
-        # Nguyen tac: neu scalp_trend xac nhan chieu + macro KHONG nguoc chieu -> spike la move that,
-        # khong phai isolated pump. Day la bao ve chinh xac: tranh LONG khi macro=-1 (downtrend manh).
-        _scalp_bull_no_macro_bear = scalp_trend == 1  and macro_trend >= 0
-        _scalp_bear_no_macro_bull = scalp_trend == -1 and macro_trend <= 0
+        # Nguyen tac: neu scalp_trend xac nhan chieu + macro KHONG nguoc chieu -> spike la move that.
+        # Bao ve chinh xac: tranh LONG khi macro=-1 (downtrend manh), SHORT khi macro=+1.
+        #
+        # SHORT sau pump: coin vua pump xong, macro_trend van = +1 (EMA lag), nhung:
+        #   - scalp_trend da flip -1 (gia dang giam thuc su)
+        #   - _post_peak_decline_long = True (dinh ro rang 15+ nen truoc, giam > 1%)
+        #   -> day la SHORT hop le (ban sau khi pump xong), khong phai short giua uptrend
+        #   -> chi block khi _strong_bull_trend (EMA + 24h change tat ca xac nhan bull manh)
+        # LONG sau dump: tuong tu - _post_trough_rise_short = True xac nhan day that su
+        _scalp_bull_no_macro_bear = (scalp_trend == 1  and macro_trend >= 0) \
+                                    or (scalp_trend == 1  and _post_trough_rise_short and not _strong_bear_trend)
+        _scalp_bear_no_macro_bull = (scalp_trend == -1 and macro_trend <= 0) \
+                                    or (scalp_trend == -1 and _post_peak_decline_long and not _strong_bull_trend)
         _pump_spike_in_trend = micro_up and (_is_gradual_uptrend or _emerging_uptrend
                                              or (scalp_trend == 1 and macro_trend == 1)
                                              or _scalp_bull_no_macro_bear)

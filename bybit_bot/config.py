@@ -65,9 +65,9 @@ DEFAULT_LEVERAGE       = 10
 # VON THEO DO TIEM NANG (potential-scaled), KHONG cap cung tuy tien:
 #   potential thap -> von nho (giu cho cho lenh khac), potential cao -> von lon (an dam).
 # potential = f(consensus, strength) trong [0,1].
-CAPITAL_PCT_MIN = 0.01   # HF: 1% equity moi lenh (nhieu lenh cung luc, von nho tung lenh)
-CAPITAL_PCT_MAX = 0.08   # HF: toi da 8% equity/lenh - lenh high-conviction duoc von lon hon
-MAX_CAPITAL_PCT = 0.08   # HF: tran mem = CAPITAL_PCT_MAX
+CAPITAL_PCT_MIN = 0.03   # HF: 3% equity moi lenh toi thieu (tang tu 1%)
+CAPITAL_PCT_MAX = 0.20   # HF: toi da 20% equity/lenh - lenh high-conviction von lon (tang tu 8%)
+MAX_CAPITAL_PCT = 0.20   # HF: tran mem = CAPITAL_PCT_MAX
 # Free margin: 1 lenh dung toi da 95% margin CON TRONG. So lenh TU DIEU TIET:
 # lenh manh an nhieu von -> free giam nhanh -> it lenh song song; lenh yeu an it -> con cho nhieu lenh.
 MAX_FREE_MARGIN_FRAC = 0.95

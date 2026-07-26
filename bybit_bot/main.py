@@ -1502,6 +1502,8 @@ class TradingBot:
                 if abs(_change_24h) > 30:
                     logger.info(f"{symbol}: 24h change={_change_24h:.1f}% > 30% -> HARD SKIP (extreme move)")
                     return False
+                # Nguong block 15%: se duoc RELAX sau khi macro_trend duoc tinh (xem TREND-RELAX bên dưới)
+                # Nhung van set truoc de _24h_pos check ben duoi co the override
                 if _change_24h > 15:
                     _block_long_24h = True
                     logger.debug(f"{symbol}: 24h change=+{_change_24h:.1f}% -> block LONG (pump exhausted)")
@@ -1629,6 +1631,22 @@ class TradingBot:
                 elif _m2h_pos > _m2h_top_thresh:
                     _m2h_block_long = True
                     logger.debug(f"{symbol}: 2h 1m range_pos={_m2h_pos:.2f} > {_m2h_top_thresh} -> block LONG (2h top)")
+
+        # TREND RELAXATION: khi CA HAI macro TF xac nhan trend, relax range blocks qua strict.
+        # Trong uptrend manh, gia LIEN TUC o top of range -> block_long_24h/h1/2h luon True
+        # -> bot khong trade gi ca du trend ro rang. Thuc te: price o top = uptrend khoe,
+        # KHONG phai pump exhausted (exhausted chi khi 24h change > 22% hoac o sat tuyet dinh).
+        _all_tfs_bull = (macro_trend == 1 and macro_4h == 1)
+        _all_tfs_bear = (macro_trend == -1 and macro_4h == -1)
+        if _all_tfs_bull and _block_long_24h:
+            # Chi giu block khi THUC SU spike extreme: pump >22% trong 24h HOAC o 93%+ range
+            if _change_24h <= 22.0 and _24h_pos <= 0.93:
+                _block_long_24h = False
+                logger.debug(f"{symbol}: TREND-RELAX block_long_24h cleared (macro=bull pos={_24h_pos:.0%} chg={_change_24h:.1f}%)")
+        if _all_tfs_bear and _block_short_24h:
+            if _change_24h >= -22.0 and _24h_pos >= 0.07:
+                _block_short_24h = False
+                logger.debug(f"{symbol}: TREND-RELAX block_short_24h cleared (macro=bear pos={_24h_pos:.0%} chg={_change_24h:.1f}%)")
 
         # Momentum confirmation (15m): it nhat 2/3 nen gan nhat cung chieu voi signal
         # 2-consecutive (c1 AND c2) qua chat: breakout candle c1=green, c2=red (consolidation) bi block
@@ -3705,15 +3723,21 @@ class TradingBot:
         # Dinh/day 5h range = vi tri cuoi xu huong lon -> dao chieu, TP trung binh (co the tao dinh/day moi)
         # Emerging trend/scenario: gia len dinh 5h TRONG uptrend moi = breakout, KHONG flip nguoc
         if _h1_block_long and best.direction == 1 and not _emerging_uptrend and not _scenario_entry:
-            best.direction = -1
-            best.tp_roi_override = 0.15  # 15% ROI: dinh 5h tuong doi lon, TP medium
-            _direction_flipped = True
-            logger.info(f"{symbol}: 5h range flip LONG->SHORT at 5h top, TP=15%")
+            if _all_tfs_bull:
+                pass  # uptrend confirmed: top of 5h range = continuation, khong flip
+            else:
+                best.direction = -1
+                best.tp_roi_override = 0.15  # 15% ROI: dinh 5h tuong doi lon, TP medium
+                _direction_flipped = True
+                logger.info(f"{symbol}: 5h range flip LONG->SHORT at 5h top, TP=15%")
         if _h1_block_short and best.direction == -1 and not _emerging_downtrend and not _scenario_entry:
-            best.direction = 1
-            best.tp_roi_override = 0.15
-            _direction_flipped = True
-            logger.info(f"{symbol}: 5h range flip SHORT->LONG at 5h bottom, TP=15%")
+            if _all_tfs_bear:
+                pass  # downtrend confirmed: bottom of 5h range = continuation, khong flip
+            else:
+                best.direction = 1
+                best.tp_roi_override = 0.15
+                _direction_flipped = True
+                logger.info(f"{symbol}: 5h range flip SHORT->LONG at 5h bottom, TP=15%")
 
         # 2h range block
         # Exception: gradual trend (>=18/30 nen cung chieu) + scalp xac nhan -> day/dinh 2h la DIEM BO QUA
@@ -3721,9 +3745,9 @@ class TradingBot:
         # Emerging trend: uptrend moi day gia len dinh 2h = trend dang chay, khong flip nguoc
         # Scenario entry: da tu phan tich vi tri (breakout tren dinh la chu dich) - khong flip
         _m2h_grad_bypass_long  = (_is_gradual_uptrend   and scalp_trend == 1  and macro_trend == 1) \
-                                 or _emerging_uptrend or _scenario_entry
+                                 or _emerging_uptrend or _scenario_entry or _all_tfs_bull
         _m2h_grad_bypass_short = (_is_gradual_downtrend and scalp_trend == -1 and macro_trend == -1) \
-                                 or _emerging_downtrend or _scenario_entry
+                                 or _emerging_downtrend or _scenario_entry or _all_tfs_bear
         if _m2h_block_short and best.direction == -1 and not _m2h_grad_bypass_short:
             # Day 2h range: flip SHORT->LONG, TP 12% (day lon, co the tao day moi nhung TP nho du co loi)
             best.direction = 1

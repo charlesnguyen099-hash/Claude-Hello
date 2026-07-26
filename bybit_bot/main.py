@@ -1423,14 +1423,17 @@ class TradingBot:
         if df_signal.empty or len(df_signal) < 50:
             return False
 
-        # Volatility bucket cho spike/pump-dump thresholds:
-        # largecap  (BTC/ETH):              _sp = 0.50 - ATR% ~0.3-0.4%, threshold rat thap
-        # midcap    (SOL/XRP/HYPE/BNB/..): _sp = 0.75 - volatility trung binh, giua 2 nhom
-        # altcoin   (phan con lai):          _sp = 1.00 - volatility cao nhat
-        _LARGECAP = {"BTCUSDT", "ETHUSDT"}
+        # Volatility bucket dua tren VOLUME THUC TE tu scanner (khong chi BTC/ETH hardcode):
+        # high_vol (>= 10M USDT/24h): coin lon, ATR% nho hon, dung nguong mem hon
+        # mid_vol  (1M-10M):          volatility trung binh
+        # low_vol  (< 1M):            altcoin volatility cao, dung nguong chat hon
+        _coin_vol = self.scanner.volume_map.get(symbol, 0)
+        _LARGECAP = {"BTCUSDT", "ETHUSDT"}   # giu cho risk_manager ATR mult compat
         _MIDCAP   = {"SOLUSDT", "XRPUSDT", "HYPEUSDT", "BNBUSDT", "DOGEUSDT", "ADAUSDT", "TRXUSDT", "AVAXUSDT", "LINKUSDT", "DOTUSDT"}
         _is_largecap = symbol in _LARGECAP
-        _sp = 0.50 if symbol in _LARGECAP else (0.75 if symbol in _MIDCAP else 1.0)
+        # _is_high_vol: bat ca coin >= 10M USDT volume - khong chi BTC/ETH
+        _is_high_vol = _coin_vol >= config.HIGH_VOL_THRESHOLD   # 10M
+        _sp = 0.50 if symbol in _LARGECAP else (0.75 if (symbol in _MIDCAP or _is_high_vol) else 1.0)
 
         # 2h range position - tinh som de dung o quality gate cho tat ca paths
         # (se duoc tinh lai chinh xac hon trong scenario block, nhung gia tri nay dung cho gate)
@@ -1567,9 +1570,10 @@ class TradingBot:
                 # Bull: ca 3 EMA aligned up + EMA21 tang + 24h change > 3%
                 # Nguong 8% cu qua cao: BTC/ETH thuong chi tang 2-5%/ngay -> never trigger
                 # Giam xuong 3% de bat largecap trong normal bull run
-                _bull_24h_min = 3.0 if _is_largecap else 5.0   # largecap: 3%, altcoin: 5%
-                _bear_24h_max = -3.0 if _is_largecap else -5.0
-                _bull_accel_min = 0.001 if _is_largecap else 0.003  # largecap ATR% nho hon
+                # High-vol (>= 10M): 24h tang cham hon altcoin -> nguong thap hon
+                _bull_24h_min = 3.0 if _is_high_vol else 5.0
+                _bear_24h_max = -3.0 if _is_high_vol else -5.0
+                _bull_accel_min = 0.001 if _is_high_vol else 0.003
                 if (macro_trend == 1 and macro_4h == 1
                         and _change_24h > _bull_24h_min
                         and _strd_e21 > _strd_e50 > _strd_e100
@@ -1640,10 +1644,11 @@ class TradingBot:
         # Trong uptrend manh, gia LIEN TUC o top of range -> block_long_24h/h1/2h luon True
         # -> bot khong trade gi ca du trend ro rang. Thuc te: price o top = uptrend khoe,
         # KHONG phai pump exhausted (exhausted chi khi 24h change > 22% hoac o sat tuyet dinh).
-        # Largecap (BTC/ETH): macro_4h (EMA 300/600 on 1m) takes hours to flip in new bull run
-        # -> require only macro_trend (EMA 100/250) for largecap to avoid zero largecap trades
-        _all_tfs_bull = (macro_trend == 1 and macro_4h == 1) or (_is_largecap and macro_trend == 1)
-        _all_tfs_bear = (macro_trend == -1 and macro_4h == -1) or (_is_largecap and macro_trend == -1)
+        # High-vol coins (>= 10M): macro_4h (EMA 300/600 on 1m) qua cham flip khi trend moi bat dau
+        # -> dung chi macro_trend (EMA 100/250) cho ca coin lon de bat trend som hon
+        # Altcoin nho: van can ca 2 TF de tranh false signal
+        _all_tfs_bull = (macro_trend == 1 and macro_4h == 1) or (_is_high_vol and macro_trend == 1)
+        _all_tfs_bear = (macro_trend == -1 and macro_4h == -1) or (_is_high_vol and macro_trend == -1)
         if _all_tfs_bull and _block_long_24h:
             # Chi giu block khi THUC SU spike extreme: pump >22% trong 24h HOAC o 93%+ range
             if _change_24h <= 22.0 and _24h_pos <= 0.93:
@@ -1872,10 +1877,10 @@ class TradingBot:
                     _micro_spike_pump = True
                     logger.debug(f"{symbol}: 1m RSI={_micro_rsi:.1f} extreme overbought (5m not bullish) -> pump flag")
 
-            # Consecutive candles block: largecap 10 nen (6 green 1m candles binh thuong trong BTC uptrend)
-            # Altcoin: 8 nen lien tiep = exhaustion / dao chieu
+            # Consecutive candles block: high-vol (>=10M) 10 nen (BTC/SOL uptrend co 6+ green 1m binh thuong)
+            # Altcoin nho: 8 nen lien tiep = exhaustion / dao chieu
             # scalp_trend bypass: neu 5m xac nhan cung chieu -> la trend that, khong phai exhaustion
-            _consec_n = 10 if _is_largecap else 8
+            _consec_n = 10 if _is_high_vol else 8
             if len(df_micro) >= _consec_n:
                 _micro_c = df_micro["close"].iloc[-_consec_n:].values
                 _micro_o = df_micro["open"].iloc[-_consec_n:].values
@@ -2241,11 +2246,11 @@ class TradingBot:
                         _macro_neither_bull = macro_trend <= 0 and macro_4h <= 0
                         if micro_down and scalp_trend <= 0 and _macro_neither_bull:
                             short_ok = True
-                    # 5m alignment pre-filter: khong dem signal khi 5m nguoc chieu (ALTCOIN ONLY)
-                    # BTC/ETH (largecap): 5m corrections trong 1h trend la BINH THUONG (buy dip / sell bounce)
-                    # -> khong apply cho largecap, dung 1m micro check (micro_up/down + EMA9/21) thay the
-                    # Altcoin: 5m bounce trong 1h downtrend = timing xau cho SHORT -> bo qua
-                    if _is_largecap:
+                    # 5m alignment pre-filter: khong dem signal khi 5m nguoc chieu (ALTCOIN NHO ONLY)
+                    # High-vol (>= 10M): 5m corrections trong 1h trend la BINH THUONG (buy dip / sell bounce)
+                    # -> khong apply cho high-vol, dung 1m micro check (micro_up/down + EMA9/21) thay the
+                    # Altcoin nho: 5m bounce trong 1h downtrend = timing xau cho SHORT -> bo qua
+                    if _is_high_vol:
                         scalp_allows_short = True
                         scalp_allows_long  = True
                     else:
@@ -3991,7 +3996,7 @@ class TradingBot:
                     f"(1m={micro}, 5m={scalp_trend}, 15m={macro_trend}, 1h={macro_4h})"
                 )
 
-        if not _is_largecap:
+        if not _is_high_vol:
             if best.direction == -1 and scalp_trend == -1 and (macro_trend + macro_4h) <= -1:
                 _micro_spike_dump = False
 
@@ -5315,13 +5320,13 @@ class TradingBot:
                     f"(macro={macro_trend} macro4h={macro_4h}) -> skip, sai chieu"
                 )
 
-        # HIGH-VOL CAPITAL BOOST: high-vol coins + confirmed trend -> cap them von
+        # HIGH-VOL CAPITAL BOOST: coin >= 10M USDT volume + confirmed trend -> cap them von
         # gate_score mac dinh = 0 cho non-scenario -> risk_manager dung potential fallback (~3-5%).
         # Boost gate_score len 70-85 cho coin lon/priority trong trend manh -> cap 4-7% equity.
         # Khong boost scenario entries (da co gate_score rieng tu scenario engine).
         _cur_gs = getattr(best, 'gate_score', 0.0)
         if _cur_gs < 50:   # chua co gate_score tu scenario
-            _is_high_vol  = symbol in _LARGECAP or symbol in _MIDCAP
+            # _is_high_vol da tinh o tren tu volume_map (>= 10M)
             _trend_aligned = (best.direction == 1 and _strong_trend_up) or (best.direction == -1 and _strong_trend_dn)
             if _is_high_vol and _trend_aligned:
                 best.gate_score = 85.0   # coin lon + all-3-TF trend -> 6.6% equity

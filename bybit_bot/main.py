@@ -3812,16 +3812,18 @@ class TradingBot:
         # Neu scalp_trend van cung chieu lenh -> day chi la pullback ngan, khong phai peak that
         if not _direction_flipped and not _scenario_entry:
             if best.direction == 1 and _post_peak_decline_long and _m2h_pos > 0.30:
-                if scalp_trend != 1:   # scalp da nguoc -> confirm peak that, block LONG
+                # bypass only if scalp confirms AND macro not bearish (prevents LONG in downtrend bounce)
+                if not (scalp_trend == 1 and macro_trend >= 0):
                     return _block(
                         f"POST-PEAK block LONG - {_ppd_drop*100:.1f}% below 60c high "
-                        f"({_ppd_hi_age}c ago) scalp={scalp_trend}"
+                        f"({_ppd_hi_age}c ago) scalp={scalp_trend} macro={macro_trend}"
                     )
             elif best.direction == -1 and _post_trough_rise_short and _m2h_pos < 0.70:
-                if scalp_trend != -1:  # scalp da nguoc -> confirm trough that, block SHORT
+                # bypass only if scalp confirms AND macro not bullish (prevents SHORT in uptrend bounce)
+                if not (scalp_trend == -1 and macro_trend <= 0):
                     return _block(
                         f"POST-TROUGH block SHORT - {_ppd_rise*100:.1f}% above 60c low "
-                        f"({_ppd_lo_age}c ago) scalp={scalp_trend}"
+                        f"({_ppd_lo_age}c ago) scalp={scalp_trend} macro={macro_trend}"
                     )
 
         # == EMERGING TREND OVERRIDE - HBAR fix ===================================

@@ -1357,19 +1357,26 @@ class TradingBot:
             if direction == 1 and _hi30 > 0 and price >= _hi30 * (1 - _qg3_pct):
                 return False, f"QG3:within {_qg3_pct*100:.2f}% of 30m high={_hi30:.6g}(->block LONG)"
 
-        # QG-4: Immediate momentum conflict (skip reversal; skip in HF mode)
-        # HF mode: pullback entry trong uptrend co imm am -> QG4 block LONG dung luc pullback
-        # -> bypass (trend alignment gate + QG2 xu ly sai chieu toan dien hon)
-        if not _hf and not is_reversal and len(df_micro) >= 10:
+        # QG-4: Immediate momentum conflict
+        # Chi bypass khi trend_confirmed (ca 2 TF xac nhan) VA momentum KHÔNG qua nguong nang:
+        #   - trend_confirmed + imm nhe nguoc chieu: co the la pullback entry -> bypass
+        #   - trend_confirmed + imm MANH nguoc chieu (> 2x thresh): van block (PEOPLEUSDT pattern)
+        #   - khong co trend_confirmed: bat buoc imm phai cung chieu
+        # Removed: "skip in HF mode" - QG4 bypass in HF was causing PEOPLEUSDT-type losses
+        if not is_reversal and len(df_micro) >= 10:
             _c5  = float(df_micro["close"].iloc[-5:].mean())
             _c10 = float(df_micro["close"].iloc[-10:-5].mean())
             if _c10 > 0:
                 _imm = (_c5 - _c10) / _c10
                 _thresh = 0.002 * sp  # 0.1% largecap, 0.15% midcap, 0.2% altcoin
-                if direction == -1 and _imm > _thresh:
-                    return False, f"QG4:imm_mom=+{_imm*100:.3f}%(bouncing->block SHORT)"
-                if direction == 1 and _imm < -_thresh:
-                    return False, f"QG4:imm_mom={_imm*100:.3f}%(falling->block LONG)"
+                _strong_against = abs(_imm) > _thresh * 2   # imm manh nguoc chieu = PEOPLEUSDT pattern
+                # Bypass QG4 chi khi: trend_confirmed + imm nhe (co the la pullback trong trend)
+                _qg4_bypass = trend_confirmed and not _strong_against
+                if not _qg4_bypass:
+                    if direction == -1 and _imm > _thresh:
+                        return False, f"QG4:imm_mom=+{_imm*100:.3f}%(bouncing->block SHORT)"
+                    if direction == 1 and _imm < -_thresh:
+                        return False, f"QG4:imm_mom={_imm*100:.3f}%(falling->block LONG)"
 
         # QG-5: EMA21 overstretch (HF: loosen to 3%/6% so only extreme cases block)
         if len(df_micro) >= 21:
@@ -1385,8 +1392,8 @@ class TradingBot:
                 if direction == 1 and _stretch > _lim:
                     return False, f"QG5:price {_stretch*100:.2f}% above EMA21(overstretched->block LONG)"
 
-        # QG-6: Last 3 candle bodies strongly against direction (skip reversal; skip in HF mode)
-        if not _hf and not is_reversal and len(df_micro) >= 4:
+        # QG-6: Last 3 candle bodies strongly against direction (skip reversal; bypass in confirmed trend)
+        if not trend_confirmed and not is_reversal and len(df_micro) >= 4:
             _bodies = (df_micro["close"].iloc[-3:].values
                        - df_micro["open"].iloc[-3:].values)
             _ranges = (df_micro["high"].iloc[-3:].values

@@ -3730,25 +3730,14 @@ class TradingBot:
                 and _scenario_name != "sc_breakout_down"):
             return _block("skip - 1m dump spike (not in confirmed downtrend), no short")
 
-        # 1h range block (5h range extreme) -> flip direction thay vi block
-        # Dinh/day 5h range = vi tri cuoi xu huong lon -> dao chieu, TP trung binh (co the tao dinh/day moi)
-        # Emerging trend/scenario: gia len dinh 5h TRONG uptrend moi = breakout, KHONG flip nguoc
+        # 1h range block (5h range extreme) -> BLOCK (khong flip: flip gay sai chieu)
+        # Dinh/day 5h range trong trend khong xac nhan -> block hoan toan, khong dao chieu
         if _h1_block_long and best.direction == 1 and not _emerging_uptrend and not _scenario_entry:
-            if _all_tfs_bull:
-                pass  # uptrend confirmed: top of 5h range = continuation, khong flip
-            else:
-                best.direction = -1
-                best.tp_roi_override = 0.15  # 15% ROI: dinh 5h tuong doi lon, TP medium
-                _direction_flipped = True
-                logger.info(f"{symbol}: 5h range flip LONG->SHORT at 5h top, TP=15%")
+            if not _all_tfs_bull:
+                return _block(f"5h range top ({_h1_pos:.0%}) block LONG - trend chua xac nhan, skip")
         if _h1_block_short and best.direction == -1 and not _emerging_downtrend and not _scenario_entry:
-            if _all_tfs_bear:
-                pass  # downtrend confirmed: bottom of 5h range = continuation, khong flip
-            else:
-                best.direction = 1
-                best.tp_roi_override = 0.15
-                _direction_flipped = True
-                logger.info(f"{symbol}: 5h range flip SHORT->LONG at 5h bottom, TP=15%")
+            if not _all_tfs_bear:
+                return _block(f"5h range bottom ({_h1_pos:.0%}) block SHORT - trend chua xac nhan, skip")
 
         # 2h range block
         # Exception: gradual trend (>=18/30 nen cung chieu) + scalp xac nhan -> day/dinh 2h la DIEM BO QUA
@@ -3768,17 +3757,9 @@ class TradingBot:
                                  or _emerging_downtrend or _scenario_entry \
                                  or (_all_tfs_bear and _not_2h_extreme_bot)
         if _m2h_block_short and best.direction == -1 and not _m2h_grad_bypass_short:
-            # Day 2h range: flip SHORT->LONG, TP 12% (day lon, co the tao day moi nhung TP nho du co loi)
-            best.direction = 1
-            best.tp_roi_override = 0.12
-            _direction_flipped = True
-            logger.info(f"{symbol}: 2h range flip SHORT->LONG at 2h bottom ({_m2h_pos:.0%}), TP=12%")
+            return _block(f"2h range bottom ({_m2h_pos:.0%}) block SHORT - skip, khong flip sai chieu")
         if _m2h_block_long and best.direction == 1 and not _m2h_grad_bypass_long:
-            # Dinh 2h range: flip LONG->SHORT, TP 12% (dinh lon, co the tao dinh moi nhung TP nho du co loi)
-            best.direction = -1
-            best.tp_roi_override = 0.12
-            _direction_flipped = True
-            logger.info(f"{symbol}: 2h range flip LONG->SHORT at 2h top ({_m2h_pos:.0%}), TP=12%")
+            return _block(f"2h range top ({_m2h_pos:.0%}) block LONG - skip, khong flip sai chieu")
 
         # POST-PEAK / POST-TROUGH: EMA(100/250) lag sau khi gia qua dinh/day
         # MAGMAUSDT pattern: EMA con bullish nhung coin da giam 1%+ trong 40+ phut -> LONG = sai chieu
@@ -3788,20 +3769,14 @@ class TradingBot:
         # tuong tu KHONG long khi gia da o dinh range (>70%). Scenario entry tu phan tich - bo qua.
         if not _direction_flipped and not _scenario_entry:
             if best.direction == 1 and _post_peak_decline_long and _m2h_pos > 0.30:
-                best.direction = -1
-                best.tp_roi_override = 0.10
-                _direction_flipped = True
-                logger.info(
-                    f"{symbol}: POST-PEAK flip LONG->SHORT - {_ppd_drop*100:.1f}% below 60c high "
-                    f"({_ppd_hi_age}c ago, EMA lag) scalp={scalp_trend}, TP=10%"
+                return _block(
+                    f"POST-PEAK block LONG - {_ppd_drop*100:.1f}% below 60c high "
+                    f"({_ppd_hi_age}c ago) scalp={scalp_trend}"
                 )
             elif best.direction == -1 and _post_trough_rise_short and _m2h_pos < 0.70:
-                best.direction = 1
-                best.tp_roi_override = 0.10
-                _direction_flipped = True
-                logger.info(
-                    f"{symbol}: POST-TROUGH flip SHORT->LONG - {_ppd_rise*100:.1f}% above 60c low "
-                    f"({_ppd_lo_age}c ago, EMA lag) scalp={scalp_trend}, TP=10%"
+                return _block(
+                    f"POST-TROUGH block SHORT - {_ppd_rise*100:.1f}% above 60c low "
+                    f"({_ppd_lo_age}c ago) scalp={scalp_trend}"
                 )
 
         # == EMERGING TREND OVERRIDE - HBAR fix ===================================
@@ -4125,33 +4100,15 @@ class TradingBot:
             _mean20   = _close20.mean()
             if _mean20 > 0 and (_std20 / _mean20) < 0.0010:  # std < 0.10% = truly flat range (was 0.15%)
                 if best.direction == 1 and _m2h_pos > 0.50 and not _scenario_entry:
-                    if _m2h_pos >= 0.80 and not _direction_flipped:
-                        best.direction = -1
-                        best.tp_roi_override = 0.10
-                        _direction_flipped = True
-                        logger.info(
-                            f"{symbol}: AEQ-11 flip LONG->SHORT - flat at 2h top ({_m2h_pos:.0%}), "
-                            f"distribution zone, TP=10%"
-                        )
-                    else:
-                        return _block(
-                            f"skip LONG - flat at 2h top ({_m2h_pos:.0%}), "
-                            f"std={_std20/_mean20*100:.3f}% (distribution zone)"
-                        )
+                    return _block(
+                        f"skip LONG - flat at 2h top ({_m2h_pos:.0%}), "
+                        f"std={_std20/_mean20*100:.3f}% (distribution zone)"
+                    )
                 elif best.direction == -1 and _m2h_pos < 0.50 and not _scenario_entry:
-                    if _m2h_pos <= 0.20 and not _direction_flipped:
-                        best.direction = 1
-                        best.tp_roi_override = 0.10
-                        _direction_flipped = True
-                        logger.info(
-                            f"{symbol}: AEQ-11 flip SHORT->LONG - flat at 2h bottom ({_m2h_pos:.0%}), "
-                            f"accumulation zone, TP=10%"
-                        )
-                    else:
-                        return _block(
-                            f"skip SHORT - flat at 2h bottom ({_m2h_pos:.0%}), "
-                            f"std={_std20/_mean20*100:.3f}% (accumulation zone)"
-                        )
+                    return _block(
+                        f"skip SHORT - flat at 2h bottom ({_m2h_pos:.0%}), "
+                        f"std={_std20/_mean20*100:.3f}% (accumulation zone)"
+                    )
 
         # [AEQ-12] Pump-top / dump-bottom prevention (du dinh / du day toan dien)
         #
@@ -5302,22 +5259,35 @@ class TradingBot:
             logger.info(f"{symbol}: [QUALITY-GATE] MOMENTUM blocked - {_mo_qg_msg}")
             return False
 
-        # FINAL TREND CONSISTENCY CHECK (HF MODE) - bo bao ve cuoi cung.
-        # Van de: signal ban dau LONG -> pass trend-alignment-gate -> cac flip logic doi thanh SHORT
-        # -> execute SHORT trong confirmed uptrend -> NGUOC CHIEU -> LO.
-        # Trend alignment gate chay TRUOC flip (dua tren original direction), khong bao ve flip.
-        # Check nay chay SAU TAT CA flip: neu direction sau flip van nguoc macro trend -> SKIP.
-        # Chi skip neu CA HAI macro TF xac nhan (macro_trend + macro_4h) - tranh over-block.
+        # FINAL TREND CONSISTENCY CHECK - chay SAU TAT CA flip logic.
+        # Bat ky flip nao bien LONG thanh SHORT trong uptrend, hoac SHORT thanh LONG trong downtrend
+        # deu bi block tai day. Day la tuong chua cuoi cung chong sai chieu.
+        #
+        # Level 1 (manh): _all_tfs_bull/bear (ca 2 TF xac nhan) -> block toan phan
+        # Level 2 (TB):   macro_trend + scalp_trend cung chieu nguoc signal -> block
+        #   (bat duoc ZAMAUSDT/AVAAIUSDT: scalp=-1 macro=-1 nhung flip thanh LONG)
         if _hf_mode:
             if _all_tfs_bull and best.direction == -1:
                 return _block(
-                    f"HF FINAL-CHECK: sau flip van SHORT trong confirmed uptrend "
-                    f"(macro={macro_trend} macro4h={macro_4h}) -> skip, sai chieu"
+                    f"FINAL-CHECK L1: SHORT trong confirmed uptrend "
+                    f"(macro={macro_trend} macro4h={macro_4h}) -> sai chieu"
                 )
             if _all_tfs_bear and best.direction == 1:
                 return _block(
-                    f"HF FINAL-CHECK: sau flip van LONG trong confirmed downtrend "
-                    f"(macro={macro_trend} macro4h={macro_4h}) -> skip, sai chieu"
+                    f"FINAL-CHECK L1: LONG trong confirmed downtrend "
+                    f"(macro={macro_trend} macro4h={macro_4h}) -> sai chieu"
+                )
+            # Level 2: macro_trend + scalp_trend dong thuan nguoc chieu entry -> sai chieu
+            # Du coin khong du ieu kien all_tfs, 2 TF cung chieu da la du de xac nhan trend
+            if macro_trend == -1 and scalp_trend == -1 and best.direction == 1:
+                return _block(
+                    f"FINAL-CHECK L2: LONG nhung macro={macro_trend} scalp={scalp_trend} "
+                    f"(ca 2 TF bear) -> sai chieu, bo qua"
+                )
+            if macro_trend == 1 and scalp_trend == 1 and best.direction == -1:
+                return _block(
+                    f"FINAL-CHECK L2: SHORT nhung macro={macro_trend} scalp={scalp_trend} "
+                    f"(ca 2 TF bull) -> sai chieu, bo qua"
                 )
 
         # HIGH-VOL CAPITAL BOOST: coin >= 10M USDT volume + confirmed trend -> cap them von

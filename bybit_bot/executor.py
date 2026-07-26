@@ -39,6 +39,7 @@ class Executor:
         self._executing:  set               = set()  # symbols dang trong qua trinh execute (lock)
         self._open_symbols: set             = set()  # symbols co open position theo executor (guard stale list)
         self._restored_symbols: set         = set()  # symbols duoc restore tu exchange khi restart - khong dong boi signal
+        self._recently_closed: dict[str, float] = {}  # symbol -> timestamp close; guard duplicate close khi API lag
         # Post-loss cooldown: sau khi dong lenh LO, block re-entry tren coin do
         self._loss_cooldown:  dict[str, float] = {}  # symbol -> timestamp khi dong lenh lo
         # Flip-guard: block flip direction tren cung coin (Long->Short hoac Short->Long)
@@ -567,6 +568,12 @@ class Executor:
         side   = position["side"]
         qty    = _fval(position, "size")
         pnl    = _fval(position, "unrealisedPnl")
+        # Guard: neu vua close roi (trong 10s) thi skip - API lag co the tra lai position cu
+        _last_close = self._recently_closed.get(symbol, 0)
+        if time.time() - _last_close < 10:
+            logger.warning(f"{symbol}: skip duplicate _close_position (last close {time.time()-_last_close:.1f}s ago)")
+            return
+        self._recently_closed[symbol] = time.time()
         try:
             self.client.close_position(symbol, side, qty)
             self.clear_position_state(symbol)

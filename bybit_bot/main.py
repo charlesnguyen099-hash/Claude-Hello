@@ -3785,10 +3785,10 @@ class TradingBot:
         _scalp_confirms_short = _scalp_bear_no_macro_bull and h1_pos > 0.10
         if _h1_block_long and best.direction == 1 and not _emerging_uptrend and not _scenario_entry:
             if not _all_tfs_bull and not _scalp_confirms_long:
-                return _block(f"5h range top ({_h1_pos:.0%}) block LONG - trend chua xac nhan, skip")
+                return _block(f"5h range top ({h1_pos:.0%}) block LONG - trend chua xac nhan, skip")
         if _h1_block_short and best.direction == -1 and not _emerging_downtrend and not _scenario_entry:
             if not _all_tfs_bear and not _scalp_confirms_short:
-                return _block(f"5h range bottom ({_h1_pos:.0%}) block SHORT - trend chua xac nhan, skip")
+                return _block(f"5h range bottom ({h1_pos:.0%}) block SHORT - trend chua xac nhan, skip")
 
         # 2h range block: cung logic - scalp confirm la du khi macro khong nguoc
         # Extreme top >88% / bottom <12%: van block (scalp co the bi push boi spike cuoi)

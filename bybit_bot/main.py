@@ -747,7 +747,6 @@ class TradingBot:
                     self._dyn_tp_raised.pop(symbol, None)
                     continue
                 if pnl_roi <= -config.DYN_HARD_CUT_ROI:
-                    # lo qua sau, khong co bounce -> cat luon, khong cho cham SL banh chanh
                     logger.warning(
                         f"[DYN-EXIT] {symbol} {side}: HARD CUT roi={pnl_roi*100:.0f}% "
                         f"| trend nguoc + khong bounce -> cat, chan lo them"
@@ -756,14 +755,29 @@ class TradingBot:
                     self._dyn_tp_raised.pop(symbol, None)
                     continue
 
-            # 2b) IMM-CUT: macro van bullish nhung immediate momentum dao nguoc manh + lo dang sau
-            # Bat case coin uptrend (macro=1) nhung gia dang dump ngan han (imm=-1):
-            # macro khong flip nen SMART CUT khong chay -> can IMM-CUT rieng.
-            # Chi cat khi da du lo (tranh cat nham khi noise): 15% ROI = ~1.5% price o 10x.
-            if pnl_roi <= -0.15 and imm == -pos_dir:
+            # 2b) DIRECTION-WRONG-CUT: phat hien sai chieu SOM, cat truoc khi mat nhieu.
+            # Case: SHORT nhung coin dang PUMP manh (scalp+imm ca 2 nguoc chieu lenh).
+            # macro_dir co the chua flip (EMA lag) -> SMART CUT chua chay -> can logic rieng.
+            # Chi cat khi CA 2 scalp_trend VA imm nguoc chieu lenh (tranh noise 1 chi bao).
+            # Khong can doi -15% ROI: cat som khi con lo it la tot hon de lo lon.
+            _scalp_now = self._micro_trend(df)   # EMA9/21/50 hien tai
+            _imm_now   = imm
+            _both_against = (_scalp_now == -pos_dir) and (_imm_now == -pos_dir)
+            if _both_against and pnl_roi < -_exit_cost_roi:
+                logger.warning(
+                    f"[DYN-EXIT] {symbol} {side}: DIRECTION-WRONG roi={pnl_roi*100:.1f}% "
+                    f"| scalp={_scalp_now} imm={_imm_now} ca 2 nguoc chieu lenh -> cat som"
+                )
+                self.executor._close_position(pos)
+                self._dyn_tp_raised.pop(symbol, None)
+                continue
+
+            # 2c) IMM-CUT: macro van cung chieu nhung imm nguoc + lo kha sau -> cat
+            # Giam nguong tu 15% xuong 10% ROI: cat som hon de bao ve von
+            if pnl_roi <= -0.10 and imm == -pos_dir:
                 logger.warning(
                     f"[DYN-EXIT] {symbol} {side}: IMM-CUT roi={pnl_roi*100:.0f}% "
-                    f"| imm={imm} nguoc chieu + lo sau (macro={macro_dir} van cung chieu nhung gia dang giam) -> cat"
+                    f"| imm={imm} nguoc chieu + lo sau -> cat"
                 )
                 self.executor._close_position(pos)
                 self._dyn_tp_raised.pop(symbol, None)
@@ -3743,16 +3757,13 @@ class TradingBot:
         # Nguyen tac: neu scalp_trend xac nhan chieu + macro KHONG nguoc chieu -> spike la move that.
         # Bao ve chinh xac: tranh LONG khi macro=-1 (downtrend manh), SHORT khi macro=+1.
         #
-        # SHORT sau pump: coin vua pump xong, macro_trend van = +1 (EMA lag), nhung:
-        #   - scalp_trend da flip -1 (gia dang giam thuc su)
-        #   - _post_peak_decline_long = True (dinh ro rang 15+ nen truoc, giam > 1%)
-        #   -> day la SHORT hop le (ban sau khi pump xong), khong phai short giua uptrend
-        #   -> chi block khi _strong_bull_trend (EMA + 24h change tat ca xac nhan bull manh)
-        # LONG sau dump: tuong tu - _post_trough_rise_short = True xac nhan day that su
-        _scalp_bull_no_macro_bear = (scalp_trend == 1  and macro_trend >= 0) \
-                                    or (scalp_trend == 1  and _post_trough_rise_short and not _strong_bear_trend)
-        _scalp_bear_no_macro_bull = (scalp_trend == -1 and macro_trend <= 0) \
-                                    or (scalp_trend == -1 and _post_peak_decline_long and not _strong_bull_trend)
+        # Nguyen tac an toan: scalp_trend xac nhan chieu + macro KHONG MANH NGUOC chieu.
+        # Tranh SHORT khi macro con bullish (coin co the chi pullback ngan) -> sai chieu.
+        # Tranh LONG khi macro con bearish -> cung vay.
+        # Khong dung _post_peak_decline_long de bypass: no bi kích khi coin pause 1-2 nen roi
+        # resume pump -> false SHORT signal (HOMEUSDT pattern).
+        _scalp_bull_no_macro_bear = scalp_trend == 1  and macro_trend >= 0
+        _scalp_bear_no_macro_bull = scalp_trend == -1 and macro_trend <= 0
         _pump_spike_in_trend = micro_up and (_is_gradual_uptrend or _emerging_uptrend
                                              or (scalp_trend == 1 and macro_trend == 1)
                                              or _scalp_bull_no_macro_bear)

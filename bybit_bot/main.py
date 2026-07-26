@@ -675,7 +675,7 @@ class TradingBot:
             # TOTAL_ROUND_TRIP_COST = entry_fee + exit_fee + funding_buffer -> dam bao moi exit
             # deu cover du phi -> khong bao gio chot loi ma hoa ra lo sau phi.
             _exit_cost_roi = config.TOTAL_ROUND_TRIP_COST * _lev   # entry+exit+funding (toan bo phi)
-            _lock_thresh   = max(config.DYN_PROFIT_LOCK_ROI, _exit_cost_roi + 0.02)  # +2% net toi thieu
+            _lock_thresh   = max(config.DYN_PROFIT_LOCK_ROI, _exit_cost_roi + 0.05)  # +5% net buffer (tranh close dang lo sau phi)
 
             # 1) PROFIT-LOCK: dang loi (sau phi dong) ma market quay dau nguoc -> chot ngay
             if pnl_roi >= _lock_thresh:

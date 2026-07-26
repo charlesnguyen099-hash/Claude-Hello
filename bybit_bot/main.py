@@ -5259,6 +5259,23 @@ class TradingBot:
             logger.info(f"{symbol}: [QUALITY-GATE] MOMENTUM blocked - {_mo_qg_msg}")
             return False
 
+        # HIGH-VOL CAPITAL BOOST: high-vol coins + confirmed trend -> cap them von
+        # gate_score mac dinh = 0 cho non-scenario -> risk_manager dung potential fallback (~3-5%).
+        # Boost gate_score len 70-85 cho coin lon/priority trong trend manh -> cap 4-7% equity.
+        # Khong boost scenario entries (da co gate_score rieng tu scenario engine).
+        _cur_gs = getattr(best, 'gate_score', 0.0)
+        if _cur_gs < 50:   # chua co gate_score tu scenario
+            _is_high_vol  = symbol in _LARGECAP or symbol in _MIDCAP
+            _trend_aligned = (best.direction == 1 and _strong_trend_up) or (best.direction == -1 and _strong_trend_dn)
+            if _is_high_vol and _trend_aligned:
+                best.gate_score = 85.0   # coin lon + all-3-TF trend -> 6.6% equity
+            elif _is_high_vol and is_priority:
+                best.gate_score = 70.0   # coin lon + priority queue -> 4.5% equity
+            elif is_priority and _trend_aligned:
+                best.gate_score = 75.0   # priority coin + trend manh -> 5.5% equity
+            elif is_priority:
+                best.gate_score = 60.0   # priority coin (high-vol nhung trend chua ro) -> 2.4% equity
+
         self.executor.execute_signal(symbol, best, equity, open_positions, is_priority=is_priority)
         return True
 

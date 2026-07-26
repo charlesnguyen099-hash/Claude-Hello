@@ -66,8 +66,8 @@ DEFAULT_LEVERAGE       = 10
 #   potential thap -> von nho (giu cho cho lenh khac), potential cao -> von lon (an dam).
 # potential = f(consensus, strength) trong [0,1].
 CAPITAL_PCT_MIN = 0.01   # HF: 1% equity moi lenh (nhieu lenh cung luc, von nho tung lenh)
-CAPITAL_PCT_MAX = 0.05   # HF: toi da 5% equity/lenh - 20 lenh song song = 100% margin
-MAX_CAPITAL_PCT = 0.05   # HF: tran mem = CAPITAL_PCT_MAX
+CAPITAL_PCT_MAX = 0.08   # HF: toi da 8% equity/lenh - lenh high-conviction duoc von lon hon
+MAX_CAPITAL_PCT = 0.08   # HF: tran mem = CAPITAL_PCT_MAX
 # Free margin: 1 lenh dung toi da 95% margin CON TRONG. So lenh TU DIEU TIET:
 # lenh manh an nhieu von -> free giam nhanh -> it lenh song song; lenh yeu an it -> con cho nhieu lenh.
 MAX_FREE_MARGIN_FRAC = 0.95
@@ -95,7 +95,7 @@ ATR_PERIOD        = 14
 # SL ROI = min(SL_TP_RATIO x TP, tran an toan thanh ly) - SL khong vuot gia thanh ly.
 TP_ROI_MIN  = 0.03   # TP san dong: 3% ROI — risk_manager tinh san that su tu fee+leverage
                      # Gia tri that su = max(fee_breakeven + 1%, ATR-cap) do risk_manager tinh
-TP_ROI_MAX  = 0.25   # TP toi da 25% ROI (lenh manh nhat) - van de dat truoc khi dao chieu
+TP_ROI_MAX  = 0.35   # TP toi da 35% ROI (lenh manh nhat) - tang tu 25% de an lenh dai hon
 SL_TP_RATIO = 5.0    # SL muc tieu = 5 x TP (truoc khi clamp thanh ly)
 
 # --- Signal sensitivity -------------------------------------------------------
@@ -132,7 +132,7 @@ ENABLE_SCENARIO_PATH = True   # bat tat ca scenario path (S1-S40+)
 #      cham SL banh chanh, ma dong ngay khi co BOUNCE nguoc ve phia minh (luc lo IT NHAT).
 DYN_EXIT_ENABLE     = True
 DYN_PROFIT_LOCK_ROI = 0.03   # HF: chot loi som o 3% ROI khi quay dau
-DYN_HARD_CUT_ROI    = 0.20   # HF: cat som o 20% ROI (was 35%) - khong de lo sau tren lenh nho
+DYN_HARD_CUT_ROI    = 0.15   # HF: cat som o 15% ROI - cat lo nhanh hon, bao ve von
 DYN_MIN_HOLD_SEC    = 20     # HF: 20s min hold (was 60s)
 
 # --- DYNAMIC TP (bot dieu chinh TP dong dua tren momentum sau khi vao lenh) ---------
@@ -142,8 +142,8 @@ DYN_MIN_HOLD_SEC    = 20     # HF: 20s min hold (was 60s)
 #    TP chi duoc NANG, khong bao gio HA (trailing theo huong co loi).
 DYN_TP_ENABLE        = True    # bat SOFT PROFIT LOCK
 DYN_TP_RAISE_ENABLE  = True    # bat TP RAISE khi momentum manh
-DYN_TP_RAISE_STEP    = 0.30    # nang TP len 30% khoang con lai tu gia hien tai den tran TP
-DYN_TP_CEIL_ROI      = 0.20    # tran TP dong: toi da 20% ROI tu entry (khong keo qua dai)
+DYN_TP_RAISE_STEP    = 0.40    # nang TP len 40% khoang con lai tu gia hien tai den tran TP (tang tu 30%)
+DYN_TP_CEIL_ROI      = 0.30    # tran TP dong: toi da 30% ROI tu entry (tang tu 20% - bat lenh dai hon)
 
 # Max spread: neu bid-ask spread > nguong nay -> khong entry (thanh khoan kem)
 # Largecap (BTC/ETH): 0.05%, Altcoin: 0.15%
@@ -163,9 +163,9 @@ FLIP_COOLDOWN_SEC      = 30     # HF: 30 giay flip guard (gan nhu tat)
 # --- Execution ----------------------------------------------------------------
 LOOP_INTERVAL_SEC      = 1    # minimum pause giua cac tick (rate limit only)
 SYMBOL_COOLDOWN_SEC    = 60    # REST coins: re-analyze moi 60s (toan bo ~400 coin covered trong 1 phut)
-TOP20_COOLDOWN_SEC     = 5     # HIGH-VOL top coins: re-analyze moi 5s (nhanh nhat)
-TOP20_COUNT            = 50    # so coin HIGH-VOL duoc uu tien (tang 30->50)
-SCAN_BUDGET_TOP20_SEC  = 300.0  # budget HIGH-VOL: du cho 50 coin x ~1s/coin
+TOP20_COOLDOWN_SEC     = 3     # HIGH-VOL top coins: re-analyze moi 3s (tang tu 5s - nhanh hon 67%)
+TOP20_COUNT            = 60    # so coin HIGH-VOL duoc uu tien (tang 50->60)
+SCAN_BUDGET_TOP20_SEC  = 300.0  # budget HIGH-VOL: du cho 60 coin x ~1s/coin
 SCAN_BUDGET_REST_SEC   = 600.0  # budget REST: du cho toan bo ~400 coin con lai x ~1s/coin
 
 # --- Logging ------------------------------------------------------------------

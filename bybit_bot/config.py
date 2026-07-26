@@ -151,9 +151,7 @@ MAX_SPREAD_PCT_LARGE = 0.0005   # 0.05% cho BTC/ETH
 MAX_SPREAD_PCT_ALT   = 0.0015   # 0.15% cho altcoin
 # LOI RONG TOI THIEU SAU PHI+SPREAD tai TP: lenh bi ABORT neu du tinh loi rong < nguong nay.
 # 5% ROI net = du dem cho slippage fill, bien dong funding, gia tri trade thuc su.
-MIN_SAFE_NET_ROI     = 0.08     # 8% ROI net toi thieu tai TP: buffer chong slippage fill TP
-# 5% cu: leverage cao -> TP qua gan entry -> fill slippage an het loi -> lo. Tang len 8%
-# de force leverage xuong, TP xa hon, fill slippage khong xoa loi.
+MIN_SAFE_NET_ROI     = 0.05     # 5% ROI net toi thieu tai TP sau phi+spread
 
 # --- Post-loss cooldown -------------------------------------------------------
 # Sau khi dong lenh LOI tren 1 coin: block re-entry tren coin do trong X giay.

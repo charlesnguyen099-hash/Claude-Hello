@@ -1345,23 +1345,27 @@ class TradingBot:
 
         _hf = getattr(config, "HIGH_FREQ_MODE", False)
 
-        # QG-3: 30m high/low proximity (skip breakout; HF mode dung nguong loi hon 2x)
-        if not is_breakout and len(df_micro) >= 30:
+        # QG-3: 30m high/low proximity (skip breakout; skip in HF mode)
+        # HF mode: gia trong trend LUON gan 30m high/low -> QG3 block het moi entry trend
+        # -> bypass de bat momentum move (trend alignment gate xu ly sai trend)
+        if not _hf and not is_breakout and len(df_micro) >= 30:
             _lo30 = float(df_micro["low"].iloc[-30:].min())
             _hi30 = float(df_micro["high"].iloc[-30:].max())
-            _qg3_pct = (0.008 if _hf else 0.005) * sp  # HF: 0.4%/0.6%/0.8%, normal: 0.25%/0.375%/0.5%
+            _qg3_pct = 0.005 * sp  # 0.25% largecap, 0.375% midcap, 0.5% altcoin
             if direction == -1 and _lo30 > 0 and price <= _lo30 * (1 + _qg3_pct):
                 return False, f"QG3:within {_qg3_pct*100:.2f}% of 30m low={_lo30:.6g}(->block SHORT)"
             if direction == 1 and _hi30 > 0 and price >= _hi30 * (1 - _qg3_pct):
                 return False, f"QG3:within {_qg3_pct*100:.2f}% of 30m high={_hi30:.6g}(->block LONG)"
 
-        # QG-4: Immediate momentum conflict (skip reversal; HF mode dung nguong loi hon 2x)
-        if not is_reversal and len(df_micro) >= 10:
+        # QG-4: Immediate momentum conflict (skip reversal; skip in HF mode)
+        # HF mode: pullback entry trong uptrend co imm am -> QG4 block LONG dung luc pullback
+        # -> bypass (trend alignment gate + QG2 xu ly sai chieu toan dien hon)
+        if not _hf and not is_reversal and len(df_micro) >= 10:
             _c5  = float(df_micro["close"].iloc[-5:].mean())
             _c10 = float(df_micro["close"].iloc[-10:-5].mean())
             if _c10 > 0:
                 _imm = (_c5 - _c10) / _c10
-                _thresh = (0.004 if _hf else 0.002) * sp  # HF: 0.2%/0.3%/0.4%, normal: 0.1%/0.15%/0.2%
+                _thresh = 0.002 * sp  # 0.1% largecap, 0.15% midcap, 0.2% altcoin
                 if direction == -1 and _imm > _thresh:
                     return False, f"QG4:imm_mom=+{_imm*100:.3f}%(bouncing->block SHORT)"
                 if direction == 1 and _imm < -_thresh:

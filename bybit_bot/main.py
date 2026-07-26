@@ -756,6 +756,19 @@ class TradingBot:
                     self._dyn_tp_raised.pop(symbol, None)
                     continue
 
+            # 2b) IMM-CUT: macro van bullish nhung immediate momentum dao nguoc manh + lo dang sau
+            # Bat case coin uptrend (macro=1) nhung gia dang dump ngan han (imm=-1):
+            # macro khong flip nen SMART CUT khong chay -> can IMM-CUT rieng.
+            # Chi cat khi da du lo (tranh cat nham khi noise): 15% ROI = ~1.5% price o 10x.
+            if pnl_roi <= -0.15 and imm == -pos_dir:
+                logger.warning(
+                    f"[DYN-EXIT] {symbol} {side}: IMM-CUT roi={pnl_roi*100:.0f}% "
+                    f"| imm={imm} nguoc chieu + lo sau (macro={macro_dir} van cung chieu nhung gia dang giam) -> cat"
+                )
+                self.executor._close_position(pos)
+                self._dyn_tp_raised.pop(symbol, None)
+                continue
+
     def _btc_correlated(self, df_coin, lookback: int = 100, threshold: float = 0.5) -> bool:
         """True neu coin co rolling correlation voi BTC >= threshold (neo theo BTC).
         False = coin chay doc lap, bo qua BTC filter."""
@@ -2724,12 +2737,21 @@ class TradingBot:
                 elif _strong_bull_trend and _sc_dir == 0:
                     _near_ema21 = (_emg_ema21 > 0
                                    and _emg_ema21 * 0.997 <= _sc_price <= _emg_ema21 * 1.008)
-                    if _near_ema21 and _sc_last_green and 30 <= rsi_now <= 65 and _24h_pos < 0.92 and _imm_mom > -0.001:
+                    # imm_mom phai duong ro rang (khong vao khi gia dang roi) + 2 nen cuoi xanh
+                    _pb_long_2green = (len(df_micro) >= 2
+                                       and df_micro["close"].iloc[-1] > df_micro["open"].iloc[-1]
+                                       and df_micro["close"].iloc[-2] > df_micro["open"].iloc[-2])
+                    if (_near_ema21 and _pb_long_2green and 30 <= rsi_now <= 65
+                            and _24h_pos < 0.88 and _sc_pos <= 0.65 and _imm_mom > 0.0003):
                         _sc_dir, _sc_strength, _sc_tp, _sc_name = 1, 0.70, 0.0, "sc_trend_pullback_long"
                 elif _strong_bear_trend and _sc_dir == 0:
                     _near_ema21_bear = (_emg_ema21 > 0
                                         and _emg_ema21 * 0.992 <= _sc_price <= _emg_ema21 * 1.003)
-                    if _near_ema21_bear and _sc_last_red and 35 <= rsi_now <= 70 and _24h_pos > 0.08 and _imm_mom < 0.001:
+                    _pb_short_2red = (len(df_micro) >= 2
+                                      and df_micro["close"].iloc[-1] < df_micro["open"].iloc[-1]
+                                      and df_micro["close"].iloc[-2] < df_micro["open"].iloc[-2])
+                    if (_near_ema21_bear and _pb_short_2red and 35 <= rsi_now <= 70
+                            and _24h_pos > 0.12 and _sc_pos >= 0.35 and _imm_mom < -0.0003):
                         _sc_dir, _sc_strength, _sc_tp, _sc_name = -1, 0.70, 0.0, "sc_trend_pullback_short"
 
             # ================================================================

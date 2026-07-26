@@ -161,11 +161,11 @@ MIN_SAFE_NET_ROI     = 0.05     # 5% ROI net toi thieu tai TP (sau phi khu hoi +
 # Sau khi dong lenh LOI tren 1 coin: block re-entry tren coin do trong X giay.
 # Phong "flip-flop": bot vao Long, thua, roi ngay lap tuc Short cung coin -> lo ca 2.
 # 7200s = 2h: du de market on dinh lai, tranh trade revenge/chasing tren coin mat tien.
-LOSS_COOLDOWN_SEC      = 7200   # 2h cooldown sau khi dong lenh lo
+LOSS_COOLDOWN_SEC      = 3600   # 1h cooldown sau khi dong lenh lo (giam tu 2h: scalp bot khong nen block lau)
 # Flip-guard: neu lenh truoc tren coin nay la NGUOC chieu voi lenh moi -> block them.
-# Vi du: vua dong Short BANKUSDT (du loi hay lo) -> khong cho Long BANKUSDT trong 2h.
-# Chi cho phep cung chieu (continuation) sau khi dong lenh.
-FLIP_COOLDOWN_SEC      = 7200   # 2h block flip direction (Long->Short hoac Short->Long)
+# NGOAI LE (trong code): _direction_flipped=True (AEQ/VOL-TREND da phan tich dao chieu) -> khong block.
+# Vi du: vua dong Short BANKUSDT (du loi hay lo) -> khong cho Long BANKUSDT trong 30 phut.
+FLIP_COOLDOWN_SEC      = 1800   # 30min block flip direction (giam tu 2h: AEQ flip co phan tich rieng)
 
 # --- Execution ----------------------------------------------------------------
 LOOP_INTERVAL_SEC      = 1    # minimum pause giua cac tick (rate limit only)

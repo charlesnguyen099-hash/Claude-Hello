@@ -1334,10 +1334,13 @@ class TradingBot:
         if not is_breakout and len(df_micro) >= 30:
             _lo30 = float(df_micro["low"].iloc[-30:].min())
             _hi30 = float(df_micro["high"].iloc[-30:].max())
-            if direction == -1 and _lo30 > 0 and price <= _lo30 * 1.0025:
-                return False, f"QG3:within 0.25% of 30m low={_lo30:.6g}(->block SHORT)"
-            if direction == 1 and _hi30 > 0 and price >= _hi30 * 0.9975:
-                return False, f"QG3:within 0.25% of 30m high={_hi30:.6g}(->block LONG)"
+            # Scale theo sp: largecap (0.50) -> 0.25%, midcap -> 0.375%, altcoin -> 0.5%
+            # QG3 chi block khi THUC SU sat day/dinh (khong phai trong range nho cua uptrend)
+            _qg3_pct = 0.005 * sp  # 0.25% largecap, 0.375% midcap, 0.5% altcoin
+            if direction == -1 and _lo30 > 0 and price <= _lo30 * (1 + _qg3_pct):
+                return False, f"QG3:within {_qg3_pct*100:.2f}% of 30m low={_lo30:.6g}(->block SHORT)"
+            if direction == 1 and _hi30 > 0 and price >= _hi30 * (1 - _qg3_pct):
+                return False, f"QG3:within {_qg3_pct*100:.2f}% of 30m high={_hi30:.6g}(->block LONG)"
 
         # QG-4: Immediate momentum conflict (skip reversal - reversal wants counter-momentum)
         if not is_reversal and len(df_micro) >= 10:
@@ -4260,11 +4263,10 @@ class TradingBot:
                 _vol_now  = df_micro["volume"].iloc[-20:].mean()
                 _vol_weak = _vol_now < _vol_base * 0.70  # recent vol < 70% baseline
 
-                # LONG: neu price o top 2h range (>60%) ma sellers dang chiem uu -> flip SHORT
-                # Volume xac nhan sellers -> SHORT voi TP nho (co the tao dinh moi nhung SHORT co loi)
+                # LONG: neu price o top 2h range (>75%) ma sellers dang chiem uu -> flip SHORT
+                # Nang tu 0.60 len 0.75: 0.60 qua thap, lam flip nhieu lenh o giua range
                 # Guards: khong flip lenh da flip/scenario; khong flip nguoc EMERGING uptrend
-                # (HBAR: gia len tu day -> pos vuot 0.60 som -> flip nguoc = ban chan song len)
-                if (best.direction == 1 and _m2h_pos > 0.60
+                if (best.direction == 1 and _m2h_pos > 0.75
                         and not _direction_flipped and not _scenario_entry and not _emerging_uptrend):
                     _thresh = 0.45 if _vol_weak else 0.38
                     if _buy_press < _thresh:
@@ -4275,9 +4277,9 @@ class TradingBot:
                             f"{symbol}: AEQ-VOL flip LONG->SHORT: buy_pressure={_buy_press:.0%} < {_thresh:.0%} "
                             f"at 2h top {_m2h_pos:.0%} (vol_weak={_vol_weak}), TP=8%"
                         )
-                # SHORT: neu price o bot 2h range (<40%) ma buyers dang chiem uu -> flip LONG
-                # Volume xac nhan buyers -> LONG voi TP nho
-                if (best.direction == -1 and _m2h_pos < 0.40
+                # SHORT: neu price o bot 2h range (<25%) ma buyers dang chiem uu -> flip LONG
+                # Ha tu 0.40 xuong 0.25: doi xung voi tren
+                if (best.direction == -1 and _m2h_pos < 0.25
                         and not _direction_flipped and not _scenario_entry and not _emerging_downtrend):
                     _thresh = 0.55 if _vol_weak else 0.62
                     if _buy_press > _thresh:
@@ -5188,8 +5190,10 @@ class TradingBot:
         )
 
         # Flip-guard: block neu chieu moi NGUOC voi lenh truoc trong FLIP_COOLDOWN_SEC
+        # NGOAI LE: _direction_flipped=True -> AEQ/VOL-TREND da phan tich va quyet dinh
+        # dao chieu -> khong block (flip la ket qua phan tich, khong phai random)
         _last_dir_info = self.executor._last_direction.get(symbol)
-        if _last_dir_info is not None:
+        if _last_dir_info is not None and not _direction_flipped:
             _last_dir, _last_close_ts = _last_dir_info
             import time as _time_mod2
             if _time_mod2.time() - _last_close_ts < _flip_cooldown_sec and _last_dir != best.direction:

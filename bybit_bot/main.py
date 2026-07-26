@@ -1372,7 +1372,7 @@ class TradingBot:
             _ema21 = float(compute_ema(df_micro["close"], 21).iloc[-1])
             if _ema21 > 0:
                 _stretch = (price - _ema21) / _ema21
-                _lim = (0.025 if is_breakout else 0.020) * sp  # looser for breakout
+                _lim = (0.025 if is_breakout else 0.015) * sp  # looser for breakout; 0.75% BTC, 1.5% altcoin
                 if direction == -1 and _stretch < -_lim:
                     return False, f"QG5:price {_stretch*100:.2f}% below EMA21(overstretched->block SHORT)"
                 if direction == 1 and _stretch > _lim:

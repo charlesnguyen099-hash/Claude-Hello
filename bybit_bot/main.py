@@ -2500,11 +2500,18 @@ class TradingBot:
                     _sc_bod5_pct = float(abs(df_micro["close"].iloc[-5:].values
                                              - df_micro["open"].iloc[-5:].values).max()) / _sc_price
 
+                # Immediate momentum: close trung binh 5 nen cuoi vs 5 nen truoc do
+                # > 0 = nen cuoi dang tang (bounce), < 0 = dang giam
+                _imm_close5  = df_micro["close"].iloc[-5:].mean()
+                _imm_close10 = df_micro["close"].iloc[-10:-5].mean()
+                _imm_mom     = (_imm_close5 - _imm_close10) / _imm_close10 if _imm_close10 > 0 else 0.0
+
                 # S1/S2 - EMERGING TREND (uu tien cao nhat - chinh la HBAR pattern)
                 # _sc_pos guard: tranh long o gan dinh 2h range (>82%) hoac short o gan day (< 18%)
-                if _emerging_uptrend and not _block_long_24h and _sc_pos < 0.82:
+                # _imm_mom guard: tranh short khi gia dang bounce (>+0.05%) hoac long khi dang giam (<-0.05%)
+                if _emerging_uptrend and not _block_long_24h and _sc_pos < 0.82 and _imm_mom > -0.0005:
                     _sc_dir, _sc_strength, _sc_tp, _sc_name = 1, 0.62, 0.0, "sc_emerging_up"
-                elif _emerging_downtrend and not _block_short_24h and _sc_pos > 0.18:
+                elif _emerging_downtrend and not _block_short_24h and _sc_pos > 0.18 and _imm_mom < 0.0005:
                     _sc_dir, _sc_strength, _sc_tp, _sc_name = -1, 0.62, 0.0, "sc_emerging_down"
                 # S3/S4 - BREAKOUT 2h range + volume >= 1.5x, break 0.1-0.7% (khong chase),
                 # khong co nen spike > 2%*_sp trong 5c, macro lon khong chong lai

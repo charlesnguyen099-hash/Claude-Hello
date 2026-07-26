@@ -1389,7 +1389,7 @@ class TradingBot:
                     return False, f"QG5:price {_stretch*100:.2f}% above EMA21(overstretched->block LONG)"
 
         # QG-6: Last 3 candle bodies strongly against direction (skip reversal; bypass in confirmed trend)
-        if not trend_confirmed and not is_reversal and len(df_micro) >= 4:
+        if not strong_trend and not is_reversal and len(df_micro) >= 4:
             _bodies = (df_micro["close"].iloc[-3:].values
                        - df_micro["open"].iloc[-3:].values)
             _ranges = (df_micro["high"].iloc[-3:].values

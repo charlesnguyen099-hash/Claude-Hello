@@ -1476,15 +1476,22 @@ class TradingBot:
             logger.debug(f"{symbol}: skip - 1m ADX={adx:.1f} < {min_adx} (sideway)")
             return False
 
-        # --- Post-loss cooldown & flip-guard ------------------------------------------
+        # --- Post-loss / Post-win cooldown & flip-guard --------------------------------
         import time as _time_mod
         _now_ts = _time_mod.time()
         _loss_cooldown_sec = getattr(config, "LOSS_COOLDOWN_SEC", 7200)
+        _win_cooldown_sec  = getattr(config, "WIN_COOLDOWN_SEC",  120)
         _flip_cooldown_sec = getattr(config, "FLIP_COOLDOWN_SEC", 7200)
         _loss_ts = self.executor._loss_cooldown.get(symbol, 0.0)
         if _now_ts - _loss_ts < _loss_cooldown_sec:
             _rem = int(_loss_ts + _loss_cooldown_sec - _now_ts)
             logger.debug(f"{symbol}: skip - loss cooldown ({_rem}s remaining)")
+            return False
+        # Win cooldown: sau dong lenh loi, momentum da can - tranh re-entry ngay (PRLUSDT pattern)
+        _win_ts = self.executor._win_cooldown.get(symbol, 0.0)
+        if _now_ts - _win_ts < _win_cooldown_sec:
+            _rem = int(_win_ts + _win_cooldown_sec - _now_ts)
+            logger.debug(f"{symbol}: skip - win cooldown ({_rem}s remaining)")
             return False
         # ------------------------------------------------------------------------------
 

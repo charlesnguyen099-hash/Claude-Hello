@@ -158,6 +158,7 @@ MIN_SAFE_NET_ROI     = 0.05     # 5% ROI net toi thieu tai TP sau phi+spread
 # Phong "flip-flop": bot vao Long, thua, roi ngay lap tuc Short cung coin -> lo ca 2.
 # 7200s = 2h: du de market on dinh lai, tranh trade revenge/chasing tren coin mat tien.
 LOSS_COOLDOWN_SEC      = 60     # HF: 1 phut cooldown sau loss (nhanh re-entry)
+WIN_COOLDOWN_SEC       = 120    # 2 phut cooldown sau win - tranh re-entry luc momentum da can (PRLUSDT pattern)
 FLIP_COOLDOWN_SEC      = 30     # HF: 30 giay flip guard (gan nhu tat)
 
 # --- Execution ----------------------------------------------------------------

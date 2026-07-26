@@ -42,6 +42,8 @@ class Executor:
         self._recently_closed: dict[str, float] = {}  # symbol -> timestamp close; guard duplicate close khi API lag
         # Post-loss cooldown: sau khi dong lenh LO, block re-entry tren coin do
         self._loss_cooldown:  dict[str, float] = {}  # symbol -> timestamp khi dong lenh lo
+        # Post-win cooldown: sau khi dong lenh LOI, block re-entry de tranh exhausted momentum
+        self._win_cooldown:   dict[str, float] = {}  # symbol -> timestamp khi dong lenh loi
         # Flip-guard: block flip direction tren cung coin (Long->Short hoac Short->Long)
         self._last_direction: dict[str, tuple[int, float]] = {}  # symbol -> (direction, close_time)
 
@@ -550,7 +552,15 @@ class Executor:
                 logger.info(
                     f"[LOSS-COOLDOWN] {stale_sym}: dong lenh LO "
                     f"(pnl_roi={_last_pnl_roi*100:.1f}%) - block re-entry "
-                    f"{getattr(config, 'LOSS_COOLDOWN_SEC', 7200)//3600}h"
+                    f"{getattr(config, 'LOSS_COOLDOWN_SEC', 7200)}s"
+                )
+            # Neu dong lenh o trang thai LOI (pnl_roi > 0): ghi win cooldown
+            elif _last_pnl_roi is not None and _last_pnl_roi > 0.005:  # loi > 0.5% ROI
+                self._win_cooldown[stale_sym] = _now
+                logger.info(
+                    f"[WIN-COOLDOWN] {stale_sym}: dong lenh LOI "
+                    f"(pnl_roi={_last_pnl_roi*100:.1f}%) - block re-entry "
+                    f"{getattr(config, 'WIN_COOLDOWN_SEC', 120)}s"
                 )
             self.clear_position_state(stale_sym)
 

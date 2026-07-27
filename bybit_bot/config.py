@@ -135,7 +135,7 @@ ENABLE_SCENARIO_PATH = True   # bat tat ca scenario path (S1-S40+)
 #      cham SL banh chanh, ma dong ngay khi co BOUNCE nguoc ve phia minh (luc lo IT NHAT).
 DYN_EXIT_ENABLE     = True
 DYN_PROFIT_LOCK_ROI = 0.05   # dang loi >= 5% ROI ma momentum quay dau nguoc -> chot ngay
-DYN_HARD_CUT_ROI    = 0.35   # dang lo >= 35% ROI + trend nguoc, khong co bounce -> cat luon (chan banh chanh)
+DYN_HARD_CUT_ROI    = 0.20   # dang lo >= 20% ROI + trend nguoc, khong co bounce -> cat luon (chan banh chanh)
 DYN_MIN_HOLD_SEC    = 60     # cho lenh 'tho' 60s dau, tranh churn theo nhieu ngan han
 
 # --- DYNAMIC TP (bot dieu chinh TP dong dua tren momentum sau khi vao lenh) ---------

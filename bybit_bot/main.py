@@ -756,14 +756,25 @@ class TradingBot:
                     self._dyn_tp_raised.pop(symbol, None)
                     continue
 
-            # 2b) IMM-CUT: macro van bullish nhung immediate momentum dao nguoc manh + lo dang sau
-            # Bat case coin uptrend (macro=1) nhung gia dang dump ngan han (imm=-1):
-            # macro khong flip nen SMART CUT khong chay -> can IMM-CUT rieng.
-            # Chi cat khi da du lo (tranh cat nham khi noise): 15% ROI = ~1.5% price o 10x.
-            if pnl_roi <= -0.15 and imm == -pos_dir:
+            # 2b) SCALP-CUT: scalp_trend (EMA9/21/50) nguoc chieu + lo > 5% ROI -> cat som
+            # Mac du macro chua flip (can 100+ phut), scalp flip trong 5-10 phut la tin hieu som nhat.
+            # TLMUSDT pattern: vao LONG 03:56, scalp flip xuong trong vai phut, giu den 06:24 = 2.5h lo.
+            _scalp_now = self._micro_trend(df)
+            if pnl_roi <= -0.05 and _scalp_now == -pos_dir and imm == -pos_dir:
+                logger.warning(
+                    f"[DYN-EXIT] {symbol} {side}: SCALP-CUT roi={pnl_roi*100:.1f}% "
+                    f"| scalp={_scalp_now} imm={imm} ca hai nguoc chieu -> cat som, khong doi macro"
+                )
+                self.executor._close_position(pos)
+                self._dyn_tp_raised.pop(symbol, None)
+                continue
+
+            # 2c) IMM-CUT: macro van cung chieu nhung immediate momentum dao nguoc manh + lo dang sau
+            # Giam nguong tu -15% xuong -8% ROI de cat som hon (tranh giu lo sau nhu TLMUSDT).
+            if pnl_roi <= -0.08 and imm == -pos_dir:
                 logger.warning(
                     f"[DYN-EXIT] {symbol} {side}: IMM-CUT roi={pnl_roi*100:.0f}% "
-                    f"| imm={imm} nguoc chieu + lo sau (macro={macro_dir} van cung chieu nhung gia dang giam) -> cat"
+                    f"| imm={imm} nguoc chieu + lo sau (macro={macro_dir}) -> cat"
                 )
                 self.executor._close_position(pos)
                 self._dyn_tp_raised.pop(symbol, None)

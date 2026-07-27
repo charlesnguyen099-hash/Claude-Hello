@@ -1310,7 +1310,8 @@ class TradingBot:
                       pos_24h: float = 0.5,
                       hi_24h: float = 0.0,
                       lo_24h: float = 0.0,
-                      strong_trend: bool = False) -> tuple[bool, str]:
+                      strong_trend: bool = False,
+                      scalp_trend: int = 0) -> tuple[bool, str]:
         """
         Universal pre-entry quality gate - ap dung cho TAT CA entry paths.
         Returns (True, "") neu OK, (False, reason) neu bi block.
@@ -1321,6 +1322,7 @@ class TradingBot:
         QG-4: Immediate momentum conflict - khong short khi bounce, khong long khi dump
         QG-5: EMA21 overstretch - khong short khi da qua xa duoi EMA21 (va nguoc lai)
         QG-6: 3-candle body direction strongly against entry
+        QG-7: scalp_trend (EMA9/21/50) nguoc chieu + imm nguoc chieu -> block (ca hai xac nhan sai)
         """
         if df_micro is None or df_micro.empty or len(df_micro) < 21:
             return True, ""
@@ -1366,17 +1368,27 @@ class TradingBot:
             if direction == 1 and _hi30 > 0 and price >= _hi30 * (1 - _qg3_pct):
                 return False, f"QG3:within {_qg3_pct*100:.2f}% of 30m high={_hi30:.6g}(->block LONG)"
 
-        # QG-4: Immediate momentum conflict (skip reversal - reversal wants counter-momentum)
-        if not is_reversal and len(df_micro) >= 10:
+        # QG-4: Immediate momentum conflict
+        # Non-reversal: block khi momentum ngan han nguoc chieu (threshold chuan)
+        # Reversal: van check nhung threshold lax hon 3x (cho phep counter-momentum nho, block khi qua manh)
+        if len(df_micro) >= 10:
             _c5  = float(df_micro["close"].iloc[-5:].mean())
             _c10 = float(df_micro["close"].iloc[-10:-5].mean())
             if _c10 > 0:
                 _imm = (_c5 - _c10) / _c10
                 _thresh = 0.002 * sp  # 0.1% largecap, 0.15% midcap, 0.2% altcoin
-                if direction == -1 and _imm > _thresh:
-                    return False, f"QG4:imm_mom=+{_imm*100:.3f}%(bouncing->block SHORT)"
-                if direction == 1 and _imm < -_thresh:
-                    return False, f"QG4:imm_mom={_imm*100:.3f}%(falling->block LONG)"
+                if is_reversal:
+                    # Reversal: chi block khi momentum MANH nguoc chieu (3x threshold)
+                    # KORUUSDT pattern: SHORT khi gia dang tang ro rang -> block
+                    if direction == -1 and _imm > _thresh * 3:
+                        return False, f"QG4:reversal_imm=+{_imm*100:.3f}%(tang manh->block SHORT reversal)"
+                    if direction == 1 and _imm < -_thresh * 3:
+                        return False, f"QG4:reversal_imm={_imm*100:.3f}%(giam manh->block LONG reversal)"
+                else:
+                    if direction == -1 and _imm > _thresh:
+                        return False, f"QG4:imm_mom=+{_imm*100:.3f}%(bouncing->block SHORT)"
+                    if direction == 1 and _imm < -_thresh:
+                        return False, f"QG4:imm_mom={_imm*100:.3f}%(falling->block LONG)"
 
         # QG-5: EMA21 overstretch in direction of trade
         if len(df_micro) >= 21:
@@ -1389,8 +1401,10 @@ class TradingBot:
                 if direction == 1 and _stretch > _lim:
                     return False, f"QG5:price {_stretch*100:.2f}% above EMA21(overstretched->block LONG)"
 
-        # QG-6: Last 3 candle bodies strongly against direction (skip reversal)
-        if not is_reversal and len(df_micro) >= 4:
+        # QG-6: Last 3 candle bodies strongly against direction
+        # Non-reversal: block >=55% body ratio nguoc chieu
+        # Reversal: block >=80% (chi block khi THAT SU nguoc manh, cho phep reversal diem)
+        if len(df_micro) >= 4:
             _bodies = (df_micro["close"].iloc[-3:].values
                        - df_micro["open"].iloc[-3:].values)
             _ranges = (df_micro["high"].iloc[-3:].values
@@ -1398,10 +1412,33 @@ class TradingBot:
             _total_range = float(_ranges.sum())
             if _total_range > 0:
                 _body_ratio = float(_bodies.sum()) / _total_range
-                if direction == -1 and _body_ratio > 0.55:
+                _qg6_thresh = 0.80 if is_reversal else 0.55
+                if direction == -1 and _body_ratio > _qg6_thresh:
                     return False, f"QG6:3c bullish ratio={_body_ratio:.2f}(->block SHORT)"
-                if direction == 1 and _body_ratio < -0.55:
+                if direction == 1 and _body_ratio < -_qg6_thresh:
                     return False, f"QG6:3c bearish ratio={_body_ratio:.2f}(->block LONG)"
+
+        # QG-7: scalp_trend + imm ca hai nguoc chieu -> wrong direction confirmed, block
+        # TLMUSDT pattern: macro EMA con bullish (lag 100+ phut) nhung scalp da flip xuong
+        # scalp_trend (EMA9/21/50) phan anh trend 30-60 phut - chinh xac hon macro khi macro lag
+        # Skip reversal vi reversal intentionally counter-trend
+        if not is_reversal and scalp_trend != 0:
+            if scalp_trend == -direction:
+                # Scalp nguoc: chi block khi strong (kem theo imm) de tranh noise
+                _imm_last = 0
+                if len(df_micro) >= 8:
+                    _r7 = df_micro.iloc[-7:]
+                    _net7 = (float(_r7["close"].iloc[-1]) - float(_r7["close"].iloc[0]))
+                    if float(_r7["close"].iloc[0]) > 0:
+                        _net7_pct = _net7 / float(_r7["close"].iloc[0])
+                        _greens7 = int((_r7["close"] > _r7["open"]).sum())
+                        _reds7   = int((_r7["close"] < _r7["open"]).sum())
+                        if _net7_pct > 0.001 * sp and _greens7 > _reds7:
+                            _imm_last = 1
+                        elif _net7_pct < -0.001 * sp and _reds7 > _greens7:
+                            _imm_last = -1
+                if _imm_last == -direction:
+                    return False, f"QG7:scalp={scalp_trend}&imm={_imm_last} ca hai nguoc {direction}(->block)"
 
         return True, ""
 
@@ -2055,7 +2092,8 @@ class TradingBot:
                     _bo_qg_ok, _bo_qg_msg = self._quality_gate(
                         bo_sig.direction, df_micro, rsi_now, _sc_pos, _sp, is_breakout=True,
                         pos_24h=_24h_pos, hi_24h=_24h_hi, lo_24h=_24h_lo,
-                        strong_trend=(_strong_bull_trend and bo_sig.direction == 1) or (_strong_bear_trend and bo_sig.direction == -1))
+                        strong_trend=(_strong_bull_trend and bo_sig.direction == 1) or (_strong_bear_trend and bo_sig.direction == -1),
+                        scalp_trend=scalp_trend)
                     if not _bo_qg_ok:
                         logger.info(f"{symbol}: [QUALITY-GATE] BREAKOUT blocked - {_bo_qg_msg}")
                         return False
@@ -2478,7 +2516,8 @@ class TradingBot:
                     _rv_qg_ok, _rv_qg_msg = self._quality_gate(
                         best.direction, df_micro, rsi_now, _sc_pos, _sp, is_reversal=True,
                         pos_24h=_24h_pos, hi_24h=_24h_hi, lo_24h=_24h_lo,
-                        strong_trend=(_strong_bull_trend and best.direction == 1) or (_strong_bear_trend and best.direction == -1))
+                        strong_trend=(_strong_bull_trend and best.direction == 1) or (_strong_bear_trend and best.direction == -1),
+                        scalp_trend=scalp_trend)
                     if not _rv_qg_ok:
                         logger.info(f"{symbol}: [QUALITY-GATE] REVERSAL blocked - {_rv_qg_msg}")
                         return False
@@ -5254,7 +5293,8 @@ class TradingBot:
             best.direction, df_micro, rsi_now, _sc_pos, _sp,
             is_reversal=False, is_breakout=False,
             pos_24h=_24h_pos, hi_24h=_24h_hi, lo_24h=_24h_lo,
-            strong_trend=(_strong_bull_trend and best.direction == 1) or (_strong_bear_trend and best.direction == -1))
+            strong_trend=(_strong_bull_trend and best.direction == 1) or (_strong_bear_trend and best.direction == -1),
+            scalp_trend=scalp_trend)
         if not _mo_qg_ok:
             logger.info(f"{symbol}: [QUALITY-GATE] MOMENTUM blocked - {_mo_qg_msg}")
             return False

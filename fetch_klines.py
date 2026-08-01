@@ -174,6 +174,11 @@ def main():
     args = parser.parse_args()
     out_dir = args.out
 
+    # Tên file = y chang lệnh đã gõ (bỏ "python fetch_klines.py")
+    import sys
+    _cmd_args = " ".join(sys.argv[1:])
+    _file_label = _cmd_args.replace("/", "-").replace("\\", "-")  # tránh ký tự không hợp lệ trên Windows
+
     # Xác định khoảng thời gian
     if args.date:
         start_dt = datetime.strptime(args.date, "%Y-%m-%d")

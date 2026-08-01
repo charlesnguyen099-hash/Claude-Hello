@@ -98,9 +98,12 @@ def fetch_klines(symbol, start_ms, end_ms):
     return sorted(all_rows.values(), key=lambda x: x["timestamp_ms"])
 
 
-def save_csv(symbol, rows, date, out_dir):
+def save_csv(symbol, rows, date, out_dir, filename_override=None):
     os.makedirs(out_dir, exist_ok=True)
-    fname = os.path.join(out_dir, "{}_1m_{}.csv".format(symbol, date.strftime("%Y%m%d")))
+    if filename_override:
+        fname = os.path.join(out_dir, filename_override)
+    else:
+        fname = os.path.join(out_dir, "{}_1m_{}.csv".format(symbol, date.strftime("%Y%m%d")))
     with open(fname, "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=["timestamp_ms", "open", "high", "low", "close", "volume"])
         w.writeheader()

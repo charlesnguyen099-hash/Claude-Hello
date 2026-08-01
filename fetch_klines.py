@@ -98,12 +98,9 @@ def fetch_klines(symbol, start_ms, end_ms):
     return sorted(all_rows.values(), key=lambda x: x["timestamp_ms"])
 
 
-def save_csv(symbol, rows, date, out_dir, filename_override=None):
+def save_csv(symbol, rows, date, out_dir):
     os.makedirs(out_dir, exist_ok=True)
-    if filename_override:
-        fname = os.path.join(out_dir, filename_override)
-    else:
-        fname = os.path.join(out_dir, "{}_1m_{}.csv".format(symbol, date.strftime("%Y%m%d")))
+    fname = os.path.join(out_dir, "{}_{}.csv".format(symbol, date.strftime("%Y-%m-%d")))
     with open(fname, "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=["timestamp_ms", "open", "high", "low", "close", "volume"])
         w.writeheader()
@@ -173,11 +170,6 @@ def main():
 
     args = parser.parse_args()
     out_dir = args.out
-
-    # Tên file = y chang lệnh đã gõ (bỏ "python fetch_klines.py")
-    import sys
-    _cmd_args = " ".join(sys.argv[1:])
-    _file_label = _cmd_args.replace("/", "-").replace("\\", "-")  # tránh ký tự không hợp lệ trên Windows
 
     # Xác định khoảng thời gian
     if args.date:

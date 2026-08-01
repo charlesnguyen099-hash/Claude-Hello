@@ -203,8 +203,8 @@ def main():
 
     args = parser.parse_args()
 
-    global OUT_DIR
     if args.out:
+        global OUT_DIR
         OUT_DIR = args.out
 
     # -- Xác định khoảng thời gian --

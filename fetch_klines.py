@@ -55,8 +55,15 @@ def get_all_usdt_perp_symbols():
 
 
 def fetch_klines(symbol, start_ms, end_ms):
+    """
+    Tải toàn bộ nến 1m trong khoảng [start_ms, end_ms).
+    Bybit trả tối đa 1000 nến/request nên tự vòng lặp nhiều lần cho đến khi đủ.
+    Bybit trả về thứ tự: mới nhất trước (index 0 = mới nhất).
+    """
     all_rows = {}
     cur = start_ms
+    req_count = 0
+
     while cur < end_ms:
         params = {
             "category": "linear",
@@ -69,16 +76,23 @@ def fetch_klines(symbol, start_ms, end_ms):
         try:
             r    = requests.get(BYBIT_BASE + KLINE_ENDPOINT, params=params, timeout=15)
             r.raise_for_status()
-            rows = r.json().get("result", {}).get("list", [])
+            raw = r.json().get("result", {}).get("list", [])
         except Exception as e:
-            print("\n    [!] {}: lỗi request: {}".format(symbol, e))
+            print("\n    [!] {}: lỗi request #{}: {}".format(symbol, req_count + 1, e))
             time.sleep(2)
             break
 
-        if not rows:
+        if not raw:
             break
-        rows = list(reversed(rows))
-        for row in rows:
+
+        req_count += 1
+
+        # Bybit trả mới nhất trước: raw[0] = mới nhất, raw[-1] = cũ nhất
+        # Lấy timestamp cũ nhất và mới nhất trong batch này
+        oldest_ts  = int(raw[-1][0])   # raw[-1] = cũ nhất
+        newest_ts  = int(raw[0][0])    # raw[0]  = mới nhất
+
+        for row in raw:
             ts = int(row[0])
             if start_ms <= ts < end_ms:
                 all_rows[ts] = {
@@ -89,10 +103,12 @@ def fetch_klines(symbol, start_ms, end_ms):
                     "close":  row[4],
                     "volume": row[5],
                 }
-        last_ts = int(rows[-1][0])
-        if last_ts <= cur:
-            break
-        cur = last_ts + 60000
+
+        # Tiến cur đến sau nến mới nhất vừa nhận để lấy batch tiếp theo
+        if newest_ts <= cur:
+            break  # không tiến được, thoát tránh vô hạn
+        cur = newest_ts + 60000  # +1 phút, bắt đầu batch kế
+
         time.sleep(RATE_DELAY)
 
     return sorted(all_rows.values(), key=lambda x: x["timestamp_ms"])

@@ -94,7 +94,7 @@ def fetch_klines(symbol, start_ms, end_ms):
         for row in raw:
             ts = int(row[0])
             if start_ms <= ts < end_ms:
-                dt_str = datetime.utcfromtimestamp(ts / 1000).strftime("%Y-%m-%d %H:%M:%S")
+                dt_str = datetime.fromtimestamp(ts / 1000, timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
                 all_rows[ts] = {
                     "datetime": dt_str,
                     "open":     row[1],
@@ -112,7 +112,7 @@ def fetch_klines(symbol, start_ms, end_ms):
         current_end = oldest_ts
         time.sleep(RATE_DELAY)
 
-    return sorted(all_rows.values(), key=lambda x: x["timestamp_ms"])
+    return sorted(all_rows.values(), key=lambda x: x["datetime"])
 
 
 def save_csv(symbol, rows, date, out_dir):

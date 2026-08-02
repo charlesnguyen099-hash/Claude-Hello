@@ -118,23 +118,31 @@ MIN_TP1_TO_COST_RATIO = 8.0
 # This is the mechanical form of "don't buy the top / don't sell the
 # bottom": an EMA cross fires *after* a move has already started, so
 # entering at that close is by construction entering into extension.
-# Measured in research/two_stage_entry.py on both years, over the same
-# signal set, net of fees:
 #
-#   mode          2026 total   2025 total
-#   immediate       -17.53%      -16.12%
-#   limit 0.5 ATR    -7.11%       -7.82%
-#   limit 1.0 ATR    -5.84%       -7.91%
-#   limit 2.0 ATR    -6.77%       -5.63%
+# Be careful reading the evidence for this one. A simplified equal-sized
+# fixed-target model (research/two_stage_entry.py) suggested waiting for
+# a pullback more than halves the loss on BOTH years. Re-run inside the
+# real engine — confidence-scaled sizing, dynamic leverage, partial TP,
+# breakeven, chandelier trail, stale exit — that did not hold up
+# (research/pullback_sweep.py, full-year returns):
 #
-# Waiting for the pullback more than halves the loss on both years —
-# the only change tested so far that improves both, rather than trading
-# one year's result against the other's. 1.0 ATR is chosen as the
-# setting that is near-best on 2026 and mid-pack on 2025, instead of
-# picking each year's own optimum (which would be curve-fitting).
+#   pullback   2026     2025    combined   worst DD
+#      0.00   -12.78%  +6.01%    -6.77%    -12.78%
+#      0.50    -8.85%  -7.14%   -15.99%     -8.85%
+#      0.75    -6.31%  -5.14%   -11.45%     -7.50%
+#      1.00    -2.35%  -5.68%    -8.03%     -6.45%
+#      2.00    -3.45%  -6.08%    -9.53%     -6.13%
 #
-# It does NOT make the strategy profitable — see README. It makes a
-# losing edge less negative, consistently.
+# No setting is profitable on both years, and with only 3-26 trades per
+# year the differences in return are inside the noise — the headline
+# "2026 improved from -12.78% to -2.35%" is a small-sample result, not a
+# demonstrated edge, and it came at the cost of 2025's positive year.
+#
+# The pullback is kept anyway, for two reasons that do survive: it is
+# the explicit "don't chase extension" behaviour that was asked for, and
+# it roughly halves the worst drawdown (-12.78% -> -6.45%), which is a
+# risk property rather than a return claim. It does NOT make the
+# strategy profitable. See README.
 PULLBACK_ATR_MULT = 1.0
 PENDING_MAX_BARS = 120  # cancel an unfilled entry after this many 1m bars
 

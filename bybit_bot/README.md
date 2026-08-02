@@ -27,6 +27,61 @@ all-in on any single trade, on purpose:
 Defaults are `BYBIT_TESTNET=true` and `DRY_RUN=true` — the bot will not
 place a single real order until you deliberately change both in `.env`.
 
+## The clearest result: the patterns do predict — by less than the fee
+
+This one is worth reading before anything else, because it is the most
+informative thing found in the whole project, and it is not "there is no
+pattern."
+
+The procedure requested was: look at the candles before a profitable
+move, work out why that move was coming, encode it, then trade every
+similar situation from the smallest profit to the largest.
+`research/pattern_matching.py` implements exactly that, generalised so
+none of the example numbers are baked in — pattern lengths of 10, 20 and
+40 candles, holding times of 5 to 240 minutes, targets of 10% and 20% at
+25x leverage, long and short.
+
+**Step 1: the patterns genuinely carry information.** Out-of-sample lift
+(how much more often a matched setup pays, versus the base rate) ran
+from 1.17x to 7.92x, and — the part that rules out luck — the two
+cross-year directions agreed with each other:
+
+| pattern | horizon | target | base rate | after matching | lift |
+|---------|---------|--------|-----------|----------------|------|
+| 40 candles | 15m | 10% | 3.27% | 6.72% | **2.05x** |
+| 40 candles | 30m | 10% | 7.49% | 12.46% | **1.66x** |
+| 40 candles | 60m | 20% | 5.72% | 9.52% | **1.67x** |
+| 40 candles | 5m | 20% | 0.11% | 0.54% | **4.82x** |
+
+A library built on 2025 lifts 2026's hit rate by about as much as a
+library built on 2026 lifts 2025's. That is a real, reproducible signal,
+not curve-fitting.
+
+**Step 2: trading it still loses, by almost exactly the fee.**
+`research/pattern_strategy.py` takes those same libraries and places
+actual trades on the other year — real stop, real target, hard time
+exit, fees and slippage, stop-first on ambiguous bars. Across 60+
+configurations the average net result per trade came out between
+**-0.18% and -0.25%**, against a round-trip cost of **0.21%**.
+
+Subtract the fee and the gross edge is approximately **zero**. Win rates
+landed at 19-45%, profit factors at 0.17-0.49, and nothing was
+profitable in both cross-year directions.
+
+**Why lift doesn't become profit.** An "opportunity" is labelled by the
+best price reached inside the window — a perfect exit. A real trade
+carries a stop, and the move against you usually arrives first:
+`research/two_stage_entry.py` measures that adverse excursion at a
+median of 2.0-2.1 ATR on both years, which at 25x leverage is about
+**17.5% of equity** before the trade goes your way. The pattern tells
+you something true about where price is heading; it does not tell you
+that price will get there without taking out your stop on the way.
+
+So the honest summary is not "no edge exists." It is: **a real edge
+exists, and it is smaller than what Bybit charges to trade it.** That is
+also why this is hard to fix by trying more indicators — the problem is
+the size of the toll relative to the signal, not the search for signal.
+
 ## "Just find the profitable trades in past data and trade them"
 
 This was requested directly, with the reasoning that it *cannot* lose.
@@ -500,6 +555,16 @@ research/
   hindsight_proof.py   Why "find profitable past trades and trade them" can't be
                        turned into a bot: 100% win rate with lookahead vs ~50%
                        accuracy without it, measured on both years
+  pattern_matching.py  Do similar candle shapes repeat the same outcome? Sweeps
+                       pattern length, horizon, target, direction. Answer: yes,
+                       lift 1.2-7.9x out-of-sample, confirmed both directions
+  pattern_strategy.py  Turns that lift into real trades with stops and fees.
+                       Answer: -0.18 to -0.25% per trade vs a 0.21% round trip
+  two_stage_entry.py   "Short the dip first, then long" vs waiting vs entering
+                       now. Measures the adverse excursion (median ~17.5% at 25x)
+  pullback_sweep.py    Entry-pullback depth swept through the real engine
+  filter_sweep.py      How many trades the entry gates discard, and whether the
+                       discarded ones would have made money
 data/
   BTCUSDT_2026.csv     Jan-Aug 2026 dataset (307k candles)
   BTCUSDT_2025.csv     Full year 2025 dataset (526k candles, out-of-sample validation)

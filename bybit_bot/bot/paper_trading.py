@@ -57,6 +57,11 @@ class PaperPosition:
     realized_pnl_usd: float = 0.0
     high_water: float = 0.0
     low_water: float = 0.0
+    # Timestamp of the last CLOSED 1m candle already scanned for TP/SL
+    # touches. The still-forming candle is deliberately re-scanned every
+    # tick (its high/low keeps extending), which is safe because every
+    # exit path below is guarded by a flag or removes the position.
+    last_check_ts: pd.Timestamp | None = None
 
     def __post_init__(self) -> None:
         self.qty_remaining = self.qty_initial
@@ -177,24 +182,74 @@ class PaperBroker:
             symbol, pos.side.upper(), fill, reason, total_pnl, r_multiple, self.equity,
         )
 
+    def manage_with_candles(self, symbol: str) -> None:
+        """Check TP/SL against the full high/low range of every 1m candle
+        since the last check, not just the price at this instant.
+
+        A real TP/SL order sits on the exchange book and fires the moment
+        price *touches* it. Sampling `get_last_price` every N seconds
+        misses fast wicks that touched a level and retraced, which
+        silently skips stop-outs and makes paper results look better than
+        the same logic would do live. Scanning candle high/low closes that
+        gap, and matches how backtest/engine.py measures the same trade.
+        """
+        pos = self.open_positions.get(symbol)
+        if pos is None:
+            return
+        try:
+            candles = self.exchange.get_klines(symbol, "1m", 10)
+        except Exception:
+            logger.exception("Failed to fetch 1m candles for %s", symbol)
+            return
+        if candles.empty:
+            return
+
+        pending = candles if pos.last_check_ts is None else candles[
+            candles["datetime"] > pos.last_check_ts
+        ]
+        for row in pending.itertuples():
+            if symbol not in self.open_positions:
+                break
+            self._apply_range(symbol, float(row.high), float(row.low))
+
+        still_open = self.open_positions.get(symbol)
+        if still_open is not None and len(candles) >= 2:
+            # Second-to-last is the newest *closed* candle; the last one
+            # is still forming, so leave it eligible for re-scanning.
+            still_open.last_check_ts = candles.iloc[-2]["datetime"]
+
     def manage_with_price(self, symbol: str, price: float) -> None:
+        """Check the position against a single instantaneous price -- a
+        zero-width range. Kept for callers that already hold a tick and
+        don't need the candle fetch in manage_with_candles().
+        """
+        self._apply_range(symbol, price, price)
+
+    def _apply_range(self, symbol: str, high: float, low: float) -> None:
+        """Resolve one candle's range against the position's levels.
+
+        Same-candle ambiguity (both the stop and a target inside one
+        bar's range) is resolved conservatively in favour of the stop,
+        identical to the backtest engine, so paper results never flatter
+        the strategy relative to the backtest.
+        """
         pos = self.open_positions.get(symbol)
         if pos is None:
             return
         long = pos.side == "long"
 
-        hit_stop = (price <= pos.stop) if long else (price >= pos.stop)
+        hit_stop = (low <= pos.stop) if long else (high >= pos.stop)
         if hit_stop:
             self._close(symbol, pos.stop, "stop_loss" if not pos.tp1_hit else "breakeven_stop")
             return
 
-        hit_tp2 = (price >= pos.tp2) if long else (price <= pos.tp2)
+        hit_tp2 = (high >= pos.tp2) if long else (low <= pos.tp2)
         if hit_tp2:
             self._close(symbol, pos.tp2, "take_profit_2")
             return
 
         if not pos.tp1_hit:
-            hit_tp1 = (price >= pos.tp1) if long else (price <= pos.tp1)
+            hit_tp1 = (high >= pos.tp1) if long else (low <= pos.tp1)
             if hit_tp1:
                 close_qty = pos.qty_initial * 0.5
                 fill = _fill_price(pos.tp1, pos.side, is_entry=False)
@@ -211,9 +266,9 @@ class PaperBroker:
 
         if pos.tp1_hit:
             if long:
-                pos.high_water = max(pos.high_water, price)
+                pos.high_water = max(pos.high_water, high)
             else:
-                pos.low_water = min(pos.low_water, price)
+                pos.low_water = min(pos.low_water, low)
 
     def refresh_trend_and_trail(self, symbol: str) -> None:
         """Slower-cadence check: trend flip, ATR-based trailing stop
@@ -292,20 +347,59 @@ class PaperBroker:
                 open_losses += 1
             open_rows.append((symbol, pos.side, pos.entry, price, unrealized))
 
+        gross_profit = sum(t.pnl_usd for t in wins)
+        gross_loss = sum(t.pnl_usd for t in losses)
+        open_profit = sum(u for *_, u in open_rows if u > 0)
+        open_loss = sum(u for *_, u in open_rows if u <= 0)
+
         return {
             "closed_trades": len(closed),
             "closed_wins": len(wins),
             "closed_losses": len(losses),
+            "gross_profit_usd": gross_profit,
+            "gross_loss_usd": gross_loss,
             "realized_pnl_usd": realized_pnl,
             "open_positions": len(self.open_positions),
             "open_currently_winning": open_wins,
             "open_currently_losing": open_losses,
+            "open_profit_usd": open_profit,
+            "open_loss_usd": open_loss,
             "unrealized_pnl_usd": unrealized_total,
             "open_rows": open_rows,
+            # Combined view: closed trades + still-open positions marked
+            # to market, which is what "how many winners / losers do I
+            # have in total right now" actually means at shutdown.
+            "total_trades": len(closed) + len(self.open_positions),
+            "total_winning": len(wins) + open_wins,
+            "total_losing": len(losses) + open_losses,
+            "total_profit_usd": gross_profit + open_profit,
+            "total_loss_usd": gross_loss + open_loss,
             "starting_equity": self.starting_equity,
             "realized_equity": self.equity,
             "equity_incl_unrealized": self.equity + unrealized_total,
         }
+
+    def export_trades_csv(self, path: str) -> None:
+        rows = [
+            {
+                "symbol": t.symbol, "side": t.side, "status": "closed",
+                "entry": t.entry, "exit_or_last": t.exit_price,
+                "entry_time": t.entry_time, "exit_time": t.exit_time,
+                "reason": t.exit_reason, "pnl_usd": t.pnl_usd, "r_multiple": t.r_multiple,
+            }
+            for t in self.closed_trades
+        ]
+        for symbol, side, entry, price, unrealized in self.summary()["open_rows"]:
+            pos = self.open_positions[symbol]
+            rows.append({
+                "symbol": symbol, "side": side, "status": "open_at_shutdown",
+                "entry": entry, "exit_or_last": price,
+                "entry_time": pos.entry_time, "exit_time": pd.Timestamp.now(tz="UTC"),
+                "reason": "still_open", "pnl_usd": unrealized, "r_multiple": float("nan"),
+            })
+        if rows:
+            pd.DataFrame(rows).to_csv(path, index=False)
+            logger.info("Wrote %d trade rows to %s", len(rows), path)
 
 
 def print_summary(summary: dict) -> None:
@@ -313,22 +407,44 @@ def print_summary(summary: dict) -> None:
     print("PAPER TRADING SESSION SUMMARY")
     print("=" * 60)
     print(f"Starting virtual equity : ${summary['starting_equity']:.4f}")
-    print(f"Closed trades           : {summary['closed_trades']}"
-          f" (win {summary['closed_wins']} / loss {summary['closed_losses']})")
-    print(f"Realized P&L            : ${summary['realized_pnl_usd']:+.4f}")
-    print(f"Open positions now      : {summary['open_positions']}"
-          f" (currently winning {summary['open_currently_winning']}"
-          f" / currently losing {summary['open_currently_losing']})")
+
+    print("\n-- CLOSED TRADES (finished: hit TP or SL) " + "-" * 18)
+    print(f"  Trades closed         : {summary['closed_trades']}")
+    print(f"    winning             : {summary['closed_wins']}")
+    print(f"    losing              : {summary['closed_losses']}")
+    print(f"  Total profit          : ${summary['gross_profit_usd']:+.4f}")
+    print(f"  Total loss            : ${summary['gross_loss_usd']:+.4f}")
+    print(f"  Net realized P&L      : ${summary['realized_pnl_usd']:+.4f}")
+
+    print("\n-- STILL OPEN AT SHUTDOWN (marked to last price) " + "-" * 11)
+    print(f"  Positions open        : {summary['open_positions']}")
+    print(f"    currently winning   : {summary['open_currently_winning']}")
+    print(f"    currently losing    : {summary['open_currently_losing']}")
     for symbol, side, entry, price, unrealized in summary["open_rows"]:
-        print(f"    {symbol:10s} {side.upper():5s} entry={entry:.4f} last={price:.4f}"
+        print(f"      {symbol:10s} {side.upper():5s} entry={entry:.4f} last={price:.4f}"
               f" unrealized=${unrealized:+.4f}")
-    print(f"Unrealized P&L          : ${summary['unrealized_pnl_usd']:+.4f}")
-    print(f"Equity (realized only)  : ${summary['realized_equity']:.4f}")
-    print(f"Equity incl. unrealized : ${summary['equity_incl_unrealized']:.4f}")
+    print(f"  Unrealized profit     : ${summary['open_profit_usd']:+.4f}")
+    print(f"  Unrealized loss       : ${summary['open_loss_usd']:+.4f}")
+    print(f"  Net unrealized P&L    : ${summary['unrealized_pnl_usd']:+.4f}")
+
+    print("\n-- COMBINED (closed + still open) " + "-" * 26)
+    print(f"  Total trades          : {summary['total_trades']}")
+    print(f"    winning             : {summary['total_winning']}")
+    print(f"    losing              : {summary['total_losing']}")
+    print(f"  Total profit          : ${summary['total_profit_usd']:+.4f}")
+    print(f"  Total loss            : ${summary['total_loss_usd']:+.4f}")
+
+    print("\n-- EQUITY " + "-" * 50)
+    print(f"  Realized only         : ${summary['realized_equity']:.4f}")
+    print(f"  Incl. open positions  : ${summary['equity_incl_unrealized']:.4f}")
+    net = summary["equity_incl_unrealized"] - summary["starting_equity"]
+    pct = 100 * net / summary["starting_equity"] if summary["starting_equity"] else 0.0
+    print(f"  Net result            : ${net:+.4f}  ({pct:+.2f}%)")
     print("=" * 60)
 
 
-def run(starting_equity: float, poll_seconds: int = PRICE_POLL_SECONDS) -> None:
+def run(starting_equity: float, poll_seconds: int = PRICE_POLL_SECONDS,
+        trades_csv: str | None = None) -> None:
     setup_logging(CONFIG.log_level)
     exchange = BybitExchange(CONFIG)
     broker = PaperBroker(exchange, CONFIG, starting_equity)
@@ -355,8 +471,7 @@ def run(starting_equity: float, poll_seconds: int = PRICE_POLL_SECONDS) -> None:
             for symbol in CONFIG.symbols:
                 if symbol in broker.open_positions:
                     try:
-                        price = exchange.get_last_price(symbol)
-                        broker.manage_with_price(symbol, price)
+                        broker.manage_with_candles(symbol)
                     except Exception:
                         logger.exception("Error managing paper position for %s", symbol)
 
@@ -377,14 +492,21 @@ def run(starting_equity: float, poll_seconds: int = PRICE_POLL_SECONDS) -> None:
                 time.sleep(1)
     finally:
         print_summary(broker.summary())
+        if trades_csv:
+            try:
+                broker.export_trades_csv(trades_csv)
+            except Exception:
+                logger.exception("Failed to write trade log to %s", trades_csv)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Paper-trade against real Bybit market data")
     parser.add_argument("--equity", type=float, default=10.0, help="Starting virtual equity in USDT")
     parser.add_argument("--poll-seconds", type=int, default=PRICE_POLL_SECONDS)
+    parser.add_argument("--trades-csv", default=None,
+                        help="Write every trade (closed + open at shutdown) to this CSV")
     args = parser.parse_args()
-    run(starting_equity=args.equity, poll_seconds=args.poll_seconds)
+    run(starting_equity=args.equity, poll_seconds=args.poll_seconds, trades_csv=args.trades_csv)
 
 
 if __name__ == "__main__":

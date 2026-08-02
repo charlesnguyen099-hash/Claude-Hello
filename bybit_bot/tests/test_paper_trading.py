@@ -28,8 +28,11 @@ class FakeExchange:
         self.df_1h = df_1h
         self.now: pd.Timestamp | None = None
         self.price_override: float | None = None
+        self.klines_override: pd.DataFrame | None = None
 
     def get_klines(self, symbol, timeframe, limit=300):
+        if self.klines_override is not None and timeframe == "1m":
+            return self.klines_override.tail(limit).reset_index(drop=True)
         src = self.df_1m if timeframe == "1m" else self.df_1h
         return src[src["datetime"] <= self.now].tail(limit).reset_index(drop=True)
 
@@ -122,3 +125,92 @@ def test_paper_broker_tp1_then_trailing_and_summary():
     assert final["closed_trades"] == 1
     assert final["closed_wins"] == 1
     assert final["realized_pnl_usd"] > 0
+
+
+def test_intrabar_wick_triggers_stop_even_if_candle_closes_safe():
+    """A wick that touches the stop and retraces must still stop us out.
+
+    Polling `get_last_price` every N seconds can step right over such a
+    wick; a real stop order on the exchange would not. manage_with_candles
+    scans candle high/low, so it catches it.
+    """
+    df_1m, df_1h = _load_1m_and_1h()
+    fake = FakeExchange(df_1m, df_1h)
+    config = Config(symbols=["BTCUSDT"])
+    broker = PaperBroker(fake, config, starting_equity=10_000.0)
+
+    fake.now = pd.Timestamp("2026-01-21 16:57:00")
+    broker.try_open("BTCUSDT")
+    pos = broker.open_positions["BTCUSDT"]
+    assert pos.side == "short"  # stop sits ABOVE entry
+
+    # One candle whose high pierces the stop but whose close is back at
+    # entry -- i.e. exactly the case a last-price poll would miss.
+    spike = pd.DataFrame([
+        {"datetime": pd.Timestamp("2026-01-21 16:58:00"), "open": pos.entry,
+         "high": pos.stop + 1.0, "low": pos.entry, "close": pos.entry, "volume": 1.0},
+        {"datetime": pd.Timestamp("2026-01-21 16:59:00"), "open": pos.entry,
+         "high": pos.entry, "low": pos.entry, "close": pos.entry, "volume": 1.0},
+    ])
+    fake.klines_override = spike
+
+    # Sanity: the "current price" never leaves entry, so a price-only
+    # check sees nothing wrong.
+    broker.manage_with_price("BTCUSDT", pos.entry)
+    assert "BTCUSDT" in broker.open_positions
+
+    broker.manage_with_candles("BTCUSDT")
+    assert "BTCUSDT" not in broker.open_positions
+    assert broker.closed_trades[0].exit_reason == "stop_loss"
+
+
+def test_summary_combines_closed_and_open_counts():
+    df_1m, df_1h = _load_1m_and_1h()
+    fake = FakeExchange(df_1m, df_1h)
+    config = Config(symbols=["BTCUSDT"])
+    broker = PaperBroker(fake, config, starting_equity=10.0)
+
+    fake.now = pd.Timestamp("2026-01-21 16:57:00")
+    broker.try_open("BTCUSDT")
+    pos = broker.open_positions["BTCUSDT"]
+
+    # Close one trade at a loss.
+    broker.manage_with_price("BTCUSDT", pos.stop)
+    assert len(broker.closed_trades) == 1
+
+    # Re-open and leave it open, in profit (SHORT -> price below entry).
+    fake.now = pd.Timestamp("2026-01-21 16:57:00")
+    broker.try_open("BTCUSDT")
+    open_pos = broker.open_positions["BTCUSDT"]
+    fake.price_override = open_pos.entry * 0.99
+
+    s = broker.summary()
+    assert s["closed_trades"] == 1 and s["closed_losses"] == 1
+    assert s["open_positions"] == 1 and s["open_currently_winning"] == 1
+    # Combined view spans both.
+    assert s["total_trades"] == 2
+    assert s["total_winning"] == 1
+    assert s["total_losing"] == 1
+    assert s["gross_loss_usd"] < 0
+    assert s["open_profit_usd"] > 0
+    assert s["total_profit_usd"] == s["gross_profit_usd"] + s["open_profit_usd"]
+
+
+def test_export_trades_csv_includes_open_positions(tmp_path):
+    df_1m, df_1h = _load_1m_and_1h()
+    fake = FakeExchange(df_1m, df_1h)
+    config = Config(symbols=["BTCUSDT"])
+    broker = PaperBroker(fake, config, starting_equity=10.0)
+
+    fake.now = pd.Timestamp("2026-01-21 16:57:00")
+    broker.try_open("BTCUSDT")
+    pos = broker.open_positions["BTCUSDT"]
+    broker.manage_with_price("BTCUSDT", pos.stop)
+    fake.now = pd.Timestamp("2026-01-21 16:57:00")
+    broker.try_open("BTCUSDT")
+
+    out = tmp_path / "trades.csv"
+    broker.export_trades_csv(str(out))
+    rows = pd.read_csv(out)
+    assert set(rows["status"]) == {"closed", "open_at_shutdown"}
+    assert len(rows) == 2

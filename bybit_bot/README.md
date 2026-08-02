@@ -27,6 +27,63 @@ all-in on any single trade, on purpose:
 Defaults are `BYBIT_TESTNET=true` and `DRY_RUN=true` — the bot will not
 place a single real order until you deliberately change both in `.env`.
 
+## "Just find the profitable trades in past data and trade them"
+
+This was requested directly, with the reasoning that it *cannot* lose.
+`research/hindsight_proof.py` implements exactly that procedure and runs
+it on both years. Run it yourself: `python3 -m research.hindsight_proof`.
+
+**Part A — the claim is correct.** Selecting trades by looking ahead and
+keeping only the moves that beat fees produces, on real BTCUSDT data:
+
+| year | hold | trades | win rate | return |
+|------|------|--------|----------|--------|
+| 2026 | 15m  | 9,708  | **100.000%** | +3.5e24 % |
+| 2026 | 60m  | 4,239  | **100.000%** | +7.1e19 % |
+| 2025 | 15m  | 16,029 | **100.000%** | +6.4e36 % |
+| 2025 | 60m  | 7,216  | **100.000%** | +2.3e30 % |
+
+Not 99%. Exactly 100%, every time, both years. So the intuition is not
+wrong — on data whose outcome is already known, a losing trade is
+impossible by construction.
+
+**Part B — but those trades cannot be identified before they happen.**
+That is the whole problem, and it is testable rather than a matter of
+opinion. Part A's selector reads future candles; a live bot cannot. So
+Part B tries to reproduce Part A's picks from past-only information:
+
+*B1 — exhaustive rule search.* Thousands of EMA/RSI/volume rule
+combinations (both directions), scored on one year, best one carried to
+the other year:
+
+| trained | best rule found | in-sample | out-of-sample |
+|---------|-----------------|-----------|---------------|
+| 2025 | ema12/200, rsi 40-60, vol>1.5 | -1237.89% | **-784.69%** (2026) |
+| 2026 | ema9/21, rsi 40-60, vol>1.5   | -723.87%  | **-1248.57%** (2025) |
+
+The *best rule out of thousands* is already negative on the very data it
+was picked on, once fees and non-overlapping trades are enforced.
+
+*B2 — machine learning on Part A's own labels.* Logistic regression, 26
+backward-looking features (returns over 7 horizons, 5 EMA distances,
+RSI, ATR, volatility ratios, volume ratios, range position, time-of-day,
+streak), trained directly on the 100%-accurate labels:
+
+| train → test | in-sample accuracy | out-of-sample accuracy | avg net/trade |
+|--------------|--------------------|------------------------|---------------|
+| 2025 → 2026 | 52.10% | **51.03%** | -0.2055% |
+| 2026 → 2025 | 53.62% | **51.16%** | -0.2164% |
+| 2025 → 2026 (4h) | 52.52% | **49.89%** | -0.2209% |
+| 2026 → 2025 (4h) | 54.24% | **50.91%** | -0.2217% |
+
+Out-of-sample accuracy lands on ~50-51% — a coin flip. And note the last
+column: even at 51% accuracy the average trade still loses ~0.21%,
+because the round-trip cost is 0.21%. Being right slightly more often
+than chance does not help when the wins are the same size as the losses.
+**That gap — 100% on known data, ~50% on unknown data — is the entire
+reason a 100%-accurate bot cannot be built, and it is measured here, not
+asserted.**
+
 ## Statistical foundation: what the raw data actually shows
 
 Before picking any indicator, the raw 1-minute return series for both
@@ -343,16 +400,42 @@ python -m bot.paper_trading --equity 10
 - `--equity` sets the starting virtual balance (default 10, i.e. $10 as
   requested — see the note below on what that does and doesn't prove).
 - Entries are checked on every newly-closed **1-minute** candle
-  (`SIGNAL_POLL_SECONDS = 60`), matching the live scanner. Open positions
-  are additionally checked against the **live last price** every 15
-  seconds (`PRICE_POLL_SECONDS`) for stop/TP1/TP2 fills — faster than
-  waiting for the next candle close.
-- Stop with Ctrl+C at any point. It prints a full session summary:
-  closed trades (count, wins, losses, realized P&L) **and** currently
-  open positions (count, how many are currently winning vs. losing right
-  now, unrealized P&L per position and in total), plus the combined
-  realized + unrealized total — covering both what already happened and
-  what's still in flight, as requested.
+  (`SIGNAL_POLL_SECONDS = 60`), matching the live scanner.
+- Open positions are checked every 15 seconds (`PRICE_POLL_SECONDS`), and
+  the check scans the **high/low range of every 1m candle since the last
+  check**, not just the price at that instant. This matters: a real
+  TP/SL order rests on the exchange book and fires the moment price
+  *touches* it, so sampling the last price every 15s would silently skip
+  fast wicks that touched a stop and retraced — which flatters results by
+  discarding losses that really happened. Same-candle ambiguity (stop and
+  target both inside one bar) resolves in favour of the stop, identical
+  to `backtest/engine.py`, so paper mode never looks better than the
+  backtest for accounting reasons alone.
+- Stop with Ctrl+C at any point. It prints a full session summary in
+  three blocks: **closed trades** (count, winners, losers, total profit,
+  total loss, net realized), **still open at shutdown** (count, how many
+  are currently winning vs. losing, unrealized profit/loss per position
+  and in total), and **combined** (closed + open together — total
+  trades, total winners, total losers, total profit, total loss), plus
+  final equity with and without open positions.
+- `--trades-csv trades.csv` additionally writes every trade to CSV, with
+  a `status` column marking each row `closed` or `open_at_shutdown`.
+
+### Seeing the output without waiting for live trades
+
+The strategy is deliberately selective (14 entries across all of 2026),
+so a freshly started live session can easily run for hours with nothing
+to show. `bot/replay.py` feeds historical candles through the *same*
+`PaperBroker`, one 1m candle at a time with no lookahead, so you can see
+the exact session summary immediately:
+
+```bash
+python -m bot.replay data/BTCUSDT_2026.csv --equity 10 --candles 9000 --warmup 27000
+```
+
+This is not a substitute for `backtest/run_backtest.py` (which is far
+faster and covers whole years) — its purpose is to exercise the live
+code path and show the live summary format.
 
 **Why it ignores Bybit's real minimum order size**: paper trading never
 submits a real order, so there's no real lot-size constraint to respect.
@@ -369,16 +452,24 @@ key is required to run this — but it does need real outbound access to
 `api.bybit.com` (or `api-testnet.bybit.com` if `BYBIT_TESTNET=true`).
 This is a genuine, confirmed environment limitation, not a code issue:
 the sandbox this bot was built in runs its outbound traffic through a
-policy-enforcing proxy that returns a `403` (policy denial) specifically
-for `api.bybit.com` — checked directly (`curl` to the kline endpoint,
-and the proxy's own status log) rather than assumed. `curl -sS
-http://127.0.0.1:39861/__agentproxy/status` in that environment shows
-the exact rejected host if you want to see it yourself. Because of that,
-this mode could not be end-to-end tested from here;
-`tests/test_paper_trading.py` and `tests/test_scanner.py` cover the
+policy-enforcing proxy that returns a `403` (policy denial) for
+`api.bybit.com`, `api-testnet.bybit.com`, `api.bytick.com` and
+`stream.bybit.com` alike — checked directly (`curl` to the kline
+endpoint, plus the proxy's own status log naming the rejected host)
+rather than assumed. `curl -sS "$HTTPS_PROXY/__agentproxy/status"` in
+that environment shows the rejection if you want to see it yourself.
+
+Because of that, **the live network path specifically could not be
+exercised from here** — that one step needs a machine with real outbound
+access to Bybit. Everything downstream of the network call *is* tested:
+`tests/test_paper_trading.py` and `tests/test_scanner.py` drive the
 fill/fee/signal/summary logic against a fake exchange fed real
-historical data instead — run `paper_trading.py` itself in an
-environment with real internet access to Bybit.
+historical candles (including a test that a stop-piercing wick which
+closes back at entry still stops the position out), and `bot/replay.py`
+runs the entire live loop end-to-end on historical data. So run
+`python -m bot.paper_trading --equity 10` on your own machine and it
+should work — but treat the first live session as the real
+confirmation, since the HTTP layer itself is the one untested link.
 
 **Why the kline fetch paginates**: the slower indicators (EMA span=315
 on 1m bars) need several thousand 1-minute candles of history to
@@ -399,11 +490,16 @@ bot/
   exchange_bybit.py   pybit v5 REST wrapper (klines, tickers, orders, stop management)
   scanner.py          Per-symbol signal evaluation + open-position management (live)
   paper_trading.py    Same logic against real-time data, virtual account, no real orders
+  replay.py           Drives paper_trading's broker over historical candles (no network)
   config.py           .env-driven configuration
   main.py              Poll loop entrypoint (live bot)
 backtest/
   engine.py            Bar-by-bar backtest engine (fees, slippage, funding, sizing)
   run_backtest.py      CLI report
+research/
+  hindsight_proof.py   Why "find profitable past trades and trade them" can't be
+                       turned into a bot: 100% win rate with lookahead vs ~50%
+                       accuracy without it, measured on both years
 data/
   BTCUSDT_2026.csv     Jan-Aug 2026 dataset (307k candles)
   BTCUSDT_2025.csv     Full year 2025 dataset (526k candles, out-of-sample validation)

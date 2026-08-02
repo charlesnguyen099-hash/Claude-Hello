@@ -94,13 +94,14 @@ def fetch_klines(symbol, start_ms, end_ms):
         for row in raw:
             ts = int(row[0])
             if start_ms <= ts < end_ms:
+                dt_str = datetime.utcfromtimestamp(ts / 1000).strftime("%Y-%m-%d %H:%M:%S")
                 all_rows[ts] = {
-                    "timestamp_ms": ts,
-                    "open":   row[1],
-                    "high":   row[2],
-                    "low":    row[3],
-                    "close":  row[4],
-                    "volume": row[5],
+                    "datetime": dt_str,
+                    "open":     row[1],
+                    "high":     row[2],
+                    "low":      row[3],
+                    "close":    row[4],
+                    "volume":   row[5],
                 }
 
         # Nếu đã lấy đến hoặc vượt qua start_ms thì đủ rồi
@@ -118,7 +119,7 @@ def save_csv(symbol, rows, date, out_dir):
     os.makedirs(out_dir, exist_ok=True)
     fname = os.path.join(out_dir, "{}_{}.csv".format(symbol, date.strftime("%Y-%m-%d")))
     with open(fname, "w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=["timestamp_ms", "open", "high", "low", "close", "volume"])
+        w = csv.DictWriter(f, fieldnames=["datetime", "open", "high", "low", "close", "volume"])
         w.writeheader()
         w.writerows(rows)
     return fname

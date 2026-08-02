@@ -1,8 +1,8 @@
 """Integration test for bot/scanner.py against a fake exchange (no
-network) fed from the real BTCUSDT July dataset used for the backtest, to
-prove the live wiring (fetch -> signal -> risk plan -> order calls ->
-trailing-stop management) reaches the exact same entry the backtest
-found, without hitting Bybit at all.
+network) fed from the real BTCUSDT Jan-Aug 2026 dataset used for the
+backtest, to prove the live wiring (fetch -> signal -> risk plan ->
+order calls -> trailing-stop management) reaches the exact same entry
+the backtest found, without hitting Bybit at all.
 """
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ import pandas as pd
 from bot.config import Config
 from bot.scanner import Scanner
 
-CSV_PATH = "data/BTCUSDT_202607.csv"
+CSV_PATH = "data/BTCUSDT_2026.csv"
 
 
 def _load_resampled():
@@ -69,10 +69,10 @@ def test_scanner_opens_the_same_trade_the_backtest_found():
     config = Config(symbols=["BTCUSDT"], max_concurrent_positions=4, equity_override_usdt=10_000.0)
     scanner = Scanner(exchange=fake, config=config)
 
-    # Backtest found a LONG entry on BTCUSDT at 2026-07-10 01:45:00 (see
+    # Backtest found a LONG entry on BTCUSDT at 2026-01-14 13:15:00 (see
     # backtest/run_backtest.py output). Advance the fake clock to just
     # after that bar closes and run one scan.
-    fake.now = pd.Timestamp("2026-07-10 02:00:00")  # +1 bar so it's not "still forming"
+    fake.now = pd.Timestamp("2026-01-14 13:30:00")  # +1 bar so it's not "still forming"
     scanner.run_once()
 
     assert "BTCUSDT" in scanner.open_positions
@@ -87,7 +87,7 @@ def test_scanner_does_not_open_when_no_signal():
     config = Config(symbols=["BTCUSDT"], max_concurrent_positions=4, equity_override_usdt=10_000.0)
     scanner = Scanner(exchange=fake, config=config)
 
-    fake.now = pd.Timestamp("2026-07-05 00:15:00")
+    fake.now = pd.Timestamp("2026-01-03 00:15:00")  # HTF EMA200 not warmed up yet
     scanner.run_once()
 
     assert "BTCUSDT" not in scanner.open_positions
@@ -100,7 +100,7 @@ def test_scanner_moves_stop_to_breakeven_after_tp1():
     config = Config(symbols=["BTCUSDT"], max_concurrent_positions=4, equity_override_usdt=10_000.0)
     scanner = Scanner(exchange=fake, config=config)
 
-    fake.now = pd.Timestamp("2026-07-10 02:00:00")
+    fake.now = pd.Timestamp("2026-01-14 13:30:00")
     scanner.run_once()
     assert "BTCUSDT" in scanner.open_positions
 

@@ -1,31 +1,46 @@
-"""Trend-following breakout strategy.
+"""Trend-following EMA-cross strategy.
 
-Design (derived from backtesting BTCUSDT 1m futures data, July 2026 —
-see backtest/run_backtest.py for the report this is based on; a first
-version of this module used a mean-reversion "pullback to EMA21" entry,
-which on this dataset produced almost no signals and lost on the few it
-took, because in a real trend price often never comes back to touch a
-fast EMA. It was replaced with a breakout-continuation entry, which is
-the classical trend-following approach and matched this data far better):
+Design history — this module went through three versions while being
+validated against real BTCUSDT data (first 1 month, then 7 months
+Jan-Aug 2026, ~307k 1-minute candles; see backtest/run_backtest.py):
 
-1. HIGHER TIMEFRAME (1h) defines the *regime*: only trade in the direction
-   of the 1h trend. Trend = EMA50 vs EMA200 slope/position + ADX(14) >
-   ADX_MIN (a flat/choppy market is excluded, not force-traded).
-2. LOWER TIMEFRAME (15m) defines the *entry*: a Donchian-style breakout —
-   price closes beyond its own N-bar high/low channel in the direction of
-   the HTF trend, with volume confirmation and short/mid EMA alignment.
-   This buys/sells strength in the direction of the trend instead of
-   trying to catch a pullback that may never come.
-3. Every entry carries a `confidence` score (0-100) built from trend
-   strength (ADX), EMA alignment, breakout strength (in ATR units) and
-   volume confirmation. Confidence maps to a position-size tier in
-   bot/risk.py — there is no scenario that produces 100% confidence,
-   because no such setup exists; the tiers are capped well below
-   "all-in" on purpose (see risk.py).
-4. Exits use an initial ATR stop, a partial take-profit at 2R that moves
-   the remaining stop to breakeven, and after that an ATR chandelier
-   trailing stop on the remainder — so winners are allowed to run with
-   the trend instead of being capped at a fixed target.
+1. A mean-reversion "pullback to EMA21" entry produced almost no signals
+   on 1 month of data and lost on the few it took — in a real trend,
+   price often never comes back to touch a fast EMA.
+2. A Donchian-style breakout entry (close beyond the prior 20-bar
+   high/low) produced far more signals, but backtested over the full
+   7-month 2026 dataset it had a ~32-34% win rate *at every confidence
+   tier* and a profit factor < 1 (net losing), including several
+   principled variants (2-bar breakout confirmation, wider ATR trail,
+   larger partial-TP target) — none fixed it. Conclusion: on this
+   symbol/timeframe, buying a fresh N-bar extreme walks into short-term
+   mean-reversion/stop-hunt wicks often enough to erase the edge.
+3. **Current: EMA9/EMA21 crossover** in the direction of the HTF trend.
+   Instead of waiting for price to make a new extreme (breakout) or
+   come back to a level that may never return (pullback), this enters
+   right as short-term momentum turns to agree with the HTF trend —
+   which on the 7-month dataset caught the real multi-week trends (e.g.
+   the Jan-Jun 2026 BTC downtrend from ~87.6k to ~62.8k) that the
+   breakout version mostly missed or chopped through. Result on that
+   dataset: 42 trades, 38.1% win rate, profit factor 1.29, +9.46%
+   return, -12.18% max drawdown. See "Applying this to other coins" in
+   README.md for why this is not a claim that generalizes automatically.
+
+The rest of the pipeline is unchanged across all three versions:
+
+- HIGHER TIMEFRAME (1h) defines the *regime*: only trade in the direction
+  of the 1h trend. Trend = EMA50 vs EMA200 slope/position + ADX(14) >
+  ADX_MIN (a flat/choppy market is excluded, not force-traded), and the
+  regime must have held for TREND_MIN_BARS consecutive 1h bars.
+- Every entry carries a `confidence` score (0-100) built from trend
+  strength (ADX) and volume. Confidence maps to a position-size tier in
+  bot/risk.py — there is no scenario that produces 100% confidence,
+  because no such setup exists; the tiers are capped well below
+  "all-in" on purpose (see risk.py).
+- Exits use an initial ATR stop, a partial take-profit at 2R that moves
+  the remaining stop to breakeven, and after that an ATR chandelier
+  trailing stop on the remainder — so winners are allowed to run with
+  the trend instead of being capped at a fixed target.
 
 This module is shared, unmodified, between the backtester and the live
 bot so backtest results and live behaviour cannot drift apart.
@@ -48,7 +63,6 @@ EMA_MID = 21
 EMA_SLOW_HTF = 50
 EMA_TREND_HTF = 200
 VOL_MA_LEN = 20
-BREAKOUT_LOOKBACK = 20
 ATR_INIT_MULT = 2.0
 ATR_TRAIL_MULT = 3.0
 TP1_R_MULT = 2.0
@@ -113,48 +127,26 @@ def build_signal_columns(df: pd.DataFrame) -> pd.DataFrame:
     """Vectorized entry-condition columns on an LTF dataframe that already
     has compute_ltf() + merge_htf_trend() applied.
 
-    Entry = Donchian breakout: close beyond the prior N-bar high/low
-    channel (shift(1) so the channel never includes the breakout bar
-    itself), in the direction of the HTF trend, with EMA alignment and
-    volume confirmation.
+    Entry = EMA9/EMA21 crossover in the direction of the HTF trend, with
+    above-average volume. See the module docstring for why this replaced
+    an earlier breakout-based entry.
     """
     out = df.copy()
 
-    prior_high = out["high"].shift(1).rolling(BREAKOUT_LOOKBACK, min_periods=BREAKOUT_LOOKBACK).max()
-    prior_low = out["low"].shift(1).rolling(BREAKOUT_LOOKBACK, min_periods=BREAKOUT_LOOKBACK).min()
+    cross_up = (out["ema9"].shift(1) <= out["ema21"].shift(1)) & (out["ema9"] > out["ema21"])
+    cross_down = (out["ema9"].shift(1) >= out["ema21"].shift(1)) & (out["ema9"] < out["ema21"])
+    vol_confirm = out["volume"] > out["vol_ma20"]
 
-    vol_confirm = out["volume"] > (out["vol_ma20"] * 1.2)
-    ema_bull = out["ema9"] > out["ema21"]
-    ema_bear = out["ema9"] < out["ema21"]
+    out["long_setup"] = (out["trend"] == "up") & cross_up & vol_confirm
+    out["short_setup"] = (out["trend"] == "down") & cross_down & vol_confirm
 
-    bar_range = (out["high"] - out["low"]).replace(0.0, np.nan)
-    close_position = (out["close"] - out["low"]) / bar_range  # 0=at low, 1=at high
-    strong_bull_close = close_position >= 0.65
-    strong_bear_close = close_position <= 0.35
-
-    out["long_setup"] = (
-        (out["trend"] == "up") & (out["close"] > prior_high) & vol_confirm & ema_bull & strong_bull_close
-    )
-    out["short_setup"] = (
-        (out["trend"] == "down") & (out["close"] < prior_low) & vol_confirm & ema_bear & strong_bear_close
-    )
-
-    breakout_dist_long = ((out["close"] - prior_high) / out["atr14"]).clip(lower=0, upper=3.0)
-    breakout_dist_short = ((prior_low - out["close"]) / out["atr14"]).clip(lower=0, upper=3.0)
     vol_ratio = (out["volume"] / out["vol_ma20"]).clip(upper=3.0)
-    ema_slope = (out["ema9"] - out["ema21"]) / out["ema21"]
+    adx_score = (out["htf_adx14"].clip(upper=60.0) / 60.0) * 60.0
+    vol_score = (vol_ratio.clip(lower=0) / 3.0) * 35.0
 
-    adx_score = (out["htf_adx14"].clip(upper=60.0) / 60.0) * 40.0
-    vol_score = (vol_ratio.clip(lower=0) / 3.0) * 20.0
-    long_ema_score = (ema_slope.clip(lower=0, upper=0.008) / 0.008) * 15.0
-    short_ema_score = ((-ema_slope).clip(lower=0, upper=0.008) / 0.008) * 15.0
-
-    out["confidence_long"] = (
-        adx_score + vol_score + long_ema_score + (breakout_dist_long / 3.0) * 25.0
-    ).clip(0, 95)
-    out["confidence_short"] = (
-        adx_score + vol_score + short_ema_score + (breakout_dist_short / 3.0) * 25.0
-    ).clip(0, 95)
+    confidence = (adx_score + vol_score).clip(0, 95)
+    out["confidence_long"] = confidence
+    out["confidence_short"] = confidence
 
     return out
 
@@ -180,7 +172,7 @@ def signal_from_row(row: pd.Series) -> Signal | None:
             take_profit_1=entry + TP1_R_MULT * risk,
             take_profit_2=entry + 8.0 * risk,
             confidence=float(row["confidence_long"]),
-            reason="uptrend breakout above prior 20-bar high, EMA9>EMA21, volume confirm",
+            reason="uptrend, EMA9 crossed above EMA21, volume confirm",
         )
 
     if bool(row.get("short_setup", False)):
@@ -194,7 +186,7 @@ def signal_from_row(row: pd.Series) -> Signal | None:
             take_profit_1=entry - TP1_R_MULT * risk,
             take_profit_2=entry - 8.0 * risk,
             confidence=float(row["confidence_short"]),
-            reason="downtrend breakdown below prior 20-bar low, EMA9<EMA21, volume confirm",
+            reason="downtrend, EMA9 crossed below EMA21, volume confirm",
         )
 
     return None

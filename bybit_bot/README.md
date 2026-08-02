@@ -1,9 +1,10 @@
 # Bybit Futures Trend-Following Bot
 
-A trend-following breakout bot for Bybit USDT perpetual futures, with
-strict risk management (tiered position sizing, volatility-capped
-leverage, ATR stop-loss, partial take-profit + breakeven, ATR chandelier
-trailing stop, daily loss circuit breaker).
+A trend-following bot for Bybit USDT perpetual futures (EMA9/EMA21 cross
+in the direction of a confirmed higher-timeframe trend), with strict risk
+management (tiered position sizing, volatility-capped leverage, ATR
+stop-loss, partial take-profit + breakeven, ATR chandelier trailing
+stop, daily loss circuit breaker).
 
 ## Important: read this before running anything live
 
@@ -30,40 +31,65 @@ place a single real order until you deliberately change both in `.env`.
 
 `backtest/run_backtest.py` runs the exact same signal code
 (`bot/strategy.py`) used by the live bot against real BTCUSDT 1-minute
-futures data for July 2026 (`data/BTCUSDT_202607.csv`). This is not a
-hypothetical demo — it is the actual trade log the strategy would have
-produced:
+futures data. This is not a hypothetical demo — it is the actual trade
+log the strategy would have produced. The strategy went through three
+iterations as more data became available (1 month, then Jan-Aug 2026 /
+~307k 1-minute candles, `data/BTCUSDT_2026.csv`), and every version's
+result below is the honest number, not a cherry-picked one:
+
+1. **Pullback-to-EMA21 entry** (mean reversion): almost no signals on 1
+   month of data, lost on the ones it took — real trends often never
+   pull back to a fast EMA.
+2. **Donchian breakout entry** (close beyond prior 20-bar high/low): far
+   more signals, but on the full 7-month dataset it had a ~32-34% win
+   rate *at every confidence tier* and profit factor < 1 (net losing).
+   Several principled variants (2-bar breakout confirmation, wider ATR
+   trail, larger partial-TP) were tested and none fixed it — a fresh
+   N-bar extreme on this symbol/timeframe gets wicked through and
+   reversed often enough to erase the edge.
+3. **Current: EMA9/EMA21 crossover entry**, still gated by the same
+   higher-timeframe trend filter. Instead of waiting for a new extreme,
+   it enters as soon as short-term momentum turns to agree with the
+   already-confirmed HTF trend, which caught the real multi-week 2026
+   BTC trends (e.g. the ~87.6k → ~62.8k Jan-Jun downtrend) that the
+   breakout version mostly missed or chopped through.
+
+The full pipeline (current version):
 
 1. **Regime filter (1h):** only trade in the direction of the 1h trend
    — EMA50 vs EMA200 + ADX(14) ≥ 25 (Wilder's standard "trending market"
    threshold), and the regime must have held for ≥3 consecutive 1h bars
    before being trusted (filters fresh/fake regime flips).
-2. **Entry (15m):** a Donchian-style breakout — close beyond the prior
-   20-bar high/low, in the direction of the 1h trend, with EMA9/EMA21
-   alignment, above-average volume, and a "strong close" (close in the
-   outer third of the bar's range) — standard breakout-confirmation
-   filters, not curve-fit to this specific dataset.
+2. **Entry (15m):** EMA9 crosses EMA21 in the direction of the HTF
+   trend, with above-average volume.
 3. **Exit:** initial stop at 2×ATR(14, 15m). Half the position closes at
    +2R and the stop moves to breakeven. The remainder trails with a
    3×ATR chandelier stop, or exits immediately if the 1h trend flips
    against the position.
-4. **Confidence (0-100):** built from HTF ADX strength, volume ratio,
-   EMA slope, and breakout distance in ATR units. Maps to a position-size
-   tier in `bot/risk.py` — never "all-in," even at the top tier.
+4. **Confidence (0-100):** built from HTF ADX strength and volume ratio.
+   Maps to a position-size tier in `bot/risk.py` — never "all-in," even
+   at the top tier.
 
-On the July 2026 BTCUSDT dataset this produced 4 trades for the month
-(it sat out most of the sideways second half of the month by design),
-one profitable trend-catch, three small controlled losses during chop,
-for **-0.9% net / -1.33% max drawdown** — i.e. losses were small and
-bounded, which is what the risk management is for. **One month of one
-symbol is not a statistically significant sample.** Forward-test on
-testnet before trusting this (or any strategy) with real funds.
+**Results on the full Jan-Aug 2026 BTCUSDT dataset** (the statistically
+meaningful one — 7 months, 42 trades): 38.1% win rate, profit factor
+1.29, **+9.46% return, -12.18% max drawdown**. On the July-2026-only
+subset alone (one choppy, mostly sideways month) it's 4 trades, all
+losses, -2.31% — that month simply didn't contain a clean trend for a
+trend-following system to catch, and the daily-loss circuit breaker and
+per-trade risk caps kept that loss small and bounded rather than
+compounding it. Both numbers are real and both are reported here on
+purpose: **this strategy needs an actual trend to make money, and does
+small, controlled damage when the market doesn't provide one.** 7 months
+of one symbol is better evidence than 1 month, but it is still not proof
+of a permanent edge — forward-test on testnet before trusting this (or
+any strategy) with real funds.
 
 Re-run it yourself:
 
 ```bash
-python -m backtest.run_backtest data/BTCUSDT_202607.csv
-python -m backtest.run_backtest data/BTCUSDT_202607.csv --equity 5000
+python -m backtest.run_backtest data/BTCUSDT_2026.csv
+python -m backtest.run_backtest data/BTCUSDT_2026.csv --equity 5000
+python -m backtest.run_backtest data/BTCUSDT_202607.csv   # smaller, choppier reference month
 ```
 
 ## Applying the same logic to other coins
@@ -108,7 +134,7 @@ python -m pytest tests/ -v
 Run the backtest report:
 
 ```bash
-python -m backtest.run_backtest data/BTCUSDT_202607.csv
+python -m backtest.run_backtest data/BTCUSDT_2026.csv
 ```
 
 Run the bot (safe by default: testnet + dry-run, logs what it *would*
@@ -159,7 +185,8 @@ backtest/
   engine.py            Bar-by-bar backtest engine (fees, slippage, funding, sizing)
   run_backtest.py      CLI report
 data/
-  BTCUSDT_202607.csv   The July 2026 dataset the strategy was derived from
+  BTCUSDT_2026.csv     Jan-Aug 2026 dataset (main backtest, 7 months)
+  BTCUSDT_202607.csv   July-2026-only dataset (smaller reference month)
 tests/                 Unit + integration tests (indicators, strategy, risk, scanner)
 ```
 

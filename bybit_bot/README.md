@@ -27,6 +27,58 @@ all-in on any single trade, on purpose:
 Defaults are `BYBIT_TESTNET=true` and `DRY_RUN=true` — the bot will not
 place a single real order until you deliberately change both in `.env`.
 
+## The strongest model built here, and how it failed
+
+The sharpest version of the "trade every case correctly" idea is this:
+ten falling candles are a short, but days later the same shape with a
+different volume rhythm — different volume *differences between
+consecutive candles* — is a different trend, and the bot should tell
+those apart. That distinction is real, and nothing in the earlier
+studies here tested it: they all described volume as a *level* (this
+candle against a moving average), never as a *rhythm*.
+
+`research/deep_market_model.py` was built specifically around it — 73
+features including candle-to-candle volume ratios over the last 10 bars,
+the share of window volume that traded on down candles versus up ones,
+volume and return acceleration between window halves, return/volume
+correlation — fed to gradient-boosted regression trees (120 trees, depth
+6, written directly against numpy since scikit-learn is unavailable
+here). Depth 6 carves up to 64 sub-cases per tree, which is what
+"handle each small case" requires without memorising prices. The label
+is the realised net return of a real trade: 2 ATR stop, 4 ATR target,
+120-minute time exit, fees charged, stop taken first on ambiguous bars.
+
+**The model does learn.** In-sample fit correlation is +0.26 to +0.32,
+so volume rhythm genuinely does relate to trade outcome within a year.
+Win rate rises with selectivity too — in one cell, from 40.78% at the
+top 5% of predictions to 55.47% at the top 0.1% — so the ranking is not
+meaningless.
+
+**It just does not transfer.** Out-of-sample correlation across all four
+runs: **+0.0100, +0.0113, +0.0129, +0.0145**. Fifteen of sixteen
+selections lost money on unseen data.
+
+The sixteenth is the interesting one, and `research/verify_positive_cell.py`
+exists because it deserved a real test rather than a dismissal:
+
+| test | result | t |
+|------|--------|---|
+| the cell: 2026 model → 2025 data, top 0.1% | **+0.2577%** over 521 trades | +3.86 |
+| its mirror: 2025 model → 2026 data | **-0.2217%** over 306 trades | -3.30 |
+| fresh split: 2025 H1 → 2025 H2 | **-0.8945%** over 260 trades | -9.90 |
+| fresh split: 2026 H1 → 2026 H2 | **-0.3212%** over 153 trades | -3.12 |
+
+Taken alone the cell is significant at t=+3.86. Three independent tests
+contradict it, all significant, all negative. Note what the mirror does:
+it does not merely fail to repeat, it flips sign *significantly*. That is
+the signature of a model fitting one year's quirks — the learned rule is
+not absent on new data, it is actively wrong there. And with sixteen
+cells examined, the chance one clears t=2 on luck alone is about 56%.
+
+So the answer to "the same shape with a different volume rhythm is a
+different trend" is: **true within a year, and it does not carry to the
+next one.** The relationship is real and it is not stable.
+
 ## The clearest result: the patterns do predict — by less than the fee
 
 This one is worth reading before anything else, because it is the most
@@ -564,7 +616,15 @@ research/
                        now. Measures the adverse excursion (median ~17.5% at 25x)
   pullback_sweep.py    Entry-pullback depth swept through the real engine
   filter_sweep.py      How many trades the entry gates discard, and whether the
-                       discarded ones would have made money
+                       discarded ones would have made money. Also how the dead
+                       RSI filter was found
+  general_logic.py     Coarse regime cells learned from realised trade returns,
+                       plus the fee-sensitivity sweep down to zero cost
+  billion_rules.py     One rule per profitable bar, nothing combined; 100%
+                       in-sample, ~fee-negative everywhere else
+  deep_market_model.py 73 volume-rhythm features + gradient-boosted trees
+  verify_positive_cell.py  Re-tests the single positive result on three
+                       independent splits
 data/
   BTCUSDT_2026.csv     Jan-Aug 2026 dataset (307k candles)
   BTCUSDT_2025.csv     Full year 2025 dataset (526k candles, out-of-sample validation)

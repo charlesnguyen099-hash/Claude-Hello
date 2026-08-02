@@ -151,6 +151,18 @@ class BybitExchange:
         rounded = (qty // step) * step
         return max(rounded, 0.0)
 
+    def round_price(self, symbol: str, price: float) -> float:
+        """Snap a price to the symbol's tick size — Bybit rejects a limit
+        order whose price isn't a multiple of it.
+        """
+        info = self.get_instrument_info(symbol)
+        tick = info.tick_size
+        if tick <= 0:
+            return price
+        ticks = round(price / tick)
+        # Re-round through the tick to avoid float dust like 87594.90000001.
+        return round(ticks * tick, 10)
+
     def place_market_entry_with_stop(
         self, symbol: str, side: str, qty: float, stop_price: float
     ) -> dict | None:
@@ -180,6 +192,62 @@ class BybitExchange:
             positionIdx=0,
         )
         return order
+
+    def place_limit_entry(
+        self, symbol: str, side: str, qty: float, limit_price: float
+    ) -> dict | None:
+        """Rest a GTC limit entry at `limit_price` (below the market for a
+        long, above for a short).
+
+        The strategy enters on a pullback rather than at the signal bar's
+        close (strategy.PULLBACK_ATR_MULT), and the backtest models that
+        fill as happening AT the limit price with no adverse slippage.
+        Using a real resting limit order here — rather than polling and
+        firing a market order when price arrives — is what makes that
+        model honest: a market order would cross the spread and slip,
+        so live results would quietly come in below backtest.
+
+        The stop-loss cannot be attached until the order actually fills
+        (there is no position to attach it to yet), so the caller must
+        set it once the fill is detected.
+        """
+        order_side = "Buy" if side == "long" else "Sell"
+        if self.config.dry_run:
+            logger.info(
+                "[DRY_RUN] would place LIMIT %s %s qty=%s @ %s",
+                order_side, symbol, qty, limit_price,
+            )
+            return None
+
+        return self.client.place_order(
+            category=self.config.category,
+            symbol=symbol,
+            side=order_side,
+            orderType="Limit",
+            qty=str(qty),
+            price=str(limit_price),
+            timeInForce="GTC",
+            reduceOnly=False,
+        )
+
+    def cancel_order(self, symbol: str, order_id: str) -> None:
+        if self.config.dry_run:
+            logger.info("[DRY_RUN] would cancel order %s on %s", order_id, symbol)
+            return
+        self.client.cancel_order(
+            category=self.config.category, symbol=symbol, orderId=order_id
+        )
+
+    def get_open_position_qty(self, symbol: str) -> float:
+        """Signed position size: >0 long, <0 short, 0 flat. Used to detect
+        whether a resting limit entry has filled.
+        """
+        resp = self.client.get_positions(category=self.config.category, symbol=symbol)
+        for pos in resp["result"]["list"]:
+            size = float(pos.get("size") or 0)
+            if size:
+                return size if pos.get("side") == "Buy" else -size
+        return 0.0
 
     def update_stop_loss(self, symbol: str, stop_price: float) -> None:
         if self.config.dry_run:

@@ -66,6 +66,8 @@ class BacktestResult:
     equity_curve: list[tuple[pd.Timestamp, float]] = field(default_factory=list)
     starting_equity: float = 10_000.0
     ending_equity: float = 10_000.0
+    pending_created: int = 0   # signals that rested a limit entry
+    pending_expired: int = 0   # ...that price never came back to
 
     def summary(self) -> dict:
         closed = [t for t in self.trades if t.exit_price is not None]
@@ -90,6 +92,8 @@ class BacktestResult:
             "ending_equity": round(self.ending_equity, 2),
             "return_pct": round(100.0 * (self.ending_equity / self.starting_equity - 1.0), 2),
             "max_drawdown_pct": round(float(drawdown.min()) * 100.0, 2),
+            "signals_rested": self.pending_created,
+            "never_filled": self.pending_expired,
         }
 
 
@@ -107,7 +111,14 @@ def _fees(qty: float, price_a: float, price_b: float) -> float:
 
 
 def run_backtest(df_1m: pd.DataFrame, starting_equity: float = 10_000.0) -> BacktestResult:
-    df = strategy.prepare(df_1m)
+    return run_backtest_prepared(strategy.prepare(df_1m), starting_equity)
+
+
+def run_backtest_prepared(df: pd.DataFrame, starting_equity: float = 10_000.0) -> BacktestResult:
+    """Same engine, but on a frame that already went through
+    strategy.prepare(). Lets a parameter sweep reuse one expensive
+    indicator pass across many parameter settings.
+    """
     result = BacktestResult(starting_equity=starting_equity)
     equity = starting_equity
     open_trade: Trade | None = None
@@ -115,6 +126,8 @@ def run_backtest(df_1m: pd.DataFrame, starting_equity: float = 10_000.0) -> Back
     current_day = None
     halted_for_day = False
     just_closed_ts = None
+    pending: strategy.Signal | None = None   # resting limit entry
+    pending_age = 0
 
     for _, row in df.iterrows():
         ts = row["datetime"]
@@ -281,18 +294,37 @@ def run_backtest(df_1m: pd.DataFrame, starting_equity: float = 10_000.0) -> Back
         if open_trade is not None:
             continue
 
-        sig = strategy.signal_from_row(row)
-        if sig is None:
+        # A resting entry order from an earlier bar: fill it if this bar's
+        # range reached it, otherwise age it out.
+        if pending is not None:
+            pending_age += 1
+            if strategy.limit_order_filled(pending.side, pending.entry,
+                                           row["high"], row["low"]):
+                sig, pending = pending, None
+                # A resting limit order fills AT its price -- no adverse
+                # slippage, unlike a market order. Fees are still charged
+                # at the taker rate, which is conservative for a maker fill.
+                fill_entry = sig.entry
+            else:
+                if pending_age >= strategy.PENDING_MAX_BARS:
+                    pending = None
+                    result.pending_expired += 1
+                continue
+        else:
+            sig = strategy.signal_from_row(row)
+            if sig is None:
+                continue
+            if just_closed_ts == ts:
+                continue  # don't re-enter on the exact bar we just closed on
+            # Rest the order instead of chasing; it may fill on a later bar.
+            pending, pending_age = sig, 0
+            result.pending_created += 1
             continue
-        if just_closed_ts == ts:
-            continue  # don't re-enter on the exact bar we just closed on
 
         atr_pct = row["atr14"] / row["close"] if row["close"] else 0.0
         plan = risk.plan_position(equity, sig.entry, sig.stop, sig.confidence, atr_pct)
         if plan is None or plan.qty <= 0:
             continue
-
-        fill_entry = _fill_price(sig.entry, sig.side, is_entry=True)
 
         open_trade = Trade(
             side=sig.side,

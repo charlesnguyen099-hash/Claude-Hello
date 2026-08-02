@@ -44,10 +44,36 @@ class PositionState:
 
 
 @dataclass
+class PendingEntry:
+    """A resting limit entry that has not filled yet.
+
+    The strategy deliberately does not enter at the signal bar's close
+    (see strategy.PULLBACK_ATR_MULT): it waits for price to pull back to
+    a better level, and abandons the trade if that never happens. Until
+    the order fills there is no position, so nothing to manage — only an
+    order to age out.
+    """
+    symbol: str
+    side: str
+    limit_price: float
+    stop: float
+    tp1: float
+    tp2: float
+    qty: float
+    leverage: int
+    confidence: float
+    placed_at: pd.Timestamp
+    entry_trend: str
+    order_id: str | None = None
+    bars_waited: int = 0
+
+
+@dataclass
 class Scanner:
     exchange: BybitExchange
     config: Config
     open_positions: dict[str, PositionState] = field(default_factory=dict)
+    pending_entries: dict[str, PendingEntry] = field(default_factory=dict)
     daily_start_equity: float | None = None
     current_day: object = None
     halted_for_day: bool = False
@@ -171,28 +197,84 @@ class Scanner:
 
         leverage = min(plan.leverage, int(info.max_leverage))
         self.exchange.set_leverage(symbol, leverage)
-        self.exchange.place_market_entry_with_stop(symbol, sig.side, qty, sig.stop)
 
-        self.open_positions[symbol] = PositionState(
+        limit_price = self.exchange.round_price(symbol, sig.entry)
+        order = self.exchange.place_limit_entry(symbol, sig.side, qty, limit_price)
+        order_id = None
+        if order:
+            order_id = (order.get("result") or {}).get("orderId")
+
+        self.pending_entries[symbol] = PendingEntry(
             symbol=symbol,
             side=sig.side,
-            entry=sig.entry,
+            limit_price=limit_price,
             stop=sig.stop,
             tp1=sig.take_profit_1,
             tp2=sig.take_profit_2,
-            qty_initial=qty,
-            qty_remaining=qty,
+            qty=qty,
             leverage=leverage,
-            entry_time=row["datetime"],
+            confidence=sig.confidence,
+            placed_at=row["datetime"],
             entry_trend=row["trend"],
-            high_water=row["high"],
-            low_water=row["low"],
+            order_id=order_id,
         )
         logger.info(
-            "%s: OPENED %s entry=%.6f stop=%.6f conf=%.0f risk%%=%.1f lev=%sx (%s)",
-            symbol, sig.side.upper(), sig.entry, sig.stop, sig.confidence,
+            "%s: RESTED %s limit=%.6f (signal close %.6f, pullback %.2f ATR) "
+            "stop=%.6f conf=%.0f risk%%=%.1f lev=%sx (%s)",
+            symbol, sig.side.upper(), limit_price, sig.signal_price,
+            strategy.PULLBACK_ATR_MULT, sig.stop, sig.confidence,
             plan.equity_risk_pct * 100, leverage, sig.reason,
         )
+
+    def _check_pending(self, symbol: str, row: pd.Series) -> None:
+        """Promote a filled limit entry to a managed position, or cancel it
+        once it has waited longer than strategy.PENDING_MAX_BARS.
+        """
+        pending = self.pending_entries.get(symbol)
+        if pending is None:
+            return
+
+        try:
+            signed_qty = self.exchange.get_open_position_qty(symbol)
+        except Exception:
+            logger.exception("%s: could not read position while checking pending entry", symbol)
+            return
+
+        filled = (signed_qty > 0) if pending.side == "long" else (signed_qty < 0)
+        if filled:
+            del self.pending_entries[symbol]
+            qty = abs(signed_qty)
+            self.exchange.update_stop_loss(symbol, pending.stop)
+            self.open_positions[symbol] = PositionState(
+                symbol=symbol,
+                side=pending.side,
+                entry=pending.limit_price,
+                stop=pending.stop,
+                tp1=pending.tp1,
+                tp2=pending.tp2,
+                qty_initial=qty,
+                qty_remaining=qty,
+                leverage=pending.leverage,
+                entry_time=row["datetime"],
+                entry_trend=pending.entry_trend,
+                high_water=row["high"],
+                low_water=row["low"],
+            )
+            logger.info("%s: limit entry FILLED @%.6f, stop set to %.6f",
+                        symbol, pending.limit_price, pending.stop)
+            return
+
+        pending.bars_waited += 1
+        if pending.bars_waited >= strategy.PENDING_MAX_BARS:
+            del self.pending_entries[symbol]
+            if pending.order_id:
+                try:
+                    self.exchange.cancel_order(symbol, pending.order_id)
+                except Exception:
+                    logger.exception("%s: failed to cancel expired entry order", symbol)
+            logger.info("%s: limit entry never filled after %d bars, cancelled — "
+                        "price never pulled back, capital stays free",
+                        symbol, pending.bars_waited)
 
     def run_once(self) -> None:
         equity = self.exchange.get_wallet_equity_usdt()
@@ -211,9 +293,21 @@ class Scanner:
                     logger.exception("Error managing open position for %s", symbol)
                 continue
 
+            # A resting entry from a previous bar takes precedence over
+            # looking for a new signal on this one.
+            if symbol in self.pending_entries:
+                try:
+                    self._check_pending(symbol, row)
+                except Exception:
+                    logger.exception("Error checking pending entry for %s", symbol)
+                continue
+
             if halted:
                 continue
-            if len(self.open_positions) >= self.config.max_concurrent_positions:
+            # Pending entries count against the concurrency limit: their
+            # margin is committed the moment the order rests.
+            committed = len(self.open_positions) + len(self.pending_entries)
+            if committed >= self.config.max_concurrent_positions:
                 continue
             try:
                 self._try_open(symbol, row, equity)

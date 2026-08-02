@@ -33,6 +33,10 @@ class FakeExchange:
         self.df_1h = df_1h
         self.now: pd.Timestamp | None = None
         self.calls: list[tuple] = []
+        # Signed size of the simulated exchange-side position. The scanner
+        # reads this to learn whether its resting limit entry has filled.
+        self.position_qty = 0.0
+        self.resting: tuple[str, float, float] | None = None  # side, price, qty
 
     def get_klines(self, symbol, timeframe, limit=300):
         src = self.df_1m if timeframe == "1m" else self.df_1h
@@ -50,11 +54,33 @@ class FakeExchange:
         step = 0.001
         return max((qty // step) * step, 0.0)
 
+    def round_price(self, symbol, price):
+        return round(price, 1)
+
     def set_leverage(self, symbol, leverage):
         self.calls.append(("set_leverage", symbol, leverage))
 
     def place_market_entry_with_stop(self, symbol, side, qty, stop_price):
         self.calls.append(("open", symbol, side, qty, stop_price))
+
+    def place_limit_entry(self, symbol, side, qty, limit_price):
+        self.calls.append(("limit", symbol, side, qty, limit_price))
+        self.resting = (side, limit_price, qty)
+        return {"result": {"orderId": "fake-1"}}
+
+    def cancel_order(self, symbol, order_id):
+        self.calls.append(("cancel", symbol, order_id))
+        self.resting = None
+
+    def get_open_position_qty(self, symbol):
+        return self.position_qty
+
+    def fill_resting(self):
+        """Simulate the resting limit order being hit."""
+        assert self.resting is not None
+        side, _price, qty = self.resting
+        self.position_qty = qty if side == "long" else -qty
+        self.resting = None
 
     def update_stop_loss(self, symbol, stop_price):
         self.calls.append(("update_stop", symbol, stop_price))
@@ -75,10 +101,53 @@ def test_scanner_opens_the_same_trade_the_backtest_found():
     fake.now = pd.Timestamp("2026-01-21 16:57:00")  # +1 bar so it's not "still forming"
     scanner.run_once()
 
+    # The strategy no longer chases the close: it rests a limit entry on
+    # the pullback and only becomes a position once that order fills.
+    assert "BTCUSDT" not in scanner.open_positions
+    assert "BTCUSDT" in scanner.pending_entries
+    limits = [c for c in fake.calls if c[0] == "limit"]
+    assert len(limits) == 1
+    assert limits[0][2] == "short"
+    pending = scanner.pending_entries["BTCUSDT"]
+    # A short rests ABOVE the signal price, so it fills on a bounce.
+    assert pending.limit_price > df_1m[df_1m["datetime"] == pd.Timestamp(
+        "2026-01-21 16:56:00")]["close"].iloc[0]
+
+    # Once the exchange reports the fill, the next scan promotes it to a
+    # managed position and attaches the stop.
+    fake.fill_resting()
+    fake.now = pd.Timestamp("2026-01-21 16:58:00")
+    scanner.run_once()
+
     assert "BTCUSDT" in scanner.open_positions
-    opens = [c for c in fake.calls if c[0] == "open"]
-    assert len(opens) == 1
-    assert opens[0][2] == "short"
+    assert "BTCUSDT" not in scanner.pending_entries
+    assert scanner.open_positions["BTCUSDT"].side == "short"
+    assert any(c[0] == "update_stop" for c in fake.calls)
+
+
+def test_scanner_cancels_entry_that_never_fills():
+    df_1m, df_1h = _load_1m_and_1h()
+    fake = FakeExchange(df_1m, df_1h)
+    config = Config(symbols=["BTCUSDT"], max_concurrent_positions=4, equity_override_usdt=10_000.0)
+    scanner = Scanner(exchange=fake, config=config)
+
+    fake.now = pd.Timestamp("2026-01-21 16:57:00")
+    scanner.run_once()
+    assert "BTCUSDT" in scanner.pending_entries
+
+    # Price never comes back to the limit: the order should age out and be
+    # cancelled rather than resting forever and tying up margin.
+    from bot import strategy
+    times = df_1m[df_1m["datetime"] > fake.now]["datetime"].tolist()
+    for t in times[:strategy.PENDING_MAX_BARS + 2]:
+        fake.now = t
+        scanner.run_once()
+        if "BTCUSDT" not in scanner.pending_entries:
+            break
+
+    assert "BTCUSDT" not in scanner.pending_entries
+    assert "BTCUSDT" not in scanner.open_positions
+    assert any(c[0] == "cancel" for c in fake.calls)
 
 
 def test_scanner_does_not_open_when_no_signal():
@@ -103,6 +172,10 @@ def test_scanner_moves_stop_to_breakeven_after_tp1():
     # This entry (2026-02-01 11:09:00 SHORT) is the one the backtest shows
     # actually reaching TP1 (tp1_hit=True).
     fake.now = pd.Timestamp("2026-02-01 11:10:00")
+    scanner.run_once()
+    assert "BTCUSDT" in scanner.pending_entries
+    fake.fill_resting()
+    fake.now = pd.Timestamp("2026-02-01 11:11:00")
     scanner.run_once()
     assert "BTCUSDT" in scanner.open_positions
 

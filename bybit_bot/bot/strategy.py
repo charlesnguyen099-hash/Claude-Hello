@@ -109,11 +109,50 @@ RSI_OVERSOLD = 30.0
 # after real costs. See bot/risk.py ROUND_TRIP_COST_PCT.
 MIN_TP1_TO_COST_RATIO = 8.0
 
+# Don't chase the market. Rather than entering at the signal bar's close,
+# rest the entry PULLBACK_ATR_MULT ATR below price (above, for a short)
+# and take the trade only if price actually comes back to it within
+# PENDING_MAX_BARS. If it never does, the trade is simply skipped and the
+# capital stays free.
+#
+# This is the mechanical form of "don't buy the top / don't sell the
+# bottom": an EMA cross fires *after* a move has already started, so
+# entering at that close is by construction entering into extension.
+# Measured in research/two_stage_entry.py on both years, over the same
+# signal set, net of fees:
+#
+#   mode          2026 total   2025 total
+#   immediate       -17.53%      -16.12%
+#   limit 0.5 ATR    -7.11%       -7.82%
+#   limit 1.0 ATR    -5.84%       -7.91%
+#   limit 2.0 ATR    -6.77%       -5.63%
+#
+# Waiting for the pullback more than halves the loss on both years —
+# the only change tested so far that improves both, rather than trading
+# one year's result against the other's. 1.0 ATR is chosen as the
+# setting that is near-best on 2026 and mid-pack on 2025, instead of
+# picking each year's own optimum (which would be curve-fitting).
+#
+# It does NOT make the strategy profitable — see README. It makes a
+# losing edge less negative, consistently.
+PULLBACK_ATR_MULT = 1.0
+PENDING_MAX_BARS = 120  # cancel an unfilled entry after this many 1m bars
+
+# Rejected alternative, kept documented so it isn't re-tried blind:
+# "capture the dip first, then enter" (open a counter-direction trade
+# with a tight target, flip into the signal after it fills). The adverse
+# excursion it aims at is real — median 2.0-2.1 ATR, ~17.5% of equity at
+# 25x leverage, on both years — but trading it is a coin flip: the
+# counter legs won 42.5% (2026) / 40.8% (2025) and cost an extra round
+# trip each, taking the totals from -17.53%/-16.12% to -24.29%/-35.46%.
+# The dip is real; its *timing* is not predictable at signal time.
+
 
 @dataclass(frozen=True)
 class Signal:
     side: str  # "long" or "short"
-    entry: float
+    entry: float          # limit price the order rests at
+    signal_price: float   # close of the bar that produced the signal
     stop: float
     take_profit_1: float
     take_profit_2: float
@@ -206,7 +245,8 @@ def signal_from_row(row: pd.Series) -> Signal | None:
         return None
 
     if bool(row.get("long_setup", False)):
-        entry = float(row["close"])
+        signal_price = float(row["close"])
+        entry = signal_price - PULLBACK_ATR_MULT * atr
         stop = entry - ATR_INIT_MULT * atr
         risk = entry - stop
         tp1 = entry + TP1_R_MULT * risk
@@ -215,15 +255,17 @@ def signal_from_row(row: pd.Series) -> Signal | None:
         return Signal(
             side="long",
             entry=entry,
+            signal_price=signal_price,
             stop=stop,
             take_profit_1=tp1,
             take_profit_2=entry + 8.0 * risk,
             confidence=float(row["confidence_long"]),
-            reason="uptrend, EMA9 crossed above EMA21, volume confirm",
+            reason="uptrend, EMA9 crossed above EMA21, volume confirm, limit entry on pullback",
         )
 
     if bool(row.get("short_setup", False)):
-        entry = float(row["close"])
+        signal_price = float(row["close"])
+        entry = signal_price + PULLBACK_ATR_MULT * atr
         stop = entry + ATR_INIT_MULT * atr
         risk = stop - entry
         tp1 = entry - TP1_R_MULT * risk
@@ -232,14 +274,22 @@ def signal_from_row(row: pd.Series) -> Signal | None:
         return Signal(
             side="short",
             entry=entry,
+            signal_price=signal_price,
             stop=stop,
             take_profit_1=tp1,
             take_profit_2=entry - 8.0 * risk,
             confidence=float(row["confidence_short"]),
-            reason="downtrend, EMA9 crossed below EMA21, volume confirm",
+            reason="downtrend, EMA9 crossed below EMA21, volume confirm, limit entry on pullback",
         )
 
     return None
+
+
+def limit_order_filled(side: str, limit_price: float, bar_high: float, bar_low: float) -> bool:
+    """Would a resting entry order at `limit_price` have filled on a bar
+    with this high/low? A long rests below the market, a short above.
+    """
+    return (bar_low <= limit_price) if side == "long" else (bar_high >= limit_price)
 
 
 def _clears_fees(entry: float, tp1: float) -> bool:

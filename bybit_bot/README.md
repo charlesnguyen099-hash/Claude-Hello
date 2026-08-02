@@ -492,6 +492,43 @@ Stop the bot any time with Ctrl+C (or SIGTERM) — it shuts down cleanly
 without leaving background threads; any position already open on the
 exchange stays open with its stop-loss still active on Bybit's side.
 
+## Quick start: run it on your own machine
+
+```bash
+git clone <this repo>
+cd bybit_bot
+pip install -r requirements.txt
+python run_paper_bot.py
+```
+
+That is the whole setup. No API key, no `.env`, no account. It reads
+Bybit's public kline and ticker endpoints and never submits an order —
+the $10 is a number in memory.
+
+```bash
+python run_paper_bot.py --equity 10 --symbols BTCUSDT
+python run_paper_bot.py --symbols BTCUSDT,ETHUSDT,SOLUSDT --max-positions 2
+python run_paper_bot.py --trades-csv session.csv
+```
+
+Press Ctrl+C to stop; it prints closed trades (winners, losers, total
+profit, total loss), positions still open at that moment (how many
+winning, how many losing, unrealized P&L each), and the two combined.
+
+It defaults to **mainnet** prices deliberately: Bybit's testnet has its
+own thin synthetic order flow, so paper-trading against it would say
+nothing about real price action. No key is sent and no order is placed
+either way.
+
+**Expect long idle stretches.** On the 2026 data the strategy entered 6
+times in eight months. Sitting still is the entry filter doing its job,
+not the bot hanging.
+
+**Before you read a green session as proof:** on the two years of history
+in `data/`, this strategy loses money — **-1.38% on 2026, -4.69% on
+2025**. A profitable afternoon is a small sample. The rest of this README
+is the evidence for why the number is what it is.
+
 ## Paper trading against real, live Bybit data
 
 `bot/paper_trading.py` runs the identical strategy/risk logic against

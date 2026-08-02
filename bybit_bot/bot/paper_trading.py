@@ -444,15 +444,16 @@ def print_summary(summary: dict) -> None:
 
 
 def run(starting_equity: float, poll_seconds: int = PRICE_POLL_SECONDS,
-        trades_csv: str | None = None) -> None:
-    setup_logging(CONFIG.log_level)
-    exchange = BybitExchange(CONFIG)
-    broker = PaperBroker(exchange, CONFIG, starting_equity)
+        trades_csv: str | None = None, config=None) -> None:
+    config = config or CONFIG
+    setup_logging(config.log_level)
+    exchange = BybitExchange(config)
+    broker = PaperBroker(exchange, config, starting_equity)
 
     logger.warning(
         "Paper trading started: virtual equity=$%.4f symbols=%s "
         "(real Bybit %s market data, NO real orders placed)",
-        starting_equity, CONFIG.symbols, "TESTNET" if CONFIG.testnet else "MAINNET",
+        starting_equity, config.symbols, "TESTNET" if config.testnet else "MAINNET",
     )
 
     running = True
@@ -468,7 +469,7 @@ def run(starting_equity: float, poll_seconds: int = PRICE_POLL_SECONDS,
     try:
         while running:
             now = time.time()
-            for symbol in CONFIG.symbols:
+            for symbol in config.symbols:
                 if symbol in broker.open_positions:
                     try:
                         broker.manage_with_candles(symbol)
@@ -477,11 +478,11 @@ def run(starting_equity: float, poll_seconds: int = PRICE_POLL_SECONDS,
 
             if now - last_signal_check >= SIGNAL_POLL_SECONDS:
                 last_signal_check = now
-                for symbol in CONFIG.symbols:
+                for symbol in config.symbols:
                     try:
                         if symbol in broker.open_positions:
                             broker.refresh_trend_and_trail(symbol)
-                        elif len(broker.open_positions) < CONFIG.max_concurrent_positions:
+                        elif len(broker.open_positions) < config.max_concurrent_positions:
                             broker.try_open(symbol)
                     except Exception:
                         logger.exception("Error evaluating %s", symbol)

@@ -90,28 +90,74 @@ one:
      (as if it were one candle), EMA-smoothed — reproducing the original
      15m ATR's real-world units while still updating every minute.
 
-**Results, current (1m-entry) version, both years, out-of-sample each
-way** (strategy structure identical between these two runs):
+6. **Investigated, and rejected after testing: ZigZag swing-pivot
+   entries.** Checked directly against the data first (not assumed): a
+   0.5% ZigZag threshold on 1-minute BTCUSDT closes finds ~14 confirmed
+   swing pivots *per day* — i.e. there genuinely are many more raw
+   candidate opportunities per day than versions 1-5 ever looked for.
+   Built `indicators.zigzag_pivots` (causal, no lookahead) and an entry
+   at every confirmed pivot whose target cleared trading costs, sized by
+   swing amplitude and HTF-trend alignment (a soft confidence modifier
+   instead of a hard gate, so smaller counter-trend swings could still
+   be taken at reduced size). Rigorously backtested — not just once:
+   - Baseline: -19.5%/2026, DD -21.4%.
+   - Swept stop buffer 0.3-2.5×ATR (wider, to survive the common
+     "retest the pivot before continuing" pattern): every wider setting
+     was *worse* (down to -84%), because a wider stop also raises the
+     TP1 target enough to newly pass the fee filter, letting in more
+     low-quality signals, not fewer.
+   - Swept the ZigZag threshold 0.3%-2.0%: mostly -70% to -92%; only the
+     tightest, most fee-filter-restricted setting (0.3%, just 20 trades)
+     was near flat, too small a sample to trust.
+   - Hard-gating out counter-trend pivots instead of just down-weighting
+     them: -19.4%, basically unchanged — so the losses weren't
+     concentrated in the counter-trend trades specifically.
+   - Exiting at the *next opposite* pivot instead of an R-multiple
+     target: -16.1%, win rate 25%, still net negative.
+   - A hybrid (EMA-cross entries in version 5, or a same-direction
+     swing pivot, both still gated by HTF trend, R-target reduced to
+     1.5R): -6.1%, still losing.
+   No configuration tested showed a robust edge, on 2026 alone, let
+   alone confirmed out-of-sample on 2025. This surfaces a genuine
+   tension between two explicit requirements: "catch every small-to-
+   large opportunity" and "guarantee profit after fees" — enforcing the
+   second rigorously rejects nearly all of what the first would want to
+   take, and even the survivors didn't show a proven edge. Reported
+   here in full rather than quietly dropped, because a strategy this
+   thoroughly tested and still losing is itself the honest answer to
+   "is there money being left on the table here" — not evidence of
+   insufficient effort. The zigzag detector was removed from the
+   codebase after this (no dead code) — this section plus the commit
+   history is the record of what was tried.
+7. **Current: reverted to the version-5 (1m EMA-cross) entries**, since
+   that remains the only version with genuine (if modest,
+   regime-dependent) validated results. One real bug was found and
+   fixed while investigating why counter-trend pivot trades were
+   getting stopped out within 1-2 minutes: the trend-flip exit compared
+   the *current* HTF trend to the position's direction, so a "flat" HTF
+   reading (neither up nor down) counted as a flip and force-closed the
+   position almost immediately. Fixed to compare against the trend *at
+   entry time* instead, so a position now only exits on a genuine
+   reversal, not merely a neutral reading (`entry_trend` field in
+   `backtest/engine.py`, `bot/scanner.py`, `bot/paper_trading.py`).
+
+**Results, current version, both years, out-of-sample each way**
+(identical strategy structure between these two runs):
 
 | Dataset | Trades | Win rate | Profit factor | Return | Max drawdown |
 |---|---|---|---|---|---|
-| Jan-Aug 2026 | 14 | 21.4% | 0.32 | -11.45% | -11.45% |
-| Full year 2025 | 26 | 50.0% | 1.31 | **+5.23%** | -7.43% |
+| Jan-Aug 2026 | 14 | 21.4% | 0.28 | -13.34% | -13.34% |
+| Full year 2025 | 26 | 50.0% | 1.27 | **+4.76%** | -7.43% |
 
-For comparison, the 15m-entry version (same filters, same risk logic)
-scored +10.67%/-6.44% on 2026 and -0.19%/-2.34% on 2025. Moving to 1m
-entries made 2026 worse and 2025 better — with only 14-26 trades per
-year, that's consistent with the extra entries just landing on slightly
-different fills rather than a real edge change either direction; it is
-reported as-is rather than picking whichever timeframe looks better.
-**Trading on 1m candles gives faster reaction time (this bot reacts to a
-crossover within ~1 minute of it happening instead of within 15), not a
-provably better edge** — the underlying trend/momentum information the
-strategy trades on is the same either way, since the indicator periods
-were rescaled to cover the same real time span. Both configurations
-remain available: `EMA_FAST=135, EMA_MID=315, ATR_BLOCK_MINUTES=15` in
-`strategy.py` is the 1m version currently wired into the live bot,
-scanner, and paper trading.
+One year up, one year down, neither dramatic, with 14-26 trades a year —
+this is not a strong or reliably repeatable edge, and it's reported
+exactly that way. **Trading on 1m candles gives faster reaction time
+(reacts to a crossover within ~1 minute instead of within 15), not a
+provably better edge** — the underlying trend/momentum information is
+the same either way, since the indicator periods were rescaled to cover
+the same real time span. `EMA_FAST=135, EMA_MID=315,
+ATR_BLOCK_MINUTES=15` in `strategy.py` is what's wired into the live
+bot, scanner, and paper trading.
 
 Re-run it yourself (the 2025 run takes noticeably longer — it's ~526k
 1-minute bars processed one at a time):

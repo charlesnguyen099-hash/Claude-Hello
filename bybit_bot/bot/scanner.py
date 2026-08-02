@@ -37,6 +37,7 @@ class PositionState:
     qty_remaining: float
     leverage: int
     entry_time: pd.Timestamp
+    entry_trend: str
     tp1_hit: bool = False
     high_water: float = 0.0
     low_water: float = 0.0
@@ -88,10 +89,16 @@ class Scanner:
     def _manage_position(self, symbol: str, row: pd.Series) -> None:
         state = self.open_positions[symbol]
         long = state.side == "long"
-        expected_trend = "up" if long else "down"
+        # Entries no longer require a matching HTF trend (trend is a
+        # confidence modifier now, not a gate — see strategy.py), so a
+        # "flat" HTF reading isn't a flip, and neither is "still opposite"
+        # for a trade that was deliberately opened counter-trend (already
+        # priced into its lower confidence/size at entry) — only exit here
+        # if the trend has actively reversed relative to entry time.
+        opposite_trend = "down" if long else "up"
 
-        if row["trend"] != expected_trend:
-            logger.info("%s: trend flipped away from %s, closing remaining position", symbol, state.side)
+        if row["trend"] == opposite_trend and state.entry_trend != opposite_trend:
+            logger.info("%s: trend flipped against %s, closing remaining position", symbol, state.side)
             self.exchange.close_position_market(symbol, state.side, state.qty_remaining)
             del self.open_positions[symbol]
             return
@@ -177,6 +184,7 @@ class Scanner:
             qty_remaining=qty,
             leverage=leverage,
             entry_time=row["datetime"],
+            entry_trend=row["trend"],
             high_water=row["high"],
             low_water=row["low"],
         )

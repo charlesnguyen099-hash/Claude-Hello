@@ -80,22 +80,3 @@ def adx(df: pd.DataFrame, length: int = 14) -> pd.Series:
     dx = 100.0 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0.0, np.nan)
     return dx.ewm(alpha=1.0 / length, adjust=False, min_periods=length).mean().fillna(0.0)
 
-
-def swing_points(df: pd.DataFrame, lookback: int = 3) -> tuple[pd.Series, pd.Series]:
-    """Boolean masks for confirmed swing highs/lows (fractal, `lookback` bars
-    on each side). A point at index i is only confirmed `lookback` bars later,
-    so this is safe to use in a bar-by-bar backtest without lookahead as long
-    as callers only read a swing flag once i + lookback bars have closed.
-    """
-    highs = df["high"]
-    lows = df["low"]
-    is_high = pd.Series(False, index=df.index)
-    is_low = pd.Series(False, index=df.index)
-    for i in range(lookback, len(df) - lookback):
-        window_h = highs.iloc[i - lookback : i + lookback + 1]
-        window_l = lows.iloc[i - lookback : i + lookback + 1]
-        if highs.iloc[i] == window_h.max():
-            is_high.iloc[i] = True
-        if lows.iloc[i] == window_l.min():
-            is_low.iloc[i] = True
-    return is_high, is_low

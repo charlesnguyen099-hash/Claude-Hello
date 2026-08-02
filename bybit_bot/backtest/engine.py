@@ -42,6 +42,7 @@ class Trade:
     qty_initial: float
     entry_high: float
     entry_low: float
+    entry_trend: str
     qty_remaining: float = 0.0
     tp1_hit: bool = False
     realized_pnl_usd: float = 0.0
@@ -131,7 +132,15 @@ def run_backtest(df_1m: pd.DataFrame, starting_equity: float = 10_000.0) -> Back
                 (not open_trade.tp1_hit)
                 and ((row["high"] >= open_trade.tp1) if long else (row["low"] <= open_trade.tp1))
             )
-            trend_flip = row["trend"] != ("up" if long else "down")
+            # Entries no longer require a matching HTF trend (see
+            # strategy.py — trend is a confidence modifier now, not a
+            # gate), so a "flat" HTF reading isn't a flip, and neither is
+            # "still opposite" for a trade that was deliberately opened
+            # counter-trend (that was already priced into its lower
+            # confidence/size at entry) — only exit here if the trend has
+            # actively reversed relative to what it was at entry time.
+            opposite = "down" if long else "up"
+            trend_flip = row["trend"] == opposite and open_trade.entry_trend != opposite
 
             if hit_stop:
                 raw = open_trade.stop
@@ -299,6 +308,7 @@ def run_backtest(df_1m: pd.DataFrame, starting_equity: float = 10_000.0) -> Back
             qty_initial=plan.qty,
             entry_high=row["high"],
             entry_low=row["low"],
+            entry_trend=row["trend"],
         )
 
     result.ending_equity = equity

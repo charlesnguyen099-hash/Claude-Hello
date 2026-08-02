@@ -51,6 +51,7 @@ class PaperPosition:
     leverage: int
     confidence: float
     entry_time: pd.Timestamp
+    entry_trend: str
     qty_remaining: float = 0.0
     tp1_hit: bool = False
     realized_pnl_usd: float = 0.0
@@ -144,6 +145,7 @@ class PaperBroker:
             leverage=plan.leverage,
             confidence=sig.confidence,
             entry_time=pd.Timestamp.now(tz="UTC"),
+            entry_trend=row["trend"],
         )
         logger.info(
             "%s: OPENED %s @%.6f stop=%.6f tp1=%.6f conf=%.0f risk%%=%.1f lev=%sx (%s)",
@@ -226,9 +228,15 @@ class PaperBroker:
             return
         row = merged.iloc[-1]
         long = pos.side == "long"
-        expected_trend = "up" if long else "down"
+        # Entries no longer require a matching HTF trend (trend is a
+        # confidence modifier now, not a gate — see strategy.py), so a
+        # "flat" HTF reading isn't a flip, and neither is "still opposite"
+        # for a trade that was deliberately opened counter-trend (already
+        # priced into its lower confidence/size at entry) — only exit here
+        # if the trend has actively reversed relative to entry time.
+        opposite_trend = "down" if long else "up"
 
-        if row["trend"] != expected_trend:
+        if row["trend"] == opposite_trend and pos.entry_trend != opposite_trend:
             try:
                 price = self.exchange.get_last_price(symbol)
             except Exception:

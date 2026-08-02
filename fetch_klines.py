@@ -125,6 +125,19 @@ def save_csv(symbol, rows, date, out_dir):
     return fname
 
 
+def save_txt_merged(symbol, all_rows, out_dir, label):
+    """Gộp toàn bộ nến thành 1 file .txt tab-separated."""
+    os.makedirs(out_dir, exist_ok=True)
+    fname = os.path.join(out_dir, "{}_{}.txt".format(symbol, label))
+    with open(fname, "w", encoding="utf-8") as f:
+        f.write("datetime\topen\thigh\tlow\tclose\tvolume\n")
+        for row in all_rows:
+            f.write("{}\t{}\t{}\t{}\t{}\t{}\n".format(
+                row["datetime"], row["open"], row["high"],
+                row["low"], row["close"], row["volume"]))
+    return fname
+
+
 def date_range(start, end):
     cur = start
     while cur < end:
@@ -132,17 +145,20 @@ def date_range(start, end):
         cur += timedelta(days=1)
 
 
-def process(symbols, start_dt, end_dt, out_dir):
+def process(symbols, start_dt, end_dt, out_dir, merge=False, merge_label=""):
     days    = list(date_range(start_dt, end_dt))
     total_s = len(symbols)
     total_d = len(days)
-    print("\nSẽ tải: {} coin x {} ngày = {} file".format(total_s, total_d, total_s * total_d))
+    file_desc = "{} coin x 1 file gộp".format(total_s) if merge else "{} coin x {} ngày = {} file".format(total_s, total_d, total_s * total_d)
+    print("\nSẽ tải: {}".format(file_desc))
     print("Lưu vào: {}\n".format(out_dir))
 
     success = 0
     failed  = []
 
     for i, sym in enumerate(symbols, 1):
+        merged_rows = []
+
         for day in days:
             day_start_ms = int(day.replace(tzinfo=timezone.utc).timestamp() * 1000)
             day_end_ms   = day_start_ms + 86400000
@@ -151,14 +167,27 @@ def process(symbols, start_dt, end_dt, out_dir):
 
             rows = fetch_klines(sym, day_start_ms, day_end_ms)
             if rows:
-                path = save_csv(sym, rows, day, out_dir)
-                print("{} nến -> {}".format(len(rows), path))
-                success += 1
+                if merge:
+                    merged_rows.extend(rows)
+                    print("{} nến (gộp)".format(len(rows)))
+                else:
+                    path = save_csv(sym, rows, day, out_dir)
+                    print("{} nến -> {}".format(len(rows), path))
+                    success += 1
             else:
                 print("không có data, bỏ qua")
-                failed.append("{} {}".format(sym, day.strftime("%Y-%m-%d")))
+                if not merge:
+                    failed.append("{} {}".format(sym, day.strftime("%Y-%m-%d")))
 
-    print("\nHoàn tất: {}/{} file".format(success, total_s * total_d))
+        if merge and merged_rows:
+            path = save_txt_merged(sym, merged_rows, out_dir, merge_label)
+            print("  => Gộp {} nến -> {}\n".format(len(merged_rows), path))
+            success += 1
+        elif merge and not merged_rows:
+            failed.append(sym)
+
+    total_files = total_s if merge else total_s * total_d
+    print("\nHoàn tất: {}/{} file".format(success, total_files))
     if failed:
         print("Thất bại ({}):" .format(len(failed)))
         for item in failed:
@@ -184,6 +213,8 @@ def main():
 
     parser.add_argument("--out", default=DEFAULT_OUT_DIR,
                         help="Thư mục lưu file (mặc định: {})".format(DEFAULT_OUT_DIR))
+    parser.add_argument("--merge", action="store_true",
+                        help="Gộp toàn bộ ngày của mỗi coin thành 1 file .txt duy nhất")
 
     args = parser.parse_args()
     out_dir = args.out
@@ -211,9 +242,17 @@ def main():
     last_day_str = (end_dt - timedelta(days=1)).strftime("%Y-%m-%d")
     print("Khoảng thời gian: {} -> {} (UTC)".format(start_dt.strftime("%Y-%m-%d"), last_day_str))
 
+    # Label dùng để đặt tên file khi --merge
+    if args.date:
+        merge_label = args.date
+    elif args.month:
+        merge_label = args.month
+    else:
+        merge_label = "{}_{}".format(args.date_from, args.date_to)
+
     symbols = get_all_usdt_perp_symbols() if args.all else [s.upper() for s in args.coins]
 
-    process(symbols, start_dt, end_dt, out_dir)
+    process(symbols, start_dt, end_dt, out_dir, merge=args.merge, merge_label=merge_label)
 
 
 if __name__ == "__main__":

@@ -200,6 +200,7 @@ def main():
     time_group = parser.add_mutually_exclusive_group(required=True)
     time_group.add_argument("--date",  metavar="YYYY-MM-DD", help="Tải 1 ngày. Vd: --date 2026-07-01")
     time_group.add_argument("--month", metavar="YYYY-MM",    help="Tải cả tháng. Vd: --month 2026-07")
+    time_group.add_argument("--year",  metavar="YYYY",       help="Tải cả năm. Vd: --year 2026")
     time_group.add_argument("--from",  dest="date_from", metavar="YYYY-MM-DD",
                             help="Tải từ ngày (dùng kèm --to). Vd: --from 2026-07-01 --to 2026-07-15")
 
@@ -221,34 +222,35 @@ def main():
 
     # Xác định khoảng thời gian
     if args.date:
-        start_dt = datetime.strptime(args.date, "%Y-%m-%d")
-        end_dt   = start_dt + timedelta(days=1)
+        start_dt    = datetime.strptime(args.date, "%Y-%m-%d")
+        end_dt      = start_dt + timedelta(days=1)
+        merge_label = args.date
 
     elif args.month:
-        y, m     = map(int, args.month.split("-"))
-        start_dt = datetime(y, m, 1)
-        end_dt   = datetime(y, m, monthrange(y, m)[1]) + timedelta(days=1)
+        y, m        = map(int, args.month.split("-"))
+        start_dt    = datetime(y, m, 1)
+        end_dt      = datetime(y, m, monthrange(y, m)[1]) + timedelta(days=1)
+        merge_label = args.month
+
+    elif args.year:
+        y           = int(args.year)
+        start_dt    = datetime(y, 1, 1)
+        end_dt      = datetime(y + 1, 1, 1)
+        merge_label = args.year
 
     elif args.date_from:
         if not args.date_to:
             parser.error("--from cần kèm --to")
-        start_dt = datetime.strptime(args.date_from, "%Y-%m-%d")
-        end_dt   = datetime.strptime(args.date_to,   "%Y-%m-%d")
+        start_dt    = datetime.strptime(args.date_from, "%Y-%m-%d")
+        end_dt      = datetime.strptime(args.date_to,   "%Y-%m-%d")
         if end_dt <= start_dt:
             parser.error("--to phải sau --from")
+        merge_label = "{}_to_{}".format(args.date_from, args.date_to)
     else:
-        parser.error("Phải chỉ định --date, --month, hoặc --from/--to")
+        parser.error("Phải chỉ định --date, --month, --year, hoặc --from/--to")
 
     last_day_str = (end_dt - timedelta(days=1)).strftime("%Y-%m-%d")
     print("Khoảng thời gian: {} -> {} (UTC)".format(start_dt.strftime("%Y-%m-%d"), last_day_str))
-
-    # Label dùng để đặt tên file khi --merge
-    if args.date:
-        merge_label = args.date
-    elif args.month:
-        merge_label = args.month
-    else:
-        merge_label = "{}_{}".format(args.date_from, args.date_to)
 
     symbols = get_all_usdt_perp_symbols() if args.all else [s.upper() for s in args.coins]
 

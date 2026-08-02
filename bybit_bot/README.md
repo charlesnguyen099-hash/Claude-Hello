@@ -27,6 +27,56 @@ all-in on any single trade, on purpose:
 Defaults are `BYBIT_TESTNET=true` and `DRY_RUN=true` — the bot will not
 place a single real order until you deliberately change both in `.env`.
 
+## Statistical foundation: what the raw data actually shows
+
+Before picking any indicator, the raw 1-minute return series for both
+datasets (`data/BTCUSDT_2026.csv`, `data/BTCUSDT_2025.csv`, ~307k and
+~526k candles) was analyzed directly, independent of any specific
+strategy, to check what structure genuinely exists to trade — this is
+what grounds every design choice below, not indicator-guessing.
+
+1. **Return autocorrelation at 6 horizons (1m, 5m, 15m, 1h, 4h, 1d),
+   both years**: every value came out between -0.03 and +0.01 (except
+   2025's 1-day horizon at -0.11) — i.e. **the raw return series is
+   close to a random walk at every horizon checked.** There is no
+   simple "up begets up" (momentum) or strong "up begets down"
+   (mean-reversion) pattern to mechanically exploit on its own.
+2. **Forward returns conditional on the classic EMA50/EMA200 trend
+   filter**: being in a "confirmed uptrend" by this definition did
+   **not** predict positive forward returns in either year (2026: next
+   24h averaged -0.001% in "uptrend" vs -0.265% in "downtrend" — both
+   negative; 2025: next 24h averaged -0.023% in "uptrend" vs **+0.041%**
+   in "downtrend" — inverted from what a trend-follower would assume).
+   This lagging-MA "trend" label, on its own, doesn't predict direction
+   — whatever edge the EMA-cross strategy below has comes from the
+   interaction of the crossover *timing* with risk management, not from
+   "uptrend implies more upside" as a standalone statistical fact.
+3. **Reversion after fast moves**: after a ≥1% drop within 5 minutes,
+   the average next-15-minute return was consistently positive in both
+   years (+0.066%/2026, +0.143%/2025) — a real, cross-validated
+   "flash-dump bounce" pattern (consistent with liquidation-cascade
+   overshoot, a known feature of leveraged crypto futures). This looked
+   promising enough to build and test as a real strategy — buy the
+   flash dump, ATR-scaled stop/target, fee-aware.
+4. It didn't survive contact with a realistic trade simulation. Across
+   15+ stop/target/threshold combinations, **and** a variant requiring
+   the dip to be above the 1-day EMA (a "buy the dip in an uptrend"
+   filter), every single configuration was net negative on both years
+   once a real stop-loss, realistic path-dependency (stop-before-target
+   ambiguity resolved conservatively), and fees were included — the
+   average-return statistic in point 3 is real, but it's driven by a
+   skewed distribution (a minority of large bounces), not something a
+   fixed stop/target rule can reliably capture. This was not adopted.
+
+**What this means honestly**: BTCUSDT's own price/volume history, at
+these horizons, does not contain a strong, mechanically-exploitable
+directional edge net of Bybit's fees. This isn't a claim unique to this
+bot — it's consistent with BTC perpetuals being one of the most liquid,
+closely-arbitraged markets that exists, where simple technical patterns
+get competed away fast. The version below is the most defensible one
+found (positive in one year, mildly negative in the other, small
+sample), presented with that context rather than a false promise.
+
 ## How the strategy was derived
 
 `backtest/run_backtest.py` runs the exact same signal code

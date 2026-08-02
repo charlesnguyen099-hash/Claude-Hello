@@ -21,7 +21,7 @@ from bot.exchange_bybit import BybitExchange
 
 logger = logging.getLogger("bybit_bot.scanner")
 
-KLINES_15M_LIMIT = 200
+KLINES_1M_LIMIT = 2000  # EMA span=315 needs ~5x that many bars to actually converge
 KLINES_1H_LIMIT = 300
 
 
@@ -53,17 +53,17 @@ class Scanner:
 
     def _latest_closed_frame(self, symbol: str) -> pd.DataFrame | None:
         try:
-            df_15m = self.exchange.get_klines(symbol, "15m", KLINES_15M_LIMIT)
+            df_1m = self.exchange.get_klines(symbol, "1m", KLINES_1M_LIMIT)
             df_1h = self.exchange.get_klines(symbol, "1h", KLINES_1H_LIMIT)
         except Exception:
             logger.exception("Failed to fetch klines for %s", symbol)
             return None
-        if len(df_15m) < 2 or len(df_1h) < 2:
+        if len(df_1m) < 2 or len(df_1h) < 2:
             return None
         # Drop the last row of each: it's the still-forming candle.
-        df_15m = df_15m.iloc[:-1].reset_index(drop=True)
+        df_1m = df_1m.iloc[:-1].reset_index(drop=True)
         df_1h = df_1h.iloc[:-1].reset_index(drop=True)
-        merged = strategy.prepare_from_ltf_htf(df_15m, df_1h)
+        merged = strategy.prepare_from_ltf_htf(df_1m, df_1h)
         if merged.empty:
             return None
         return merged
@@ -120,11 +120,11 @@ class Scanner:
                     if long
                     else (state.entry - row["close"]) / risk_distance
                 )
-                elapsed_bars = (row["datetime"] - state.entry_time) / pd.Timedelta(minutes=15)
-                if elapsed_bars >= risk.STALE_POSITION_MAX_BARS and unrealized_r < risk.STALE_POSITION_MIN_R:
+                elapsed_minutes = (row["datetime"] - state.entry_time) / pd.Timedelta(minutes=1)
+                if elapsed_minutes >= risk.STALE_POSITION_MAX_MINUTES and unrealized_r < risk.STALE_POSITION_MIN_R:
                     logger.info(
-                        "%s: stale position (%.1f bars, %.2fR unrealized), closing to free capital",
-                        symbol, elapsed_bars, unrealized_r,
+                        "%s: stale position (%.0f min, %.2fR unrealized), closing to free capital",
+                        symbol, elapsed_minutes, unrealized_r,
                     )
                     self.exchange.close_position_market(symbol, state.side, state.qty_remaining)
                     del self.open_positions[symbol]

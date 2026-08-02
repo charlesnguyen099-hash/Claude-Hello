@@ -35,10 +35,12 @@ ASSUMED_SLIPPAGE_PCT = 0.0005
 ROUND_TRIP_COST_PCT = 2 * (TAKER_FEE_PCT + ASSUMED_SLIPPAGE_PCT)
 
 # Capital efficiency: a position that hasn't meaningfully progressed
-# within this many LTF (15m) bars gets closed at market instead of
-# tying up margin indefinitely waiting for a move that may not come.
-STALE_POSITION_MAX_BARS = 24  # 24 * 15m = 6 hours
-STALE_POSITION_MIN_R = 0.3    # "meaningfully progressed" = at least this much R unrealized
+# within this many minutes gets closed at market instead of tying up
+# margin indefinitely waiting for a move that may not come. Expressed in
+# real time (not bar count) so it means the same thing regardless of the
+# entry timeframe (1m, 15m, ...).
+STALE_POSITION_MAX_MINUTES = 360  # 6 hours
+STALE_POSITION_MIN_R = 0.3        # "meaningfully progressed" = at least this much R unrealized
 
 
 @dataclass(frozen=True)

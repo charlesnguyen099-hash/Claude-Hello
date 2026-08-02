@@ -223,9 +223,9 @@ def run_backtest(df_1m: pd.DataFrame, starting_equity: float = 10_000.0) -> Back
                     if long
                     else (open_trade.entry - row["close"]) / risk_distance
                 ) if risk_distance > 0 else 0.0
-                elapsed_bars = (ts - open_trade.entry_time) / pd.Timedelta(minutes=15)
+                elapsed_minutes = (ts - open_trade.entry_time) / pd.Timedelta(minutes=1)
 
-                if elapsed_bars >= risk.STALE_POSITION_MAX_BARS and unrealized_r < risk.STALE_POSITION_MIN_R:
+                if elapsed_minutes >= risk.STALE_POSITION_MAX_MINUTES and unrealized_r < risk.STALE_POSITION_MIN_R:
                     raw = row["close"]
                     fill = _fill_price(raw, open_trade.side, is_entry=False)
                     gross = (fill - open_trade.entry) * open_trade.qty_remaining if long else (

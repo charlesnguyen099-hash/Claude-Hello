@@ -57,13 +57,33 @@ from bot import risk as _risk
 
 ADX_MIN = 25.0  # Wilder's textbook "trending market" threshold
 TREND_MIN_BARS = 3  # HTF regime must have held for this many 1h bars before trading it
-RSI_LEN = 14
+
+# LTF indicator periods, in 1-minute bars. The entry signal is evaluated
+# on every closed 1m candle (fastest possible reaction), but EMA9/EMA21/
+# ATR14/RSI14 computed directly, natively on 1m bars turned out to be
+# almost pure microstructure noise: backtested on both 2025 and 2026 (1m
+# EMA-cross, no other change), results ranged from -44% to -21% depending
+# only on how the fee filter was tuned, with no setting working on both
+# years — the crossings just don't carry real trend information at that
+# granularity. Scaling the periods up to the real time span that worked
+# at 15m (9 bars * 15m = 135m, 21 bars * 15m = 315m, etc.) keeps the
+# proven smoothing while still checking for a new signal every minute.
+#
+# ATR needed a different fix than "just use a longer period": True Range
+# is a per-bar-size measure (a 1-minute candle's range is always much
+# smaller than a 15-minute candle's, no matter the lookback length), so
+# ATR_LEN alone can't fix it — see indicators.rolling_block_atr, which
+# measures the range of a rolling ATR_BLOCK_MINUTES-wide window instead
+# of the native 1m bar, then EMA-smooths ATR_LEN of those block ranges,
+# reproducing the original 15m ATR14's real-world units at 1m cadence.
+RSI_LEN = 210
+ATR_BLOCK_MINUTES = 15
 ATR_LEN = 14
-EMA_FAST = 9
-EMA_MID = 21
+EMA_FAST = 135
+EMA_MID = 315
 EMA_SLOW_HTF = 50
 EMA_TREND_HTF = 200
-VOL_MA_LEN = 20
+VOL_MA_LEN = 300
 ATR_INIT_MULT = 2.0
 ATR_TRAIL_MULT = 3.0
 TP1_R_MULT = 2.0
@@ -127,7 +147,7 @@ def compute_ltf(df_ltf: pd.DataFrame) -> pd.DataFrame:
     out["ema9"] = ind.ema(out["close"], EMA_FAST)
     out["ema21"] = ind.ema(out["close"], EMA_MID)
     out["rsi14"] = ind.rsi(out["close"], RSI_LEN)
-    out["atr14"] = ind.atr(out, ATR_LEN)
+    out["atr14"] = ind.rolling_block_atr(out, ATR_BLOCK_MINUTES, ATR_LEN)
     out["vol_ma20"] = out["volume"].rolling(VOL_MA_LEN, min_periods=VOL_MA_LEN).mean()
     return out
 
@@ -234,29 +254,30 @@ def _clears_fees(entry: float, tp1: float) -> bool:
 
 
 def prepare(df_1m: pd.DataFrame) -> pd.DataFrame:
-    """Full pipeline: 1m OHLCV -> 15m entry frame with HTF(1h) trend and
-    signal columns attached. Used by the backtester, which only has 1m
-    history to work from.
+    """Full pipeline: 1m OHLCV -> entry frame (native 1m — entries are
+    analyzed and taken on every closed 1-minute candle, per the user's
+    explicit request) with HTF(1h) trend and signal columns attached.
+    The LTF frame needs no resampling since the input already is 1m; only
+    the HTF (1h) trend filter is built by resampling up.
     """
     df = df_1m.copy()
     df["datetime"] = pd.to_datetime(df["datetime"])
     df = df.set_index("datetime")
 
     agg = {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}
-    df_15m = df.resample("15min").agg(agg).dropna().reset_index()
     df_1h = df.resample("1h").agg(agg).dropna().reset_index()
-    return prepare_from_ltf_htf(df_15m, df_1h)
+    df_1m_flat = df.reset_index()
+    return prepare_from_ltf_htf(df_1m_flat, df_1h)
 
 
-def prepare_from_ltf_htf(df_15m_raw: pd.DataFrame, df_1h_raw: pd.DataFrame) -> pd.DataFrame:
-    """Same pipeline as prepare(), but starting from native 15m/1h OHLCV
-    (e.g. fetched directly from the exchange's kline endpoints, which is
-    far cheaper than pulling enough 1m history to resample). This is the
+def prepare_from_ltf_htf(df_ltf_raw: pd.DataFrame, df_1h_raw: pd.DataFrame) -> pd.DataFrame:
+    """Same pipeline as prepare(), but starting from native LTF (1m)/1h
+    OHLCV already fetched from the exchange's kline endpoints. This is the
     single function both the backtester (via prepare()) and the live bot
     call, so behaviour cannot drift between them.
     """
     df_htf = compute_htf(df_1h_raw)
-    df_ltf = compute_ltf(df_15m_raw)
+    df_ltf = compute_ltf(df_ltf_raw)
     merged = merge_htf_trend(df_ltf, df_htf)
     merged = build_signal_columns(merged)
     return merged

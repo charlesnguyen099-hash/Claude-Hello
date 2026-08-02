@@ -11,43 +11,43 @@ from bot.config import Config
 from bot.paper_trading import PaperBroker
 
 
-def _load_resampled(csv_path="data/BTCUSDT_2026.csv"):
+def _load_1m_and_1h(csv_path="data/BTCUSDT_2026.csv"):
     df = pd.read_csv(csv_path, sep=None, engine="python")
     df.columns = [c.strip().lower() for c in df.columns]
     df["datetime"] = pd.to_datetime(df["datetime"])
-    df = df.set_index("datetime")
+    df_1m = df.reset_index(drop=True)
+    dfi = df.set_index("datetime")
     agg = {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}
-    df_15m = df.resample("15min").agg(agg).dropna().reset_index()
-    df_1h = df.resample("1h").agg(agg).dropna().reset_index()
-    return df_15m, df_1h
+    df_1h = dfi.resample("1h").agg(agg).dropna().reset_index()
+    return df_1m, df_1h
 
 
 class FakeExchange:
-    def __init__(self, df_15m, df_1h):
-        self.df_15m = df_15m
+    def __init__(self, df_1m, df_1h):
+        self.df_1m = df_1m
         self.df_1h = df_1h
         self.now: pd.Timestamp | None = None
         self.price_override: float | None = None
 
     def get_klines(self, symbol, timeframe, limit=300):
-        src = self.df_15m if timeframe == "15m" else self.df_1h
+        src = self.df_1m if timeframe == "1m" else self.df_1h
         return src[src["datetime"] <= self.now].tail(limit).reset_index(drop=True)
 
     def get_last_price(self, symbol):
         if self.price_override is not None:
             return self.price_override
-        row = self.df_15m[self.df_15m["datetime"] <= self.now].iloc[-1]
+        row = self.df_1m[self.df_1m["datetime"] <= self.now].iloc[-1]
         return float(row["close"])
 
 
 def test_paper_broker_opens_position_matching_backtest_signal():
-    df_15m, df_1h = _load_resampled()
-    fake = FakeExchange(df_15m, df_1h)
+    df_1m, df_1h = _load_1m_and_1h()
+    fake = FakeExchange(df_1m, df_1h)
     config = Config(symbols=["BTCUSDT"])
     broker = PaperBroker(fake, config, starting_equity=10_000.0)
 
-    # Same SHORT entry the backtest found at 2026-01-21 16:45:00.
-    fake.now = pd.Timestamp("2026-01-21 17:00:00")
+    # Same SHORT entry the backtest found at 2026-01-21 16:56:00.
+    fake.now = pd.Timestamp("2026-01-21 16:57:00")
     broker.try_open("BTCUSDT")
 
     assert "BTCUSDT" in broker.open_positions
@@ -57,8 +57,8 @@ def test_paper_broker_opens_position_matching_backtest_signal():
 
 
 def test_paper_broker_no_open_when_no_signal():
-    df_15m, df_1h = _load_resampled()
-    fake = FakeExchange(df_15m, df_1h)
+    df_1m, df_1h = _load_1m_and_1h()
+    fake = FakeExchange(df_1m, df_1h)
     config = Config(symbols=["BTCUSDT"])
     broker = PaperBroker(fake, config, starting_equity=10_000.0)
 
@@ -70,12 +70,12 @@ def test_paper_broker_no_open_when_no_signal():
 
 
 def test_paper_broker_stop_loss_closes_and_deducts_correctly():
-    df_15m, df_1h = _load_resampled()
-    fake = FakeExchange(df_15m, df_1h)
+    df_1m, df_1h = _load_1m_and_1h()
+    fake = FakeExchange(df_1m, df_1h)
     config = Config(symbols=["BTCUSDT"])
     broker = PaperBroker(fake, config, starting_equity=10_000.0)
 
-    fake.now = pd.Timestamp("2026-01-21 17:00:00")
+    fake.now = pd.Timestamp("2026-01-21 16:57:00")
     broker.try_open("BTCUSDT")
     pos = broker.open_positions["BTCUSDT"]
     equity_after_entry = broker.equity
@@ -92,12 +92,12 @@ def test_paper_broker_stop_loss_closes_and_deducts_correctly():
 
 
 def test_paper_broker_tp1_then_trailing_and_summary():
-    df_15m, df_1h = _load_resampled()
-    fake = FakeExchange(df_15m, df_1h)
+    df_1m, df_1h = _load_1m_and_1h()
+    fake = FakeExchange(df_1m, df_1h)
     config = Config(symbols=["BTCUSDT"])
     broker = PaperBroker(fake, config, starting_equity=10_000.0)
 
-    fake.now = pd.Timestamp("2026-01-21 17:00:00")
+    fake.now = pd.Timestamp("2026-01-21 16:57:00")
     broker.try_open("BTCUSDT")
     pos = broker.open_positions["BTCUSDT"]
 

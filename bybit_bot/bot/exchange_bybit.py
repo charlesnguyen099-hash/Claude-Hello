@@ -17,7 +17,7 @@ from bot.config import Config
 
 logger = logging.getLogger("bybit_bot.exchange")
 
-INTERVAL_MAP = {"15m": "15", "1h": "60"}
+INTERVAL_MAP = {"1m": "1", "15m": "15", "1h": "60"}
 
 
 @dataclass
@@ -39,20 +39,55 @@ class BybitExchange:
         )
         self._instrument_cache: dict[str, InstrumentInfo] = {}
 
+    _MAX_KLINES_PER_CALL = 1000  # Bybit v5 kline endpoint hard cap per request
+
     def get_klines(self, symbol: str, timeframe: str, limit: int = 300) -> pd.DataFrame:
+        """Fetches up to `limit` most-recent closed+forming candles,
+        transparently paginating (walking backward with `end`) when
+        `limit` exceeds Bybit's per-call cap — needed because the slower
+        indicators (e.g. EMA span=315 on 1m bars) need several thousand
+        bars of history to actually converge, not just to have a
+        non-NaN value.
+        """
         interval = INTERVAL_MAP[timeframe]
-        resp = self.client.get_kline(
-            category=self.config.category, symbol=symbol, interval=interval, limit=limit
-        )
-        rows = resp["result"]["list"]
-        df = pd.DataFrame(
-            rows, columns=["ts", "open", "high", "low", "close", "volume", "turnover"]
-        )
-        df["datetime"] = pd.to_datetime(df["ts"].astype("int64"), unit="ms")
+        chunks: list[pd.DataFrame] = []
+        remaining = limit
+        end_ms: int | None = None
+
+        while remaining > 0:
+            page_limit = min(remaining, self._MAX_KLINES_PER_CALL)
+            kwargs = {
+                "category": self.config.category,
+                "symbol": symbol,
+                "interval": interval,
+                "limit": page_limit,
+            }
+            if end_ms is not None:
+                kwargs["end"] = end_ms
+            resp = self.client.get_kline(**kwargs)
+            rows = resp["result"]["list"]
+            if not rows:
+                break
+            df = pd.DataFrame(
+                rows, columns=["ts", "open", "high", "low", "close", "volume", "turnover"]
+            )
+            df["ts"] = df["ts"].astype("int64")
+            chunks.append(df)
+            remaining -= len(rows)
+            oldest_ts = df["ts"].min()
+            end_ms = oldest_ts - 1
+            if len(rows) < page_limit:
+                break  # exchange has no more history than this
+
+        if not chunks:
+            return pd.DataFrame(columns=["datetime", "open", "high", "low", "close", "volume"])
+
+        combined = pd.concat(chunks, ignore_index=True).drop_duplicates(subset="ts")
+        combined["datetime"] = pd.to_datetime(combined["ts"], unit="ms")
         for col in ("open", "high", "low", "close", "volume"):
-            df[col] = df[col].astype(float)
-        df = df.sort_values("datetime").reset_index(drop=True)
-        return df[["datetime", "open", "high", "low", "close", "volume"]]
+            combined[col] = combined[col].astype(float)
+        combined = combined.sort_values("datetime").tail(limit).reset_index(drop=True)
+        return combined[["datetime", "open", "high", "low", "close", "volume"]]
 
     def get_last_price(self, symbol: str) -> float:
         """Public ticker endpoint — no API key needed. Used by paper

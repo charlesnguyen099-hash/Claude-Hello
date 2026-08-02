@@ -53,8 +53,8 @@ one:
    character failing on a genuinely different one. This is reported
    because it's the honest result of the out-of-sample test, not because
    it's flattering.
-4. **Current version** adds three changes, each requested explicitly and
-   each validated (not assumed) on both years:
+4. Added three changes, each requested explicitly and each validated
+   (not assumed) on both years:
    - **Fee-aware filter**: a signal is only taken if its smallest profit
      target (TP1) clears Bybit's round-trip taker fee + assumed slippage
      by ≥8x (`bot/risk.py: ROUND_TRIP_COST_PCT`, `strategy.py:
@@ -69,28 +69,52 @@ one:
      which didn't have that side effect — see the comment in
      `strategy.py` for the numbers that led to swapping it.
    - **Stale-position exit**: a position that hasn't reached TP1 within 6
-     hours (24 × 15m bars) and isn't at least +0.3R unrealized gets
-     closed at market instead of sitting on margin indefinitely
-     (`risk.py: STALE_POSITION_MAX_BARS/MIN_R`).
+     hours and isn't at least +0.3R unrealized gets closed at market
+     instead of sitting on margin indefinitely (`risk.py:
+     STALE_POSITION_MAX_MINUTES/MIN_R`).
+5. **Current: entries evaluated on every closed 1-minute candle**
+   instead of every 15-minute candle, per an explicit follow-up request
+   to analyze and trade on 1m bars. This needed two real fixes, not just
+   "use 1m data":
+   - Naively computing EMA9/EMA21/ATR14/RSI14 directly on 1m bars was
+     almost pure microstructure noise — backtested on both years with
+     only the fee filter re-tuned, results ranged from **-44% to -21%**
+     with no setting working on both. The periods were rescaled to the
+     same *real time span* that worked at 15m (9 bars×15m = 135m, 21
+     bars×15m = 315m, etc.), computed directly on 1m closes.
+   - That fixed EMA/RSI, but not ATR: ATR measures the size of a bar's
+     *own* range, so a longer lookback period never fixes it — a
+     1-minute candle's range is always much smaller than a 15-minute
+     candle's, regardless of how many of them you average. Fixed with
+     `indicators.rolling_block_atr`: a sliding 15-minute window's range
+     (as if it were one candle), EMA-smoothed — reproducing the original
+     15m ATR's real-world units while still updating every minute.
 
-**Results with the current version, both years, out-of-sample each way**
-(strategy structure wasn't touched between these two runs):
+**Results, current (1m-entry) version, both years, out-of-sample each
+way** (strategy structure identical between these two runs):
 
 | Dataset | Trades | Win rate | Profit factor | Return | Max drawdown |
 |---|---|---|---|---|---|
-| Jan-Aug 2026 | 14 | 35.7% | 1.70 | **+10.67%** | -6.44% |
-| Full year 2025 | 7 | 57.1% | 0.96 | -0.19% | -2.34% |
+| Jan-Aug 2026 | 14 | 21.4% | 0.32 | -11.45% | -11.45% |
+| Full year 2025 | 26 | 50.0% | 1.31 | **+5.23%** | -7.43% |
 
-Both drawdowns are now single-digit (down from -19.62% before these
-filters), and 2025 — the year that broke the previous version — is now
-roughly flat instead of -16.95%. This is a much smaller number of trades
-than "catch every possible profitable wiggle," on purpose: this is a
-filtered, risk-controlled system, not a strategy that promises to catch
-every potential move — see "On the request to catch every possible
-trade" below for why that's not something any real system can honestly
-promise.
+For comparison, the 15m-entry version (same filters, same risk logic)
+scored +10.67%/-6.44% on 2026 and -0.19%/-2.34% on 2025. Moving to 1m
+entries made 2026 worse and 2025 better — with only 14-26 trades per
+year, that's consistent with the extra entries just landing on slightly
+different fills rather than a real edge change either direction; it is
+reported as-is rather than picking whichever timeframe looks better.
+**Trading on 1m candles gives faster reaction time (this bot reacts to a
+crossover within ~1 minute of it happening instead of within 15), not a
+provably better edge** — the underlying trend/momentum information the
+strategy trades on is the same either way, since the indicator periods
+were rescaled to cover the same real time span. Both configurations
+remain available: `EMA_FAST=135, EMA_MID=315, ATR_BLOCK_MINUTES=15` in
+`strategy.py` is the 1m version currently wired into the live bot,
+scanner, and paper trading.
 
-Re-run it yourself:
+Re-run it yourself (the 2025 run takes noticeably longer — it's ~526k
+1-minute bars processed one at a time):
 
 ```bash
 python -m backtest.run_backtest data/BTCUSDT_2026.csv
@@ -134,7 +158,7 @@ of being tied up for the full duration of a move.
 The live bot (`bot/scanner.py`) and paper-trading mode
 (`bot/paper_trading.py`) both evaluate every symbol in `SYMBOLS` against
 the identical rules above, independently, every poll cycle. A coin only
-gets traded when its own 1h/15m candles satisfy the regime + entry +
+gets traded when its own 1h/1m candles satisfy the regime + entry +
 anti-chase + fee conditions; coins that don't match are simply skipped
 that cycle. There is no "if it's Bitcoin do X, otherwise do Y" — the same
 functions (`strategy.prepare_from_ltf_htf` / `strategy.signal_from_row`)
@@ -222,10 +246,11 @@ python -m bot.paper_trading --equity 10
 
 - `--equity` sets the starting virtual balance (default 10, i.e. $10 as
   requested — see the note below on what that does and doesn't prove).
-- It checks every open paper position against the **live last price**
-  every 15 seconds (`PRICE_POLL_SECONDS`) for stop/TP1/TP2 fills — not
-  just once per candle close — and refreshes trend/trailing-stop/
-  stale-position checks every 60 seconds (`SIGNAL_POLL_SECONDS`).
+- Entries are checked on every newly-closed **1-minute** candle
+  (`SIGNAL_POLL_SECONDS = 60`), matching the live scanner. Open positions
+  are additionally checked against the **live last price** every 15
+  seconds (`PRICE_POLL_SECONDS`) for stop/TP1/TP2 fills — faster than
+  waiting for the next candle close.
 - Stop with Ctrl+C at any point. It prints a full session summary:
   closed trades (count, wins, losses, realized P&L) **and** currently
   open positions (count, how many are currently winning vs. losing right
@@ -246,10 +271,27 @@ realistically executable on a real account of that size.
 **Network note**: klines/tickers are public Bybit endpoints, so no API
 key is required to run this — but it does need real outbound access to
 `api.bybit.com` (or `api-testnet.bybit.com` if `BYBIT_TESTNET=true`).
-This sandbox's network egress does not reach Bybit, so this mode could
-not be end-to-end tested from here; `tests/test_paper_trading.py` covers
-the fill/fee/summary logic against a fake exchange instead. Run it
-yourself in an environment with real internet access to Bybit.
+This is a genuine, confirmed environment limitation, not a code issue:
+the sandbox this bot was built in runs its outbound traffic through a
+policy-enforcing proxy that returns a `403` (policy denial) specifically
+for `api.bybit.com` — checked directly (`curl` to the kline endpoint,
+and the proxy's own status log) rather than assumed. `curl -sS
+http://127.0.0.1:39861/__agentproxy/status` in that environment shows
+the exact rejected host if you want to see it yourself. Because of that,
+this mode could not be end-to-end tested from here;
+`tests/test_paper_trading.py` and `tests/test_scanner.py` cover the
+fill/fee/signal/summary logic against a fake exchange fed real
+historical data instead — run `paper_trading.py` itself in an
+environment with real internet access to Bybit.
+
+**Why the kline fetch paginates**: the slower indicators (EMA span=315
+on 1m bars) need several thousand 1-minute candles of history to
+actually *converge*, not just to produce a non-NaN value — with too
+short a window the EMA is still biased toward wherever the window
+happened to start. `bot/exchange_bybit.py: get_klines` transparently
+pages past Bybit's 1000-candles-per-call limit (walking backward with
+the `end` parameter) to fetch the ~2000 bars both the live scanner and
+paper trading request on every poll.
 
 ## Project layout
 
@@ -294,8 +336,8 @@ changing them is a deliberate code change, not a one-line config flip:
 - `DAILY_LOSS_LIMIT_PCT = 0.15`
 - `ROUND_TRIP_COST_PCT`: assumed Bybit taker fee + slippage round trip,
   used by the fee-aware signal filter in `strategy.py`
-- `STALE_POSITION_MAX_BARS = 24`, `STALE_POSITION_MIN_R = 0.3`: capital-
-  efficiency exit for positions that aren't progressing
+- `STALE_POSITION_MAX_MINUTES = 360`, `STALE_POSITION_MIN_R = 0.3`:
+  capital-efficiency exit for positions that aren't progressing
 
 If you deliberately want higher risk limits, edit those constants with
 full understanding that it increases both potential return and the

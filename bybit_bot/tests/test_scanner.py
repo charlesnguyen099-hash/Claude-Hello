@@ -14,28 +14,28 @@ from bot.scanner import Scanner
 CSV_PATH = "data/BTCUSDT_2026.csv"
 
 
-def _load_resampled():
+def _load_1m_and_1h():
     df = pd.read_csv(CSV_PATH, sep=None, engine="python")
     df.columns = [c.strip().lower() for c in df.columns]
     df["datetime"] = pd.to_datetime(df["datetime"])
-    df = df.set_index("datetime")
+    df_1m = df.reset_index(drop=True)
+    dfi = df.set_index("datetime")
     agg = {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}
-    df_15m = df.resample("15min").agg(agg).dropna().reset_index()
-    df_1h = df.resample("1h").agg(agg).dropna().reset_index()
-    return df_15m, df_1h
+    df_1h = dfi.resample("1h").agg(agg).dropna().reset_index()
+    return df_1m, df_1h
 
 
 class FakeExchange:
     """Duck-types the subset of BybitExchange the scanner calls."""
 
-    def __init__(self, df_15m: pd.DataFrame, df_1h: pd.DataFrame):
-        self.df_15m = df_15m
+    def __init__(self, df_1m: pd.DataFrame, df_1h: pd.DataFrame):
+        self.df_1m = df_1m
         self.df_1h = df_1h
         self.now: pd.Timestamp | None = None
         self.calls: list[tuple] = []
 
     def get_klines(self, symbol, timeframe, limit=300):
-        src = self.df_15m if timeframe == "15m" else self.df_1h
+        src = self.df_1m if timeframe == "1m" else self.df_1h
         window = src[src["datetime"] <= self.now].tail(limit).reset_index(drop=True)
         return window
 
@@ -64,15 +64,15 @@ class FakeExchange:
 
 
 def test_scanner_opens_the_same_trade_the_backtest_found():
-    df_15m, df_1h = _load_resampled()
-    fake = FakeExchange(df_15m, df_1h)
+    df_1m, df_1h = _load_1m_and_1h()
+    fake = FakeExchange(df_1m, df_1h)
     config = Config(symbols=["BTCUSDT"], max_concurrent_positions=4, equity_override_usdt=10_000.0)
     scanner = Scanner(exchange=fake, config=config)
 
-    # Backtest found a SHORT entry on BTCUSDT at 2026-01-21 16:45:00 (see
+    # Backtest found a SHORT entry on BTCUSDT at 2026-01-21 16:56:00 (see
     # backtest/run_backtest.py output). Advance the fake clock to just
     # after that bar closes and run one scan.
-    fake.now = pd.Timestamp("2026-01-21 17:00:00")  # +1 bar so it's not "still forming"
+    fake.now = pd.Timestamp("2026-01-21 16:57:00")  # +1 bar so it's not "still forming"
     scanner.run_once()
 
     assert "BTCUSDT" in scanner.open_positions
@@ -82,8 +82,8 @@ def test_scanner_opens_the_same_trade_the_backtest_found():
 
 
 def test_scanner_does_not_open_when_no_signal():
-    df_15m, df_1h = _load_resampled()
-    fake = FakeExchange(df_15m, df_1h)
+    df_1m, df_1h = _load_1m_and_1h()
+    fake = FakeExchange(df_1m, df_1h)
     config = Config(symbols=["BTCUSDT"], max_concurrent_positions=4, equity_override_usdt=10_000.0)
     scanner = Scanner(exchange=fake, config=config)
 
@@ -95,20 +95,20 @@ def test_scanner_does_not_open_when_no_signal():
 
 
 def test_scanner_moves_stop_to_breakeven_after_tp1():
-    df_15m, df_1h = _load_resampled()
-    fake = FakeExchange(df_15m, df_1h)
+    df_1m, df_1h = _load_1m_and_1h()
+    fake = FakeExchange(df_1m, df_1h)
     config = Config(symbols=["BTCUSDT"], max_concurrent_positions=4, equity_override_usdt=10_000.0)
     scanner = Scanner(exchange=fake, config=config)
 
-    # This entry (2026-02-01 10:45:00 SHORT) is the one the backtest shows
+    # This entry (2026-02-01 11:09:00 SHORT) is the one the backtest shows
     # actually reaching TP1 (tp1_hit=True).
-    fake.now = pd.Timestamp("2026-02-01 11:00:00")
+    fake.now = pd.Timestamp("2026-02-01 11:10:00")
     scanner.run_once()
     assert "BTCUSDT" in scanner.open_positions
 
     # Step forward bar-by-bar until TP1 fires (matches backtest, which
     # showed tp1_hit=True for this exact trade) or the position closes.
-    times = df_15m[df_15m["datetime"] > fake.now]["datetime"].tolist()
+    times = df_1m[df_1m["datetime"] > fake.now]["datetime"].tolist()
     for t in times:
         fake.now = t
         scanner.run_once()

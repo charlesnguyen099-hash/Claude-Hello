@@ -34,8 +34,8 @@ from bot.main import setup_logging
 logger = logging.getLogger("bybit_bot.paper")
 
 PRICE_POLL_SECONDS = 15    # how often to check open positions against live price
-SIGNAL_POLL_SECONDS = 60   # how often to refresh trend / look for new entries
-KLINES_15M_LIMIT = 200
+SIGNAL_POLL_SECONDS = 60   # how often to refresh trend / look for new entries (matches a new 1m candle)
+KLINES_1M_LIMIT = 2000  # EMA span=315 needs ~5x that many bars to actually converge
 KLINES_1H_LIMIT = 300
 
 
@@ -97,16 +97,16 @@ class PaperBroker:
 
     def _merged_frame(self, symbol: str) -> pd.DataFrame | None:
         try:
-            df_15m = self.exchange.get_klines(symbol, "15m", KLINES_15M_LIMIT)
+            df_1m = self.exchange.get_klines(symbol, "1m", KLINES_1M_LIMIT)
             df_1h = self.exchange.get_klines(symbol, "1h", KLINES_1H_LIMIT)
         except Exception:
             logger.exception("Failed to fetch klines for %s", symbol)
             return None
-        if len(df_15m) < 2 or len(df_1h) < 2:
+        if len(df_1m) < 2 or len(df_1h) < 2:
             return None
-        df_15m = df_15m.iloc[:-1].reset_index(drop=True)
+        df_1m = df_1m.iloc[:-1].reset_index(drop=True)
         df_1h = df_1h.iloc[:-1].reset_index(drop=True)
-        merged = strategy.prepare_from_ltf_htf(df_15m, df_1h)
+        merged = strategy.prepare_from_ltf_htf(df_1m, df_1h)
         return merged if not merged.empty else None
 
     def try_open(self, symbol: str) -> None:
@@ -216,7 +216,7 @@ class PaperBroker:
     def refresh_trend_and_trail(self, symbol: str) -> None:
         """Slower-cadence check: trend flip, ATR-based trailing stop
         update, and the stale-position capital-efficiency exit — these
-        all need the 15m/1h indicator frame, not just a live price tick.
+        all need the 1m/1h indicator frame, not just a live price tick.
         """
         pos = self.open_positions.get(symbol)
         if pos is None:
@@ -255,8 +255,8 @@ class PaperBroker:
                 unrealized_r = (
                     (price - pos.entry) / risk_distance if long else (pos.entry - price) / risk_distance
                 )
-                elapsed_bars = (pd.Timestamp.now(tz="UTC") - pos.entry_time) / pd.Timedelta(minutes=15)
-                if elapsed_bars >= risk.STALE_POSITION_MAX_BARS and unrealized_r < risk.STALE_POSITION_MIN_R:
+                elapsed_minutes = (pd.Timestamp.now(tz="UTC") - pos.entry_time) / pd.Timedelta(minutes=1)
+                if elapsed_minutes >= risk.STALE_POSITION_MAX_MINUTES and unrealized_r < risk.STALE_POSITION_MIN_R:
                     self._close(symbol, price, "stale_position")
 
     def summary(self) -> dict:

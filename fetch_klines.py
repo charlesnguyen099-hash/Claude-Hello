@@ -56,41 +56,40 @@ def get_all_usdt_perp_symbols():
 
 def fetch_klines(symbol, start_ms, end_ms):
     """
-    Tải toàn bộ nến 1m trong khoảng [start_ms, end_ms).
-    Bybit trả tối đa 1000 nến/request nên tự vòng lặp nhiều lần cho đến khi đủ.
-    Bybit trả về thứ tự: mới nhất trước (index 0 = mới nhất).
+    Tải toàn bộ nến 1m trong [start_ms, end_ms).
+    Bybit trả về mới nhất trước (descending), tối đa 1000/request.
+    -> Phải duyệt ngược: mỗi batch lấy 1000 nến MỚI NHẤT trong range,
+       sau đó dùng timestamp CŨ NHẤT của batch làm end mới để lấy tiếp về quá khứ.
+    Ví dụ 1 ngày (1440 nến):
+      Batch 1: end=23:59 -> nhận nến 07:20-23:59 (1000 nến), oldest=07:20
+      Batch 2: end=07:20 -> nhận nến 00:00-07:19 (440 nến), oldest<=start -> dừng
     """
     all_rows = {}
-    cur = start_ms
-    req_count = 0
+    current_end = end_ms
 
-    while cur < end_ms:
+    while True:
         params = {
             "category": "linear",
             "symbol":   symbol,
             "interval": "1",
-            "start":    cur,
-            "end":      end_ms,
+            "start":    start_ms,
+            "end":      current_end,
             "limit":    MAX_LIMIT,
         }
         try:
-            r    = requests.get(BYBIT_BASE + KLINE_ENDPOINT, params=params, timeout=15)
+            r   = requests.get(BYBIT_BASE + KLINE_ENDPOINT, params=params, timeout=15)
             r.raise_for_status()
             raw = r.json().get("result", {}).get("list", [])
         except Exception as e:
-            print("\n    [!] {}: lỗi request #{}: {}".format(symbol, req_count + 1, e))
+            print("\n    [!] {}: lỗi request: {}".format(symbol, e))
             time.sleep(2)
             break
 
         if not raw:
             break
 
-        req_count += 1
-
-        # Bybit trả mới nhất trước: raw[0] = mới nhất, raw[-1] = cũ nhất
-        # Lấy timestamp cũ nhất và mới nhất trong batch này
-        oldest_ts  = int(raw[-1][0])   # raw[-1] = cũ nhất
-        newest_ts  = int(raw[0][0])    # raw[0]  = mới nhất
+        # raw[0]=mới nhất, raw[-1]=cũ nhất
+        oldest_ts = int(raw[-1][0])
 
         for row in raw:
             ts = int(row[0])
@@ -104,11 +103,12 @@ def fetch_klines(symbol, start_ms, end_ms):
                     "volume": row[5],
                 }
 
-        # Tiến cur đến sau nến mới nhất vừa nhận để lấy batch tiếp theo
-        if newest_ts <= cur:
-            break  # không tiến được, thoát tránh vô hạn
-        cur = newest_ts + 60000  # +1 phút, bắt đầu batch kế
+        # Nếu đã lấy đến hoặc vượt qua start_ms thì đủ rồi
+        if oldest_ts <= start_ms:
+            break
 
+        # Lần tiếp: lấy các nến CŨ HƠN oldest vừa nhận
+        current_end = oldest_ts
         time.sleep(RATE_DELAY)
 
     return sorted(all_rows.values(), key=lambda x: x["timestamp_ms"])

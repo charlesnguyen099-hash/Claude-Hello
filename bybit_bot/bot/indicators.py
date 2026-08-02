@@ -1,0 +1,79 @@
+"""Pure pandas/numpy technical indicators. No external TA dependency,
+so behavior is identical between backtest and live bot.
+"""
+from __future__ import annotations
+
+import numpy as np
+import pandas as pd
+
+
+def ema(series: pd.Series, length: int) -> pd.Series:
+    return series.ewm(span=length, adjust=False, min_periods=length).mean()
+
+
+def rsi(series: pd.Series, length: int = 14) -> pd.Series:
+    delta = series.diff()
+    gain = delta.clip(lower=0.0)
+    loss = -delta.clip(upper=0.0)
+    avg_gain = gain.ewm(alpha=1.0 / length, adjust=False, min_periods=length).mean()
+    avg_loss = loss.ewm(alpha=1.0 / length, adjust=False, min_periods=length).mean()
+    rs = avg_gain / avg_loss.replace(0.0, np.nan)
+    out = 100.0 - (100.0 / (1.0 + rs))
+    return out.fillna(50.0)
+
+
+def true_range(df: pd.DataFrame) -> pd.Series:
+    prev_close = df["close"].shift(1)
+    a = df["high"] - df["low"]
+    b = (df["high"] - prev_close).abs()
+    c = (df["low"] - prev_close).abs()
+    return pd.concat([a, b, c], axis=1).max(axis=1)
+
+
+def atr(df: pd.DataFrame, length: int = 14) -> pd.Series:
+    tr = true_range(df)
+    return tr.ewm(alpha=1.0 / length, adjust=False, min_periods=length).mean()
+
+
+def adx(df: pd.DataFrame, length: int = 14) -> pd.Series:
+    up_move = df["high"].diff()
+    down_move = -df["low"].diff()
+
+    plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
+    minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
+
+    tr = true_range(df)
+    atr_ = tr.ewm(alpha=1.0 / length, adjust=False, min_periods=length).mean()
+
+    plus_dm_s = pd.Series(plus_dm, index=df.index).ewm(
+        alpha=1.0 / length, adjust=False, min_periods=length
+    ).mean()
+    minus_dm_s = pd.Series(minus_dm, index=df.index).ewm(
+        alpha=1.0 / length, adjust=False, min_periods=length
+    ).mean()
+
+    plus_di = 100.0 * (plus_dm_s / atr_.replace(0.0, np.nan))
+    minus_di = 100.0 * (minus_dm_s / atr_.replace(0.0, np.nan))
+
+    dx = 100.0 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0.0, np.nan)
+    return dx.ewm(alpha=1.0 / length, adjust=False, min_periods=length).mean().fillna(0.0)
+
+
+def swing_points(df: pd.DataFrame, lookback: int = 3) -> tuple[pd.Series, pd.Series]:
+    """Boolean masks for confirmed swing highs/lows (fractal, `lookback` bars
+    on each side). A point at index i is only confirmed `lookback` bars later,
+    so this is safe to use in a bar-by-bar backtest without lookahead as long
+    as callers only read a swing flag once i + lookback bars have closed.
+    """
+    highs = df["high"]
+    lows = df["low"]
+    is_high = pd.Series(False, index=df.index)
+    is_low = pd.Series(False, index=df.index)
+    for i in range(lookback, len(df) - lookback):
+        window_h = highs.iloc[i - lookback : i + lookback + 1]
+        window_l = lows.iloc[i - lookback : i + lookback + 1]
+        if highs.iloc[i] == window_h.max():
+            is_high.iloc[i] = True
+        if lows.iloc[i] == window_l.min():
+            is_low.iloc[i] = True
+    return is_high, is_low

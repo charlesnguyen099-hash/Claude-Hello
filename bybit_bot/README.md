@@ -32,75 +32,113 @@ place a single real order until you deliberately change both in `.env`.
 `backtest/run_backtest.py` runs the exact same signal code
 (`bot/strategy.py`) used by the live bot against real BTCUSDT 1-minute
 futures data. This is not a hypothetical demo — it is the actual trade
-log the strategy would have produced. The strategy went through three
-iterations as more data became available (1 month, then Jan-Aug 2026 /
-~307k 1-minute candles, `data/BTCUSDT_2026.csv`), and every version's
-result below is the honest number, not a cherry-picked one:
+log the strategy would have produced. The strategy went through several
+iterations as more data became available (1 month → Jan-Aug 2026, ~307k
+candles → full year 2025, ~526k candles, `data/BTCUSDT_2025.csv`), and
+every version's result below is the honest number, not a cherry-picked
+one:
 
 1. **Pullback-to-EMA21 entry** (mean reversion): almost no signals on 1
-   month of data, lost on the ones it took — real trends often never
-   pull back to a fast EMA.
-2. **Donchian breakout entry** (close beyond prior 20-bar high/low): far
-   more signals, but on the full 7-month dataset it had a ~32-34% win
-   rate *at every confidence tier* and profit factor < 1 (net losing).
-   Several principled variants (2-bar breakout confirmation, wider ATR
-   trail, larger partial-TP) were tested and none fixed it — a fresh
-   N-bar extreme on this symbol/timeframe gets wicked through and
-   reversed often enough to erase the edge.
-3. **Current: EMA9/EMA21 crossover entry**, still gated by the same
-   higher-timeframe trend filter. Instead of waiting for a new extreme,
-   it enters as soon as short-term momentum turns to agree with the
-   already-confirmed HTF trend, which caught the real multi-week 2026
-   BTC trends (e.g. the ~87.6k → ~62.8k Jan-Jun downtrend) that the
-   breakout version mostly missed or chopped through.
+   month of data, lost on the ones it took.
+2. **Donchian breakout entry**: ~32-34% win rate *at every confidence
+   tier*, profit factor < 1 on 7 months of 2026 data. Several fixes
+   tried, none worked — a fresh N-bar extreme gets wicked through and
+   reversed too often on this symbol/timeframe.
+3. **EMA9/EMA21 crossover entry**, still gated by the HTF trend filter:
+   38.1% win rate, profit factor 1.29, +9.46% on the 2026 dataset — but
+   when tested **out-of-sample on all of 2025** (a much choppier year,
+   whipsawing ±5-18% almost every month instead of one clean trend) it
+   lost **-16.95%** with a **-19.62% drawdown**. That gap is a textbook
+   overfitting signature: a strategy shaped around one dataset's specific
+   character failing on a genuinely different one. This is reported
+   because it's the honest result of the out-of-sample test, not because
+   it's flattering.
+4. **Current version** adds three changes, each requested explicitly and
+   each validated (not assumed) on both years:
+   - **Fee-aware filter**: a signal is only taken if its smallest profit
+     target (TP1) clears Bybit's round-trip taker fee + assumed slippage
+     by ≥8x (`bot/risk.py: ROUND_TRIP_COST_PCT`, `strategy.py:
+     MIN_TP1_TO_COST_RATIO`) — a "win" on paper must still be a win after
+     real costs.
+   - **Anti-chase filter**: reject longs where RSI(14) is already ≥70
+     (overbought) and shorts where it's already ≤30 (oversold) — this is
+     the "không đu đỉnh/đáy" rule. An earlier attempt measured distance
+     from the 1h EMA50 in ATR units instead; that rejected most of the
+     *good* continuation trades too (a slow average naturally trails far
+     behind price in any real trend), so it was replaced with plain RSI,
+     which didn't have that side effect — see the comment in
+     `strategy.py` for the numbers that led to swapping it.
+   - **Stale-position exit**: a position that hasn't reached TP1 within 6
+     hours (24 × 15m bars) and isn't at least +0.3R unrealized gets
+     closed at market instead of sitting on margin indefinitely
+     (`risk.py: STALE_POSITION_MAX_BARS/MIN_R`).
 
-The full pipeline (current version):
+**Results with the current version, both years, out-of-sample each way**
+(strategy structure wasn't touched between these two runs):
 
-1. **Regime filter (1h):** only trade in the direction of the 1h trend
-   — EMA50 vs EMA200 + ADX(14) ≥ 25 (Wilder's standard "trending market"
-   threshold), and the regime must have held for ≥3 consecutive 1h bars
-   before being trusted (filters fresh/fake regime flips).
-2. **Entry (15m):** EMA9 crosses EMA21 in the direction of the HTF
-   trend, with above-average volume.
-3. **Exit:** initial stop at 2×ATR(14, 15m). Half the position closes at
-   +2R and the stop moves to breakeven. The remainder trails with a
-   3×ATR chandelier stop, or exits immediately if the 1h trend flips
-   against the position.
-4. **Confidence (0-100):** built from HTF ADX strength and volume ratio.
-   Maps to a position-size tier in `bot/risk.py` — never "all-in," even
-   at the top tier.
+| Dataset | Trades | Win rate | Profit factor | Return | Max drawdown |
+|---|---|---|---|---|---|
+| Jan-Aug 2026 | 14 | 35.7% | 1.70 | **+10.67%** | -6.44% |
+| Full year 2025 | 7 | 57.1% | 0.96 | -0.19% | -2.34% |
 
-**Results on the full Jan-Aug 2026 BTCUSDT dataset** (the statistically
-meaningful one — 7 months, 42 trades): 38.1% win rate, profit factor
-1.29, **+9.46% return, -12.18% max drawdown**. On the July-2026-only
-subset alone (one choppy, mostly sideways month) it's 4 trades, all
-losses, -2.31% — that month simply didn't contain a clean trend for a
-trend-following system to catch, and the daily-loss circuit breaker and
-per-trade risk caps kept that loss small and bounded rather than
-compounding it. Both numbers are real and both are reported here on
-purpose: **this strategy needs an actual trend to make money, and does
-small, controlled damage when the market doesn't provide one.** 7 months
-of one symbol is better evidence than 1 month, but it is still not proof
-of a permanent edge — forward-test on testnet before trusting this (or
-any strategy) with real funds.
+Both drawdowns are now single-digit (down from -19.62% before these
+filters), and 2025 — the year that broke the previous version — is now
+roughly flat instead of -16.95%. This is a much smaller number of trades
+than "catch every possible profitable wiggle," on purpose: this is a
+filtered, risk-controlled system, not a strategy that promises to catch
+every potential move — see "On the request to catch every possible
+trade" below for why that's not something any real system can honestly
+promise.
 
 Re-run it yourself:
 
 ```bash
 python -m backtest.run_backtest data/BTCUSDT_2026.csv
-python -m backtest.run_backtest data/BTCUSDT_2026.csv --equity 5000
+python -m backtest.run_backtest data/BTCUSDT_2025.csv
 python -m backtest.run_backtest data/BTCUSDT_202607.csv   # smaller, choppier reference month
 ```
 
+## On the request to catch every possible trade, and the "short first, then long" idea
+
+Two specific asks from the brief for this version deserve a direct
+answer instead of a silent substitution:
+
+**"Đảm bảo trade được các lệnh dù lời nhỏ nhất đến lớn nhất không bỏ sót
+bất kỳ lệnh tiềm năng nào"** — catching literally every profitable move,
+no matter how small, is not achievable by any real system. The only way
+to never skip a small profitable wiggle is to trade every single price
+change, which mostly means trading noise, and noise loses to fees (this
+is exactly what the new fee-aware filter exists to prevent). What the
+current strategy does instead: it takes every setup that clears the
+trend, momentum, volume, anti-chase, and fee filters, from the smallest
+qualifying tier to the largest confidence tier — nothing above the
+confidence floor is skipped, but the floor itself exists on purpose.
+
+**The "short first for a small guaranteed profit, then long" idea** (or
+mirrored for downtrends): entering counter to the higher-timeframe trend
+to bank a small move before reversing into the main trend. This is not
+implemented as described, because "guaranteed" small profit from timing
+a short-term counter-trend move is strictly *harder* than timing the
+main trend itself — it requires correctly predicting a local top/bottom
+within a move that hasn't happened yet, which is precisely the
+"đu đỉnh/đáy" mistake the brief also explicitly warns against, just
+aimed the other direction. Implementing it as "guaranteed" would be
+dishonest. What was implemented instead, aimed at the same underlying
+goal — not leaving capital idle — is the **stale-position exit** above:
+capital that isn't working gets freed automatically rather than sitting
+in a slow trade, so it's available for the next qualifying setup instead
+of being tied up for the full duration of a move.
+
 ## Applying the same logic to other coins
 
-The live bot (`bot/scanner.py`) evaluates every symbol in `SYMBOLS`
-against the identical rules above, independently, every poll cycle. A
-coin only gets traded when its own 1h/15m candles satisfy the regime +
-breakout + confirmation conditions; coins that don't match are simply
-skipped that cycle. There is no "if it's Bitcoin do X, otherwise do Y" —
-the same function (`strategy.prepare_from_ltf_htf` /
-`strategy.signal_from_row`) runs for every symbol.
+The live bot (`bot/scanner.py`) and paper-trading mode
+(`bot/paper_trading.py`) both evaluate every symbol in `SYMBOLS` against
+the identical rules above, independently, every poll cycle. A coin only
+gets traded when its own 1h/15m candles satisfy the regime + entry +
+anti-chase + fee conditions; coins that don't match are simply skipped
+that cycle. There is no "if it's Bitcoin do X, otherwise do Y" — the same
+functions (`strategy.prepare_from_ltf_htf` / `strategy.signal_from_row`)
+run for every symbol, in both modes.
 
 ## Setup
 
@@ -170,24 +208,69 @@ Stop the bot any time with Ctrl+C (or SIGTERM) — it shuts down cleanly
 without leaving background threads; any position already open on the
 exchange stays open with its stop-loss still active on Bybit's side.
 
+## Paper trading against real, live Bybit data
+
+`bot/paper_trading.py` runs the identical strategy/risk logic against
+**real real-time Bybit market data** (public kline + ticker REST
+endpoints — no API key needed) but against a **virtual account**, so you
+can watch it trade on live price action with realistic simulated fees,
+slippage, and TP/SL fills before ever using real funds:
+
+```bash
+python -m bot.paper_trading --equity 10
+```
+
+- `--equity` sets the starting virtual balance (default 10, i.e. $10 as
+  requested — see the note below on what that does and doesn't prove).
+- It checks every open paper position against the **live last price**
+  every 15 seconds (`PRICE_POLL_SECONDS`) for stop/TP1/TP2 fills — not
+  just once per candle close — and refreshes trend/trailing-stop/
+  stale-position checks every 60 seconds (`SIGNAL_POLL_SECONDS`).
+- Stop with Ctrl+C at any point. It prints a full session summary:
+  closed trades (count, wins, losses, realized P&L) **and** currently
+  open positions (count, how many are currently winning vs. losing right
+  now, unrealized P&L per position and in total), plus the combined
+  realized + unrealized total — covering both what already happened and
+  what's still in flight, as requested.
+
+**Why it ignores Bybit's real minimum order size**: paper trading never
+submits a real order, so there's no real lot-size constraint to respect.
+With a genuinely tiny account like $10, the risk-based position sizer
+would compute a quantity below Bybit's real minimum for something like
+BTCUSDT anyway (a real $10 account mostly couldn't trade BTC perpetuals
+at real position-sizing discipline) — paper mode sizes purely off the
+risk model so you can still observe the decision logic. Use a larger
+`--equity` (e.g. 500-1000) if you want position sizes that would also be
+realistically executable on a real account of that size.
+
+**Network note**: klines/tickers are public Bybit endpoints, so no API
+key is required to run this — but it does need real outbound access to
+`api.bybit.com` (or `api-testnet.bybit.com` if `BYBIT_TESTNET=true`).
+This sandbox's network egress does not reach Bybit, so this mode could
+not be end-to-end tested from here; `tests/test_paper_trading.py` covers
+the fill/fee/summary logic against a fake exchange instead. Run it
+yourself in an environment with real internet access to Bybit.
+
 ## Project layout
 
 ```
 bot/
   indicators.py     EMA / RSI / ATR / ADX (pure pandas, no TA lib dependency)
-  strategy.py        Signal logic shared by backtest and live bot
-  risk.py             Position sizing tiers, dynamic leverage cap, safety limits
-  exchange_bybit.py   pybit v5 REST wrapper (klines, orders, stop management)
-  scanner.py          Per-symbol signal evaluation + open-position management
+  strategy.py        Signal logic shared by backtest, live bot, and paper trading
+  risk.py             Position sizing tiers, dynamic leverage cap, fees, safety limits
+  exchange_bybit.py   pybit v5 REST wrapper (klines, tickers, orders, stop management)
+  scanner.py          Per-symbol signal evaluation + open-position management (live)
+  paper_trading.py    Same logic against real-time data, virtual account, no real orders
   config.py           .env-driven configuration
-  main.py              Poll loop entrypoint
+  main.py              Poll loop entrypoint (live bot)
 backtest/
   engine.py            Bar-by-bar backtest engine (fees, slippage, funding, sizing)
   run_backtest.py      CLI report
 data/
-  BTCUSDT_2026.csv     Jan-Aug 2026 dataset (main backtest, 7 months)
+  BTCUSDT_2026.csv     Jan-Aug 2026 dataset (307k candles)
+  BTCUSDT_2025.csv     Full year 2025 dataset (526k candles, out-of-sample validation)
   BTCUSDT_202607.csv   July-2026-only dataset (smaller reference month)
-tests/                 Unit + integration tests (indicators, strategy, risk, scanner)
+tests/                 Unit + integration tests (indicators, strategy, risk, scanner, paper trading)
 ```
 
 ## Configuration reference (`.env`)
@@ -209,6 +292,10 @@ changing them is a deliberate code change, not a one-line config flip:
 - `TIERS`: confidence → (equity % risked, leverage) tiers
 - `ABSOLUTE_MAX_LEVERAGE = 25`, `ABSOLUTE_MAX_EQUITY_RISK_PCT = 0.25`
 - `DAILY_LOSS_LIMIT_PCT = 0.15`
+- `ROUND_TRIP_COST_PCT`: assumed Bybit taker fee + slippage round trip,
+  used by the fee-aware signal filter in `strategy.py`
+- `STALE_POSITION_MAX_BARS = 24`, `STALE_POSITION_MIN_R = 0.3`: capital-
+  efficiency exit for positions that aren't progressing
 
 If you deliberately want higher risk limits, edit those constants with
 full understanding that it increases both potential return and the

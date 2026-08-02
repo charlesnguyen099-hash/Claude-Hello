@@ -54,6 +54,14 @@ class BybitExchange:
         df = df.sort_values("datetime").reset_index(drop=True)
         return df[["datetime", "open", "high", "low", "close", "volume"]]
 
+    def get_last_price(self, symbol: str) -> float:
+        """Public ticker endpoint — no API key needed. Used by paper
+        trading to check open positions against live price between
+        candle closes.
+        """
+        resp = self.client.get_tickers(category=self.config.category, symbol=symbol)
+        return float(resp["result"]["list"][0]["lastPrice"])
+
     def get_instrument_info(self, symbol: str) -> InstrumentInfo:
         if symbol in self._instrument_cache:
             return self._instrument_cache[symbol]

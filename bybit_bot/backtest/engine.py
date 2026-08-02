@@ -21,8 +21,8 @@ import pandas as pd
 
 from bot import risk, strategy
 
-TAKER_FEE = 0.00055        # Bybit USDT perpetual taker fee (approx)
-SLIPPAGE_PCT = 0.0005      # assumed adverse slippage per fill
+TAKER_FEE = risk.TAKER_FEE_PCT           # Bybit USDT perpetual taker fee (approx)
+SLIPPAGE_PCT = risk.ASSUMED_SLIPPAGE_PCT  # assumed adverse slippage per fill
 FUNDING_PER_8H = 0.0001    # rough average funding assumption while a trade is open
 TP1_CLOSE_FRACTION = 0.5   # fraction of position closed at TP1
 
@@ -211,6 +211,41 @@ def run_backtest(df_1m: pd.DataFrame, starting_equity: float = 10_000.0) -> Back
                 result.trades.append(open_trade)
                 open_trade = None
                 just_closed_ts = ts
+
+            elif not open_trade.tp1_hit:
+                # Capital-efficiency exit: a position that hasn't hit TP1
+                # (so its stop is still the original one, not breakeven)
+                # and hasn't meaningfully progressed after many bars is
+                # closed at market instead of tying up margin indefinitely.
+                risk_distance = abs(open_trade.entry - open_trade.stop)
+                unrealized_r = (
+                    (row["close"] - open_trade.entry) / risk_distance
+                    if long
+                    else (open_trade.entry - row["close"]) / risk_distance
+                ) if risk_distance > 0 else 0.0
+                elapsed_bars = (ts - open_trade.entry_time) / pd.Timedelta(minutes=15)
+
+                if elapsed_bars >= risk.STALE_POSITION_MAX_BARS and unrealized_r < risk.STALE_POSITION_MIN_R:
+                    raw = row["close"]
+                    fill = _fill_price(raw, open_trade.side, is_entry=False)
+                    gross = (fill - open_trade.entry) * open_trade.qty_remaining if long else (
+                        open_trade.entry - fill
+                    ) * open_trade.qty_remaining
+                    fees = _fees(open_trade.qty_remaining, open_trade.entry, fill)
+                    funding = FUNDING_PER_8H * (open_trade.entry * open_trade.qty_remaining)
+                    pnl = gross - fees - funding
+                    total_pnl = open_trade.realized_pnl_usd + pnl
+                    risk_amount = risk_distance * open_trade.qty_initial
+
+                    open_trade.exit_time = ts
+                    open_trade.exit_price = fill
+                    open_trade.exit_reason = "stale_position"
+                    open_trade.pnl_usd = total_pnl
+                    open_trade.r_multiple = total_pnl / risk_amount if risk_amount > 0 else 0.0
+                    equity += pnl
+                    result.trades.append(open_trade)
+                    open_trade = None
+                    just_closed_ts = ts
 
             # Chandelier trailing stop on the runner, only after TP1 has
             # locked in breakeven. Uses THIS bar's high/low to update the

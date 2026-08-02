@@ -36,6 +36,7 @@ class PositionState:
     qty_initial: float
     qty_remaining: float
     leverage: int
+    entry_time: pd.Timestamp
     tp1_hit: bool = False
     high_water: float = 0.0
     low_water: float = 0.0
@@ -108,6 +109,27 @@ class Scanner:
                 logger.info("%s: TP1 hit, closed %.6f, stop moved to breakeven %.6f", symbol, close_qty, state.stop)
                 return  # re-evaluate trailing next poll
 
+            # Capital-efficiency exit: hasn't reached TP1 (so risk distance
+            # is still the original stop) and hasn't meaningfully
+            # progressed after many bars — free the margin instead of
+            # tying it up indefinitely waiting for a move that may not come.
+            risk_distance = abs(state.entry - state.stop)
+            if risk_distance > 0:
+                unrealized_r = (
+                    (row["close"] - state.entry) / risk_distance
+                    if long
+                    else (state.entry - row["close"]) / risk_distance
+                )
+                elapsed_bars = (row["datetime"] - state.entry_time) / pd.Timedelta(minutes=15)
+                if elapsed_bars >= risk.STALE_POSITION_MAX_BARS and unrealized_r < risk.STALE_POSITION_MIN_R:
+                    logger.info(
+                        "%s: stale position (%.1f bars, %.2fR unrealized), closing to free capital",
+                        symbol, elapsed_bars, unrealized_r,
+                    )
+                    self.exchange.close_position_market(symbol, state.side, state.qty_remaining)
+                    del self.open_positions[symbol]
+                    return
+
         if state.tp1_hit:
             atr_now = row["atr14"]
             if long:
@@ -154,6 +176,7 @@ class Scanner:
             qty_initial=qty,
             qty_remaining=qty,
             leverage=leverage,
+            entry_time=row["datetime"],
             high_water=row["high"],
             low_water=row["low"],
         )

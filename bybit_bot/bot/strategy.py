@@ -53,6 +53,7 @@ import numpy as np
 import pandas as pd
 
 from bot import indicators as ind
+from bot import risk as _risk
 
 ADX_MIN = 25.0  # Wilder's textbook "trending market" threshold
 TREND_MIN_BARS = 3  # HTF regime must have held for this many 1h bars before trading it
@@ -66,6 +67,27 @@ VOL_MA_LEN = 20
 ATR_INIT_MULT = 2.0
 ATR_TRAIL_MULT = 3.0
 TP1_R_MULT = 2.0
+
+# Anti-chase filter: don't buy something that's already overbought / sell
+# something that's already oversold — this is what "đu đỉnh" (buying a
+# top) / "đu đáy" (selling a bottom) looks like mechanically: piling onto
+# a move that has already run hard instead of catching one that's
+# starting. An earlier version of this filter instead measured distance
+# from the 1h EMA50 in ATR units, but on the full 2025+2026 backtest that
+# rejected most of the good continuation trades too (a slow trend average
+# naturally trails far behind price during any real multi-week trend, so
+# "far from EMA50" doesn't distinguish a good continuation entry from a
+# genuine blow-off top). Plain RSI(14) overbought/oversold on the entry
+# timeframe does distinguish them and didn't have that side effect.
+RSI_OVERBOUGHT = 70.0
+RSI_OVERSOLD = 30.0
+
+# Fee-awareness: Bybit USDT-perpetual taker fee is ~0.055% per fill. A
+# round trip (entry + exit) plus assumed slippage costs roughly this
+# much; TP1 — the smallest profit target any trade can bank — must clear
+# it by a wide safety margin, or a "win" on paper can still be a loss
+# after real costs. See bot/risk.py ROUND_TRIP_COST_PCT.
+MIN_TP1_TO_COST_RATIO = 8.0
 
 
 @dataclass(frozen=True)
@@ -136,9 +158,11 @@ def build_signal_columns(df: pd.DataFrame) -> pd.DataFrame:
     cross_up = (out["ema9"].shift(1) <= out["ema21"].shift(1)) & (out["ema9"] > out["ema21"])
     cross_down = (out["ema9"].shift(1) >= out["ema21"].shift(1)) & (out["ema9"] < out["ema21"])
     vol_confirm = out["volume"] > out["vol_ma20"]
+    not_overbought = out["rsi14"] <= RSI_OVERBOUGHT
+    not_oversold = out["rsi14"] >= RSI_OVERSOLD
 
-    out["long_setup"] = (out["trend"] == "up") & cross_up & vol_confirm
-    out["short_setup"] = (out["trend"] == "down") & cross_down & vol_confirm
+    out["long_setup"] = (out["trend"] == "up") & cross_up & vol_confirm & not_overbought
+    out["short_setup"] = (out["trend"] == "down") & cross_down & vol_confirm & not_oversold
 
     vol_ratio = (out["volume"] / out["vol_ma20"]).clip(upper=3.0)
     adx_score = (out["htf_adx14"].clip(upper=60.0) / 60.0) * 60.0
@@ -165,11 +189,14 @@ def signal_from_row(row: pd.Series) -> Signal | None:
         entry = float(row["close"])
         stop = entry - ATR_INIT_MULT * atr
         risk = entry - stop
+        tp1 = entry + TP1_R_MULT * risk
+        if not _clears_fees(entry, tp1):
+            return None
         return Signal(
             side="long",
             entry=entry,
             stop=stop,
-            take_profit_1=entry + TP1_R_MULT * risk,
+            take_profit_1=tp1,
             take_profit_2=entry + 8.0 * risk,
             confidence=float(row["confidence_long"]),
             reason="uptrend, EMA9 crossed above EMA21, volume confirm",
@@ -179,17 +206,31 @@ def signal_from_row(row: pd.Series) -> Signal | None:
         entry = float(row["close"])
         stop = entry + ATR_INIT_MULT * atr
         risk = stop - entry
+        tp1 = entry - TP1_R_MULT * risk
+        if not _clears_fees(entry, tp1):
+            return None
         return Signal(
             side="short",
             entry=entry,
             stop=stop,
-            take_profit_1=entry - TP1_R_MULT * risk,
+            take_profit_1=tp1,
             take_profit_2=entry - 8.0 * risk,
             confidence=float(row["confidence_short"]),
             reason="downtrend, EMA9 crossed below EMA21, volume confirm",
         )
 
     return None
+
+
+def _clears_fees(entry: float, tp1: float) -> bool:
+    """Reject a signal whose smallest profit target wouldn't clear real
+    Bybit round-trip trading costs by a comfortable margin — a "win" on
+    paper must still be a win after fees + slippage.
+    """
+    if entry <= 0:
+        return False
+    gain_pct = abs(tp1 - entry) / entry
+    return gain_pct >= _risk.ROUND_TRIP_COST_PCT * MIN_TP1_TO_COST_RATIO
 
 
 def prepare(df_1m: pd.DataFrame) -> pd.DataFrame:

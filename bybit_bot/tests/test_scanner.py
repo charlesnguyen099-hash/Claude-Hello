@@ -69,16 +69,16 @@ def test_scanner_opens_the_same_trade_the_backtest_found():
     config = Config(symbols=["BTCUSDT"], max_concurrent_positions=4, equity_override_usdt=10_000.0)
     scanner = Scanner(exchange=fake, config=config)
 
-    # Backtest found a LONG entry on BTCUSDT at 2026-01-14 13:15:00 (see
+    # Backtest found a SHORT entry on BTCUSDT at 2026-01-21 16:45:00 (see
     # backtest/run_backtest.py output). Advance the fake clock to just
     # after that bar closes and run one scan.
-    fake.now = pd.Timestamp("2026-01-14 13:30:00")  # +1 bar so it's not "still forming"
+    fake.now = pd.Timestamp("2026-01-21 17:00:00")  # +1 bar so it's not "still forming"
     scanner.run_once()
 
     assert "BTCUSDT" in scanner.open_positions
     opens = [c for c in fake.calls if c[0] == "open"]
     assert len(opens) == 1
-    assert opens[0][2] == "long"
+    assert opens[0][2] == "short"
 
 
 def test_scanner_does_not_open_when_no_signal():
@@ -100,7 +100,9 @@ def test_scanner_moves_stop_to_breakeven_after_tp1():
     config = Config(symbols=["BTCUSDT"], max_concurrent_positions=4, equity_override_usdt=10_000.0)
     scanner = Scanner(exchange=fake, config=config)
 
-    fake.now = pd.Timestamp("2026-01-14 13:30:00")
+    # This entry (2026-02-01 10:45:00 SHORT) is the one the backtest shows
+    # actually reaching TP1 (tp1_hit=True).
+    fake.now = pd.Timestamp("2026-02-01 11:00:00")
     scanner.run_once()
     assert "BTCUSDT" in scanner.open_positions
 

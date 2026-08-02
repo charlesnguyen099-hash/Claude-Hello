@@ -26,6 +26,20 @@ ABSOLUTE_MAX_EQUITY_RISK_PCT = 0.25
 MAX_CONCURRENT_POSITIONS = 4
 DAILY_LOSS_LIMIT_PCT = 0.15  # circuit breaker: stop opening new trades
 
+# Bybit USDT-perpetual taker fee, applied on both entry and exit (a
+# "round trip"), plus an assumed adverse-slippage allowance per fill.
+# Used by bot/strategy.py to reject any signal whose smallest profit
+# target (TP1) wouldn't clear real trading costs by a comfortable margin.
+TAKER_FEE_PCT = 0.00055
+ASSUMED_SLIPPAGE_PCT = 0.0005
+ROUND_TRIP_COST_PCT = 2 * (TAKER_FEE_PCT + ASSUMED_SLIPPAGE_PCT)
+
+# Capital efficiency: a position that hasn't meaningfully progressed
+# within this many LTF (15m) bars gets closed at market instead of
+# tying up margin indefinitely waiting for a move that may not come.
+STALE_POSITION_MAX_BARS = 24  # 24 * 15m = 6 hours
+STALE_POSITION_MIN_R = 0.3    # "meaningfully progressed" = at least this much R unrealized
+
 
 @dataclass(frozen=True)
 class PositionPlan:

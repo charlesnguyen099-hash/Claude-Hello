@@ -95,10 +95,10 @@ def test_scanner_opens_the_same_trade_the_backtest_found():
     config = Config(symbols=["BTCUSDT"], max_concurrent_positions=4, equity_override_usdt=10_000.0)
     scanner = Scanner(exchange=fake, config=config)
 
-    # Backtest found a SHORT entry on BTCUSDT at 2026-01-21 16:56:00 (see
+    # Backtest found a SHORT entry on BTCUSDT at 2026-01-30 18:22:00 (see
     # backtest/run_backtest.py output). Advance the fake clock to just
     # after that bar closes and run one scan.
-    fake.now = pd.Timestamp("2026-01-21 16:57:00")  # +1 bar so it's not "still forming"
+    fake.now = pd.Timestamp("2026-01-30 18:23:00")  # +1 bar so it's not "still forming"
     scanner.run_once()
 
     # The strategy no longer chases the close: it rests a limit entry on
@@ -111,12 +111,12 @@ def test_scanner_opens_the_same_trade_the_backtest_found():
     pending = scanner.pending_entries["BTCUSDT"]
     # A short rests ABOVE the signal price, so it fills on a bounce.
     assert pending.limit_price > df_1m[df_1m["datetime"] == pd.Timestamp(
-        "2026-01-21 16:56:00")]["close"].iloc[0]
+        "2026-01-30 18:22:00")]["close"].iloc[0]
 
     # Once the exchange reports the fill, the next scan promotes it to a
     # managed position and attaches the stop.
     fake.fill_resting()
-    fake.now = pd.Timestamp("2026-01-21 16:58:00")
+    fake.now = pd.Timestamp("2026-01-30 18:24:00")
     scanner.run_once()
 
     assert "BTCUSDT" in scanner.open_positions
@@ -131,7 +131,7 @@ def test_scanner_cancels_entry_that_never_fills():
     config = Config(symbols=["BTCUSDT"], max_concurrent_positions=4, equity_override_usdt=10_000.0)
     scanner = Scanner(exchange=fake, config=config)
 
-    fake.now = pd.Timestamp("2026-01-21 16:57:00")
+    fake.now = pd.Timestamp("2026-01-30 18:23:00")
     scanner.run_once()
     assert "BTCUSDT" in scanner.pending_entries
 

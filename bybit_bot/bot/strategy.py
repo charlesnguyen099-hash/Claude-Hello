@@ -99,8 +99,26 @@ TP1_R_MULT = 2.0
 # "far from EMA50" doesn't distinguish a good continuation entry from a
 # genuine blow-off top). Plain RSI(14) overbought/oversold on the entry
 # timeframe does distinguish them and didn't have that side effect.
-RSI_OVERBOUGHT = 70.0
-RSI_OVERSOLD = 30.0
+# These thresholds MUST be calibrated to RSI_LEN. 70/30 is the textbook
+# band for RSI(14); this strategy runs RSI at length 210 (see RSI_LEN
+# above — the 1m periods were scaled up to match the time span that
+# worked at 15m). Averaging over 210 bars pulls RSI hard toward 50: on
+# both datasets it stays inside 42-58 for 98% of bars and never once
+# reached 30. The 70/30 band therefore rejected 0.0003% of bars — the
+# anti-chase filter was silently inert, and the bot was taking exactly
+# the extended entries it was supposed to refuse.
+#
+# Found by research/filter_sweep.py: the "rsi only" and "none" gate sets
+# produced byte-identical results across all 108 rows, which is only
+# possible if the RSI band never bound.
+#
+# Recalibrated by matching what the classic band MEANS rather than its
+# number: RSI(14) > 70 marks roughly the most-extended 3.4-4.0% of bars.
+# The RSI(210) value at that same quantile is 55.3 on 2026 and 55.3 on
+# 2025 — the two years agree to a decimal, so this is a property of the
+# indicator, not a fit to one year.
+RSI_OVERBOUGHT = 55.0
+RSI_OVERSOLD = 45.0
 
 # Fee-awareness: Bybit USDT-perpetual taker fee is ~0.055% per fill. A
 # round trip (entry + exit) plus assumed slippage costs roughly this

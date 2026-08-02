@@ -49,8 +49,8 @@ def test_paper_broker_opens_position_matching_backtest_signal():
     config = Config(symbols=["BTCUSDT"])
     broker = PaperBroker(fake, config, starting_equity=10_000.0)
 
-    # Same SHORT entry the backtest found at 2026-01-21 16:56:00.
-    fake.now = pd.Timestamp("2026-01-21 16:57:00")
+    # Same SHORT entry the backtest found at 2026-01-30 18:22:00.
+    fake.now = pd.Timestamp("2026-01-30 18:23:00")
     broker.try_open("BTCUSDT")
 
     assert "BTCUSDT" in broker.open_positions
@@ -78,7 +78,7 @@ def test_paper_broker_stop_loss_closes_and_deducts_correctly():
     config = Config(symbols=["BTCUSDT"])
     broker = PaperBroker(fake, config, starting_equity=10_000.0)
 
-    fake.now = pd.Timestamp("2026-01-21 16:57:00")
+    fake.now = pd.Timestamp("2026-01-30 18:23:00")
     broker.try_open("BTCUSDT")
     pos = broker.open_positions["BTCUSDT"]
     equity_after_entry = broker.equity
@@ -100,7 +100,7 @@ def test_paper_broker_tp1_then_trailing_and_summary():
     config = Config(symbols=["BTCUSDT"])
     broker = PaperBroker(fake, config, starting_equity=10_000.0)
 
-    fake.now = pd.Timestamp("2026-01-21 16:57:00")
+    fake.now = pd.Timestamp("2026-01-30 18:23:00")
     broker.try_open("BTCUSDT")
     pos = broker.open_positions["BTCUSDT"]
 
@@ -139,7 +139,7 @@ def test_intrabar_wick_triggers_stop_even_if_candle_closes_safe():
     config = Config(symbols=["BTCUSDT"])
     broker = PaperBroker(fake, config, starting_equity=10_000.0)
 
-    fake.now = pd.Timestamp("2026-01-21 16:57:00")
+    fake.now = pd.Timestamp("2026-01-30 18:23:00")
     broker.try_open("BTCUSDT")
     pos = broker.open_positions["BTCUSDT"]
     assert pos.side == "short"  # stop sits ABOVE entry
@@ -147,9 +147,9 @@ def test_intrabar_wick_triggers_stop_even_if_candle_closes_safe():
     # One candle whose high pierces the stop but whose close is back at
     # entry -- i.e. exactly the case a last-price poll would miss.
     spike = pd.DataFrame([
-        {"datetime": pd.Timestamp("2026-01-21 16:58:00"), "open": pos.entry,
+        {"datetime": pd.Timestamp("2026-01-30 18:24:00"), "open": pos.entry,
          "high": pos.stop + 1.0, "low": pos.entry, "close": pos.entry, "volume": 1.0},
-        {"datetime": pd.Timestamp("2026-01-21 16:59:00"), "open": pos.entry,
+        {"datetime": pd.Timestamp("2026-01-30 18:25:00"), "open": pos.entry,
          "high": pos.entry, "low": pos.entry, "close": pos.entry, "volume": 1.0},
     ])
     fake.klines_override = spike
@@ -170,7 +170,7 @@ def test_summary_combines_closed_and_open_counts():
     config = Config(symbols=["BTCUSDT"])
     broker = PaperBroker(fake, config, starting_equity=10.0)
 
-    fake.now = pd.Timestamp("2026-01-21 16:57:00")
+    fake.now = pd.Timestamp("2026-01-30 18:23:00")
     broker.try_open("BTCUSDT")
     pos = broker.open_positions["BTCUSDT"]
 
@@ -179,7 +179,7 @@ def test_summary_combines_closed_and_open_counts():
     assert len(broker.closed_trades) == 1
 
     # Re-open and leave it open, in profit (SHORT -> price below entry).
-    fake.now = pd.Timestamp("2026-01-21 16:57:00")
+    fake.now = pd.Timestamp("2026-01-30 18:23:00")
     broker.try_open("BTCUSDT")
     open_pos = broker.open_positions["BTCUSDT"]
     fake.price_override = open_pos.entry * 0.99
@@ -202,11 +202,11 @@ def test_export_trades_csv_includes_open_positions(tmp_path):
     config = Config(symbols=["BTCUSDT"])
     broker = PaperBroker(fake, config, starting_equity=10.0)
 
-    fake.now = pd.Timestamp("2026-01-21 16:57:00")
+    fake.now = pd.Timestamp("2026-01-30 18:23:00")
     broker.try_open("BTCUSDT")
     pos = broker.open_positions["BTCUSDT"]
     broker.manage_with_price("BTCUSDT", pos.stop)
-    fake.now = pd.Timestamp("2026-01-21 16:57:00")
+    fake.now = pd.Timestamp("2026-01-30 18:23:00")
     broker.try_open("BTCUSDT")
 
     out = tmp_path / "trades.csv"

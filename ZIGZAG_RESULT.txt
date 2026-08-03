@@ -1,0 +1,114 @@
+====================================================================================
+THE TABLE IS A ZIGZAG — confirming that from the file itself
+====================================================================================
+  LONG / SHORT              : 24,891 / 24,892  (alternating legs)
+  minutes held / available  : 832,928 / 832,979  = 1.00x  (no overlap)
+  median leg net / gross    : 0.200% / 0.310%
+  median duration           : 9 min
+
+====================================================================================
+STEP 1 — the ceiling: zigzag with perfect pivot timing
+====================================================================================
+Buying every low and selling every high, on the pivot bar itself.
+Not tradeable, but it is what the uploaded table measures.
+
+ threshold | 2025    legs   win%  net%/leg       total% | 2026    legs   win%  net%/leg       total%
+------------------------------------------------------------------------------------
+     0.20% | 2025   21162 100.00    0.3833       8112.2 | 2026   12673 100.00    0.3885       4923.1
+     0.50% | 2025    5064 100.00    1.0044       5086.5 | 2026    3075 100.00    1.0095       3104.3
+     1.00% | 2025    1515 100.00    2.0266       3070.4 | 2026     950 100.00    1.9980       1898.1
+     2.00% | 2025     417 100.00    4.1161       1716.4 | 2026     254 100.00    4.0870       1038.1
+
+====================================================================================
+STEP 2 — the same zigzag, detected causally (what a bot can do)
+====================================================================================
+Enter when the reversal is confirmed, exit when the next one is.
+
+ threshold | 2025  trades   win%    net%/t       total% | 2026  trades   win%    net%/t       total%
+------------------------------------------------------------------------------------
+     0.20% | 2025   21162  23.93   -0.1178      -2492.4 | 2026   12673  24.11   -0.1184      -1500.3
+     0.50% | 2025    5064  29.68   -0.1180       -597.6 | 2026    3075  31.71   -0.1129       -347.3
+     1.00% | 2025    1515  33.60   -0.1221       -184.9 | 2026     950  32.11   -0.1614       -153.4
+     2.00% | 2025     417  35.97   -0.0585        -24.4 | 2026     254  36.22   -0.1083        -27.5
+
+====================================================================================
+STEP 3 — reviewing the losing trades: bad application, or bad logic?
+====================================================================================
+
+  threshold 0.50%, 2025: 3,561 losers (70.3% of trades), average -0.4327%
+    already profitable before fees : 314
+    move smaller than the fee      : 692
+    price went the other way       : 2,869
+    whipsaw, out within 3 bars     : 93
+
+  threshold 0.50%, 2026: 2,100 losers (68.3% of trades), average -0.4373%
+    already profitable before fees : 176
+    move smaller than the fee      : 400
+    price went the other way       : 1,700
+    whipsaw, out within 3 bars     : 36
+
+  threshold 1.00%, 2025: 1,006 losers (66.4% of trades), average -0.7536%
+    already profitable before fees : 40
+    move smaller than the fee      : 84
+    price went the other way       : 922
+    whipsaw, out within 3 bars     : 9
+
+  threshold 1.00%, 2026: 645 losers (67.9% of trades), average -0.7612%
+    already profitable before fees : 25
+    move smaller than the fee      : 61
+    price went the other way       : 584
+    whipsaw, out within 3 bars     : 2
+
+====================================================================================
+STEP 4 — fixes aimed at the causes above, each measured on BOTH years
+====================================================================================
+The review says most losers are 'price went the other way' — the
+confirmed reversal simply did not hold. So the fixes target that:
+  v1 plain      trade the confirmed reversal
+  v2 stop       cap how far a failed reversal can run
+  v3 +minleg    skip signals following a leg too small to trust
+  v5 INVERTED   if reversals fail this often, trade the continuation
+
+The column that decides everything is GROSS — net with the fee added
+back. Gross is the edge itself. If gross is not above the 0.110% fee,
+no amount of tuning the exits can make the rule pay.
+
+variant             thr | 2025  trades   win%   gross%     net%    total% | 2026  trades   win%   gross%     net%    total% | both+
+--------------------------------------------------------------------------------------------------------
+v1 plain          0.50% | 2025    5064  29.68  -0.0080  -0.1180    -597.6 | 2026    3075  31.71  -0.0029  -0.1129    -347.3 | 
+v2 stop           0.50% | 2025    5064  29.68   0.0061  -0.1039    -526.3 | 2026    3075  31.71   0.0105  -0.0995    -305.9 | 
+v3 stop+minleg    0.50% | 2025     532  27.63  -0.0381  -0.1481     -78.8 | 2026     318  31.13  -0.0170  -0.1270     -40.4 | 
+v5 INVERTED       0.50% | 2025    5064  56.65   0.0080  -0.1020    -516.5 | 2026    3075  55.28   0.0029  -0.1071    -329.2 | 
+
+v1 plain          1.00% | 2025    1515  33.60  -0.0121  -0.1221    -184.9 | 2026     950  32.11  -0.0514  -0.1614    -153.4 | 
+v2 stop           1.00% | 2025    1515  26.80   0.0138  -0.0962    -145.8 | 2026     950  26.11  -0.0062  -0.1162    -110.4 | 
+v3 stop+minleg    1.00% | 2025     657  26.03   0.0000  -0.1100     -72.3 | 2026     407  27.03  -0.0096  -0.1196     -48.7 | 
+v5 INVERTED       1.00% | 2025    1515  60.86   0.0121  -0.0979    -148.4 | 2026     950  61.47   0.0514  -0.0586     -55.6 | 
+
+v1 plain          2.00% | 2025     417  35.97   0.0515  -0.0585     -24.4 | 2026     254  36.22   0.0017  -0.1083     -27.5 | 
+v2 stop           2.00% | 2025     417  22.06   0.1385   0.0285      11.9 | 2026     254  17.32  -0.0229  -0.1329     -33.8 | 
+v3 stop+minleg    2.00% | 2025     299  21.40   0.1244   0.0144       4.3 | 2026     190  19.47   0.0422  -0.0678     -12.9 | 
+v5 INVERTED       2.00% | 2025     417  59.95  -0.0515  -0.1615     -67.3 | 2026     254  61.02  -0.0017  -0.1117     -28.4 | 
+
+v1 plain          3.00% | 2025     195  37.95   0.1091  -0.0009      -0.2 | 2026     123  34.96  -0.1197  -0.2297     -28.3 | 
+v2 stop           3.00% | 2025     195  12.82  -0.0002  -0.1102     -21.5 | 2026     123  11.38  -0.1228  -0.2328     -28.6 | 
+v3 stop+minleg    3.00% | 2025     158  12.66  -0.0017  -0.1117     -17.6 | 2026     103  12.62  -0.0737  -0.1837     -18.9 | 
+v5 INVERTED       3.00% | 2025     195  61.03  -0.1091  -0.2191     -42.7 | 2026     123  64.23   0.1197   0.0097       1.2 | 
+
+v1 plain          5.00% | 2025      70  42.86   0.5336   0.4236      29.7 | 2026      45  35.56  -0.3468  -0.4568     -20.6 | 
+v2 stop           5.00% | 2025      70   8.57  -0.1114  -0.2214     -15.5 | 2026      45   6.67   0.0391  -0.0709      -3.2 | 
+v3 stop+minleg    5.00% | 2025      57   7.02  -0.2979  -0.4079     -23.2 | 2026      38   5.26   0.1065  -0.0035      -0.1 | 
+v5 INVERTED       5.00% | 2025      70  55.71  -0.5336  -0.6436     -45.1 | 2026      45  55.56   0.3468   0.2368      10.7 | 
+
+v1 plain          8.00% | 2025      37  27.03  -1.6394  -1.7494     -64.7 | 2026      16  25.00   0.5989   0.4889       7.8 | 
+v2 stop           8.00% | 2025      37   0.00  -0.5000  -0.6100     -22.6 | 2026      16   6.25   0.0513  -0.0587      -0.9 | 
+v3 stop+minleg    8.00% | 2025      34   0.00  -0.5000  -0.6100     -20.7 | 2026      14   0.00  -0.5000  -0.6100      -8.5 | 
+v5 INVERTED       8.00% | 2025      37  70.27   1.6394   1.5294      56.6 | 2026      16  75.00  -0.5989  -0.7089     -11.3 | 
+
+====================================================================================
+No variant reached positive expected value on both years.
+
+Read the gross column down the page. That is the edge before
+costs, and it is what would have to clear 0.110% for any of this
+to work. Tuning stops and exits moves net around; it does not
+create gross.

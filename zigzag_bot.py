@@ -52,60 +52,71 @@ def load(path: str) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 # The zigzag, computed two ways
 # ---------------------------------------------------------------------------
-def perfect_pivots(close: np.ndarray, threshold: float) -> list[tuple[int, int]]:
-    """Zigzag pivots with hindsight: the extremes themselves.
+def _walk(close: np.ndarray, threshold: float, report: str
+          ) -> list[tuple[int, int]]:
+    """Shared zigzag walk. Tracks the running high and the running low
+    separately — the two cannot share one variable, or the "extreme"
+    just follows the latest price and no reversal is ever detected.
 
-    This is what the uploaded table encodes. It is not tradeable — the
-    pivot index is only identifiable once the reversal has happened — but
-    it sets the ceiling that the causal version is measured against.
+    report="pivot"  -> the bar where the extreme actually occurred
+                       (hindsight; only identifiable afterwards)
+    report="signal" -> the bar where the reversal became confirmable
+                       (causal; this is what a live bot can act on)
     """
-    pivots: list[tuple[int, int]] = []
-    last_idx, last_price, direction = 0, close[0], 0
-    ext_idx, ext_price = 0, close[0]
+    out: list[tuple[int, int]] = []
+    direction = 0
+    hi = lo = close[0]
+    hi_i = lo_i = 0
 
     for i in range(1, len(close)):
         p = close[i]
-        if direction >= 0 and p > ext_price:
-            ext_idx, ext_price = i, p
-        elif direction <= 0 and p < ext_price:
-            ext_idx, ext_price = i, p
+        if direction > 0:
+            if p > hi:
+                hi, hi_i = p, i
+            elif p <= hi * (1 - threshold):
+                out.append((hi_i if report == "pivot" else i, +1))
+                direction, lo, lo_i = -1, p, i
+        elif direction < 0:
+            if p < lo:
+                lo, lo_i = p, i
+            elif p >= lo * (1 + threshold):
+                out.append((lo_i if report == "pivot" else i, -1))
+                direction, hi, hi_i = +1, p, i
+        else:
+            if p > hi:
+                hi, hi_i = p, i
+            if p < lo:
+                lo, lo_i = p, i
+            if p <= hi * (1 - threshold):
+                out.append((hi_i if report == "pivot" else i, +1))
+                direction, lo, lo_i = -1, p, i
+            elif p >= lo * (1 + threshold):
+                out.append((lo_i if report == "pivot" else i, -1))
+                direction, hi, hi_i = +1, p, i
+    return out
 
-        if direction >= 0 and p <= ext_price * (1 - threshold):
-            pivots.append((ext_idx, +1))
-            direction, ext_idx, ext_price = -1, i, p
-        elif direction <= 0 and p >= ext_price * (1 + threshold):
-            pivots.append((ext_idx, -1))
-            direction, ext_idx, ext_price = +1, i, p
-    return pivots
+
+def perfect_pivots(close: np.ndarray, threshold: float) -> list[tuple[int, int]]:
+    """Zigzag pivots with hindsight: the extreme bars themselves.
+
+    This is what the uploaded table encodes. It is not tradeable — the
+    pivot bar is only identifiable once the reversal has happened — but
+    it sets the ceiling the causal version is measured against.
+    Marker +1 = a top, -1 = a bottom.
+    """
+    return _walk(close, threshold, "pivot")
 
 
 def causal_signals(close: np.ndarray, threshold: float) -> list[tuple[int, int]]:
     """Zigzag as a live bot can actually see it.
 
-    Emits (bar_index, direction) at the moment the reversal is confirmed —
+    Emits (bar_index, direction) at the moment the reversal is confirmed,
     which is always later, and at a worse price, than the pivot itself.
-    direction +1 means the up-leg has been confirmed (go long).
+    A +1 marker means a top was just confirmed, so the new leg is DOWN.
     """
-    signals: list[tuple[int, int]] = []
-    direction = 0
-    ext_price = close[0]
-
-    for i in range(1, len(close)):
-        p = close[i]
-        if direction >= 0 and p > ext_price:
-            ext_price = p
-        elif direction <= 0 and p < ext_price:
-            ext_price = p
-
-        if direction >= 0 and p <= ext_price * (1 - threshold):
-            direction = -1
-            ext_price = p
-            signals.append((i, -1))
-        elif direction <= 0 and p >= ext_price * (1 + threshold):
-            direction = +1
-            ext_price = p
-            signals.append((i, +1))
-    return signals
+    raw = _walk(close, threshold, "signal")
+    # Convert "which pivot was confirmed" into "which way to trade now".
+    return [(i, -1 if marker > 0 else +1) for i, marker in raw]
 
 
 # ---------------------------------------------------------------------------
@@ -117,18 +128,20 @@ def trade_perfect(close: np.ndarray, pivots: list[tuple[int, int]]) -> dict:
     for (a, _), (b, _) in zip(pivots, pivots[1:]):
         move = (close[b] - close[a]) / close[a]
         pnl.append(abs(move) - FEE_PCT)      # always on the right side
-    return summarise(np.array(pnl) if pnl else np.array([0.0]))
+    return summarise(np.array(pnl))
 
 
 def trade_causal(close: np.ndarray, signals: list[tuple[int, int]],
                  stop_pct: float | None = None,
                  min_leg_pct: float | None = None,
-                 trail_pct: float | None = None) -> tuple[dict, np.ndarray, list]:
+                 trail_pct: float | None = None,
+                 invert: bool = False) -> tuple[dict, np.ndarray, list]:
     """Enter when a leg is confirmed, exit when the next one is.
 
     stop_pct     hard stop, as a fraction of entry price
     min_leg_pct  skip a signal whose preceding leg was smaller than this
     trail_pct    trail the exit instead of waiting for the next signal
+    invert       trade AGAINST the confirmed reversal instead of with it
     """
     pnl, detail = [], []
     for k in range(len(signals) - 1):
@@ -167,7 +180,7 @@ def trade_causal(close: np.ndarray, signals: list[tuple[int, int]],
             if hit.size and hit[0] < exit_idx_rel:
                 exit_idx_rel, exit_price, reason = hit[0], run[hit[0]], "trail"
 
-        gross = (exit_price - entry) / entry * d
+        gross = (exit_price - entry) / entry * d * (-1 if invert else 1)
         net = gross - FEE_PCT
         pnl.append(net)
         detail.append({
@@ -176,16 +189,22 @@ def trade_causal(close: np.ndarray, signals: list[tuple[int, int]],
             "bars_held": exit_idx_rel + 1,
         })
 
-    arr = np.array(pnl) if pnl else np.array([0.0])
+    arr = np.array(pnl)
     return summarise(arr), arr, detail
 
 
 def summarise(a: np.ndarray) -> dict:
+    """Net is what lands in the account; gross adds the fee back, which is
+    the number that says whether the rule has any edge at all."""
+    if a.size == 0:
+        return {"trades": 0, "win_rate_pct": 0.0, "avg_net_pct": 0.0,
+                "avg_gross_pct": 0.0, "total_pct": 0.0, "profit_factor": 0.0}
     wins, losses = a[a > 0], a[a <= 0]
     return {
         "trades": len(a),
         "win_rate_pct": round(100 * float((a > 0).mean()), 2),
         "avg_net_pct": round(100 * float(a.mean()), 4),
+        "avg_gross_pct": round(100 * float(a.mean() + FEE_PCT), 4),
         "total_pct": round(100 * float(a.sum()), 1),
         "profit_factor": (round(float(wins.sum() / -losses.sum()), 3)
                           if len(losses) and losses.sum() < 0 else float("inf")),
@@ -288,46 +307,61 @@ def main() -> None:
     print("=" * 84)
     print("STEP 4 — fixes aimed at the causes above, each measured on BOTH years")
     print("=" * 84)
-    print("v1  plain causal zigzag")
-    print("v2  + hard stop, so a leg that reverses cannot run")
-    print("v3  + skip signals whose previous leg was too small (chop filter)")
-    print("v4  + trailing exit, to keep more of a leg than the next signal leaves\n")
+    print("The review says most losers are 'price went the other way' — the")
+    print("confirmed reversal simply did not hold. So the fixes target that:")
+    print("  v1 plain      trade the confirmed reversal")
+    print("  v2 stop       cap how far a failed reversal can run")
+    print("  v3 +minleg    skip signals following a leg too small to trust")
+    print("  v5 INVERTED   if reversals fail this often, trade the continuation")
+    print()
+    print("The column that decides everything is GROSS — net with the fee added")
+    print("back. Gross is the edge itself. If gross is not above the 0.110% fee,")
+    print("no amount of tuning the exits can make the rule pay.\n")
 
     variants = [
         ("v1 plain", dict()),
         ("v2 stop", dict(stop_pct=0.005)),
         ("v3 stop+minleg", dict(stop_pct=0.005, min_leg_pct=0.008)),
-        ("v4 stop+minleg+trail", dict(stop_pct=0.005, min_leg_pct=0.008, trail_pct=0.003)),
+        ("v5 INVERTED", dict(invert=True)),
     ]
-    print(f"{'variant':22s} {'thr':>6s} | " + " | ".join(
-        f"{y:>4s} {'trades':>7s} {'win%':>6s} {'net%/t':>9s} {'total%':>11s}"
+    print(f"{'variant':16s} {'thr':>6s} | " + " | ".join(
+        f"{y:>4s} {'trades':>7s} {'win%':>6s} {'gross%':>8s} {'net%':>8s} {'total%':>9s}"
         for y in DATASETS) + " | both+")
-    print("-" * 96)
+    print("-" * 104)
     winners = []
-    for thr in (0.005, 0.01, 0.02):
+    for thr in (0.005, 0.01, 0.02, 0.03, 0.05, 0.08):
         for name, kw in variants:
-            cells, totals = [], []
+            cells, nets, grosses = [], [], []
             for y, df in data.items():
                 c = df["close"].to_numpy(float)
                 r, _, _ = trade_causal(c, causal_signals(c, thr), **kw)
-                totals.append(r["avg_net_pct"])
+                if r["trades"] == 0:
+                    cells.append(f"{y:>4s} {0:7d} {'-':>6s} {'-':>8s} {'-':>8s} {'-':>9s}")
+                    nets.append(-1.0); grosses.append(-1.0)
+                    continue
+                nets.append(r["avg_net_pct"]); grosses.append(r["avg_gross_pct"])
                 cells.append(f"{y:>4s} {r['trades']:7d} {r['win_rate_pct']:6.2f} "
-                             f"{r['avg_net_pct']:9.4f} {r['total_pct']:11.1f}")
-            ok = all(t > 0 for t in totals)
+                             f"{r['avg_gross_pct']:8.4f} {r['avg_net_pct']:8.4f} "
+                             f"{r['total_pct']:9.1f}")
+            ok = all(n > 0 for n in nets)
             if ok:
-                winners.append((name, thr, totals))
-            print(f"{name:22s} {thr*100:5.2f}% | " + " | ".join(cells)
+                winners.append((name, thr, nets))
+            print(f"{name:16s} {thr*100:5.2f}% | " + " | ".join(cells)
                   + f" | {'YES' if ok else ''}")
+        print()
 
-    print()
     print("=" * 84)
     if winners:
-        print("Variants profitable per trade on BOTH years:")
-        for name, thr, totals in winners:
-            print(f"  {name} at {thr*100:.2f}%: "
-                  + ", ".join(f"{t:+.4f}%" for t in totals))
+        print("Variants with positive expected value on BOTH years:")
+        for name, thr, nets in winners:
+            print(f"  {name} at {thr*100:.2f}%: " + ", ".join(f"{n:+.4f}%" for n in nets))
     else:
         print("No variant reached positive expected value on both years.")
+        print()
+        print("Read the gross column down the page. That is the edge before")
+        print("costs, and it is what would have to clear 0.110% for any of this")
+        print("to work. Tuning stops and exits moves net around; it does not")
+        print("create gross.")
 
 
 if __name__ == "__main__":

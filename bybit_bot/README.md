@@ -27,6 +27,75 @@ all-in on any single trade, on purpose:
 Defaults are `BYBIT_TESTNET=true` and `DRY_RUN=true` — the bot will not
 place a single real order until you deliberately change both in `.env`.
 
+## Which factors actually matter, measured on 89 of them
+
+`research/factor_study.py` ranks a library of ~89 factors — price
+differential over ten spans, buying pressure, close position in range,
+up-candle share, volume level, volume growth and acceleration, run
+length, direction persistence, candle body and wick anatomy, volatility
+regime, trend distance, price/volume correlation — by how each one
+correlates with the **realised net return of a real trade** (stop,
+target, time exit, fees).
+
+The column that decides usability is not strength, it is **sign
+stability across years**. A factor that predicts one way in 2025 and the
+opposite way in 2026 is worse than no factor at all: it steers the bot
+wrong systematically rather than randomly.
+
+**Result: 0 of 89 factors reach |IC| ≥ 0.02 on both years.** The
+strongest sign-stable ones are all range/volatility measures, at an IC
+around 0.012-0.029 — a correlation of one to three percent.
+
+And the trap is right there in the top of the LONG table:
+
+| factor | IC 2025 | IC 2026 | |
+|--------|---------|---------|---|
+| `pricediff_240` | **+0.0312** | **-0.0206** | flips |
+| `pricediff_120` | +0.0205 | -0.0330 | flips |
+| `dist_ema_240` | +0.0205 | -0.0306 | flips |
+| `vwret_60` | +0.0172 | -0.0252 | flips |
+| `range_30` | +0.0204 | +0.0171 | stable |
+
+The four strongest single-year factors for going long all reverse sign
+the following year. Anyone fitting a model on 2025 alone would have
+found `pricediff_240` as their best signal and traded it into a loss in
+2026 — which is exactly the failure mode documented in the section
+below, reproduced here at the level of individual factors.
+
+## The exhaustion sequence: red run, volume collapse, snap-back
+
+Tested because it is a sequence, not a snapshot, and nothing else here
+could express one: seven-ish red candles with volume *building* through
+them, then a candle where volume *collapses*, then a reversal bar on
+heavy volume — short the first part, long the second. The
+gradient-boosted model in the next section saw volume as twenty
+independent numbers per window, which cannot represent "seven in a row,
+then a stop, then a snap back". That needs a state machine, and
+`research/factor_study.py` implements one, sweeping run length (5/7/9),
+volume build (0/10/30%), collapse threshold (<50%/<80% of average) and
+snap-back volume (>1.3x/>2.0x) instead of pinning the example's exact
+numbers. Short and long legs are scored separately.
+
+**No configuration was profitable after fees on either year.** Net per
+trade ran from -0.084% to -0.281% against a 0.210% round trip, with
+t-statistics as low as -27.
+
+One cell is worth flagging honestly rather than burying. The deepest
+version — **9 red candles, volume collapsing below 80% of average, long
+on the snap-back** — came in at -0.0907% (2025) and -0.1252% (2026).
+Subtract the 0.210% fee and the *gross* return is **+0.12% and +0.085%,
+positive on both years**. It is the only setup tested anywhere in this
+repo whose gross edge is positive in both years rather than ~zero.
+
+It is still not tradeable, and the reason is sample size: the setup fires
+37 times in 2025 and 24 times in 2026. Both t-statistics are about -0.9,
+i.e. statistically indistinguishable from zero, and the win rates
+disagree badly (27% vs 54%). With two years of one symbol there is no way
+to get more occurrences of something this rare. The honest read is "not
+disproven, not established" — the one thread here that more data could
+still settle, since running the same detector across many symbols would
+multiply the sample without touching the logic.
+
 ## The strongest model built here, and how it failed
 
 The sharpest version of the "trade every case correctly" idea is this:

@@ -1,10 +1,25 @@
-# Bybit Futures Trend-Following Bot
+# Bybit Futures Bot — research record
 
-A trend-following bot for Bybit USDT perpetual futures (EMA9/EMA21 cross
-in the direction of a confirmed higher-timeframe trend), with strict risk
-management (tiered position sizing, volatility-capped leverage, ATR
-stop-loss, partial take-profit + breakeven, ATR chandelier trailing
-stop, daily loss circuit breaker).
+> **The code has been removed from this branch on request.** Every
+> strategy, backtest, live-trading and research module was deleted; only
+> the datasets in `data/` and this write-up remain. Nothing is lost — the
+> full working tree is in git history:
+>
+> ```bash
+> git log --oneline                       # find the commit before removal
+> git checkout e6ae121 -- bybit_bot/      # restore everything
+> git checkout e6ae121 -- bybit_bot/bot   # or just one part
+> ```
+>
+> `e6ae121` is the last commit with the code present. What follows is the
+> record of what was tried and what the data actually said, kept because
+> the measurements outlast the code that produced them.
+
+The strategy that was here: EMA9/EMA21 cross in the direction of a
+confirmed higher-timeframe trend, with tiered position sizing,
+volatility-capped leverage, ATR stop-loss, partial take-profit plus
+breakeven, ATR chandelier trailing stop, and a daily loss circuit
+breaker. Final measured results: **-1.38% on 2026, -4.69% on 2025.**
 
 ## Important: read this before running anything live
 

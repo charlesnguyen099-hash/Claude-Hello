@@ -7,10 +7,21 @@
 No API key, no account, no order is ever placed. It reads Bybit's public
 kline and ticker endpoints and keeps the balance in memory.
 
-    python run_bot.py --equity 10 --top 20 --max-positions 3
+    python run_bot.py                          # every USDT perpetual on Bybit
+    python run_bot.py --top 50                 # only the 50 most liquid
+    python run_bot.py --symbols BTCUSDT,ETHUSDT,SOLUSDT
     python run_bot.py --min-votes 2 --exit net_TP2.0_SL1.5
-    python run_bot.py --symbols BTCUSDT,ETHUSDT,SOLUSDT --trades-csv session.csv
     python run_bot.py --maker-fee --max-leverage 25
+    python run_bot.py --margin-pct 5 --max-positions 20
+
+By default it scans EVERY USDT perpetual Bybit lists and trades any coin
+whose methods fire and agree -- the scan runs the whole board rather than
+stopping once a few positions are open, so a coin far down the list is as
+tradeable as one near the top. Klines are fetched in parallel, otherwise
+a full pass would take longer than the cycle it belongs to.
+
+With no position cap, what limits the bot is free margin: each trade
+takes --margin-pct of current equity, and no trade opens without it.
 
 Twelve methods vote on each 30-minute bar; a position opens only where
 enough of them fire and agree on direction. Leverage runs the file's full
@@ -40,10 +51,12 @@ from fp import logic as L
 
 
 def discover_symbols(client, top: int) -> list[str]:
+    """Every USDT perpetual, most liquid first. top=0 keeps all of them."""
     r = client.get_tickers(category="linear")
     rows = [x for x in r["result"]["list"] if x["symbol"].endswith("USDT")]
     rows.sort(key=lambda x: float(x.get("turnover24h") or 0), reverse=True)
-    return [x["symbol"] for x in rows[:top]]
+    names = [x["symbol"] for x in rows]
+    return names[:top] if top else names
 
 
 def main() -> int:
@@ -52,8 +65,14 @@ def main() -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__)
     p.add_argument("--equity", type=float, default=10.0)
     p.add_argument("--symbols", default=None, help="comma-separated; omit to use --top")
-    p.add_argument("--top", type=int, default=20)
-    p.add_argument("--max-positions", type=int, default=3)
+    p.add_argument("--top", type=int, default=0,
+                   help="scan only the N most liquid perpetuals "
+                        "(default 0 = scan every USDT perpetual)")
+    p.add_argument("--max-positions", type=int, default=0,
+                   help="cap concurrent positions (default 0 = no cap; "
+                        "free margin is the limit)")
+    p.add_argument("--margin-pct", type=float, default=10.0,
+                   help="percent of equity committed per trade (default 10)")
     p.add_argument("--min-votes", type=int, default=1,
                    help="methods that must fire and agree before a trade")
     p.add_argument("--exit", default=L.DEFAULT_EXIT, choices=L.EXIT_STRATEGIES,
@@ -96,9 +115,15 @@ def main() -> int:
     print("  PAPER TRADING — virtual money, real Bybit prices")
     print("=" * 70)
     print(f"  Starting balance : ${args.equity:,.2f} (simulated)")
-    print(f"  Symbols scanned  : {len(symbols)}")
+    print(f"  Symbols scanned  : {len(symbols)}"
+          + ("  (every USDT perpetual)" if not args.top and not args.symbols else ""))
     print(f"    {', '.join(symbols[:12])}{' ...' if len(symbols) > 12 else ''}")
-    print(f"  Max open at once : {args.max_positions}")
+    print(f"  Max open at once : "
+          + ("no cap (limited by free margin)" if not args.max_positions
+             else str(args.max_positions)))
+    print(f"  Margin per trade : {args.margin_pct:.1f}% of equity "
+          f"(${args.equity * args.margin_pct / 100:.2f} at the start, "
+          f"~{int(100 / args.margin_pct)} positions max)")
     print(f"  Methods          : {len(M.METHOD_NAMES)} voting on 30m bars")
     print(f"  Min votes to open: {args.min_votes} (and they must agree)")
     print(f"  Exit strategy    : {args.exit} (fixed at entry)")
@@ -119,6 +144,9 @@ def main() -> int:
     print("  final_direction column agrees with that consensus 50.4% of the")
     print("  time -- it was chosen after the outcome, so it is not available.")
     print("=" * 70)
+    print("  Every coin whose methods fire and agree is traded; the scan")
+    print("  covers the whole board each cycle, not just the first matches.")
+    print("=" * 70)
     print("  Ctrl+C stops the bot and prints the session summary.")
     print("=" * 70)
     print()
@@ -126,7 +154,7 @@ def main() -> int:
     try:
         B.run(client, symbols, args.equity, args.max_positions, args.exit,
               args.min_votes, args.poll_seconds, args.trades_csv, fee,
-              args.max_leverage)
+              args.max_leverage, args.margin_pct / 100.0)
     except KeyboardInterrupt:
         pass
     except Exception as exc:

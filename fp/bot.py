@@ -11,6 +11,7 @@ at entry.
 """
 from __future__ import annotations
 
+import concurrent.futures
 import logging
 import signal
 import time
@@ -30,6 +31,11 @@ logger = logging.getLogger("potential_leverage.bot")
 # feature (EMA200) needs.
 KLINES_30M = 1000
 SIGNAL_POLL_SECONDS = 60
+# Scanning the whole board means one kline call per symbol. Done serially
+# that is ~200ms x 500 symbols = well over a minute per cycle, longer than
+# the cycle itself. Bybit's public endpoints allow far more than this in
+# parallel, so the fetches are threaded and only the maths stays serial.
+FETCH_WORKERS = 12
 
 
 @dataclass
@@ -70,12 +76,16 @@ class Closed:
 class Broker:
     def __init__(self, client, symbols: list[str], equity: float,
                  max_positions: int, exit_name: str, min_votes: int,
-                 fee: float = L.FEE_ROUND_TRIP, max_leverage: float | None = None):
+                 fee: float = L.FEE_ROUND_TRIP, max_leverage: float | None = None,
+                 margin_pct: float = 0.10):
         self.client = client
         self.symbols = symbols
         self.equity = equity
         self.starting_equity = equity
+        # 0 means "no cap on the number of positions" -- what actually
+        # limits it then is free margin, which is the real constraint.
         self.max_positions = max_positions
+        self.margin_pct = margin_pct
         self.exit_name = exit_name
         self.min_votes = min_votes
         self.fee = fee
@@ -84,6 +94,20 @@ class Broker:
         self.closed: list[Closed] = []
         self.scans = 0
         self.no_signal = 0
+        self.skipped_no_margin = 0
+
+    @property
+    def committed_margin(self) -> float:
+        return sum(p.margin for p in self.open.values())
+
+    @property
+    def free_margin(self) -> float:
+        return self.equity - self.committed_margin
+
+    def has_room(self) -> bool:
+        if self.max_positions and len(self.open) >= self.max_positions:
+            return False
+        return self.free_margin >= self.equity * self.margin_pct
 
     def klines(self, symbol: str) -> pd.DataFrame | None:
         try:
@@ -110,9 +134,25 @@ class Broker:
             logger.exception("ticker fetch failed for %s", symbol)
             return None
 
-    def try_open(self, symbol: str) -> None:
+    def prefetch(self, symbols: list[str]) -> dict:
+        """Fetch klines for many symbols at once so a full-board scan is
+        bounded by the slowest request rather than the sum of all of them."""
+        out: dict = {}
+        with concurrent.futures.ThreadPoolExecutor(FETCH_WORKERS) as pool:
+            futures = {pool.submit(self.klines, s): s for s in symbols}
+            for fut in concurrent.futures.as_completed(futures):
+                sym = futures[fut]
+                try:
+                    out[sym] = fut.result()
+                except Exception:
+                    logger.exception("prefetch failed for %s", sym)
+                    out[sym] = None
+        return out
+
+    def try_open(self, symbol: str, bars=None) -> None:
         self.scans += 1
-        bars = self.klines(symbol)
+        if bars is None:
+            bars = self.klines(symbol)
         if bars is None or len(bars) < 250:
             return
         bars = bars.iloc[:-1].reset_index(drop=True)   # drop the forming bar
@@ -135,8 +175,12 @@ class Broker:
         chain = L.leverage_potential(atr_pct, self.max_leverage)
         lev = chain["leverage"]
 
-        margin = self.equity / max(1, self.max_positions)
+        # A fixed slice of current equity per trade, and never more than is
+        # actually free -- with no position cap, free margin is what stops
+        # the bot opening more than the account can carry.
+        margin = min(self.equity * self.margin_pct, self.free_margin)
         if margin <= 0:
+            self.skipped_no_margin += 1
             return
         notional = margin * lev
         qty = notional / price
@@ -237,6 +281,9 @@ class Broker:
             "starting_equity": self.starting_equity, "equity": self.equity,
             "equity_incl_open": self.equity + unreal,
             "scans": self.scans, "no_signal": self.no_signal,
+            "skipped_no_margin": self.skipped_no_margin,
+            "committed_margin": self.committed_margin,
+            "free_margin": self.free_margin,
         }
 
     def export_csv(self, path: str) -> None:
@@ -302,16 +349,17 @@ def print_summary(s: dict) -> None:
     net = s["equity_incl_open"] - s["starting_equity"]
     pct = 100 * net / s["starting_equity"] if s["starting_equity"] else 0.0
     print(f"  Net result            : ${net:+.4f}  ({pct:+.2f}%)")
-    print(f"\n  Scans: {s['scans']:,}   no qualifying vote: {s['no_signal']:,}")
+    print(f"\n  Scans: {s['scans']:,}   no qualifying vote: {s['no_signal']:,}"
+          f"   skipped for margin: {s['skipped_no_margin']:,}")
     print("=" * 70)
 
 
 def run(client, symbols: list[str], equity: float, max_positions: int,
         exit_name: str, min_votes: int, poll_seconds: int,
         trades_csv: str | None = None, fee: float = L.FEE_ROUND_TRIP,
-        max_leverage: float | None = None) -> None:
+        max_leverage: float | None = None, margin_pct: float = 0.10) -> None:
     broker = Broker(client, symbols, equity, max_positions, exit_name,
-                    min_votes, fee, max_leverage)
+                    min_votes, fee, max_leverage, margin_pct)
     running = True
 
     def stop(signum, frame):
@@ -333,15 +381,27 @@ def run(client, symbols: list[str], equity: float, max_positions: int,
             now = time.time()
             if now - last_scan >= SIGNAL_POLL_SECONDS:
                 last_scan = now
-                for sym in symbols:
-                    if not running or len(broker.open) >= max_positions:
-                        break
-                    if sym in broker.open:
-                        continue
-                    try:
-                        broker.try_open(sym)
-                    except Exception:
-                        logger.exception("entry check failed for %s", sym)
+                # Every symbol without a position is a candidate. The scan
+                # runs the whole board rather than stopping at the first
+                # few -- a coin further down the list is as tradeable as
+                # one near the top.
+                candidates = [s for s in symbols if s not in broker.open]
+                if candidates and broker.has_room():
+                    t0 = time.time()
+                    fetched = broker.prefetch(candidates)
+                    opened_before = len(broker.open)
+                    for sym in candidates:
+                        if not running or not broker.has_room():
+                            break
+                        try:
+                            broker.try_open(sym, fetched.get(sym))
+                        except Exception:
+                            logger.exception("entry check failed for %s", sym)
+                    logger.info("scanned %d symbols in %.1fs, opened %d, "
+                                "positions %d, free margin $%.2f",
+                                len(candidates), time.time() - t0,
+                                len(broker.open) - opened_before,
+                                len(broker.open), broker.free_margin)
 
             for _ in range(max(1, poll_seconds)):
                 if not running:

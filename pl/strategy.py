@@ -46,7 +46,7 @@ FEATURE_KEYS = ["rsi14", "stoch_k14", "range_pos_20", "consec_streak",
                 "vol_ratio_20", "adx14", "bb_pctb_20_2", "willr14"]
 N_BINS = 4
 MIN_CELL_TRADES = 20      # ignore cells the table barely visited
-MIN_CONVICTION = 0.30     # ignore cells where the table was near 50/50
+MIN_CONVICTION = 0.60     # raised from 0.30: see WRONG-DIRECTION below
 
 # The root cause of the losses, from the backtest: of 7,843 losing trades
 # on 2025, only 1,360 went the wrong way. 3,369 moved the right way by
@@ -59,6 +59,15 @@ MIN_CONVICTION = 0.30     # ignore cells where the table was near 50/50
 # tradeable if that clears the round trip by MIN_EDGE_MULTIPLE.
 MIN_EDGE_MULTIPLE = 2.0
 
+# WRONG-DIRECTION FIX. 1,360 of 7,843 losing trades went the wrong way.
+# Those came from cells where the table itself was close to evenly split
+# between LONG and SHORT — it had no real opinion, and the majority vote
+# was noise. Conviction is |long_share - 0.5| * 2, so 0.60 means at least
+# 80/20 agreement in that cell. Cells below it are skipped rather than
+# guessed at. MIN_CELL_SUPPORT additionally requires enough trades behind
+# the vote for the ratio to mean anything.
+MIN_CELL_SUPPORT = 40
+
 # Risk. The table used 100x; a causal entry cannot survive that.
 # Measured on causal entries over 2025-2026: median MAE 0.32%, p99 0.87%.
 # Sizing off the median would liquidate on one trade in a hundred, so the
@@ -66,9 +75,29 @@ MIN_EDGE_MULTIPLE = 2.0
 LEVERAGE_SAFETY_MAE = 0.0087
 LIQUIDATION_BUFFER = 2.0       # require this much headroom before liquidation
 MAX_LEVERAGE = 100
+MIN_LEVERAGE = 3
+
+# FEE FIX. A market order pays taker and crosses the spread:
+#     taker 0.055% + slippage 0.050%, twice = 0.210% round trip
+# A resting limit order pays maker and gets its own price:
+#     maker 0.020% + slippage 0.000%, twice = 0.040% round trip
+# Same trade, a fifth of the cost. The strategy already knows its entry
+# level in advance, so there is nothing stopping it from resting the order
+# rather than crossing — the only cost is that some entries never fill.
 TAKER_FEE_PCT = 0.00055
+MAKER_FEE_PCT = 0.00020
 SLIPPAGE_PCT = 0.0005
-ROUND_TRIP_PCT = 2 * (TAKER_FEE_PCT + SLIPPAGE_PCT)
+
+TAKER_ROUND_TRIP = 2 * (TAKER_FEE_PCT + SLIPPAGE_PCT)   # 0.210%
+MAKER_ROUND_TRIP = 2 * MAKER_FEE_PCT                    # 0.040%
+ROUND_TRIP_PCT = MAKER_ROUND_TRIP                       # default: rest the order
+
+# LIQUIDATION FIX. Lowering leverage alone does not remove liquidation, it
+# just moves it. A stop-loss placed strictly inside the liquidation
+# distance removes it structurally: the stop is always hit first, so the
+# position is closed at a known loss instead of being taken by the
+# exchange. STOP_FRACTION is how far toward liquidation the stop sits.
+STOP_FRACTION_OF_LIQ = 0.5
 
 
 def safe_leverage(expected_mae: float = LEVERAGE_SAFETY_MAE) -> int:
@@ -80,7 +109,34 @@ def safe_leverage(expected_mae: float = LEVERAGE_SAFETY_MAE) -> int:
     """
     if expected_mae <= 0:
         return MAX_LEVERAGE
-    return max(1, min(MAX_LEVERAGE, int(1.0 / (LIQUIDATION_BUFFER * expected_mae))))
+    return max(MIN_LEVERAGE,
+               min(MAX_LEVERAGE, int(1.0 / (LIQUIDATION_BUFFER * expected_mae))))
+
+
+def leverage_for(cell_mae_pct: float, floor_mae: float = LEVERAGE_SAFETY_MAE) -> int:
+    """Per-trade leverage, sized from how far THIS setup tends to run against
+    the position rather than from one global number.
+
+    A calm cell earns more leverage than a violent one, which is what
+    "flexible leverage" has to mean if it is not to be either reckless in
+    the violent cells or wasteful in the calm ones. The floor keeps a
+    suspiciously small recorded MAE from producing absurd leverage: the
+    table's excursions are measured from perfect pivots and understate what
+    a live entry will see, so the floor is the p99 excursion actually
+    measured on causal entries (0.87%). Without it, a cell recording MAE
+    0.03% would ask for 100x and be stopped out on the first normal wobble.
+    """
+    mae = max(cell_mae_pct / 100.0, floor_mae)
+    return safe_leverage(mae)
+
+
+def stop_distance(leverage: int) -> float:
+    """Adverse move at which the stop fires, as a fraction of entry price.
+
+    Strictly inside the liquidation distance, so the stop always triggers
+    first and the position can never be liquidated.
+    """
+    return STOP_FRACTION_OF_LIQ * 0.9 / max(1, leverage)
 
 
 def to_rank(values: np.ndarray, reference: np.ndarray) -> np.ndarray:
@@ -137,7 +193,7 @@ class PureLogic:
         g["direction"] = np.where(g["long_share"] >= 0.5, 1, -1)
         g["conviction"] = (g["long_share"] - 0.5).abs() * 2.0
         self.all_cells = g
-        self.rules = g[(g["n"] >= min_trades)
+        self.rules = g[(g["n"] >= max(min_trades, MIN_CELL_SUPPORT))
                        & (g["conviction"] >= min_conviction)
                        & (g["edge"] >= 100 * ROUND_TRIP_PCT * min_edge_multiple)]
 
@@ -171,6 +227,7 @@ class PureLogic:
             "conviction": float(row["conviction"]),
             "table_mae_pct": float(row["mae"]),
             "expected_move_pct": float(row["edge"]),
+            "leverage": leverage_for(float(row["mae"])),
             "support": int(row["n"]),
         }
 

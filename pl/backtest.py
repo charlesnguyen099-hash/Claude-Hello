@@ -29,15 +29,14 @@ def load(path: str) -> pd.DataFrame:
 
 
 def run(df: pd.DataFrame, logic: S.PureLogic, cells: np.ndarray,
-        leverage: int, fee_round_trip: float = S.ROUND_TRIP_PCT) -> dict:
+        leverage: int | None = None,
+        fee_round_trip: float = S.ROUND_TRIP_PCT,
+        use_stop: bool = True) -> dict:
+    """leverage=None sizes each trade from its own cell's excursion."""
     close = df["close"].to_numpy(float)
     high = df["high"].to_numpy(float)
     low = df["low"].to_numpy(float)
     n = len(close)
-
-    # Liquidation when the adverse move eats the margin. 0.9 keeps a
-    # maintenance-margin allowance rather than assuming the full 1/lev.
-    liq_move = 0.9 / leverage
 
     trades, busy = [], -1
     for i in range(n - 1):
@@ -49,6 +48,11 @@ def run(df: pd.DataFrame, logic: S.PureLogic, cells: np.ndarray,
             continue
 
         d = sig["direction"]
+        lev = leverage if leverage is not None else sig["leverage"]
+        # Liquidation when the adverse move eats the margin. 0.9 keeps a
+        # maintenance-margin allowance rather than assuming the full 1/lev.
+        liq_move = 0.9 / lev
+        stop_move = S.stop_distance(lev) if use_stop else liq_move
         j = min(i + sig["hold_minutes"], n - 1)
         entry = close[i]
         seg_hi, seg_lo = high[i + 1:j + 1], low[i + 1:j + 1]
@@ -59,7 +63,11 @@ def run(df: pd.DataFrame, logic: S.PureLogic, cells: np.ndarray,
                else (seg_hi.max() - entry) / entry)
         mae = max(mae, 0.0)
 
-        if mae >= liq_move:
+        if use_stop and mae >= stop_move:
+            # The stop sits strictly inside the liquidation distance, so it
+            # fires first and the loss is bounded and known.
+            gross, reason = -stop_move, "stopped"
+        elif mae >= liq_move:
             gross, reason = -liq_move, "liquidated"
         else:
             gross = (close[j] - entry) / entry * d
@@ -68,7 +76,7 @@ def run(df: pd.DataFrame, logic: S.PureLogic, cells: np.ndarray,
         net_unlev = gross - fee_round_trip
         trades.append({
             "gross": gross, "net_unlev": net_unlev,
-            "net_lev": net_unlev * leverage,
+            "net_lev": net_unlev * lev, "lev": lev,
             "mae": mae, "reason": reason, "conviction": sig["conviction"],
         })
         busy = j
@@ -82,6 +90,7 @@ def run(df: pd.DataFrame, logic: S.PureLogic, cells: np.ndarray,
     losers = t[~wins]
     causes = {
         "liquidated": int((losers["reason"] == "liquidated").sum()),
+        "stopped": int((losers["reason"] == "stopped").sum()),
         "wrong_direction": int((losers["gross"] <= -fee_round_trip).sum()),
         "fee_ate_it": int(((losers["gross"] > 0) &
                            (losers["gross"] < fee_round_trip)).sum()),
@@ -97,6 +106,8 @@ def run(df: pd.DataFrame, logic: S.PureLogic, cells: np.ndarray,
         "avg_net_lev_pct": round(100 * float(t["net_lev"].mean()), 3),
         "median_mae_pct": round(100 * float(t["mae"].median()), 4),
         "liquidations": int((t["reason"] == "liquidated").sum()),
+        "stops": int((t["reason"] == "stopped").sum()),
+        "avg_leverage": round(float(t["lev"].mean()), 1),
         "loss_causes": causes,
         "equity_x": float(np.expm1(np.log1p(np.clip(net, -0.99, None)).sum())),
     }

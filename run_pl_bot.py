@@ -53,8 +53,8 @@ def main() -> int:
                    help="scan the N highest-turnover USDT perpetuals (default 20)")
     p.add_argument("--max-positions", type=int, default=3)
     p.add_argument("--leverage", type=int, default=None,
-                   help="default: the highest that survives the measured "
-                        "adverse move")
+                   help="fixed leverage; omit to size each trade from its "
+                        "own setup's measured adverse excursion")
     p.add_argument("--poll-seconds", type=int, default=15)
     p.add_argument("--table", default=TABLE)
     p.add_argument("--trades-csv", default=None)
@@ -71,7 +71,7 @@ def main() -> int:
 
     client = HTTP(testnet=args.testnet)
     logic = S.PureLogic(args.table)
-    leverage = args.leverage or S.safe_leverage()
+    leverage = args.leverage   # None => per-trade sizing inside the broker
 
     if args.symbols:
         symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
@@ -89,7 +89,15 @@ def main() -> int:
     print(f"  Symbols scanned  : {len(symbols)}")
     print(f"    {', '.join(symbols[:12])}{' ...' if len(symbols) > 12 else ''}")
     print(f"  Max open at once : {args.max_positions}")
-    print(f"  Leverage         : {leverage}x")
+    print(f"  Leverage         : "
+          + (f"{leverage}x (fixed)" if leverage
+             else f"per-trade, {S.MIN_LEVERAGE}-{S.MAX_LEVERAGE}x from each "
+                  f"setup's excursion"))
+    print(f"  Fees             : maker {S.MAKER_FEE_PCT*100:.3f}% "
+          f"({S.MAKER_ROUND_TRIP*100:.3f}% round trip, "
+          f"{S.TAKER_ROUND_TRIP/S.MAKER_ROUND_TRIP:.1f}x cheaper than taker)")
+    print(f"  Stop-loss        : inside the liquidation price, so a position "
+          f"cannot be liquidated")
     print(f"  Price source     : Bybit {'TESTNET' if args.testnet else 'MAINNET'} "
           f"public API (no key, no orders)")
     print("=" * 64)

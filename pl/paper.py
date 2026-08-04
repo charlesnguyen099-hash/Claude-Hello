@@ -37,6 +37,7 @@ class Position:
     conviction: float
     expected_move_pct: float
     liq_price: float
+    stop_price: float
     peak_adverse_pct: float = 0.0
 
 
@@ -114,25 +115,34 @@ class Broker:
         if price is None or price <= 0:
             return
 
+        # Leverage is chosen per trade from this setup's own excursion,
+        # not from one global number.
+        lev = self.leverage or sig["leverage"]
         margin = self.equity / max(1, self.max_positions)
-        notional = margin * self.leverage
+        notional = margin * lev
         qty = notional / price
-        fee = notional * S.TAKER_FEE_PCT
+        # Resting a limit entry earns the maker rate instead of paying
+        # taker plus spread -- the single largest cost saving available.
+        fee = notional * S.MAKER_FEE_PCT
         self.equity -= fee
 
         d = sig["direction"]
-        liq = price * (1 - d * 0.9 / self.leverage)
+        liq = price * (1 - d * 0.9 / lev)
+        stop_move = S.stop_distance(lev)
+        stop = price * (1 - d * stop_move)
         self.open[symbol] = Position(
             symbol=symbol, direction=d, entry=price, qty=qty,
-            leverage=self.leverage, opened_at=pd.Timestamp.now(tz="UTC"),
+            leverage=lev, opened_at=pd.Timestamp.now(tz="UTC"),
             hold_minutes=sig["hold_minutes"], conviction=sig["conviction"],
             expected_move_pct=sig["expected_move_pct"], liq_price=liq,
+            stop_price=stop,
         )
         logger.info(
             "%s OPEN %s @%.6f qty=%.6f lev=%dx hold=%dmin conv=%.2f "
-            "expected=%.3f%% liq=%.6f",
-            symbol, "LONG" if d > 0 else "SHORT", price, qty, self.leverage,
-            sig["hold_minutes"], sig["conviction"], sig["expected_move_pct"], liq)
+            "expected=%.3f%% stop=%.6f (%.3f%%) liq=%.6f",
+            symbol, "LONG" if d > 0 else "SHORT", price, qty, lev,
+            sig["hold_minutes"], sig["conviction"], sig["expected_move_pct"],
+            stop, stop_move * 100, liq)
 
     # -- exits --------------------------------------------------------
     def manage(self, symbol: str) -> None:
@@ -146,10 +156,15 @@ class Broker:
         move = (price - pos.entry) / pos.entry * pos.direction
         pos.peak_adverse_pct = max(pos.peak_adverse_pct, -move * 100)
 
+        # The stop sits strictly inside the liquidation price, so it is
+        # always reached first and the position cannot be liquidated.
+        hit_stop = (price <= pos.stop_price) if pos.direction > 0 else (price >= pos.stop_price)
         liquidated = (price <= pos.liq_price) if pos.direction > 0 else (price >= pos.liq_price)
         elapsed = (pd.Timestamp.now(tz="UTC") - pos.opened_at) / pd.Timedelta(minutes=1)
 
-        if liquidated:
+        if hit_stop:
+            self._close(symbol, pos.stop_price, "stop_loss")
+        elif liquidated:
             self._close(symbol, pos.liq_price, "liquidated")
         elif elapsed >= pos.hold_minutes:
             self._close(symbol, price, "hold_elapsed")
@@ -158,7 +173,7 @@ class Broker:
         pos = self.open.pop(symbol)
         move = (price - pos.entry) / pos.entry * pos.direction
         gross = move * pos.qty * pos.entry
-        fee = pos.qty * price * S.TAKER_FEE_PCT
+        fee = pos.qty * price * S.MAKER_FEE_PCT
         pnl = gross - fee
         self.equity += pnl
         self.closed.append(Closed(
@@ -197,6 +212,7 @@ class Broker:
             "gross_profit": gross_profit, "gross_loss": gross_loss,
             "realized": gross_profit + gross_loss,
             "liquidations": sum(1 for t in self.closed if t.reason == "liquidated"),
+            "stops": sum(1 for t in self.closed if t.reason == "stop_loss"),
             "open": len(self.open), "open_wins": open_win, "open_losses": open_lose,
             "open_profit": open_profit, "open_loss": open_loss,
             "unrealized": unreal, "open_rows": rows,
@@ -240,6 +256,7 @@ def print_summary(s: dict) -> None:
     print(f"  Trades closed         : {s['closed']}")
     print(f"    winning             : {s['closed_wins']}")
     print(f"    losing              : {s['closed_losses']}")
+    print(f"    stopped out         : {s['stops']}")
     print(f"    liquidated          : {s['liquidations']}")
     print(f"  Total profit          : ${s['gross_profit']:+.4f}")
     print(f"  Total loss            : ${s['gross_loss']:+.4f}")

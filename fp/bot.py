@@ -1,11 +1,13 @@
-"""Paper-trading broker for FINAL_Profitable_Logic_Only.
+"""Paper-trading broker for FINAL_Logic_PotentialScaledLeverage.
 
 Virtual money, real Bybit prices from the public kline and ticker
 endpoints. No API key, no account, no order ever submitted.
 
 Twelve methods vote on each 30-minute bar; a position opens where they
-fire and agree on direction. Leverage is the file's flexible sizing,
-sized from the setup's own stop distance. The exit is fixed at entry.
+fire and agree on direction. Leverage runs the file's full potential
+chain -- base from ATR, a potential score from the volatility percentile,
+multiplier = score + 0.5, product capped at the base. The exit is fixed
+at entry.
 """
 from __future__ import annotations
 
@@ -21,7 +23,7 @@ from fp import features as F
 from fp import logic as L
 from fp import methods as M
 
-logger = logging.getLogger("final_profitable.bot")
+logger = logging.getLogger("potential_leverage.bot")
 
 # 30m bars are fetched directly: Bybit caps a kline call at 1000 candles,
 # and 1000 1m bars is only 33 30m bars, far short of the ~200 the slowest
@@ -47,6 +49,8 @@ class Position:
     votes: int
     best_price: float
     trail_dist: float
+    potential_score: float
+    lev_base: float
 
 
 @dataclass
@@ -128,9 +132,8 @@ class Broker:
 
         d = 1 if v["consensus_dir"] == M.LONG else -1
         atr = atr_pct / 100.0 * price
-        lev = L.leverage_flexible(atr_pct * L.SL_MULTIPLE)
-        if self.max_leverage is not None:
-            lev = min(lev, self.max_leverage)
+        chain = L.leverage_potential(atr_pct, self.max_leverage)
+        lev = chain["leverage"]
 
         margin = self.equity / max(1, self.max_positions)
         if margin <= 0:
@@ -151,10 +154,13 @@ class Broker:
             exit_name=self.exit_name, methods=fired,
             votes=int(v["n_methods_fired"]), best_price=price,
             trail_dist=L.TRAIL_MULTIPLE * atr,
+            potential_score=chain["potential_score"],
+            lev_base=chain["lev_base"],
         )
-        logger.info("%s OPEN %s @%.6f lev=%.0fx votes=%d [%s] exit=%s "
-                    "tp=%.6f sl=%.6f",
-                    symbol, "LONG" if d > 0 else "SHORT", price, lev,
+        logger.info("%s OPEN %s @%.6f potential=%.2f base=%.0fx -> lev=%.0fx "
+                    "votes=%d [%s] exit=%s tp=%.6f sl=%.6f",
+                    symbol, "LONG" if d > 0 else "SHORT", price,
+                    chain["potential_score"], chain["lev_base"], lev,
                     v["n_methods_fired"], fired, self.exit_name,
                     self.open[symbol].tp_price, self.open[symbol].sl_price)
 
@@ -211,7 +217,7 @@ class Broker:
             ow += pnl > 0
             ol += pnl <= 0
             rows.append((sym, pos.direction, pos.entry, price, pnl,
-                         pos.leverage, pos.methods))
+                         pos.leverage, pos.methods, pos.potential_score))
         gp, gl = sum(t.pnl_usd for t in wins), sum(t.pnl_usd for t in losses)
         op = sum(r[4] for r in rows if r[4] > 0)
         olo = sum(r[4] for r in rows if r[4] <= 0)
@@ -240,7 +246,7 @@ class Broker:
                  "reason": t.reason, "pnl_usd": t.pnl_usd,
                  "return_pct_leveraged": t.return_pct_leveraged,
                  "methods": t.methods} for t in self.closed]
-        for sym, d, entry, price, pnl, lev, meth in self.summary()["open_rows"]:
+        for sym, d, entry, price, pnl, lev, meth, pot in self.summary()["open_rows"]:
             pos = self.open[sym]
             rows.append({"symbol": sym, "side": "LONG" if d > 0 else "SHORT",
                          "status": "open_at_shutdown", "entry": entry,
@@ -274,9 +280,10 @@ def print_summary(s: dict) -> None:
     print(f"  Positions open        : {s['open']}")
     print(f"    currently winning   : {s['open_wins']}")
     print(f"    currently losing    : {s['open_losses']}")
-    for sym, d, entry, price, pnl, lev, meth in s["open_rows"]:
+    for sym, d, entry, price, pnl, lev, meth, pot in s["open_rows"]:
         print(f"      {sym:12s} {'LONG' if d > 0 else 'SHORT':5s} {lev:5.0f}x "
-              f"entry={entry:.6f} last={price:.6f} unreal=${pnl:+.4f}")
+              f"potential={pot:.2f} entry={entry:.6f} last={price:.6f} "
+              f"unreal=${pnl:+.4f}")
         print(f"        methods: {meth}")
     print(f"  Unrealized profit     : ${s['open_profit']:+.4f}")
     print(f"  Unrealized loss       : ${s['open_loss']:+.4f}")

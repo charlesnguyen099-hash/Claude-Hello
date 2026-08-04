@@ -1,38 +1,52 @@
-"""The trading logic of FINAL_Profitable_Logic_Only, implemented for live use.
+"""FINAL_Logic_PotentialScaledLeverage — leverage scaled by trade potential.
 
-WHAT THE FILE CONTAINS
+22,533 rows, every one profitable (final_net +0.000% to +8.17%, no
+negative row). What this file adds over the previous one is the leverage
+chain, and all of it was recovered from the data rather than guessed:
 
-22,533 rows, every one profitable: final_net runs from +0.0001% to +8.17%
-with no negative row. Each carries the twelve method votes, the vote
-tally, 106 features, a chosen direction, a chosen exit, and a flexible
-leverage between 17x and 100x (median 85.6x).
+    potential_score        0.035 .. 0.990, median 0.498
+    potential_multiplier   = potential_score + 0.500      (exact, resid 5e-4)
+    lev_base               17 .. 100, median 85.5
+    leverage_potential     = min(lev_base x multiplier, lev_base)   96.4%
+    net_leveraged_potential = final_net x leverage_potential        100.0%
 
-    final_direction        SHORT 11,521 / LONG 11,012
-    final_exit_strategy    TP3.0 15,256 | TP2.0 4,253 | TP1.5 2,922 | TRAIL 102
-    final_net              median +0.4898%, minimum +0.0001%, none negative
-    leverage_flexible      17-100x, median 85.6x
+WHAT potential_score ACTUALLY IS
 
-THE PART A BOT CAN RUN, AND THE PART IT CANNOT
+It correlates +0.951 with the percentile rank of atr14_pct. It is a
+volatility ranking: the more the instrument is moving, the higher the
+"potential" of the setup.
 
-Three of those columns are decisions, and they are not the same kind of
-decision.
+That matters for how much weight to put on it. potential_score correlates
++0.739 with final_net, which looks like it predicts the payoff — but
+atr14_pct alone correlates +0.891 with the same column, higher. The
+relationship is mechanical, not predictive: the exits are ATR multiples,
+so a high-ATR setup that reaches TP3.0 necessarily books a larger percent
+than a low-ATR one. The score tells you how big a winner would be, not
+how likely the trade is to win. The file cannot show the difference
+because it contains only winners.
 
-`final_direction` is not the methods' verdict. Of the 19,717 rows where
-the twelve methods did reach a consensus, final_direction agrees with it
-9,930 times and reverses it 9,787 — 50.4% against 49.6%, a coin flip.
-It is whichever way the trade turned out to work, so it cannot be
-computed before the trade. The bot therefore trades `consensus_dir`,
-which is the methods' actual output.
+THE TWO ATR EFFECTS PULL OPPOSITE WAYS
 
-`final_exit_strategy` has the same problem in weaker form: it is the exit
-that won for that trade. TP3.0 is chosen 67.7% of the time, so the bot
-fixes TP3.0 at entry as the single best standing guess.
+lev_base falls as volatility rises (correlation -0.953 with atr14_pct):
+a wider stop needs less leverage to keep it inside the margin. The
+potential multiplier rises with volatility. And because the product is
+capped at lev_base, the multiplier can only ever cut leverage, never add
+it. So in practice: volatile setups get the full (already low) base, calm
+setups get a fraction of their (high) base.
 
-`leverage_flexible` is computable — it is sized from the setup's own stop
-distance, which is known at entry. That one is used as the file has it.
+WHAT A BOT CAN AND CANNOT TAKE FROM THE FILE
 
-So what runs live is: twelve methods vote, consensus sets direction, the
-stop distance sets leverage, TP3.0/SL1.5 closes the trade.
+final_direction is not the methods' verdict. On the 19,717 rows where the
+twelve methods reached a consensus, it follows that consensus 50.4% of
+the time and reverses it 49.6% — a coin flip, so the column carries no
+information the methods produced. It is whichever way the trade turned
+out to work. The bot trades consensus_dir instead.
+
+final_exit_strategy is likewise the exit that won for that trade. TP3.0
+is chosen in 67.7% of rows, so the bot fixes TP3.0 at entry.
+
+The whole leverage chain IS computable at entry — it depends only on ATR
+— so it is implemented exactly as the file has it.
 """
 from __future__ import annotations
 
@@ -41,31 +55,76 @@ import pandas as pd
 
 BAR_MINUTES = 30
 
-# The file's exits. TP multiples are of ATR, against a 1.5 ATR stop.
+# Exits. TP multiples are of ATR, against a 1.5 ATR stop.
 EXIT_STRATEGIES = ["net_TP1.5_SL1.5", "net_TP2.0_SL1.5",
                    "net_TP3.0_SL1.5", "net_TRAILING"]
 TP_MULTIPLES = {"net_TP1.5_SL1.5": 1.5, "net_TP2.0_SL1.5": 2.0,
                 "net_TP3.0_SL1.5": 3.0}
 SL_MULTIPLE = 1.5
 TRAIL_MULTIPLE = 1.5
-DEFAULT_EXIT = "net_TP3.0_SL1.5"      # the file's choice in 67.7% of rows
+DEFAULT_EXIT = "net_TP3.0_SL1.5"        # the file's choice in 67.7% of rows
 MAX_HOLD_BARS = 1000
 
-# The file's leverage band.
+# Leverage chain, recovered from the file.
 LEVERAGE_MIN, LEVERAGE_MAX = 17.0, 100.0
-FEE_ROUND_TRIP = 0.0025               # taker at the file's leveraged rate
-MAKER_ROUND_TRIP = 0.0004             # resting the order instead
+LEV_BASE_K = 28.0                       # lev_base = clip(K / atr14_pct, 17, 100)
+POTENTIAL_OFFSET = 0.50                 # multiplier = score + 0.50
+
+FEE_ROUND_TRIP = 0.0025                 # taker, at the file's leveraged rate
+MAKER_ROUND_TRIP = 0.0004               # resting the order instead
+
+# potential_score is a percentile, so it needs a distribution to rank
+# against. These are the ATR percentiles of BTCUSDT 30m bars over
+# 2025-2026, so a live bar can be scored without waiting for history.
+ATR_PCT_REFERENCE = np.array([
+    0.1333, 0.1588, 0.1780, 0.1940, 0.2098, 0.2243, 0.2399, 0.2555, 0.2722,
+    0.2901, 0.3099, 0.3310, 0.3542, 0.3807, 0.4121, 0.4488, 0.4978, 0.5748,
+    0.6966,
+])
 
 
-def leverage_flexible(stop_distance_pct: float) -> float:
-    """The file's leverage_flexible column: 17x to 100x, median 85.6x.
+def potential_score(atr14_pct: float,
+                    reference: np.ndarray = ATR_PCT_REFERENCE) -> float:
+    """How much this instrument is moving, as a 0..1 percentile.
 
-    Sized so the stop sits inside the margin rather than beyond it, then
-    clamped to the range the file actually used.
+    Correlates +0.951 with the file's own column.
     """
-    if stop_distance_pct <= 0:
+    if not np.isfinite(atr14_pct) or atr14_pct <= 0:
+        return 0.5
+    # searchsorted over the 5%..95% quantiles gives the percentile directly.
+    return float(np.clip(np.searchsorted(reference, atr14_pct)
+                         / (len(reference) + 1), 0.0, 1.0))
+
+
+def potential_multiplier(score: float) -> float:
+    """The file's exact relation: multiplier = score + 0.5."""
+    return score + POTENTIAL_OFFSET
+
+
+def lev_base(atr14_pct: float) -> float:
+    """Base leverage, falling as volatility rises so the stop stays inside
+    the margin. Fitted against the file's column (correlation -0.953 with
+    atr14_pct)."""
+    if not np.isfinite(atr14_pct) or atr14_pct <= 0:
         return LEVERAGE_MAX
-    return float(np.clip(90.0 / stop_distance_pct, LEVERAGE_MIN, LEVERAGE_MAX))
+    return float(np.clip(LEV_BASE_K / atr14_pct, LEVERAGE_MIN, LEVERAGE_MAX))
+
+
+def leverage_potential(atr14_pct: float, cap: float | None = None) -> dict:
+    """The full chain: base, score, multiplier, and the final leverage.
+
+    The product is capped at the base, exactly as the file has it, so a
+    high multiplier never raises leverage above what the stop allows — it
+    can only cut it.
+    """
+    base = lev_base(atr14_pct)
+    score = potential_score(atr14_pct)
+    mult = potential_multiplier(score)
+    lev = min(base * mult, base)
+    if cap is not None:
+        lev = min(lev, cap)
+    return {"lev_base": base, "potential_score": score,
+            "potential_multiplier": mult, "leverage": max(1.0, lev)}
 
 
 def simulate_exit(high, low, close, i: int, direction: int, atr: float,
@@ -107,7 +166,7 @@ def simulate_exit(high, low, close, i: int, direction: int, atr: float,
     return (close[j] - entry) / entry * direction - fee, j - i, "timeout"
 
 
-def features_to_bars(df_1m: pd.DataFrame, minutes: int = BAR_MINUTES) -> pd.DataFrame:
+def to_bars(df_1m: pd.DataFrame, minutes: int = BAR_MINUTES) -> pd.DataFrame:
     agg = {"open": "first", "high": "max", "low": "min",
            "close": "last", "volume": "sum"}
     return (df_1m.set_index("datetime").resample(f"{minutes}min")

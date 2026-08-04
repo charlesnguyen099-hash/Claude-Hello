@@ -1,12 +1,11 @@
-"""Paper-trading broker for the twelve-method voting logic.
+"""Paper-trading broker for FINAL_Profitable_Logic_Only.
 
 Virtual money, real Bybit prices from the public kline and ticker
 endpoints. No API key, no account, no order ever submitted.
 
-Runs the full pipeline live: 30-minute bars, 106 features,
-twelve methods voting, consensus direction, flexible leverage, and one of
-the file's five exits (chosen up front and held, since which one wins is
-only knowable afterwards).
+Twelve methods vote on each 30-minute bar; a position opens where they
+fire and agree on direction. Leverage is the file's flexible sizing,
+sized from the setup's own stop distance. The exit is fixed at entry.
 """
 from __future__ import annotations
 
@@ -18,15 +17,15 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from wl import exits as X
-from wl import features as F
-from wl import methods as M
+from fp import features as F
+from fp import logic as L
+from fp import methods as M
 
-logger = logging.getLogger("wide_logic.bot")
+logger = logging.getLogger("final_profitable.bot")
 
-# 30m bars are fetched directly rather than resampled from 1m: Bybit caps a
-# kline call at 1000 candles, and 1000 1m bars is only 33 30m bars -- far
-# short of the ~200 the slowest feature (EMA200) needs to converge.
+# 30m bars are fetched directly: Bybit caps a kline call at 1000 candles,
+# and 1000 1m bars is only 33 30m bars, far short of the ~200 the slowest
+# feature (EMA200) needs.
 KLINES_30M = 1000
 SIGNAL_POLL_SECONDS = 60
 
@@ -47,7 +46,7 @@ class Position:
     methods: str
     votes: int
     best_price: float
-    trail_atr: float
+    trail_dist: float
 
 
 @dataclass
@@ -66,7 +65,8 @@ class Closed:
 
 class Broker:
     def __init__(self, client, symbols: list[str], equity: float,
-                 max_positions: int, exit_name: str, min_votes: int):
+                 max_positions: int, exit_name: str, min_votes: int,
+                 fee: float = L.FEE_ROUND_TRIP, max_leverage: float | None = None):
         self.client = client
         self.symbols = symbols
         self.equity = equity
@@ -74,6 +74,8 @@ class Broker:
         self.max_positions = max_positions
         self.exit_name = exit_name
         self.min_votes = min_votes
+        self.fee = fee
+        self.max_leverage = max_leverage
         self.open: dict[str, Position] = {}
         self.closed: list[Closed] = []
         self.scans = 0
@@ -112,9 +114,7 @@ class Broker:
         bars = bars.iloc[:-1].reset_index(drop=True)   # drop the forming bar
 
         feats = F.build(bars)
-        votes = M.evaluate_all(feats)
-        v = votes.iloc[-1]
-
+        v = M.evaluate_all(feats).iloc[-1]
         if v["n_methods_fired"] < self.min_votes or v["consensus_dir"] == "TIE":
             self.no_signal += 1
             return
@@ -122,37 +122,41 @@ class Broker:
         atr_pct = float(feats["atr14_pct"].iloc[-1])
         if not np.isfinite(atr_pct) or atr_pct <= 0:
             return
-
         price = self.last_price(symbol)
         if price is None or price <= 0:
             return
 
         d = 1 if v["consensus_dir"] == M.LONG else -1
         atr = atr_pct / 100.0 * price
-        lev = X.leverage_flexible(atr_pct * X.SL_MULTIPLE)
+        lev = L.leverage_flexible(atr_pct * L.SL_MULTIPLE)
+        if self.max_leverage is not None:
+            lev = min(lev, self.max_leverage)
+
         margin = self.equity / max(1, self.max_positions)
         if margin <= 0:
             return
         notional = margin * lev
         qty = notional / price
-        self.equity -= notional * X.FEE_ROUND_TRIP / 2
+        self.equity -= notional * self.fee / 2
 
-        tp_mult = X.TP_MULTIPLES.get(self.exit_name)
+        tp_mult = L.TP_MULTIPLES.get(self.exit_name)
         fired = ", ".join(m.split("_", 1)[1] for m in M.METHOD_NAMES if v[m] != "-")
 
         self.open[symbol] = Position(
             symbol=symbol, direction=d, entry=price, qty=qty, leverage=lev,
             margin=margin, opened_at=pd.Timestamp.now(tz="UTC"),
             tp_price=(price + d * tp_mult * atr) if tp_mult else float("nan"),
-            sl_price=price - d * X.SL_MULTIPLE * atr,
+            sl_price=price - d * L.SL_MULTIPLE * atr,
             liq_price=price * (1 - d * 0.9 / lev),
             exit_name=self.exit_name, methods=fired,
             votes=int(v["n_methods_fired"]), best_price=price,
-            trail_atr=X.TRAIL_MULTIPLE * atr,
+            trail_dist=L.TRAIL_MULTIPLE * atr,
         )
-        logger.info("%s OPEN %s @%.6f lev=%.0fx votes=%d [%s] exit=%s",
+        logger.info("%s OPEN %s @%.6f lev=%.0fx votes=%d [%s] exit=%s "
+                    "tp=%.6f sl=%.6f",
                     symbol, "LONG" if d > 0 else "SHORT", price, lev,
-                    v["n_methods_fired"], fired, self.exit_name)
+                    v["n_methods_fired"], fired, self.exit_name,
+                    self.open[symbol].tp_price, self.open[symbol].sl_price)
 
     def manage(self, symbol: str) -> None:
         pos = self.open.get(symbol)
@@ -172,7 +176,7 @@ class Broker:
 
         if pos.exit_name == "net_TRAILING":
             pos.best_price = max(pos.best_price, price) if d > 0 else min(pos.best_price, price)
-            trail = pos.best_price - d * pos.trail_atr
+            trail = pos.best_price - d * pos.trail_dist
             if (price <= trail) if d > 0 else (price >= trail):
                 self._close(symbol, trail, "trailing")
         elif np.isfinite(pos.tp_price):
@@ -185,15 +189,16 @@ class Broker:
         if reason == "liquidated":
             pnl = -pos.margin
         else:
-            pnl = move * pos.qty * pos.entry - pos.qty * price * X.FEE_ROUND_TRIP / 2
+            pnl = move * pos.qty * pos.entry - pos.qty * price * self.fee / 2
         self.equity += pnl
         self.closed.append(Closed(
             symbol=symbol, direction=pos.direction, entry=pos.entry,
             exit_price=price, opened_at=pos.opened_at,
             closed_at=pd.Timestamp.now(tz="UTC"), reason=reason, pnl_usd=pnl,
             return_pct_leveraged=100 * move * pos.leverage, methods=pos.methods))
-        logger.info("%s CLOSE @%.6f (%s) pnl=$%.4f equity=$%.4f",
-                    symbol, price, reason, pnl, self.equity)
+        logger.info("%s CLOSE %s @%.6f (%s) pnl=$%.4f equity=$%.4f",
+                    symbol, "LONG" if pos.direction > 0 else "SHORT",
+                    price, reason, pnl, self.equity)
 
     def summary(self) -> dict:
         wins = [t for t in self.closed if t.pnl_usd > 0]
@@ -215,6 +220,7 @@ class Broker:
             "closed_losses": len(losses),
             "liquidations": sum(1 for t in self.closed if t.reason == "liquidated"),
             "stops": sum(1 for t in self.closed if t.reason == "stop_loss"),
+            "targets": sum(1 for t in self.closed if t.reason == "take_profit"),
             "gross_profit": gp, "gross_loss": gl, "realized": gp + gl,
             "open": len(self.open), "open_wins": ow, "open_losses": ol,
             "open_profit": op, "open_loss": olo, "unrealized": unreal,
@@ -257,6 +263,7 @@ def print_summary(s: dict) -> None:
     print(f"  Trades closed         : {s['closed']}")
     print(f"    winning             : {s['closed_wins']}")
     print(f"    losing              : {s['closed_losses']}")
+    print(f"    hit take-profit     : {s['targets']}")
     print(f"    stopped out         : {s['stops']}")
     print(f"    liquidated          : {s['liquidations']}")
     print(f"  Total profit          : ${s['gross_profit']:+.4f}")
@@ -294,8 +301,10 @@ def print_summary(s: dict) -> None:
 
 def run(client, symbols: list[str], equity: float, max_positions: int,
         exit_name: str, min_votes: int, poll_seconds: int,
-        trades_csv: str | None = None) -> None:
-    broker = Broker(client, symbols, equity, max_positions, exit_name, min_votes)
+        trades_csv: str | None = None, fee: float = L.FEE_ROUND_TRIP,
+        max_leverage: float | None = None) -> None:
+    broker = Broker(client, symbols, equity, max_positions, exit_name,
+                    min_votes, fee, max_leverage)
     running = True
 
     def stop(signum, frame):

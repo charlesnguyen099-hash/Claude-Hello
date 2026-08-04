@@ -1,30 +1,32 @@
 #!/usr/bin/env python3
-"""Paper-trade the twelve-method voting logic on live Bybit data.
+"""Paper-trade FINAL_Profitable_Logic_Only on live Bybit data with a virtual $10.
 
     pip install pandas numpy pybit
     python run_bot.py
 
 No API key, no account, no order is ever placed. It reads Bybit's public
-kline and ticker endpoints and keeps the $10 balance in memory.
+kline and ticker endpoints and keeps the balance in memory.
 
-    python run_bot.py --equity 10
-    python run_bot.py --top 30 --max-positions 3
-    python run_bot.py --min-votes 2 --exit net_TP3.0_SL1.5
+    python run_bot.py --equity 10 --top 20 --max-positions 3
+    python run_bot.py --min-votes 2 --exit net_TP2.0_SL1.5
     python run_bot.py --symbols BTCUSDT,ETHUSDT,SOLUSDT --trades-csv session.csv
+    python run_bot.py --maker-fee --max-leverage 25
 
-Twelve methods vote on every 30-minute bar; a position opens only where
+Twelve methods vote on each 30-minute bar; a position opens only where
 enough of them fire and agree on direction. Leverage is the file's
-flexible sizing (17-100x from the setup's own stop distance). The exit is
-fixed at entry — the file's best_exit_strategy column picks the winner
-after the fact, which a live bot cannot do.
+flexible 17-100x sizing from the setup's stop distance. Exit defaults to
+TP3.0/SL1.5, the file's own choice in 67.7% of its rows.
 
-Ctrl+C prints closed trades (winners, losers, stop-outs, liquidations,
-total profit, total loss), positions still open with the methods that
-opened them, and the two combined.
+Ctrl+C prints closed trades (winners, losers, take-profits, stop-outs,
+liquidations, total profit, total loss), positions still open with the
+methods that opened them, and the two combined.
 
-Backtested on 2025-2026, every fixed exit averages between -0.20% and
--0.34% per trade. The only positive column in the file is the one that
-chooses the exit in hindsight.
+WHAT THE FILE'S COLUMNS DO AND DO NOT SUPPORT. Its final_direction is not
+the methods' verdict: on the 19,717 rows where the twelve did reach a
+consensus, final_direction agrees 9,930 times and reverses it 9,787 --
+50.4% to 49.6%, a coin flip. It is whichever way the trade turned out to
+work, so no bot can compute it. This one trades consensus_dir instead,
+which is what the methods actually produce.
 """
 from __future__ import annotations
 
@@ -32,7 +34,7 @@ import argparse
 import logging
 import sys
 
-from wl import exits as X
+from fp import logic as L
 
 
 def discover_symbols(client, top: int) -> list[str]:
@@ -44,16 +46,20 @@ def discover_symbols(client, top: int) -> list[str]:
 
 def main() -> int:
     p = argparse.ArgumentParser(
-        description="Paper-trade the twelve-method voting logic on live Bybit data.",
+        description="Paper-trade FINAL_Profitable_Logic_Only on live Bybit data.",
         formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__)
     p.add_argument("--equity", type=float, default=10.0)
     p.add_argument("--symbols", default=None, help="comma-separated; omit to use --top")
     p.add_argument("--top", type=int, default=20)
     p.add_argument("--max-positions", type=int, default=3)
     p.add_argument("--min-votes", type=int, default=1,
-                   help="methods that must fire before a trade is taken")
-    p.add_argument("--exit", default="net_TRAILING", choices=X.STRATEGIES,
-                   help="exit strategy, fixed at entry (default: net_TRAILING)")
+                   help="methods that must fire and agree before a trade")
+    p.add_argument("--exit", default=L.DEFAULT_EXIT, choices=L.EXIT_STRATEGIES,
+                   help=f"exit fixed at entry (default: {L.DEFAULT_EXIT})")
+    p.add_argument("--max-leverage", type=float, default=None,
+                   help="cap the file's flexible leverage (default: no cap)")
+    p.add_argument("--maker-fee", action="store_true",
+                   help="assume resting limit orders (0.040%% instead of 0.250%%)")
     p.add_argument("--poll-seconds", type=int, default=15)
     p.add_argument("--trades-csv", default=None)
     p.add_argument("--testnet", action="store_true")
@@ -64,10 +70,11 @@ def main() -> int:
 
     from pybit.unified_trading import HTTP
 
-    from wl import bot as B
-    from wl import methods as M
+    from fp import bot as B
+    from fp import methods as M
 
     client = HTTP(testnet=args.testnet)
+    fee = L.MAKER_ROUND_TRIP if args.maker_fee else L.FEE_ROUND_TRIP
 
     if args.symbols:
         symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
@@ -78,24 +85,32 @@ def main() -> int:
             print(f"Could not list symbols from Bybit: {exc}", file=sys.stderr)
             return 1
 
+    lev_note = (f"flexible {L.LEVERAGE_MIN:.0f}-{L.LEVERAGE_MAX:.0f}x"
+                if args.max_leverage is None
+                else f"flexible, capped at {args.max_leverage:.0f}x")
+
     print("=" * 70)
-    print("  PAPER TRADING — twelve-method voting, virtual money, real prices")
+    print("  PAPER TRADING — virtual money, real Bybit prices")
     print("=" * 70)
     print(f"  Starting balance : ${args.equity:,.2f} (simulated)")
     print(f"  Symbols scanned  : {len(symbols)}")
     print(f"    {', '.join(symbols[:12])}{' ...' if len(symbols) > 12 else ''}")
     print(f"  Max open at once : {args.max_positions}")
     print(f"  Methods          : {len(M.METHOD_NAMES)} voting on 30m bars")
-    print(f"  Min votes to open: {args.min_votes} (and they must agree on direction)")
+    print(f"  Min votes to open: {args.min_votes} (and they must agree)")
     print(f"  Exit strategy    : {args.exit} (fixed at entry)")
-    print(f"  Leverage         : flexible {X.leverage_flexible(10.0):.0f}-"
-          f"{X.leverage_flexible(0.1):.0f}x from the setup's stop distance")
-    print(f"  Fee              : {X.FEE_ROUND_TRIP*100:.3f}% round trip")
+    print(f"  Leverage         : {lev_note}")
+    print(f"  Fee              : {fee*100:.3f}% round trip "
+          f"({'maker, resting orders' if args.maker_fee else 'taker'})")
     print(f"  Price source     : Bybit {'TESTNET' if args.testnet else 'MAINNET'} "
           f"public API (no key, no orders)")
     print("=" * 70)
     for m in M.METHOD_NAMES:
         print(f"    {m}")
+    print("=" * 70)
+    print("  Direction comes from the methods' consensus. The file's own")
+    print("  final_direction column agrees with that consensus 50.4% of the")
+    print("  time -- it was chosen after the outcome, so it is not available.")
     print("=" * 70)
     print("  Ctrl+C stops the bot and prints the session summary.")
     print("=" * 70)
@@ -103,7 +118,8 @@ def main() -> int:
 
     try:
         B.run(client, symbols, args.equity, args.max_positions, args.exit,
-              args.min_votes, args.poll_seconds, args.trades_csv)
+              args.min_votes, args.poll_seconds, args.trades_csv, fee,
+              args.max_leverage)
     except KeyboardInterrupt:
         pass
     except Exception as exc:

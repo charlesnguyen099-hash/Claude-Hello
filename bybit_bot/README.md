@@ -1,19 +1,21 @@
 # Bybit Futures Bot — research record
 
-> **The code has been removed from this branch on request.** Every
-> strategy, backtest, live-trading and research module was deleted; only
-> the datasets in `data/` and this write-up remain. Nothing is lost — the
-> full working tree is in git history:
+> **All trading logic has been removed from this branch on request.** Two
+> generations of it: the EMA-cross bot with its backtester and research
+> scripts, and the later work built from the uploaded PureLogic /
+> Logic_Final trade tables. Only the datasets in `data/` and this write-up
+> remain. Nothing is lost — both are in git history:
 >
 > ```bash
-> git log --oneline                       # find the commit before removal
-> git checkout e6ae121 -- bybit_bot/      # restore everything
-> git checkout e6ae121 -- bybit_bot/bot   # or just one part
+> git log --oneline                        # see every version
+> git checkout e6ae121 -- bybit_bot/       # the EMA-cross bot + research
+> git checkout 19bb2ec -- pl run_bot.py    # the Logic_Final bot
 > ```
 >
-> `e6ae121` is the last commit with the code present. What follows is the
-> record of what was tried and what the data actually said, kept because
-> the measurements outlast the code that produced them.
+> `e6ae121` is the last commit holding the first generation, `19bb2ec` the
+> last holding the second. What follows is the record of what was tried and
+> what the data actually said, kept because the measurements outlast the
+> code that produced them.
 
 The strategy that was here: EMA9/EMA21 cross in the direction of a
 confirmed higher-timeframe trend, with tiered position sizing,

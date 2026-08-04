@@ -20,8 +20,24 @@ stopping once a few positions are open, so a coin far down the list is as
 tradeable as one near the top. Klines are fetched in parallel, otherwise
 a full pass would take longer than the cycle it belongs to.
 
+It runs continuously and shows continuously. Three threads: one keeps a
+standing signal for every coin on the board, one re-prices every open
+position each second so TP and SL fire promptly, and one prints the
+capital and P&L dashboard on a fixed beat.
+
+Nothing potential is missed. The methods read a 30-minute bar, so a
+verdict cannot change until that bar closes -- klines are therefore
+fetched once per coin per bar and the verdict is kept standing. The fill
+loop then runs continuously over those standing signals and opens each
+one the moment there is margin for it, so a signal raised while the book
+was full is taken as soon as a position closes rather than lost. Polling
+the exchange harder would not find more trades; it would only earn a
+rate-limit ban, and a banned bot misses everything.
+
 With no position cap, what limits the bot is free margin: each trade
-takes --margin-pct of current equity, and no trade opens without it.
+takes --margin-pct of current equity, and no trade opens without it. You
+get slightly fewer than 100/--margin-pct positions, because each entry
+fee shrinks equity and so shrinks the next slice.
 
 Twelve methods vote on each 30-minute bar; a position opens only where
 enough of them fire and agree on direction. Leverage runs the file's full
@@ -82,7 +98,10 @@ def main() -> int:
                         "so the file's own 17-100x band is used as written)")
     p.add_argument("--maker-fee", action="store_true",
                    help="assume resting limit orders (0.040%% instead of 0.250%%)")
-    p.add_argument("--poll-seconds", type=int, default=15)
+    p.add_argument("--poll-seconds", type=int, default=5,
+                   help="seconds between dashboard reprints (default 5). "
+                        "Scanning and position management are continuous "
+                        "and are not affected by this.")
     p.add_argument("--trades-csv", default=None)
     p.add_argument("--testnet", action="store_true")
     args = p.parse_args()
@@ -145,7 +164,14 @@ def main() -> int:
     print("  time -- it was chosen after the outcome, so it is not available.")
     print("=" * 70)
     print("  Every coin whose methods fire and agree is traded; the scan")
-    print("  covers the whole board each cycle, not just the first matches.")
+    print("  covers the whole board, not just the first matches.")
+    print()
+    print("  Runs continuously: signals are kept standing for every coin and")
+    print("  filled the moment margin frees, positions are re-priced every")
+    print(f"  second, and the dashboard reprints every {args.poll_seconds}s.")
+    print(f"  Klines are refetched once per coin per {L.BAR_MINUTES}m bar --")
+    print("  the verdict cannot change until the bar closes, and hammering")
+    print("  the endpoint would only earn a rate-limit ban.")
     print("=" * 70)
     print("  Ctrl+C stops the bot and prints the session summary.")
     print("=" * 70)

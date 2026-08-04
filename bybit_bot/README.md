@@ -16,6 +16,101 @@
 > last holding the second. What follows is the record of what was tried and
 > what the data actually said, kept because the measurements outlast the
 > code that produced them.
+>
+> **The bot that runs today is `fp/` + `run_bot.py`**, built from
+> `FINAL_Logic_PotentialScaledLeverage`. See the section immediately
+> below; everything after it is the older research record.
+
+## The current bot: `fp/` + `run_bot.py`
+
+```bash
+pip install -r requirements.txt
+python run_bot.py                    # $10 virtual, every USDT perpetual
+python run_bot.py --maker-fee        # 0.040% round trip instead of 0.250%
+python run_bot.py --top 50           # only the 50 most liquid
+python -m fp.test_bot                # 78 checks, no network needed
+```
+
+Paper trading only: real Bybit public prices, virtual money, no API key,
+no order ever submitted.
+
+### It runs continuously and shows continuously
+
+Three threads, so none waits on another:
+
+| thread | does | rate |
+|---|---|---|
+| scanner | keeps a standing signal for every coin, opens each as margin allows | continuous |
+| manager | re-prices every open position off one whole-board ticker call | 1 s |
+| dashboard | prints capital, P&L, margin, exposure, scan stats | 5 s (`--poll-seconds`) |
+
+### How "miss no potential trade" is actually achieved
+
+The obvious reading is "refetch every coin in a tight loop." That was
+measured and it does not work: on a 40-coin board it made **125 kline
+calls a second**, and on the real ~690-coin board that is a rate-limit
+ban — a banned bot misses *everything*. It is also pointless, because the
+twelve methods read a **30-minute bar**, so the verdict cannot change
+until that bar closes. The tight loop asks the same question hundreds of
+times and gets the same answer.
+
+So instead:
+
+- klines are fetched **once per coin per 30m bar**, and the verdict is
+  kept as a *standing signal* — measured at exactly 120 calls for a
+  120-coin board over a 40-second run, down from 3,132;
+- the **fill loop runs continuously** over those standing signals and
+  opens each one the moment there is margin for it.
+
+That second half is what stops trades being missed. A signal raised while
+the book was full is not discarded — it stays standing until its bar
+rolls over, and the next position to close frees the margin that takes
+it. The logs show this directly: `filled 1 standing signal(s), 21 still
+waiting on margin`.
+
+Two guards that follow from the same design:
+
+- a coin the methods pass over is still marked *evaluated*, otherwise it
+  looks unscored and gets refetched on every pass forever (this was a
+  real bug — it refetched the same 24 coins indefinitely);
+- one entry per coin per bar, otherwise a stop-out is instantly reopened
+  by the same standing verdict.
+
+### What the dashboard shows
+
+```
+  CAPITAL   start $10.0000   cash $8.4197   equity+open $8.1646   peak $13.0635
+  MARGIN    committed $8.2733   free $0.1464   used 98.3%   per trade $0.8420
+  EXPOSURE  notional $225.05   27.6x equity   avg leverage 27x
+  P&L       realized $-0.3394   unrealized $-0.2550   fees $2.1569   max DD $4.6200
+  CLOSED    26   win 10 / loss 16   rate 38.5%   TP 10 / SL 15 / liq 1   PF 0.96
+  OPEN      8 positions   in profit 3 ($+0.2866) / in loss 5 ($-0.5416)
+  SIGNALS   standing 56   waiting on margin 22   due a refresh 0   no signal 64
+  SCAN      fill pass #49   bar refreshes 3   universe 120   klines 120
+```
+
+Read the `EXPOSURE` line. At the default 10% margin per trade with the
+file's own 17–100x leverage band, a full book runs **~25x the account in
+notional**. A 4% adverse move across the book is the whole account. That
+is what the file's leverage chain does as written; the dashboard shows it
+rather than hiding it.
+
+`--margin-pct` gives slightly fewer than `100/pct` positions (9 at 10%,
+not 10) because each entry fee shrinks equity and so shrinks the next
+slice. That is what a real exchange does too.
+
+### What it does *not* claim
+
+The numbers above come from synthetic random-walk boards used to test the
+machinery, where the expected result is exactly minus the fees. They say
+the plumbing is correct. They say nothing about profit. Everything in the
+research record below still applies: across ~15 independent experiments
+the measured gross directional edge on this data was between -0.013% and
++0.0056% — indistinguishable from zero — so the net result tracks the
+fee, which is why `--maker-fee` (0.040% vs 0.250%) changes more than any
+signal change tried here.
+
+---
 
 The strategy that was here: EMA9/EMA21 cross in the direction of a
 confirmed higher-timeframe trend, with tiered position sizing,

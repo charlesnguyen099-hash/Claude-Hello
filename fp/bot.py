@@ -8,12 +8,38 @@ fire and agree on direction. Leverage runs the file's full potential
 chain -- base from ATR, a potential score from the volatility percentile,
 multiplier = score + 0.5, product capped at the base. The exit is fixed
 at entry.
+
+Three things run at once, on their own threads, so none waits on another:
+
+    scanner    keeps a standing signal for every symbol on the board and
+               opens any of them the moment margin allows
+    manager    re-prices every open position every second off one
+               whole-board ticker call, so TP/SL fire promptly
+    dashboard  prints capital, P&L, margin and scan statistics on a
+               fixed beat while the other two work
+
+HOW "SCAN CONTINUOUSLY, MISS NOTHING" IS ACTUALLY ACHIEVED
+
+Naively that means refetching every symbol's klines in a tight loop. It
+does not work: the methods read a 30-minute bar, so the verdict cannot
+change until that bar closes, and a tight loop just asks Bybit the same
+question hundreds of times for the same answer -- measured at 125 kline
+calls a second on a 40-symbol board, which on the real ~690-symbol board
+is a rate-limit ban, and a banned bot misses everything.
+
+So klines are fetched once per symbol per 30-minute bar, and the verdict
+is cached as a standing signal. The fast loop then runs continuously over
+those standing signals and opens each one as soon as there is margin for
+it. A signal raised while the book was full is not lost -- it stays
+standing until its bar rolls over, and the next freed slot fills it. That
+is what makes nothing get missed; polling harder would not.
 """
 from __future__ import annotations
 
 import concurrent.futures
 import logging
 import signal
+import threading
 import time
 from dataclasses import dataclass
 
@@ -30,12 +56,49 @@ logger = logging.getLogger("potential_leverage.bot")
 # and 1000 1m bars is only 33 30m bars, far short of the ~200 the slowest
 # feature (EMA200) needs.
 KLINES_30M = 1000
-SIGNAL_POLL_SECONDS = 60
+BAR_MS = L.BAR_MINUTES * 60 * 1000
+# The slowest feature needs about 200 bars; below this a symbol is skipped
+# rather than scored off half-formed indicators.
+MIN_BARS = 250
 # Scanning the whole board means one kline call per symbol. Done serially
-# that is ~200ms x 500 symbols = well over a minute per cycle, longer than
-# the cycle itself. Bybit's public endpoints allow far more than this in
-# parallel, so the fetches are threaded and only the maths stays serial.
+# that is ~200ms x 690 symbols, longer than the pass itself. Bybit's public
+# endpoints allow far more in parallel, so fetches are threaded.
 FETCH_WORKERS = 12
+# Signals are refreshed in chunks rather than one board-wide burst, so
+# entries keep flowing while the refresh runs instead of stalling for the
+# ~20s a full re-evaluation takes.
+REFRESH_CHUNK = 48
+# How long the fast loop pauses between attempts to fill standing signals.
+# It costs no API calls, so this only needs to be short enough that a freed
+# margin slot is reused promptly.
+FILL_INTERVAL_SECONDS = 0.5
+# How often open positions are re-priced. One ticker call covers the whole
+# board, so this costs one request per second no matter how many are open.
+MANAGE_INTERVAL_SECONDS = 1.0
+# How often the financial dashboard reprints.
+DASHBOARD_INTERVAL_SECONDS = 5.0
+# A whole-board ticker snapshot older than this is not trusted for pricing.
+PRICE_STALE_SECONDS = 10.0
+
+
+def closed_bar_ts(now_ms: int | None = None) -> int:
+    """Start of the most recently CLOSED 30m bar, in epoch ms.
+
+    Signals are computed on closed bars only, so this is what a cached
+    verdict is keyed on and what makes it stale when the bar rolls.
+    """
+    now = int(time.time() * 1000) if now_ms is None else now_ms
+    return (now // BAR_MS) * BAR_MS - BAR_MS
+
+
+@dataclass
+class Signal:
+    """A standing verdict for one symbol, valid until its bar rolls over."""
+    bar_ts: int
+    direction: int
+    atr_pct: float
+    votes: int
+    methods: str
 
 
 @dataclass
@@ -82,6 +145,8 @@ class Broker:
         self.symbols = symbols
         self.equity = equity
         self.starting_equity = equity
+        self.peak_equity = equity
+        self.max_drawdown = 0.0
         # 0 means "no cap on the number of positions" -- what actually
         # limits it then is free margin, which is the real constraint.
         self.max_positions = max_positions
@@ -90,24 +155,65 @@ class Broker:
         self.min_votes = min_votes
         self.fee = fee
         self.max_leverage = max_leverage
+
         self.open: dict[str, Position] = {}
         self.closed: list[Closed] = []
-        self.scans = 0
+        # Standing signals, one per symbol, replaced when its bar rolls.
+        self.signals: dict[str, Signal] = {}
+        # Bar each symbol was last scored on, whether or not it produced a
+        # signal. Staleness keys off this rather than off self.signals --
+        # otherwise every symbol the methods pass over looks unevaluated and
+        # gets refetched on every single pass, forever.
+        self.evaluated_bar: dict[str, int] = {}
+        # Bar a symbol was last traded on, so a stopped-out position is not
+        # instantly reopened by the same standing signal.
+        self.traded_bar: dict[str, int] = {}
+
+        self.evaluations = 0
         self.no_signal = 0
         self.skipped_no_margin = 0
+        self.blocked_signals = 0
+        self.fees_paid = 0.0
+        self.passes = 0
+        self.refreshes = 0
+        self.last_refresh_seconds = 0.0
+        self.kline_calls = 0
+        self.started_at = time.time()
+
+        # Whole-board ticker snapshot, refreshed by the manager thread and
+        # read by everything else, so no thread makes its own price call.
+        self.prices: dict[str, float] = {}
+        self.prices_at = 0.0
+        # Scanning, management and reporting run on separate threads and
+        # all touch equity and the open book, so both are lock-guarded.
+        self.lock = threading.RLock()
+        # kline_calls is bumped from the fetch pool, so it gets its own
+        # lock -- taking the main one there would serialise the fetches.
+        self.counter_lock = threading.Lock()
+
+    # ---------------------------------------------------------------- state
 
     @property
     def committed_margin(self) -> float:
-        return sum(p.margin for p in self.open.values())
+        with self.lock:
+            return sum(p.margin for p in self.open.values())
 
     @property
     def free_margin(self) -> float:
-        return self.equity - self.committed_margin
+        with self.lock:
+            return self.equity - sum(p.margin for p in self.open.values())
+
+    def slice_size(self) -> float:
+        """Margin one trade commits: a fixed slice of current equity."""
+        return self.equity * self.margin_pct
 
     def has_room(self) -> bool:
-        if self.max_positions and len(self.open) >= self.max_positions:
-            return False
-        return self.free_margin >= self.equity * self.margin_pct
+        with self.lock:
+            if self.max_positions and len(self.open) >= self.max_positions:
+                return False
+            return self.free_margin >= self.slice_size()
+
+    # ---------------------------------------------------------------- market
 
     def klines(self, symbol: str) -> pd.DataFrame | None:
         try:
@@ -115,29 +221,60 @@ class Broker:
                                          interval="30",
                                          limit=KLINES_30M)["result"]["list"]
         except Exception:
-            logger.exception("kline fetch failed for %s", symbol)
+            logger.debug("kline fetch failed for %s", symbol, exc_info=True)
             return None
+        with self.counter_lock:
+            self.kline_calls += 1
         if not rows:
             return None
         df = pd.DataFrame(rows, columns=["ts", "open", "high", "low",
                                          "close", "volume", "turnover"])
-        df["datetime"] = pd.to_datetime(df["ts"].astype("int64"), unit="ms")
+        df["ts"] = df["ts"].astype("int64")
+        df["datetime"] = pd.to_datetime(df["ts"], unit="ms")
         for c in ("open", "high", "low", "close", "volume"):
             df[c] = df[c].astype(float)
         return df.sort_values("datetime").reset_index(drop=True)
 
+    def refresh_prices(self) -> int:
+        """One call gives the last price of every linear perpetual. Managing
+        200 positions then costs the same one request as managing one."""
+        try:
+            rows = self.client.get_tickers(category="linear")["result"]["list"]
+        except Exception:
+            logger.debug("whole-board ticker fetch failed", exc_info=True)
+            return 0
+        snap = {}
+        for r in rows:
+            try:
+                p = float(r["lastPrice"])
+            except (TypeError, ValueError, KeyError):
+                continue
+            if p > 0:
+                snap[r["symbol"]] = p
+        if snap:
+            self.prices = snap
+            self.prices_at = time.time()
+        return len(snap)
+
     def last_price(self, symbol: str) -> float | None:
+        """The board snapshot if it is fresh, otherwise a direct call."""
+        if time.time() - self.prices_at <= PRICE_STALE_SECONDS:
+            p = self.prices.get(symbol)
+            if p:
+                return p
         try:
             r = self.client.get_tickers(category="linear", symbol=symbol)
             return float(r["result"]["list"][0]["lastPrice"])
         except Exception:
-            logger.exception("ticker fetch failed for %s", symbol)
+            logger.debug("ticker fetch failed for %s", symbol, exc_info=True)
             return None
 
     def prefetch(self, symbols: list[str]) -> dict:
-        """Fetch klines for many symbols at once so a full-board scan is
-        bounded by the slowest request rather than the sum of all of them."""
+        """Fetch klines for many symbols at once so a refresh is bounded by
+        the slowest request rather than the sum of all of them."""
         out: dict = {}
+        if not symbols:
+            return out
         with concurrent.futures.ThreadPoolExecutor(FETCH_WORKERS) as pool:
             futures = {pool.submit(self.klines, s): s for s in symbols}
             for fut in concurrent.futures.as_completed(futures):
@@ -145,75 +282,179 @@ class Broker:
                 try:
                     out[sym] = fut.result()
                 except Exception:
-                    logger.exception("prefetch failed for %s", sym)
+                    logger.debug("prefetch failed for %s", sym, exc_info=True)
                     out[sym] = None
         return out
 
-    def try_open(self, symbol: str, bars=None) -> None:
-        self.scans += 1
-        if bars is None:
-            bars = self.klines(symbol)
-        if bars is None or len(bars) < 250:
-            return
-        bars = bars.iloc[:-1].reset_index(drop=True)   # drop the forming bar
+    # ------------------------------------------------------------ evaluation
 
-        feats = F.build(bars)
-        v = M.evaluate_all(feats).iloc[-1]
-        if v["n_methods_fired"] < self.min_votes or v["consensus_dir"] == "TIE":
-            self.no_signal += 1
-            return
+    def evaluate(self, symbol: str, bars: pd.DataFrame | None) -> Signal | None:
+        """Score one symbol on its last closed bar and store the verdict.
+
+        Returns the standing signal, or None if the methods did not fire,
+        did not agree, or the data was unusable.
+        """
+        self.evaluations += 1
+        now_bar = closed_bar_ts()
+        if bars is None or len(bars) < MIN_BARS:
+            # Mark it evaluated anyway: a symbol Bybit cannot serve, or one
+            # too young to have 250 bars, must not be retried every pass.
+            self.evaluated_bar[symbol] = now_bar
+            self.signals.pop(symbol, None)
+            return None
+
+        # The newest row is the bar still forming; the verdict is taken on
+        # the last bar that actually closed.
+        bars = bars.iloc[:-1].reset_index(drop=True)
+        bar_ts = int(bars["ts"].iloc[-1])
+        self.evaluated_bar[symbol] = max(bar_ts, now_bar)
+
+        try:
+            feats = F.build(bars)
+            v = M.evaluate_all(feats).iloc[-1]
+        except Exception:
+            logger.debug("evaluation failed for %s", symbol, exc_info=True)
+            self.signals.pop(symbol, None)
+            return None
 
         atr_pct = float(feats["atr14_pct"].iloc[-1])
-        if not np.isfinite(atr_pct) or atr_pct <= 0:
-            return
+        if (v["n_methods_fired"] < self.min_votes
+                or v["consensus_dir"] == M.TIE
+                or not np.isfinite(atr_pct) or atr_pct <= 0):
+            self.no_signal += 1
+            self.signals.pop(symbol, None)
+            return None
+
+        sig = Signal(
+            bar_ts=bar_ts,
+            direction=1 if v["consensus_dir"] == M.LONG else -1,
+            atr_pct=atr_pct,
+            votes=int(v["n_methods_fired"]),
+            methods=", ".join(m.split("_", 1)[1]
+                              for m in M.METHOD_NAMES if v[m] != "-"),
+        )
+        self.signals[symbol] = sig
+        return sig
+
+    def refresh_signals(self, symbols: list[str]) -> int:
+        """Refetch and re-score a chunk of symbols. Returns signals standing."""
+        fetched = self.prefetch(symbols)
+        n = 0
+        for sym in symbols:
+            if self.evaluate(sym, fetched.get(sym)) is not None:
+                n += 1
+        return n
+
+    def stale_symbols(self) -> list[str]:
+        """Symbols not yet scored on the most recently closed bar.
+
+        Symbols already holding a position are left out: their entry is
+        decided, and re-scoring them would only spend kline calls.
+        """
+        want = closed_bar_ts()
+        return [s for s in self.symbols
+                if s not in self.open and self.evaluated_bar.get(s, -1) < want]
+
+    # ----------------------------------------------------------------- entry
+
+    def try_open(self, symbol: str) -> bool:
+        """Open the symbol's standing signal if there is margin for it."""
+        sig = self.signals.get(symbol)
+        if sig is None or symbol in self.open:
+            return False
+        # One entry per symbol per bar: without this a stop-out would be
+        # reopened immediately by the same standing verdict.
+        if self.traded_bar.get(symbol) == sig.bar_ts:
+            return False
+
         price = self.last_price(symbol)
         if price is None or price <= 0:
-            return
+            return False
 
-        d = 1 if v["consensus_dir"] == M.LONG else -1
-        atr = atr_pct / 100.0 * price
-        chain = L.leverage_potential(atr_pct, self.max_leverage)
+        d = sig.direction
+        atr = sig.atr_pct / 100.0 * price
+        chain = L.leverage_potential(sig.atr_pct, self.max_leverage)
         lev = chain["leverage"]
-
-        # A fixed slice of current equity per trade, and never more than is
-        # actually free -- with no position cap, free margin is what stops
-        # the bot opening more than the account can carry.
-        margin = min(self.equity * self.margin_pct, self.free_margin)
-        if margin <= 0:
-            self.skipped_no_margin += 1
-            return
-        notional = margin * lev
-        qty = notional / price
-        self.equity -= notional * self.fee / 2
-
         tp_mult = L.TP_MULTIPLES.get(self.exit_name)
-        fired = ", ".join(m.split("_", 1)[1] for m in M.METHOD_NAMES if v[m] != "-")
 
-        self.open[symbol] = Position(
-            symbol=symbol, direction=d, entry=price, qty=qty, leverage=lev,
-            margin=margin, opened_at=pd.Timestamp.now(tz="UTC"),
-            tp_price=(price + d * tp_mult * atr) if tp_mult else float("nan"),
-            sl_price=price - d * L.SL_MULTIPLE * atr,
-            liq_price=price * (1 - d * 0.9 / lev),
-            exit_name=self.exit_name, methods=fired,
-            votes=int(v["n_methods_fired"]), best_price=price,
-            trail_dist=L.TRAIL_MULTIPLE * atr,
-            potential_score=chain["potential_score"],
-            lev_base=chain["lev_base"],
-        )
+        # A fixed slice of current equity per trade, and only if that whole
+        # slice is free -- with no position cap, free margin is what stops
+        # the bot opening more than the account can carry. Sizing, the fee
+        # debit and the book entry happen under one lock so two passes
+        # cannot spend the same margin twice.
+        with self.lock:
+            if symbol in self.open:
+                return False
+            if self.max_positions and len(self.open) >= self.max_positions:
+                self.skipped_no_margin += 1
+                return False
+            margin = self.slice_size()
+            if margin <= 0 or self.free_margin < margin:
+                self.skipped_no_margin += 1
+                return False
+            notional = margin * lev
+            entry_fee = notional * self.fee / 2
+            self.equity -= entry_fee
+            self.fees_paid += entry_fee
+            pos = Position(
+                symbol=symbol, direction=d, entry=price, qty=notional / price,
+                leverage=lev, margin=margin, opened_at=pd.Timestamp.now(tz="UTC"),
+                tp_price=(price + d * tp_mult * atr) if tp_mult else float("nan"),
+                sl_price=price - d * L.SL_MULTIPLE * atr,
+                liq_price=price * (1 - d * 0.9 / lev),
+                exit_name=self.exit_name, methods=sig.methods,
+                votes=sig.votes, best_price=price,
+                trail_dist=L.TRAIL_MULTIPLE * atr,
+                potential_score=chain["potential_score"],
+                lev_base=chain["lev_base"],
+            )
+            self.open[symbol] = pos
+            self.traded_bar[symbol] = sig.bar_ts
+
         logger.info("%s OPEN %s @%.6f potential=%.2f base=%.0fx -> lev=%.0fx "
-                    "votes=%d [%s] exit=%s tp=%.6f sl=%.6f",
+                    "votes=%d [%s] exit=%s tp=%.6f sl=%.6f margin=$%.3f",
                     symbol, "LONG" if d > 0 else "SHORT", price,
                     chain["potential_score"], chain["lev_base"], lev,
-                    v["n_methods_fired"], fired, self.exit_name,
-                    self.open[symbol].tp_price, self.open[symbol].sl_price)
+                    sig.votes, sig.methods, self.exit_name,
+                    pos.tp_price, pos.sl_price, margin)
+        return True
 
-    def manage(self, symbol: str) -> None:
+    def fill_standing(self) -> tuple[int, int]:
+        """Try to open every standing signal. Returns (opened, still waiting).
+
+        This is the pass that runs continuously. It makes no kline calls, so
+        it can run as often as we like, and it is what guarantees a signal
+        raised while the book was full is taken the moment a slot frees.
+        """
+        opened, waiting = 0, 0
+        for sym in list(self.signals):
+            if sym in self.open:
+                continue
+            sig = self.signals.get(sym)
+            if sig is None or self.traded_bar.get(sym) == sig.bar_ts:
+                continue
+            if not self.has_room():
+                waiting += 1
+                continue
+            try:
+                if self.try_open(sym):
+                    opened += 1
+                else:
+                    waiting += 1
+            except Exception:
+                logger.debug("entry failed for %s", sym, exc_info=True)
+        self.blocked_signals = waiting
+        return opened, waiting
+
+    # ------------------------------------------------------------------ exit
+
+    def manage(self, symbol: str, price: float | None = None) -> None:
         pos = self.open.get(symbol)
         if pos is None:
             return
-        price = self.last_price(symbol)
         if price is None:
+            price = self.last_price(symbol)
+        if price is None or price <= 0:
             return
         d = pos.direction
 
@@ -229,39 +470,133 @@ class Broker:
             trail = pos.best_price - d * pos.trail_dist
             if (price <= trail) if d > 0 else (price >= trail):
                 self._close(symbol, trail, "trailing")
+                return
         elif np.isfinite(pos.tp_price):
             if (price >= pos.tp_price) if d > 0 else (price <= pos.tp_price):
                 self._close(symbol, pos.tp_price, "take_profit")
+                return
+
+        # The same timeout simulate_exit applies, so a position cannot tie
+        # capital up indefinitely if neither side is ever touched.
+        held = (pd.Timestamp.now(tz="UTC") - pos.opened_at).total_seconds()
+        if held >= L.MAX_HOLD_BARS * L.BAR_MINUTES * 60:
+            self._close(symbol, price, "timeout")
+
+    def manage_all(self) -> None:
+        """Re-price the whole open book off one ticker snapshot."""
+        self.refresh_prices()
+        with self.lock:
+            book = list(self.open)
+        for sym in book:
+            try:
+                self.manage(sym, self.prices.get(sym))
+            except Exception:
+                logger.debug("manage failed for %s", sym, exc_info=True)
 
     def _close(self, symbol: str, price: float, reason: str) -> None:
-        pos = self.open.pop(symbol)
-        move = (price - pos.entry) / pos.entry * pos.direction
-        if reason == "liquidated":
-            pnl = -pos.margin
-        else:
-            pnl = move * pos.qty * pos.entry - pos.qty * price * self.fee / 2
-        self.equity += pnl
-        self.closed.append(Closed(
-            symbol=symbol, direction=pos.direction, entry=pos.entry,
-            exit_price=price, opened_at=pos.opened_at,
-            closed_at=pd.Timestamp.now(tz="UTC"), reason=reason, pnl_usd=pnl,
-            return_pct_leveraged=100 * move * pos.leverage, methods=pos.methods))
+        with self.lock:
+            pos = self.open.pop(symbol, None)
+            if pos is None:
+                return
+            move = (price - pos.entry) / pos.entry * pos.direction
+            if reason == "liquidated":
+                # The margin is gone; the exit fee comes out of it, not on top.
+                pnl = -pos.margin
+            else:
+                exit_fee = pos.qty * price * self.fee / 2
+                pnl = move * pos.qty * pos.entry - exit_fee
+                self.fees_paid += exit_fee
+            self.equity += pnl
+            self.peak_equity = max(self.peak_equity, self.equity)
+            self.max_drawdown = max(self.max_drawdown,
+                                    self.peak_equity - self.equity)
+            self.closed.append(Closed(
+                symbol=symbol, direction=pos.direction, entry=pos.entry,
+                exit_price=price, opened_at=pos.opened_at,
+                closed_at=pd.Timestamp.now(tz="UTC"), reason=reason, pnl_usd=pnl,
+                return_pct_leveraged=100 * move * pos.leverage,
+                methods=pos.methods))
         logger.info("%s CLOSE %s @%.6f (%s) pnl=$%.4f equity=$%.4f",
                     symbol, "LONG" if pos.direction > 0 else "SHORT",
                     price, reason, pnl, self.equity)
 
-    def summary(self) -> dict:
-        wins = [t for t in self.closed if t.pnl_usd > 0]
-        losses = [t for t in self.closed if t.pnl_usd <= 0]
-        rows, ow, ol, unreal = [], 0, 0, 0.0
-        for sym, pos in self.open.items():
-            price = self.last_price(sym) or pos.entry
+    # ------------------------------------------------------------- reporting
+
+    def open_rows(self) -> list[tuple]:
+        with self.lock:
+            book = list(self.open.items())
+        rows = []
+        for sym, pos in book:
+            price = self.prices.get(sym) or pos.entry
             pnl = (price - pos.entry) / pos.entry * pos.direction * pos.qty * pos.entry
-            unreal += pnl
-            ow += pnl > 0
-            ol += pnl <= 0
             rows.append((sym, pos.direction, pos.entry, price, pnl,
                          pos.leverage, pos.methods, pos.potential_score))
+        return rows
+
+    def snapshot(self) -> dict:
+        """Everything the live dashboard shows, taken at one instant."""
+        with self.lock:
+            closed = list(self.closed)
+            n_open = len(self.open)
+            equity = self.equity
+            committed = sum(p.margin for p in self.open.values())
+            notional = sum(p.margin * p.leverage for p in self.open.values())
+            avg_lev = (sum(p.leverage for p in self.open.values()) / n_open
+                       if n_open else 0.0)
+        rows = self.open_rows()
+        unreal = sum(r[4] for r in rows)
+        ow = sum(1 for r in rows if r[4] > 0)
+        ol = len(rows) - ow
+        wins = [t for t in closed if t.pnl_usd > 0]
+        losses = [t for t in closed if t.pnl_usd <= 0]
+        gp = sum(t.pnl_usd for t in wins)
+        gl = sum(t.pnl_usd for t in losses)
+        eq_open = equity + unreal
+        standing = len(self.signals)
+        return {
+            "elapsed": time.time() - self.started_at,
+            "starting_equity": self.starting_equity,
+            "equity": equity, "equity_incl_open": eq_open,
+            "net": eq_open - self.starting_equity,
+            "roi_pct": (100 * (eq_open - self.starting_equity) / self.starting_equity
+                        if self.starting_equity else 0.0),
+            "realized": gp + gl, "gross_profit": gp, "gross_loss": gl,
+            "unrealized": unreal, "fees_paid": self.fees_paid,
+            "committed_margin": committed, "free_margin": equity - committed,
+            "margin_used_pct": (100 * committed / equity) if equity else 0.0,
+            "slice_size": self.slice_size(),
+            "notional": notional, "avg_leverage": avg_lev,
+            "exposure_x": (notional / eq_open) if eq_open > 0 else 0.0,
+            "max_drawdown": self.max_drawdown, "peak_equity": self.peak_equity,
+            "open": n_open, "open_wins": ow, "open_losses": ol,
+            "open_profit": sum(r[4] for r in rows if r[4] > 0),
+            "open_loss": sum(r[4] for r in rows if r[4] <= 0),
+            "closed": len(closed), "closed_wins": len(wins),
+            "closed_losses": len(losses),
+            "targets": sum(1 for t in closed if t.reason == "take_profit"),
+            "stops": sum(1 for t in closed if t.reason == "stop_loss"),
+            "liquidations": sum(1 for t in closed if t.reason == "liquidated"),
+            "win_rate": (100 * len(wins) / len(closed)) if closed else 0.0,
+            "avg_win": (gp / len(wins)) if wins else 0.0,
+            "avg_loss": (gl / len(losses)) if losses else 0.0,
+            "profit_factor": (gp / abs(gl)) if gl else (float("inf") if gp else 0.0),
+            "passes": self.passes, "refreshes": self.refreshes,
+            "last_refresh_seconds": self.last_refresh_seconds,
+            "evaluations": self.evaluations, "no_signal": self.no_signal,
+            "skipped_no_margin": self.skipped_no_margin,
+            "standing_signals": standing, "blocked_signals": self.blocked_signals,
+            "stale": len(self.stale_symbols()), "kline_calls": self.kline_calls,
+            "universe": len(self.symbols),
+        }
+
+    def summary(self) -> dict:
+        self.refresh_prices()
+        rows = self.open_rows()
+        wins = [t for t in self.closed if t.pnl_usd > 0]
+        losses = [t for t in self.closed if t.pnl_usd <= 0]
+        ow = sum(1 for r in rows if r[4] > 0)
+        ol = len(rows) - ow
+        unreal = sum(r[4] for r in rows)
         gp, gl = sum(t.pnl_usd for t in wins), sum(t.pnl_usd for t in losses)
         op = sum(r[4] for r in rows if r[4] > 0)
         olo = sum(r[4] for r in rows if r[4] <= 0)
@@ -271,17 +606,26 @@ class Broker:
             "liquidations": sum(1 for t in self.closed if t.reason == "liquidated"),
             "stops": sum(1 for t in self.closed if t.reason == "stop_loss"),
             "targets": sum(1 for t in self.closed if t.reason == "take_profit"),
+            "timeouts": sum(1 for t in self.closed if t.reason == "timeout"),
             "gross_profit": gp, "gross_loss": gl, "realized": gp + gl,
-            "open": len(self.open), "open_wins": ow, "open_losses": ol,
+            "open": len(rows), "open_wins": ow, "open_losses": ol,
             "open_profit": op, "open_loss": olo, "unrealized": unreal,
             "open_rows": rows,
-            "total_trades": len(self.closed) + len(self.open),
+            "total_trades": len(self.closed) + len(rows),
             "total_wins": len(wins) + ow, "total_losses": len(losses) + ol,
             "total_profit": gp + op, "total_loss": gl + olo,
+            "win_rate": (100 * len(wins) / len(self.closed)) if self.closed else 0.0,
             "starting_equity": self.starting_equity, "equity": self.equity,
             "equity_incl_open": self.equity + unreal,
-            "scans": self.scans, "no_signal": self.no_signal,
+            "fees_paid": self.fees_paid, "max_drawdown": self.max_drawdown,
+            "peak_equity": self.peak_equity,
+            "evaluations": self.evaluations, "no_signal": self.no_signal,
             "skipped_no_margin": self.skipped_no_margin,
+            "standing_signals": len(self.signals),
+            "blocked_signals": self.blocked_signals,
+            "passes": self.passes, "refreshes": self.refreshes,
+            "kline_calls": self.kline_calls,
+            "elapsed": time.time() - self.started_at,
             "committed_margin": self.committed_margin,
             "free_margin": self.free_margin,
         }
@@ -293,8 +637,10 @@ class Broker:
                  "reason": t.reason, "pnl_usd": t.pnl_usd,
                  "return_pct_leveraged": t.return_pct_leveraged,
                  "methods": t.methods} for t in self.closed]
-        for sym, d, entry, price, pnl, lev, meth, pot in self.summary()["open_rows"]:
-            pos = self.open[sym]
+        for sym, d, entry, price, pnl, lev, meth, pot in self.open_rows():
+            pos = self.open.get(sym)
+            if pos is None:
+                continue
             rows.append({"symbol": sym, "side": "LONG" if d > 0 else "SHORT",
                          "status": "open_at_shutdown", "entry": entry,
                          "exit_or_last": price, "opened_at": pos.opened_at,
@@ -306,19 +652,72 @@ class Broker:
             logger.info("wrote %d trade rows to %s", len(rows), path)
 
 
+def _hms(seconds: float) -> str:
+    s = int(max(0, seconds))
+    return f"{s // 3600:d}:{(s % 3600) // 60:02d}:{s % 60:02d}"
+
+
+def print_dashboard(s: dict) -> None:
+    """The live financial readout, reprinted on every beat while running."""
+    pf = "inf" if s["profit_factor"] == float("inf") else f"{s['profit_factor']:.2f}"
+    print()
+    print("=" * 78)
+    print(f"  LIVE  up {_hms(s['elapsed'])}   "
+          f"equity ${s['equity_incl_open']:.4f}   "
+          f"net ${s['net']:+.4f}  ({s['roi_pct']:+.2f}%)")
+    print("-" * 78)
+    print(f"  CAPITAL   start ${s['starting_equity']:.4f}"
+          f"   cash ${s['equity']:.4f}"
+          f"   equity+open ${s['equity_incl_open']:.4f}"
+          f"   peak ${s['peak_equity']:.4f}")
+    print(f"  MARGIN    committed ${s['committed_margin']:.4f}"
+          f"   free ${s['free_margin']:.4f}"
+          f"   used {s['margin_used_pct']:.1f}%"
+          f"   per trade ${s['slice_size']:.4f}")
+    print(f"  EXPOSURE  notional ${s['notional']:.2f}"
+          f"   {s['exposure_x']:.1f}x equity"
+          f"   avg leverage {s['avg_leverage']:.0f}x")
+    print(f"  P&L       realized ${s['realized']:+.4f}"
+          f"   unrealized ${s['unrealized']:+.4f}"
+          f"   fees ${s['fees_paid']:.4f}"
+          f"   max DD ${s['max_drawdown']:.4f}")
+    print(f"  CLOSED    {s['closed']}"
+          f"   win {s['closed_wins']} / loss {s['closed_losses']}"
+          f"   rate {s['win_rate']:.1f}%"
+          f"   TP {s['targets']} / SL {s['stops']} / liq {s['liquidations']}"
+          f"   PF {pf}")
+    print(f"            avg win ${s['avg_win']:+.4f}"
+          f"   avg loss ${s['avg_loss']:+.4f}")
+    print(f"  OPEN      {s['open']} positions"
+          f"   in profit {s['open_wins']} (${s['open_profit']:+.4f})"
+          f" / in loss {s['open_losses']} (${s['open_loss']:+.4f})")
+    print(f"  SIGNALS   standing {s['standing_signals']}"
+          f"   waiting on margin {s['blocked_signals']}"
+          f"   due a refresh {s['stale']}"
+          f"   no signal {s['no_signal']:,}")
+    print(f"  SCAN      fill pass #{s['passes']:,}"
+          f"   bar refreshes {s['refreshes']:,} (last {s['last_refresh_seconds']:.1f}s)"
+          f"   universe {s['universe']}"
+          f"   klines {s['kline_calls']:,}")
+    print("=" * 78)
+
+
 def print_summary(s: dict) -> None:
     print("\n" + "=" * 70)
     print("PAPER TRADING SESSION SUMMARY")
     print("=" * 70)
     print(f"Starting virtual equity : ${s['starting_equity']:.4f}")
+    print(f"Ran for                 : {_hms(s['elapsed'])}")
 
     print("\n-- CLOSED TRADES " + "-" * 50)
     print(f"  Trades closed         : {s['closed']}")
     print(f"    winning             : {s['closed_wins']}")
     print(f"    losing              : {s['closed_losses']}")
+    print(f"    win rate            : {s['win_rate']:.1f}%")
     print(f"    hit take-profit     : {s['targets']}")
     print(f"    stopped out         : {s['stops']}")
     print(f"    liquidated          : {s['liquidations']}")
+    print(f"    timed out           : {s['timeouts']}")
     print(f"  Total profit          : ${s['gross_profit']:+.4f}")
     print(f"  Total loss            : ${s['gross_loss']:+.4f}")
     print(f"  Net realized P&L      : ${s['realized']:+.4f}")
@@ -343,15 +742,74 @@ def print_summary(s: dict) -> None:
     print(f"  Total profit          : ${s['total_profit']:+.4f}")
     print(f"  Total loss            : ${s['total_loss']:+.4f}")
 
-    print("\n-- EQUITY " + "-" * 57)
+    print("\n-- CAPITAL " + "-" * 56)
     print(f"  Realized only         : ${s['equity']:.4f}")
     print(f"  Incl. open positions  : ${s['equity_incl_open']:.4f}")
+    print(f"  Peak equity           : ${s['peak_equity']:.4f}")
+    print(f"  Max drawdown          : ${s['max_drawdown']:.4f}")
+    print(f"  Fees paid             : ${s['fees_paid']:.4f}")
+    print(f"  Margin committed      : ${s['committed_margin']:.4f}")
+    print(f"  Margin free           : ${s['free_margin']:.4f}")
     net = s["equity_incl_open"] - s["starting_equity"]
     pct = 100 * net / s["starting_equity"] if s["starting_equity"] else 0.0
     print(f"  Net result            : ${net:+.4f}  ({pct:+.2f}%)")
-    print(f"\n  Scans: {s['scans']:,}   no qualifying vote: {s['no_signal']:,}"
-          f"   skipped for margin: {s['skipped_no_margin']:,}")
+
+    print("\n-- SCANNING " + "-" * 55)
+    print(f"  Bar refreshes         : {s['refreshes']:,}")
+    print(f"  Fill passes           : {s['passes']:,}")
+    print(f"  Kline calls           : {s['kline_calls']:,}")
+    print(f"  Evaluations           : {s['evaluations']:,}"
+          f"  ({s['no_signal']:,} produced no qualifying vote)")
+    print(f"  Signals still standing: {s['standing_signals']}"
+          f"  ({s['blocked_signals']} of them waiting on margin)")
     print("=" * 70)
+
+
+def _scanner(broker: Broker, stop_event: threading.Event) -> None:
+    """Keep signals current and fill them continuously.
+
+    Two jobs interleaved. Refreshing re-scores the symbols whose 30m bar
+    has rolled, a chunk at a time so entries never stall behind a whole
+    board pass. Filling opens any standing signal that has margin, and
+    costs no API calls, so it runs on every iteration -- a signal raised
+    while the book was full is taken the moment a position closes.
+    """
+    while not stop_event.is_set():
+        stale = broker.stale_symbols()
+        if stale:
+            t0 = time.time()
+            chunk = stale[:REFRESH_CHUNK]
+            broker.refresh_signals(chunk)
+            broker.refreshes += 1
+            broker.last_refresh_seconds = time.time() - t0
+            if stop_event.is_set():
+                return
+            broker.fill_standing()
+            broker.passes += 1
+            logger.info("refreshed %d/%d stale symbols in %.1fs, "
+                        "standing %d, open %d, free $%.3f",
+                        len(chunk), len(stale), broker.last_refresh_seconds,
+                        len(broker.signals), len(broker.open),
+                        broker.free_margin)
+            continue
+
+        opened, waiting = broker.fill_standing()
+        broker.passes += 1
+        if opened:
+            logger.info("filled %d standing signal(s), %d still waiting on "
+                        "margin, open %d, free $%.3f",
+                        opened, waiting, len(broker.open), broker.free_margin)
+        stop_event.wait(FILL_INTERVAL_SECONDS)
+
+
+def _manager(broker: Broker, stop_event: threading.Event) -> None:
+    """Re-price every open position once a second, off one ticker call."""
+    while not stop_event.is_set():
+        try:
+            broker.manage_all()
+        except Exception:
+            logger.exception("position management pass failed")
+        stop_event.wait(MANAGE_INTERVAL_SECONDS)
 
 
 def run(client, symbols: list[str], equity: float, max_positions: int,
@@ -360,54 +818,41 @@ def run(client, symbols: list[str], equity: float, max_positions: int,
         max_leverage: float | None = None, margin_pct: float = 0.10) -> None:
     broker = Broker(client, symbols, equity, max_positions, exit_name,
                     min_votes, fee, max_leverage, margin_pct)
-    running = True
+    stop_event = threading.Event()
 
     def stop(signum, frame):
-        nonlocal running
-        running = False
+        stop_event.set()
 
     signal.signal(signal.SIGINT, stop)
     signal.signal(signal.SIGTERM, stop)
 
-    last_scan = 0.0
+    # Prices first, so the manager and the dashboard have a board to read
+    # before the first refresh finishes.
+    broker.refresh_prices()
+
+    threads = [
+        threading.Thread(target=_scanner, args=(broker, stop_event),
+                         name="scanner", daemon=True),
+        threading.Thread(target=_manager, args=(broker, stop_event),
+                         name="manager", daemon=True),
+    ]
+    for t in threads:
+        t.start()
+
+    beat = poll_seconds if poll_seconds > 0 else DASHBOARD_INTERVAL_SECONDS
     try:
-        while running:
-            for sym in list(broker.open):
-                try:
-                    broker.manage(sym)
-                except Exception:
-                    logger.exception("manage failed for %s", sym)
-
-            now = time.time()
-            if now - last_scan >= SIGNAL_POLL_SECONDS:
-                last_scan = now
-                # Every symbol without a position is a candidate. The scan
-                # runs the whole board rather than stopping at the first
-                # few -- a coin further down the list is as tradeable as
-                # one near the top.
-                candidates = [s for s in symbols if s not in broker.open]
-                if candidates and broker.has_room():
-                    t0 = time.time()
-                    fetched = broker.prefetch(candidates)
-                    opened_before = len(broker.open)
-                    for sym in candidates:
-                        if not running or not broker.has_room():
-                            break
-                        try:
-                            broker.try_open(sym, fetched.get(sym))
-                        except Exception:
-                            logger.exception("entry check failed for %s", sym)
-                    logger.info("scanned %d symbols in %.1fs, opened %d, "
-                                "positions %d, free margin $%.2f",
-                                len(candidates), time.time() - t0,
-                                len(broker.open) - opened_before,
-                                len(broker.open), broker.free_margin)
-
-            for _ in range(max(1, poll_seconds)):
-                if not running:
-                    break
-                time.sleep(1)
+        while not stop_event.is_set():
+            try:
+                print_dashboard(broker.snapshot())
+            except Exception:
+                logger.exception("dashboard failed")
+            stop_event.wait(beat)
+    except KeyboardInterrupt:
+        stop_event.set()
     finally:
+        stop_event.set()
+        for t in threads:
+            t.join(timeout=10)
         print_summary(broker.summary())
         if trades_csv:
             try:

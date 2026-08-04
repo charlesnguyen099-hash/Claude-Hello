@@ -24,6 +24,7 @@ import numpy as np
 import pandas as pd
 
 LONG, SHORT, NONE = "LONG", "SHORT", "-"
+TIE = "TIE"          # fired, but the votes cancel -- no tradeable direction
 
 METHOD_NAMES = [
     "M01_EMA_Cross_Trend", "M02_MACD_Cross", "M03_RSI_Oversold_Reversal",
@@ -176,5 +177,5 @@ def evaluate_all(feats: pd.DataFrame) -> pd.DataFrame:
     out["n_short_votes"] = n_short
     out["vote_margin"] = (n_long - n_short).abs()
     out["consensus_dir"] = np.where(n_long > n_short, LONG,
-                                    np.where(n_short > n_long, SHORT, "TIE"))
+                                    np.where(n_short > n_long, SHORT, TIE))
     return out

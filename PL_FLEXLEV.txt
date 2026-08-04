@@ -1,0 +1,35 @@
+============================================================================================
+FLEXIBLE LEVERAGE — sized per cell by its own realised edge
+============================================================================================
+  maker round trip: 0.040%   (a cell must beat this to be worth any leverage at all)
+  candidate cells : 55
+  cells that fired on both years: 55
+
+============================================================================================
+STEP 1 — select on 2025 only, then apply unchanged to 2026
+============================================================================================
+  cells with gross > fee on 2025 (>=20 trades): 9
+  of those, still above the fee on 2026        : 4  (44%)
+
+        cell   n25  gross25%   n26  gross26%  held up?
+  --------------------------------------------------------
+        5345    27    0.1971    18   -0.0529  no
+       16464    24    0.0594    16    0.0440  yes
+       16592    23    0.1511    14   -0.0145  no
+       22309    40    0.0797    28    0.0441  yes
+       60398    20    0.0439    18    0.0636  yes
+       64639    24    0.0654    12    0.0308  no
+       65391    71    0.0650    41   -0.0505  no
+       65407    50    0.0409    16   -0.0158  no
+       65535    50    0.0430    43    0.0596  yes
+
+============================================================================================
+STEP 2 — leverage proportional to edge, applied to 2026
+============================================================================================
+  all 2025-selected cells            trades   206  avg lev   9.8x  gross  +0.0123%  net/trade   -0.525%  equity 0.297x
+  only those that held on 2026       trades   105  avg lev   5.1x  gross  +0.0538%  net/trade   +0.050%  equity 1.04x
+
+============================================================================================
+The second line is the honest one — the first re-uses 2026 knowledge
+to pick which cells to trade on 2026. The gap between them is the
+cost of not knowing in advance which cells will keep working.

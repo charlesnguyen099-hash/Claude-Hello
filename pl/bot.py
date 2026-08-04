@@ -1,44 +1,45 @@
-"""Paper trading on live Bybit data with the PureLogic rule.
+"""Paper-trading broker for the Sheet16_Logic_Final logic.
 
-Reads Bybit's public kline endpoint — no API key, no account, no order is
-ever submitted. The balance is a number in memory. Scans every configured
-symbol, opens a position only where the market matches a cell the table
-had a verdict on, holds for that cell's median duration, and prints a full
-session summary on Ctrl+C.
+Virtual money, real Bybit prices from the public kline and ticker
+endpoints. No API key, no account, no order ever submitted.
+
+Executes exactly what the table specifies and nothing more: the direction
+its rows traded, for the duration they held, at the leverage they used,
+paying the fee they paid. Liquidation is modelled because the table itself
+records it (37 of 23,213 rows would liquidate at 100x); no stop-loss is
+added, because the table does not have one.
 """
 from __future__ import annotations
 
 import logging
 import signal
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import pandas as pd
 
 from pl import features as F
-from pl import strategy as S
+from pl import logic as L
 
-logger = logging.getLogger("purelogic.paper")
+logger = logging.getLogger("logic_final.bot")
 
-KLINES_1M = 1000          # enough 1m bars to build 30m features with history
-POSITION_POLL_SECONDS = 15
+KLINES_1M = 1000
 SIGNAL_POLL_SECONDS = 60
 
 
 @dataclass
 class Position:
     symbol: str
-    direction: int             # +1 long, -1 short
+    direction: int
     entry: float
     qty: float
     leverage: int
+    margin: float
     opened_at: pd.Timestamp
     hold_minutes: int
     conviction: float
     expected_move_pct: float
     liq_price: float
-    stop_price: float
-    peak_adverse_pct: float = 0.0
 
 
 @dataclass
@@ -51,31 +52,27 @@ class Closed:
     closed_at: pd.Timestamp
     reason: str
     pnl_usd: float
-    return_pct: float
+    return_pct_leveraged: float
 
 
 class Broker:
-    """Virtual account. Every fill is simulated; nothing reaches an exchange."""
-
-    def __init__(self, client, logic: S.PureLogic, symbols: list[str],
-                 equity: float, leverage: int, max_positions: int):
+    def __init__(self, client, logic: L.Logic, symbols: list[str],
+                 equity: float, max_positions: int):
         self.client = client
         self.logic = logic
         self.symbols = symbols
         self.equity = equity
         self.starting_equity = equity
-        self.leverage = leverage
         self.max_positions = max_positions
         self.open: dict[str, Position] = {}
         self.closed: list[Closed] = []
-        self.skipped_no_match = 0
+        self.scans = 0
+        self.no_match = 0
 
-    # -- market data --------------------------------------------------
     def klines(self, symbol: str) -> pd.DataFrame | None:
         try:
-            resp = self.client.get_kline(category="linear", symbol=symbol,
-                                         interval="1", limit=KLINES_1M)
-            rows = resp["result"]["list"]
+            rows = self.client.get_kline(category="linear", symbol=symbol,
+                                         interval="1", limit=KLINES_1M)["result"]["list"]
         except Exception:
             logger.exception("kline fetch failed for %s", symbol)
             return None
@@ -96,55 +93,47 @@ class Broker:
             logger.exception("ticker fetch failed for %s", symbol)
             return None
 
-    # -- entries ------------------------------------------------------
     def try_open(self, symbol: str) -> None:
+        self.scans += 1
         df = self.klines(symbol)
         if df is None or len(df) < 200:
             return
-        df = df.iloc[:-1].reset_index(drop=True)      # drop the forming bar
-        feats = S.features_30m_on_1m(df, F.build)
+        df = df.iloc[:-1].reset_index(drop=True)     # drop the forming bar
+        feats = L.features_30m_on_1m(df, F.build)
         if feats.empty:
             return
-        cell = self.logic.cells_for(feats.tail(1))
-        sig = self.logic.signal(int(cell[-1]))
+        sig = self.logic.signal(int(self.logic.cells_for(feats.tail(1))[-1]))
         if sig is None:
-            self.skipped_no_match += 1
+            self.no_match += 1
             return
 
         price = self.last_price(symbol)
         if price is None or price <= 0:
             return
 
-        # Leverage is chosen per trade from this setup's own excursion,
-        # not from one global number.
-        lev = self.leverage or sig["leverage"]
+        lev = sig["leverage"]
         margin = self.equity / max(1, self.max_positions)
+        if margin <= 0:
+            return
         notional = margin * lev
         qty = notional / price
-        # Resting a limit entry earns the maker rate instead of paying
-        # taker plus spread -- the single largest cost saving available.
-        fee = notional * S.MAKER_FEE_PCT
-        self.equity -= fee
+        # Half the round trip on the way in, half on the way out.
+        self.equity -= notional * L.FEE_ROUND_TRIP_PCT / 2
 
         d = sig["direction"]
-        liq = price * (1 - d * 0.9 / lev)
-        stop_move = S.stop_distance(lev)
-        stop = price * (1 - d * stop_move)
         self.open[symbol] = Position(
-            symbol=symbol, direction=d, entry=price, qty=qty,
-            leverage=lev, opened_at=pd.Timestamp.now(tz="UTC"),
+            symbol=symbol, direction=d, entry=price, qty=qty, leverage=lev,
+            margin=margin, opened_at=pd.Timestamp.now(tz="UTC"),
             hold_minutes=sig["hold_minutes"], conviction=sig["conviction"],
-            expected_move_pct=sig["expected_move_pct"], liq_price=liq,
-            stop_price=stop,
+            expected_move_pct=sig["expected_move_pct"],
+            liq_price=price * (1 - d * L.LIQUIDATION_MOVE),
         )
-        logger.info(
-            "%s OPEN %s @%.6f qty=%.6f lev=%dx hold=%dmin conv=%.2f "
-            "expected=%.3f%% stop=%.6f (%.3f%%) liq=%.6f",
-            symbol, "LONG" if d > 0 else "SHORT", price, qty, lev,
-            sig["hold_minutes"], sig["conviction"], sig["expected_move_pct"],
-            stop, stop_move * 100, liq)
+        logger.info("%s OPEN %s @%.6f qty=%.8f lev=%dx hold=%dmin conv=%.2f "
+                    "expected=%.3f%% liq=%.6f",
+                    symbol, "LONG" if d > 0 else "SHORT", price, qty, lev,
+                    sig["hold_minutes"], sig["conviction"],
+                    sig["expected_move_pct"], self.open[symbol].liq_price)
 
-    # -- exits --------------------------------------------------------
     def manage(self, symbol: str) -> None:
         pos = self.open.get(symbol)
         if pos is None:
@@ -152,19 +141,9 @@ class Broker:
         price = self.last_price(symbol)
         if price is None:
             return
-
-        move = (price - pos.entry) / pos.entry * pos.direction
-        pos.peak_adverse_pct = max(pos.peak_adverse_pct, -move * 100)
-
-        # The stop sits strictly inside the liquidation price, so it is
-        # always reached first and the position cannot be liquidated.
-        hit_stop = (price <= pos.stop_price) if pos.direction > 0 else (price >= pos.stop_price)
-        liquidated = (price <= pos.liq_price) if pos.direction > 0 else (price >= pos.liq_price)
+        hit_liq = (price <= pos.liq_price) if pos.direction > 0 else (price >= pos.liq_price)
         elapsed = (pd.Timestamp.now(tz="UTC") - pos.opened_at) / pd.Timedelta(minutes=1)
-
-        if hit_stop:
-            self._close(symbol, pos.stop_price, "stop_loss")
-        elif liquidated:
+        if hit_liq:
             self._close(symbol, pos.liq_price, "liquidated")
         elif elapsed >= pos.hold_minutes:
             self._close(symbol, price, "hold_elapsed")
@@ -172,59 +151,48 @@ class Broker:
     def _close(self, symbol: str, price: float, reason: str) -> None:
         pos = self.open.pop(symbol)
         move = (price - pos.entry) / pos.entry * pos.direction
-        gross = move * pos.qty * pos.entry
-        fee = pos.qty * price * S.MAKER_FEE_PCT
-        pnl = gross - fee
+        if reason == "liquidated":
+            pnl = -pos.margin                    # margin gone, nothing returned
+        else:
+            pnl = move * pos.qty * pos.entry - pos.qty * price * L.FEE_ROUND_TRIP_PCT / 2
         self.equity += pnl
         self.closed.append(Closed(
             symbol=symbol, direction=pos.direction, entry=pos.entry,
             exit_price=price, opened_at=pos.opened_at,
-            closed_at=pd.Timestamp.now(tz="UTC"), reason=reason,
-            pnl_usd=pnl, return_pct=100 * move * pos.leverage,
-        ))
+            closed_at=pd.Timestamp.now(tz="UTC"), reason=reason, pnl_usd=pnl,
+            return_pct_leveraged=100 * move * pos.leverage))
         logger.info("%s CLOSE @%.6f (%s) pnl=$%.4f equity=$%.4f",
                     symbol, price, reason, pnl, self.equity)
 
-    # -- reporting ----------------------------------------------------
     def summary(self) -> dict:
         wins = [t for t in self.closed if t.pnl_usd > 0]
         losses = [t for t in self.closed if t.pnl_usd <= 0]
-        gross_profit = sum(t.pnl_usd for t in wins)
-        gross_loss = sum(t.pnl_usd for t in losses)
-
-        rows, open_win, open_lose, unreal = [], 0, 0, 0.0
+        rows, ow, ol, unreal = [], 0, 0, 0.0
         for sym, pos in self.open.items():
             price = self.last_price(sym) or pos.entry
-            move = (price - pos.entry) / pos.entry * pos.direction
-            pnl = move * pos.qty * pos.entry
+            pnl = (price - pos.entry) / pos.entry * pos.direction * pos.qty * pos.entry
             unreal += pnl
-            if pnl > 0:
-                open_win += 1
-            else:
-                open_lose += 1
-            rows.append((sym, pos.direction, pos.entry, price, pnl))
-
-        open_profit = sum(p for *_, p in rows if p > 0)
-        open_loss = sum(p for *_, p in rows if p <= 0)
+            ow += pnl > 0
+            ol += pnl <= 0
+            rows.append((sym, pos.direction, pos.entry, price, pnl, pos.leverage))
+        gp = sum(t.pnl_usd for t in wins)
+        gl = sum(t.pnl_usd for t in losses)
+        op = sum(r[4] for r in rows if r[4] > 0)
+        olo = sum(r[4] for r in rows if r[4] <= 0)
         return {
             "closed": len(self.closed), "closed_wins": len(wins),
             "closed_losses": len(losses),
-            "gross_profit": gross_profit, "gross_loss": gross_loss,
-            "realized": gross_profit + gross_loss,
             "liquidations": sum(1 for t in self.closed if t.reason == "liquidated"),
-            "stops": sum(1 for t in self.closed if t.reason == "stop_loss"),
-            "open": len(self.open), "open_wins": open_win, "open_losses": open_lose,
-            "open_profit": open_profit, "open_loss": open_loss,
-            "unrealized": unreal, "open_rows": rows,
+            "gross_profit": gp, "gross_loss": gl, "realized": gp + gl,
+            "open": len(self.open), "open_wins": ow, "open_losses": ol,
+            "open_profit": op, "open_loss": olo, "unrealized": unreal,
+            "open_rows": rows,
             "total_trades": len(self.closed) + len(self.open),
-            "total_wins": len(wins) + open_win,
-            "total_losses": len(losses) + open_lose,
-            "total_profit": gross_profit + open_profit,
-            "total_loss": gross_loss + open_loss,
-            "starting_equity": self.starting_equity,
-            "equity": self.equity,
+            "total_wins": len(wins) + ow, "total_losses": len(losses) + ol,
+            "total_profit": gp + op, "total_loss": gl + olo,
+            "starting_equity": self.starting_equity, "equity": self.equity,
             "equity_incl_open": self.equity + unreal,
-            "skipped_no_match": self.skipped_no_match,
+            "scans": self.scans, "no_match": self.no_match,
         }
 
     def export_csv(self, path: str) -> None:
@@ -232,8 +200,9 @@ class Broker:
                  "status": "closed", "entry": t.entry, "exit_or_last": t.exit_price,
                  "opened_at": t.opened_at, "closed_at": t.closed_at,
                  "reason": t.reason, "pnl_usd": t.pnl_usd,
-                 "return_pct_leveraged": t.return_pct} for t in self.closed]
-        for sym, d, entry, price, pnl in self.summary()["open_rows"]:
+                 "return_pct_leveraged": t.return_pct_leveraged}
+                for t in self.closed]
+        for sym, d, entry, price, pnl, lev in self.summary()["open_rows"]:
             pos = self.open[sym]
             rows.append({"symbol": sym, "side": "LONG" if d > 0 else "SHORT",
                          "status": "open_at_shutdown", "entry": entry,
@@ -247,53 +216,52 @@ class Broker:
 
 
 def print_summary(s: dict) -> None:
-    print("\n" + "=" * 64)
+    print("\n" + "=" * 66)
     print("PAPER TRADING SESSION SUMMARY")
-    print("=" * 64)
+    print("=" * 66)
     print(f"Starting virtual equity : ${s['starting_equity']:.4f}")
 
-    print("\n-- CLOSED TRADES " + "-" * 44)
+    print("\n-- CLOSED TRADES " + "-" * 46)
     print(f"  Trades closed         : {s['closed']}")
     print(f"    winning             : {s['closed_wins']}")
     print(f"    losing              : {s['closed_losses']}")
-    print(f"    stopped out         : {s['stops']}")
     print(f"    liquidated          : {s['liquidations']}")
     print(f"  Total profit          : ${s['gross_profit']:+.4f}")
     print(f"  Total loss            : ${s['gross_loss']:+.4f}")
     print(f"  Net realized P&L      : ${s['realized']:+.4f}")
 
-    print("\n-- STILL OPEN AT SHUTDOWN " + "-" * 35)
+    print("\n-- STILL OPEN AT SHUTDOWN " + "-" * 37)
     print(f"  Positions open        : {s['open']}")
     print(f"    currently winning   : {s['open_wins']}")
     print(f"    currently losing    : {s['open_losses']}")
-    for sym, d, entry, price, pnl in s["open_rows"]:
-        print(f"      {sym:12s} {'LONG' if d > 0 else 'SHORT':5s} "
+    for sym, d, entry, price, pnl, lev in s["open_rows"]:
+        print(f"      {sym:12s} {'LONG' if d > 0 else 'SHORT':5s} {lev:3d}x "
               f"entry={entry:.6f} last={price:.6f} unrealized=${pnl:+.4f}")
     print(f"  Unrealized profit     : ${s['open_profit']:+.4f}")
     print(f"  Unrealized loss       : ${s['open_loss']:+.4f}")
     print(f"  Net unrealized P&L    : ${s['unrealized']:+.4f}")
 
-    print("\n-- COMBINED (closed + still open) " + "-" * 27)
+    print("\n-- COMBINED (closed + still open) " + "-" * 29)
     print(f"  Total trades          : {s['total_trades']}")
     print(f"    winning             : {s['total_wins']}")
     print(f"    losing              : {s['total_losses']}")
     print(f"  Total profit          : ${s['total_profit']:+.4f}")
     print(f"  Total loss            : ${s['total_loss']:+.4f}")
 
-    print("\n-- EQUITY " + "-" * 51)
+    print("\n-- EQUITY " + "-" * 53)
     print(f"  Realized only         : ${s['equity']:.4f}")
     print(f"  Incl. open positions  : ${s['equity_incl_open']:.4f}")
     net = s["equity_incl_open"] - s["starting_equity"]
     pct = 100 * net / s["starting_equity"] if s["starting_equity"] else 0.0
     print(f"  Net result            : ${net:+.4f}  ({pct:+.2f}%)")
-    print(f"\n  Scans with no matching setup: {s['skipped_no_match']:,}")
-    print("=" * 64)
+    print(f"\n  Scans: {s['scans']:,}   with no matching setup: {s['no_match']:,}")
+    print("=" * 66)
 
 
-def run(client, logic: S.PureLogic, symbols: list[str], equity: float,
-        leverage: int, max_positions: int, poll_seconds: int,
+def run(client, logic: L.Logic, symbols: list[str], equity: float,
+        max_positions: int, poll_seconds: int,
         trades_csv: str | None = None) -> None:
-    broker = Broker(client, logic, symbols, equity, leverage, max_positions)
+    broker = Broker(client, logic, symbols, equity, max_positions)
     running = True
 
     def stop(signum, frame):
@@ -316,12 +284,10 @@ def run(client, logic: S.PureLogic, symbols: list[str], equity: float,
             if now - last_scan >= SIGNAL_POLL_SECONDS:
                 last_scan = now
                 for sym in symbols:
-                    if not running:
+                    if not running or len(broker.open) >= max_positions:
                         break
                     if sym in broker.open:
                         continue
-                    if len(broker.open) >= max_positions:
-                        break
                     try:
                         broker.try_open(sym)
                     except Exception:

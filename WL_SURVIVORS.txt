@@ -1,0 +1,28 @@
+Scoring every logic on 2025 and 2026 separately (minimum 30 trades per year)...
+
+  signals: 2025 10,096   2026 5,816
+
+============================================================================================
+HOW MANY LOGICS MAKE MONEY
+============================================================================================
+  logics tested (trigger x fixed exit, >=30 trades/year) : 305
+  profitable on 2025                                        : 2  (0.7%)
+  profitable on 2026                                        : 6  (2.0%)
+  profitable on BOTH                                        : 0  (0.0%)
+
+============================================================================================
+No logic is profitable on both years.
+
+Closest ten, ranked by their weaker year:
+  logic                                                  n25     2025%   n26     2026%
+  ------------------------------------------------------------------------------------
+  EMA_Cross_Trend+Volume_Spike_Trend + TP3.0_SL1.5        66   -0.0957    42   -0.1274
+  MACD_Cross+Bollinger_MeanRev + TP2.0_SL1.5             158   -0.1574   107   -0.1620
+  Bollinger_MeanRev+RSI_Divergence + TP1.5_SL1.5          71   -0.1658    42   -0.1043
+  MACD_Cross+Bollinger_MeanRev + TP1.5_SL1.5             158   -0.1392   107   -0.1662
+  Stochastic_Cross+ADX_TrendStrength + TP3.0_SL1.5       210   -0.1687   136   -0.0670
+  MACD_Cross+Volume_Spike_Trend + TP2.0_SL1.5            201   -0.1326   152   -0.1735
+  MACD_Cross+EMA_Pullback + TP2.0_SL1.5                   95   -0.1176    59   -0.1802
+  Stochastic_Cross+ADX_TrendStrength + TP1.5_SL1.5       210   -0.2003   136   -0.1553
+  Stochastic_Cross+ADX_TrendStrength + TP1.0_SL1.5       210   -0.2022   136   -0.1241
+  EMA_Cross_Trend+Bollinger_MeanRev + TP3.0_SL1.5        167   -0.2103    74   -0.1586

@@ -92,6 +92,14 @@ def main() -> int:
                         "At the file's leverage a trade that hits its stop "
                         "costs ~42%% of its margin, so this is ~2.1%% of the "
                         "account per trade")
+    p.add_argument("--no-expectancy-gate", action="store_true",
+                   help="take every consensus signal even where the expected "
+                        "value after fees is negative (this is what a 12-hour "
+                        "live session did, and it lost more in fees than the "
+                        "whole drawdown)")
+    p.add_argument("--assumed-win-rate", type=float, default=None,
+                   help="win rate the expectancy gate assumes (default: the "
+                        "rate this exit actually achieved on 2025+2026)")
     p.add_argument("--conviction-floor", type=float, default=L.CONVICTION_FLOOR,
                    help="smallest fraction of the file's leverage a setup the "
                         "methods barely agreed on may take (default "
@@ -216,6 +224,33 @@ def main() -> int:
     print("  the verdict cannot change until the bar closes, and hammering")
     print("  the endpoint would only earn a rate-limit ban.")
     print("=" * 70)
+    need = L.min_atr_for_edge(args.exit, fee, args.assumed_win_rate)
+    p_win = (L.MEASURED_WIN_RATE.get(args.exit, 0.35)
+             if args.assumed_win_rate is None else args.assumed_win_rate)
+    print("  EXPECTANCY GATE   " + ("OFF" if args.no_expectancy_gate else "ON"))
+    print(f"  A trade is taken only if p*TP*atr - (1-p)*SL*atr - fee > 0,")
+    print(f"  with p = {p_win:.1%}, the rate {args.exit} actually achieved on")
+    print(f"  BTCUSDT 30m over 2025-2026. At {fee*100:.3f}% that needs")
+    print(f"  atr14_pct >= {need:.3f}%.")
+    print()
+    if need > 2.5:
+        print("  WARNING. BTCUSDT 30m never reached that in two years (max")
+        print("  2.42%), so at this fee the gate will refuse essentially")
+        print("  every trade. That is the correct answer, not a fault: at")
+        print("  taker fees this logic has no positive-expectancy trade, and")
+        print("  no filter over ATR, votes or anything else changes it.")
+        print("  Measured: -0.26%/trade (2025), -0.20% (2026) at EVERY ATR")
+        print("  threshold. Use --maker-fee, or --no-expectancy-gate to")
+        print("  trade anyway and watch the fee take the account.")
+    else:
+        print(f"  About a quarter of 30m bars clear {need:.3f}% ATR.")
+    print("=" * 70)
+    print("  Judging a session shorter than a day: stops resolve in a median")
+    print("  5-7 bars (2.5-3.5h), targets in 11-12 (5.5-6h). Inside 12 hours")
+    print("  ~90% of the stops have completed but only ~78-88% of the")
+    print("  targets, so closed P&L reads worse than the position book is.")
+    print("  Read 'incl. open positions', not 'realized only'.")
+    print("=" * 70)
     print("  Ctrl+C stops the bot and prints the session summary.")
     print("=" * 70)
     print()
@@ -224,7 +259,8 @@ def main() -> int:
         B.run(client, symbols, args.equity, args.max_positions, args.exit,
               args.min_votes, args.poll_seconds, args.trades_csv, fee,
               args.max_leverage, args.margin_pct / 100.0, args.max_notional_x,
-              args.conviction_floor)
+              args.conviction_floor, not args.no_expectancy_gate,
+              args.assumed_win_rate)
     except KeyboardInterrupt:
         pass
     except Exception as exc:

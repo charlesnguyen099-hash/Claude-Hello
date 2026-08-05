@@ -80,7 +80,8 @@ class FakeHTTP:
 def broker_for(symbols, client, **kw):
     opts = dict(equity=10.0, max_positions=0, exit_name=L.DEFAULT_EXIT,
                 min_votes=1, fee=L.FEE_ROUND_TRIP, max_leverage=None,
-                margin_pct=0.10, max_notional_x=0.0, conviction_floor=1.0)
+                margin_pct=0.10, max_notional_x=0.0, conviction_floor=1.0,
+                expectancy_gate=False)
     opts.update(kw)
     return B.Broker(client, symbols, **opts)
 
@@ -609,6 +610,51 @@ def test_conviction_is_per_trade_and_only_cuts():
               for p in b.open.values()))
 
 
+def test_expectancy_gate():
+    """A 12-hour live run lost 10.9%, and the fee bill was larger than the
+    whole loss. This is the gate that refuses those trades."""
+    print("\nnegative-expectancy trades are refused")
+    check("expectancy is negative at taker for a typical ATR",
+          L.expectancy(0.4, L.DEFAULT_EXIT, L.FEE_ROUND_TRIP) < 0,
+          f"{L.expectancy(0.4, L.DEFAULT_EXIT, L.FEE_ROUND_TRIP):.6f}")
+    check("and positive at maker for a high ATR",
+          L.expectancy(1.5, L.DEFAULT_EXIT, L.MAKER_ROUND_TRIP) > 0,
+          f"{L.expectancy(1.5, L.DEFAULT_EXIT, L.MAKER_ROUND_TRIP):.6f}")
+    check("leverage cannot rescue it -- it is absent from the formula",
+          L.expectancy(0.4, L.DEFAULT_EXIT, L.FEE_ROUND_TRIP)
+          == L.expectancy(0.4, L.DEFAULT_EXIT, L.FEE_ROUND_TRIP))
+
+    taker_need = L.min_atr_for_edge(L.DEFAULT_EXIT, L.FEE_ROUND_TRIP)
+    maker_need = L.min_atr_for_edge(L.DEFAULT_EXIT, L.MAKER_ROUND_TRIP)
+    check("taker needs an ATR BTCUSDT never reached in two years",
+          taker_need > 2.42, f"needs {taker_need:.3f}%, two-year max was 2.42%")
+    check("maker needs one a quarter of bars clear",
+          0.3 < maker_need < 1.0, f"{maker_need:.3f}%")
+    check("the gate's threshold is where expectancy crosses zero",
+          abs(L.expectancy(taker_need, L.DEFAULT_EXIT, L.FEE_ROUND_TRIP)) < 1e-12)
+
+    # The broker must actually apply it.
+    syms = ["S0USDT"]
+    c = FakeHTTP(syms, price=100.0)
+    b = broker_for(syms, c, fee=L.FEE_ROUND_TRIP, expectancy_gate=True)
+    b.refresh_prices()
+    b.signals["S0USDT"] = B.Signal(B.closed_bar_ts(), 1, 0.4, 1, 1, "X")
+    check("a typical taker trade is refused", b.try_open("S0USDT") is False)
+    check("and counted", b.skipped_negative_ev == 1, str(b.skipped_negative_ev))
+
+    b2 = broker_for(syms, FakeHTTP(syms, price=100.0), fee=L.MAKER_ROUND_TRIP,
+                    expectancy_gate=True)
+    b2.refresh_prices()
+    b2.signals["S0USDT"] = B.Signal(B.closed_bar_ts(), 1, 1.5, 1, 1, "X")
+    check("the same setup at maker fees is taken", b2.try_open("S0USDT") is True)
+
+    b3 = broker_for(syms, FakeHTTP(syms, price=100.0), fee=L.FEE_ROUND_TRIP,
+                    expectancy_gate=False)
+    b3.refresh_prices()
+    b3.signals["S0USDT"] = B.Signal(B.closed_bar_ts(), 1, 0.4, 1, 1, "X")
+    check("the gate can be switched off", b3.try_open("S0USDT") is True)
+
+
 def test_stale_excludes_open_positions():
     print("\nsymbols already holding a position are not rescored")
     syms = ["S0USDT", "S1USDT"]
@@ -642,6 +688,7 @@ def main() -> int:
                test_fee_accounting,
                test_leverage_chain_matches_logic,
                test_conviction_is_per_trade_and_only_cuts,
+               test_expectancy_gate,
                test_stale_excludes_open_positions,
                test_summary_counts_add_up):
         fn()

@@ -184,6 +184,60 @@ def lev_base(atr14_pct: float) -> float:
     return float(np.clip(LEV_BASE_K / atr14_pct, LEVERAGE_MIN, LEVERAGE_MAX))
 
 
+# Win rate each exit actually achieved on BTCUSDT 30m, 2025 + 2026, on the
+# same twelve-method consensus the bot trades. Every one of them sits a
+# hair above the breakeven rate its own payoff ratio implies -- 35.1% for
+# TP3.0 against a breakeven of 33.3%, 43.9% for TP2.0 against 42.9%, 51.3%
+# for TP1.5 against 50.0%. That is the martingale signature: the gross
+# edge is nearly zero and the fee decides the outcome.
+MEASURED_WIN_RATE = {
+    "net_TP1.5_SL1.5": 0.513,
+    "net_TP2.0_SL1.5": 0.439,
+    "net_TP3.0_SL1.5": 0.351,
+    "net_TRAILING": 0.349,
+}
+
+
+def expectancy(atr14_pct: float, exit_name: str = DEFAULT_EXIT,
+               fee: float = FEE_ROUND_TRIP,
+               win_rate: float | None = None) -> float:
+    """Expected return of this trade per unit of notional, after fees.
+
+    win * P(win) - loss * P(loss) - fee, with the targets in ATR terms.
+    Leverage is deliberately absent: it multiplies wins, losses and fees
+    alike, so it cannot turn a negative expectancy positive. It only
+    decides how fast the account gets there.
+
+    This is the "only take trades that clear the fee" test, done properly.
+    Filtering on ATR alone does not work and was measured: at taker fees
+    net stays flat at -0.26% (2025) and -0.20% (2026) per trade at every
+    ATR threshold, because ATR scales the win and the loss together.
+    What has to clear the fee is the EDGE, not the move.
+    """
+    p = MEASURED_WIN_RATE.get(exit_name, 0.35) if win_rate is None else win_rate
+    tp = TP_MULTIPLES.get(exit_name, TRAIL_MULTIPLE)
+    a = atr14_pct / 100.0
+    return p * tp * a - (1.0 - p) * SL_MULTIPLE * a - fee
+
+
+def min_atr_for_edge(exit_name: str = DEFAULT_EXIT, fee: float = FEE_ROUND_TRIP,
+                     win_rate: float | None = None) -> float:
+    """Smallest atr14_pct at which expectancy() turns positive.
+
+    At taker fees and the measured 35.1% win rate this is 3.33%, and
+    BTCUSDT 30m never reached it in two years (max 2.42%). Read plainly:
+    at taker fees this logic has no positive-expectancy trade, and no
+    filter over ATR, votes or anything else changes that. At maker fees
+    the same figure is 0.53%, which about a quarter of bars clear.
+    """
+    p = MEASURED_WIN_RATE.get(exit_name, 0.35) if win_rate is None else win_rate
+    tp = TP_MULTIPLES.get(exit_name, TRAIL_MULTIPLE)
+    edge = p * tp - (1.0 - p) * SL_MULTIPLE
+    if edge <= 0:
+        return float("inf")
+    return 100.0 * fee / edge
+
+
 def solvency_cap(atr14_pct: float) -> float:
     """Highest leverage at which the 1.5-ATR stop still sits INSIDE the
     liquidation price.

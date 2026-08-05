@@ -146,7 +146,9 @@ class Broker:
                  max_positions: int, exit_name: str, min_votes: int,
                  fee: float = L.FEE_ROUND_TRIP, max_leverage: float | None = None,
                  margin_pct: float = 0.05, max_notional_x: float = 10.0,
-                 conviction_floor: float = L.CONVICTION_FLOOR):
+                 conviction_floor: float = L.CONVICTION_FLOOR,
+                 expectancy_gate: bool = True,
+                 assumed_win_rate: float | None = None):
         self.client = client
         self.symbols = symbols
         self.equity = equity
@@ -165,6 +167,12 @@ class Broker:
         # Smallest fraction of the file's leverage a minimum-conviction
         # setup may take. 1.0 disables the per-trade haircut entirely.
         self.conviction_floor = conviction_floor
+        # Refuse trades whose expected value after fees is negative. What
+        # has to clear the fee is the edge, not the move -- see
+        # logic.expectancy(). At taker fees this refuses nearly everything,
+        # which is the correct answer, not a malfunction.
+        self.expectancy_gate = expectancy_gate
+        self.assumed_win_rate = assumed_win_rate
         self.exit_name = exit_name
         self.min_votes = min_votes
         self.fee = fee
@@ -188,6 +196,7 @@ class Broker:
         self.skipped_no_margin = 0
         self.skipped_max_notional = 0
         self.skipped_unsolvent = 0
+        self.skipped_negative_ev = 0
         self.blocked_signals = 0
         self.blocked_by: dict[str, int] = {"margin": 0, "exposure": 0,
                                            "unsolvent": 0}
@@ -429,6 +438,14 @@ class Broker:
 
         price = self.last_price(symbol)
         if price is None or price <= 0:
+            return False
+
+        # Expectancy first: it costs nothing and it is the only test that
+        # can tell this trade is not worth taking at all.
+        ev = L.expectancy(sig.atr_pct, self.exit_name, self.fee,
+                          self.assumed_win_rate)
+        if self.expectancy_gate and ev <= 0:
+            self.skipped_negative_ev += 1
             return False
 
         d = sig.direction
@@ -673,6 +690,9 @@ class Broker:
             "skipped_no_margin": self.skipped_no_margin,
             "skipped_max_notional": self.skipped_max_notional,
             "skipped_unsolvent": self.skipped_unsolvent,
+            "skipped_negative_ev": self.skipped_negative_ev,
+            "min_atr_for_edge": L.min_atr_for_edge(self.exit_name, self.fee,
+                                                   self.assumed_win_rate),
             "blocked_by": dict(self.blocked_by),
             "standing_signals": standing, "blocked_signals": self.blocked_signals,
             "stale": len(self.stale_symbols()), "kline_calls": self.kline_calls,
@@ -715,6 +735,7 @@ class Broker:
             "skipped_no_margin": self.skipped_no_margin,
             "skipped_max_notional": self.skipped_max_notional,
             "skipped_unsolvent": self.skipped_unsolvent,
+            "skipped_negative_ev": self.skipped_negative_ev,
             "notional": self.notional, "exposure_x": exposure,
             "standing_signals": len(self.signals),
             "blocked_signals": self.blocked_signals,
@@ -797,6 +818,8 @@ def print_dashboard(s: dict) -> None:
     print(f"  BLOCKED   this pass: margin {bb['margin']}"
           f"   exposure ceiling {bb['exposure']}"
           f"   stop past liquidation {bb['unsolvent']}")
+    print(f"  EDGE      negative-expectancy skips {s['skipped_negative_ev']:,}"
+          f"   (needs atr14 >= {s['min_atr_for_edge']:.3f}% at this fee)")
     print(f"  SCAN      fill pass #{s['passes']:,}"
           f"   bar refreshes {s['refreshes']:,} (last {s['last_refresh_seconds']:.1f}s)"
           f"   universe {s['universe']}"
@@ -868,7 +891,8 @@ def print_summary(s: dict) -> None:
           f"  ({s['blocked_signals']} of them still waiting)")
     print(f"  Entries blocked by    : margin {s['skipped_no_margin']:,}, "
           f"exposure ceiling {s['skipped_max_notional']:,}, "
-          f"stop past liquidation {s['skipped_unsolvent']:,}")
+          f"stop past liquidation {s['skipped_unsolvent']:,}, "
+          f"negative expectancy {s['skipped_negative_ev']:,}")
     print("=" * 70)
 
 
@@ -925,10 +949,12 @@ def run(client, symbols: list[str], equity: float, max_positions: int,
         trades_csv: str | None = None, fee: float = L.FEE_ROUND_TRIP,
         max_leverage: float | None = None, margin_pct: float = 0.05,
         max_notional_x: float = 10.0,
-        conviction_floor: float = L.CONVICTION_FLOOR) -> None:
+        conviction_floor: float = L.CONVICTION_FLOOR,
+        expectancy_gate: bool = True,
+        assumed_win_rate: float | None = None) -> None:
     broker = Broker(client, symbols, equity, max_positions, exit_name,
                     min_votes, fee, max_leverage, margin_pct, max_notional_x,
-                    conviction_floor)
+                    conviction_floor, expectancy_gate, assumed_win_rate)
     stop_event = threading.Event()
 
     def stop(signum, frame):

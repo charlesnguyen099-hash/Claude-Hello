@@ -58,7 +58,7 @@ logger = logging.getLogger("potential_leverage.bot")
 # and 1000 1m bars is only 33 30m bars, far short of the ~200 the slowest
 # feature (EMA200) needs.
 KLINES_30M = 1000
-BAR_MS = L.BAR_MINUTES * 60 * 1000
+BAR_MS = L.BAR_MINUTES * 60 * 1000   # methods; patterns override per-broker
 # The slowest feature needs about 200 bars; below this a symbol is skipped
 # rather than scored off half-formed indicators.
 MIN_BARS = 250
@@ -83,14 +83,19 @@ DASHBOARD_INTERVAL_SECONDS = 5.0
 PRICE_STALE_SECONDS = 10.0
 
 
-def closed_bar_ts(now_ms: int | None = None) -> int:
-    """Start of the most recently CLOSED 30m bar, in epoch ms.
+def closed_bar_ts(now_ms: int | None = None,
+                  bar_minutes: int = L.BAR_MINUTES) -> int:
+    """Start of the most recently CLOSED bar, in epoch ms.
 
     Signals are computed on closed bars only, so this is what a cached
-    verdict is keyed on and what makes it stale when the bar rolls.
+    verdict is keyed on and what makes it stale when the bar rolls. The
+    bar size is a parameter because the pattern library runs on 15m while
+    the voting methods run on 30m -- using the wrong one here would make
+    every symbol look permanently stale, or permanently fresh.
     """
     now = int(time.time() * 1000) if now_ms is None else now_ms
-    return (now // BAR_MS) * BAR_MS - BAR_MS
+    ms = bar_minutes * 60 * 1000
+    return (now // ms) * ms - ms
 
 
 @dataclass
@@ -102,6 +107,9 @@ class Signal:
     votes: int
     vote_margin: int
     methods: str
+    # Only the pattern library sets this; the voting methods leave it None
+    # and their leverage haircut comes from the vote margin instead.
+    confidence: float | None = None
 
 
 @dataclass
@@ -148,7 +156,8 @@ class Broker:
                  margin_pct: float = 0.05, max_notional_x: float = 10.0,
                  conviction_floor: float = L.CONVICTION_FLOOR,
                  expectancy_gate: bool = True,
-                 assumed_win_rate: float | None = None):
+                 assumed_win_rate: float | None = None,
+                 signal_source: str = "methods"):
         self.client = client
         self.symbols = symbols
         self.equity = equity
@@ -173,6 +182,16 @@ class Broker:
         # which is the correct answer, not a malfunction.
         self.expectancy_gate = expectancy_gate
         self.assumed_win_rate = assumed_win_rate
+        # "methods" = the twelve voting rules on 30m bars.
+        # "patterns" = the hard-coded lookup table on 15m bars, which
+        # carries its own per-shape confidence into the leverage.
+        self.signal_source = signal_source
+        self.library = None
+        self.bar_minutes = L.BAR_MINUTES
+        if signal_source == "patterns":
+            from fp import patterns as P
+            self.library = P.Library()
+            self.bar_minutes = P.BAR_MINUTES
         self.exit_name = exit_name
         self.min_votes = min_votes
         self.fee = fee
@@ -286,7 +305,7 @@ class Broker:
     def klines(self, symbol: str) -> pd.DataFrame | None:
         try:
             rows = self.client.get_kline(category="linear", symbol=symbol,
-                                         interval="30",
+                                         interval=str(self.bar_minutes),
                                          limit=KLINES_30M)["result"]["list"]
         except Exception:
             logger.debug("kline fetch failed for %s", symbol, exc_info=True)
@@ -363,7 +382,7 @@ class Broker:
         did not agree, or the data was unusable.
         """
         self.evaluations += 1
-        now_bar = closed_bar_ts()
+        now_bar = closed_bar_ts(bar_minutes=self.bar_minutes)
         if bars is None or len(bars) < MIN_BARS:
             # Mark it evaluated anyway: a symbol Bybit cannot serve, or one
             # too young to have 250 bars, must not be retried every pass.
@@ -376,6 +395,9 @@ class Broker:
         bars = bars.iloc[:-1].reset_index(drop=True)
         bar_ts = int(bars["ts"].iloc[-1])
         self.evaluated_bar[symbol] = max(bar_ts, now_bar)
+
+        if self.signal_source == "patterns":
+            return self._evaluate_pattern(symbol, bars, bar_ts)
 
         try:
             feats = F.build(bars)
@@ -405,6 +427,33 @@ class Broker:
         self.signals[symbol] = sig
         return sig
 
+    def _evaluate_pattern(self, symbol: str, bars: pd.DataFrame,
+                          bar_ts: int) -> Signal | None:
+        """Look the last N candles up in the hard-coded table."""
+        from fp import patterns as P
+        h = bars["high"].values
+        lo = bars["low"].values
+        c = bars["close"].values
+        v = bars["volume"].values
+        atr = P.atr_series(bars)[-1]
+        if atr <= 0 or not np.isfinite(atr) or c[-1] <= 0:
+            self.signals.pop(symbol, None)
+            return None
+        key = P.signature(c, h, lo, v, len(c) - 1, atr)
+        pat = self.library.get(key) if key else None
+        if pat is None:
+            self.no_signal += 1
+            self.signals.pop(symbol, None)
+            return None
+        sig = Signal(bar_ts=bar_ts, direction=pat.direction,
+                     atr_pct=100.0 * atr / c[-1], votes=pat.n_train,
+                     vote_margin=pat.n_train,
+                     methods=f"pattern {key} ({pat.n_train} train, "
+                             f"{pat.n_live} live)",
+                     confidence=pat.confidence())
+        self.signals[symbol] = sig
+        return sig
+
     def refresh_signals(self, symbols: list[str]) -> int:
         """Refetch and re-score a chunk of symbols. Returns signals standing."""
         fetched = self.prefetch(symbols)
@@ -420,7 +469,7 @@ class Broker:
         Symbols already holding a position are left out: their entry is
         decided, and re-scoring them would only spend kline calls.
         """
-        want = closed_bar_ts()
+        want = closed_bar_ts(bar_minutes=self.bar_minutes)
         return [s for s in self.symbols
                 if s not in self.open and self.evaluated_bar.get(s, -1) < want]
 
@@ -453,7 +502,8 @@ class Broker:
         chain = L.leverage_potential(sig.atr_pct, self.max_leverage,
                                      votes=sig.votes,
                                      vote_margin=sig.vote_margin,
-                                     conviction_floor=self.conviction_floor)
+                                     conviction_floor=self.conviction_floor,
+                                     conviction=sig.confidence)
         if not chain["tradeable"]:
             # Even 1x cannot keep the stop inside the liquidation price.
             self.skipped_unsolvent += 1
@@ -951,10 +1001,12 @@ def run(client, symbols: list[str], equity: float, max_positions: int,
         max_notional_x: float = 10.0,
         conviction_floor: float = L.CONVICTION_FLOOR,
         expectancy_gate: bool = True,
-        assumed_win_rate: float | None = None) -> None:
+        assumed_win_rate: float | None = None,
+        signal_source: str = "methods") -> None:
     broker = Broker(client, symbols, equity, max_positions, exit_name,
                     min_votes, fee, max_leverage, margin_pct, max_notional_x,
-                    conviction_floor, expectancy_gate, assumed_win_rate)
+                    conviction_floor, expectancy_gate, assumed_win_rate,
+                    signal_source)
     stop_event = threading.Event()
 
     def stop(signum, frame):

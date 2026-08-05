@@ -283,7 +283,8 @@ def solvency_cap(atr14_pct: float) -> float:
 def leverage_potential(atr14_pct: float, cap: float | None = None,
                        votes: int | None = None,
                        vote_margin: int | None = None,
-                       conviction_floor: float = CONVICTION_FLOOR) -> dict:
+                       conviction_floor: float = CONVICTION_FLOOR,
+                       conviction: float | None = None) -> dict:
     """The full chain: base, score, multiplier, and the final leverage.
 
     The file's own chain runs first and unchanged: potential_score is its
@@ -308,8 +309,17 @@ def leverage_potential(atr14_pct: float, cap: float | None = None,
     score = potential_score(atr14_pct)
     mult = potential_multiplier(score)
     lev = min(base * mult, base)                    # the file's chain, as written
-    haircut = 1.0
-    if votes is not None and vote_margin is not None:
+    haircut, conv = 1.0, float("nan")
+    if conviction is not None:
+        # Supplied directly -- the pattern library passes its own live
+        # win rate here, which is a genuine per-trade quality measure
+        # rather than a proxy for one.
+        conv = float(np.clip(conviction, 0.0, 1.0))
+        f = float(np.clip(conviction_floor, 0.0, 1.0))
+        haircut = f + (1.0 - f) * conv
+        lev *= haircut
+    elif votes is not None and vote_margin is not None:
+        conv = conviction_score(votes, vote_margin)
         haircut = conviction_haircut(votes, vote_margin, conviction_floor)
         lev *= haircut                              # per-trade, cuts only
     solvent = solvency_cap(atr14_pct)
@@ -318,9 +328,7 @@ def leverage_potential(atr14_pct: float, cap: float | None = None,
         lev = min(lev, cap)
     return {"lev_base": base, "potential_score": score,
             "potential_multiplier": mult, "solvency_cap": solvent,
-            "conviction": (conviction_score(votes, vote_margin)
-                           if votes is not None and vote_margin is not None
-                           else float("nan")),
+            "conviction": conv,
             "conviction_haircut": haircut,
             "leverage": max(1.0, lev), "tradeable": lev >= 1.0}
 

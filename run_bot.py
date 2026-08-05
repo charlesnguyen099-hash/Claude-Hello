@@ -111,6 +111,12 @@ def main() -> int:
                         "equity (default 10; 0 disables). This is the only "
                         "bound on correlated risk -- crypto moves together, "
                         "so a full book is one bet, not many")
+    p.add_argument("--signals", default="methods",
+                   choices=["methods", "patterns"],
+                   help="methods = the twelve voting rules on 30m bars; "
+                        "patterns = the hard-coded lookup table on 15m bars "
+                        "built by `python -m fp.patterns learn`, which "
+                        "carries each shape's own record into the leverage")
     p.add_argument("--min-votes", type=int, default=1,
                    help="methods that must fire and agree before a trade")
     p.add_argument("--exit", default=L.DEFAULT_EXIT, choices=L.EXIT_STRATEGIES,
@@ -180,7 +186,22 @@ def main() -> int:
           + ("off -- total position value is unbounded" if not args.max_notional_x
              else f"{args.max_notional_x:.0f}x equity "
                   f"(${args.equity * args.max_notional_x:.2f} at the start)"))
-    print(f"  Methods          : {len(M.METHOD_NAMES)} voting on 30m bars")
+    if args.signals == "patterns":
+        from fp import patterns as P
+        _lib = P.Library()
+        _ok = sum(1 for x in _lib.patterns.values() if x.tradeable())
+        _live = sum(1 for x in _lib.patterns.values() if x.n_live > 0)
+        print(f"  Signals          : pattern library on {P.BAR_MINUTES}m bars, "
+              f"{P.LOOKBACK}-candle lookback")
+        print(f"                     {len(_lib.patterns)} entries, {_ok} tradeable, "
+              f"{_live} with an out-of-sample record")
+        if _live == 0:
+            print("                     NOTHING PROVEN YET -- run "
+                  "`python -m fp.patterns review` on a")
+            print("                     day the library was not built from "
+                  "before trusting it")
+    else:
+        print(f"  Methods          : {len(M.METHOD_NAMES)} voting on 30m bars")
     print(f"  Min votes to open: {args.min_votes} (and they must agree)")
     print(f"  Exit strategy    : {args.exit} (fixed at entry)")
     print(f"  Leverage         : {lev_note}")
@@ -275,7 +296,7 @@ def main() -> int:
               args.min_votes, args.poll_seconds, args.trades_csv, fee,
               args.max_leverage, args.margin_pct / 100.0, args.max_notional_x,
               args.conviction_floor, not args.no_expectancy_gate,
-              args.assumed_win_rate)
+              args.assumed_win_rate, args.signals)
     except KeyboardInterrupt:
         pass
     except Exception as exc:

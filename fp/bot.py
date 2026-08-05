@@ -6,8 +6,10 @@ endpoints. No API key, no account, no order ever submitted.
 Twelve methods vote on each 30-minute bar; a position opens where they
 fire and agree on direction. Leverage runs the file's full potential
 chain -- base from ATR, a potential score from the volatility percentile,
-multiplier = score + 0.5, product capped at the base. The exit is fixed
-at entry.
+multiplier = score + 0.5, product capped at the base -- and is then cut
+by how strongly the methods agreed on THAT setup, which is the only term
+in the chain belonging to the trade rather than to the instrument. The
+exit is fixed at entry.
 
 Three things run at once, on their own threads, so none waits on another:
 
@@ -98,6 +100,7 @@ class Signal:
     direction: int
     atr_pct: float
     votes: int
+    vote_margin: int
     methods: str
 
 
@@ -116,9 +119,11 @@ class Position:
     exit_name: str
     methods: str
     votes: int
+    vote_margin: int
     best_price: float
     trail_dist: float
     potential_score: float
+    conviction: float
     lev_base: float
 
 
@@ -140,7 +145,8 @@ class Broker:
     def __init__(self, client, symbols: list[str], equity: float,
                  max_positions: int, exit_name: str, min_votes: int,
                  fee: float = L.FEE_ROUND_TRIP, max_leverage: float | None = None,
-                 margin_pct: float = 0.05, max_notional_x: float = 10.0):
+                 margin_pct: float = 0.05, max_notional_x: float = 10.0,
+                 conviction_floor: float = L.CONVICTION_FLOOR):
         self.client = client
         self.symbols = symbols
         self.equity = equity
@@ -156,6 +162,9 @@ class Broker:
         # slice still put ~25x the account into the market, and crypto
         # moves together, so they are one bet, not nine. 0 disables it.
         self.max_notional_x = max_notional_x
+        # Smallest fraction of the file's leverage a minimum-conviction
+        # setup may take. 1.0 disables the per-trade haircut entirely.
+        self.conviction_floor = conviction_floor
         self.exit_name = exit_name
         self.min_votes = min_votes
         self.fee = fee
@@ -380,6 +389,7 @@ class Broker:
             direction=1 if v["consensus_dir"] == M.LONG else -1,
             atr_pct=atr_pct,
             votes=int(v["n_methods_fired"]),
+            vote_margin=int(v["vote_margin"]),
             methods=", ".join(m.split("_", 1)[1]
                               for m in M.METHOD_NAMES if v[m] != "-"),
         )
@@ -423,7 +433,10 @@ class Broker:
 
         d = sig.direction
         atr = sig.atr_pct / 100.0 * price
-        chain = L.leverage_potential(sig.atr_pct, self.max_leverage)
+        chain = L.leverage_potential(sig.atr_pct, self.max_leverage,
+                                     votes=sig.votes,
+                                     vote_margin=sig.vote_margin,
+                                     conviction_floor=self.conviction_floor)
         if not chain["tradeable"]:
             # Even 1x cannot keep the stop inside the liquidation price.
             self.skipped_unsolvent += 1
@@ -463,19 +476,22 @@ class Broker:
                 sl_price=price - d * L.SL_MULTIPLE * atr,
                 liq_price=price * (1 - d * 0.9 / lev),
                 exit_name=self.exit_name, methods=sig.methods,
-                votes=sig.votes, best_price=price,
-                trail_dist=L.TRAIL_MULTIPLE * atr,
+                votes=sig.votes, vote_margin=sig.vote_margin,
+                best_price=price, trail_dist=L.TRAIL_MULTIPLE * atr,
                 potential_score=chain["potential_score"],
+                conviction=chain["conviction"],
                 lev_base=chain["lev_base"],
             )
             self.open[symbol] = pos
             self.traded_bar[symbol] = sig.bar_ts
 
-        logger.info("%s OPEN %s @%.6f potential=%.2f base=%.0fx -> lev=%.0fx "
-                    "votes=%d [%s] exit=%s tp=%.6f sl=%.6f margin=$%.3f",
+        logger.info("%s OPEN %s @%.6f atr_rank=%.2f conviction=%.2f "
+                    "base=%.0fx x%.2f -> lev=%.0fx votes=%d(margin %d) [%s] "
+                    "exit=%s tp=%.6f sl=%.6f margin=$%.3f",
                     symbol, "LONG" if d > 0 else "SHORT", price,
-                    chain["potential_score"], chain["lev_base"], lev,
-                    sig.votes, sig.methods, self.exit_name,
+                    chain["potential_score"], chain["conviction"],
+                    chain["lev_base"], chain["conviction_haircut"], lev,
+                    sig.votes, sig.vote_margin, sig.methods, self.exit_name,
                     pos.tp_price, pos.sl_price, margin)
         return True
 
@@ -908,9 +924,11 @@ def run(client, symbols: list[str], equity: float, max_positions: int,
         exit_name: str, min_votes: int, poll_seconds: int,
         trades_csv: str | None = None, fee: float = L.FEE_ROUND_TRIP,
         max_leverage: float | None = None, margin_pct: float = 0.05,
-        max_notional_x: float = 10.0) -> None:
+        max_notional_x: float = 10.0,
+        conviction_floor: float = L.CONVICTION_FLOOR) -> None:
     broker = Broker(client, symbols, equity, max_positions, exit_name,
-                    min_votes, fee, max_leverage, margin_pct, max_notional_x)
+                    min_votes, fee, max_leverage, margin_pct, max_notional_x,
+                    conviction_floor)
     stop_event = threading.Event()
 
     def stop(signum, frame):

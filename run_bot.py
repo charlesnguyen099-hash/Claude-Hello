@@ -92,6 +92,12 @@ def main() -> int:
                         "At the file's leverage a trade that hits its stop "
                         "costs ~42%% of its margin, so this is ~2.1%% of the "
                         "account per trade")
+    p.add_argument("--conviction-floor", type=float, default=L.CONVICTION_FLOOR,
+                   help="smallest fraction of the file's leverage a setup the "
+                        "methods barely agreed on may take (default "
+                        f"{L.CONVICTION_FLOOR}; 1.0 turns the per-trade haircut "
+                        "off). Measured equivalent to a flat deleveraging -- "
+                        "see the note below")
     p.add_argument("--max-notional-x", type=float, default=10.0,
                    help="ceiling on total position value as a multiple of "
                         "equity (default 10; 0 disables). This is the only "
@@ -173,6 +179,22 @@ def main() -> int:
     print("  with lev_base = 28/atr14_pct clipped to 17-100x. The multiplier")
     print("  can only cut leverage, never raise it above what the stop allows.")
     print()
+    if args.conviction_floor < 1.0:
+        print(f"  That score is the instrument's volatility rank -- identical")
+        print(f"  for a long and a short on the same bar. The per-trade term")
+        print(f"  is the vote: leverage is then cut to between "
+              f"{args.conviction_floor:.2f} and 1.00 of")
+        print("  it by how strongly the twelve agreed on THIS setup.")
+        print()
+        print("  Measured on 15,617 trades over 2025-2026, that agreement does")
+        print("  NOT predict outcome (win rate 33.6% at one vote, 33.3% at")
+        print("  five; correlation -0.0011, and it flips sign between years).")
+        print("  The haircut is equivalent to a flat deleveraging of the same")
+        print("  size, to within +0.027%. It is a risk preference, not an")
+        print("  edge. --conviction-floor 1.0 turns it off.")
+    else:
+        print("  Per-trade conviction haircut: OFF (--conviction-floor 1.0).")
+    print()
     print("  One further bound, also computed from ATR: leverage is held")
     print("  below 0.9 / (1.3 x 1.5 x atr14_pct), the point where the stop")
     print("  would sit past the liquidation price. Through the normal range")
@@ -201,7 +223,8 @@ def main() -> int:
     try:
         B.run(client, symbols, args.equity, args.max_positions, args.exit,
               args.min_votes, args.poll_seconds, args.trades_csv, fee,
-              args.max_leverage, args.margin_pct / 100.0, args.max_notional_x)
+              args.max_leverage, args.margin_pct / 100.0, args.max_notional_x,
+              args.conviction_floor)
     except KeyboardInterrupt:
         pass
     except Exception as exc:

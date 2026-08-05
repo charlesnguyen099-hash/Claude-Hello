@@ -77,6 +77,12 @@ POTENTIAL_OFFSET = 0.50                 # multiplier = score + 0.50
 LIQ_MARGIN_FRACTION = 0.90
 SOLVENCY_BUFFER = 1.30
 
+# Per-trade potential. Vote margin at which conviction counts as full,
+# and the smallest fraction of the file's leverage a minimum-conviction
+# setup is allowed to take.
+CONVICTION_FULL_MARGIN = 3.0
+CONVICTION_FLOOR = 0.60
+
 FEE_ROUND_TRIP = 0.0025                 # taker, at the file's leveraged rate
 MAKER_ROUND_TRIP = 0.0004               # resting the order instead
 
@@ -106,6 +112,67 @@ def potential_score(atr14_pct: float,
 def potential_multiplier(score: float) -> float:
     """The file's exact relation: multiplier = score + 0.5."""
     return score + POTENTIAL_OFFSET
+
+
+def conviction_score(votes: int, vote_margin: int) -> float:
+    """How strongly the twelve methods agreed on THIS setup, 0..1.
+
+    This is the only quantity in the whole chain that belongs to the
+    individual trade rather than to the instrument. Two trades on the
+    same coin at the same minute, one long and one short, get different
+    conviction; they get identical atr14_pct.
+    """
+    if votes <= 0 or vote_margin <= 0:
+        return 0.0
+    return float(np.clip(vote_margin / CONVICTION_FULL_MARGIN, 0.0, 1.0))
+
+
+def conviction_haircut(votes: int, vote_margin: int,
+                       floor: float = CONVICTION_FLOOR) -> float:
+    """Per-trade sizing factor in [CONVICTION_FLOOR, 1.0].
+
+    Applied as a MULTIPLIER on the leverage the file's chain produced, so
+    it can only ever cut. That shape is deliberate, and it is the second
+    attempt: blending conviction into the score as an average was tried
+    first and measured, and it RAISED mean leverage from 64.3x to 65.3x
+    (a low ATR rank paired with high conviction scored above the ATR rank
+    alone). Raising leverage on the strength of a factor with no measured
+    edge is exactly the wrong trade, and P&L per $1 of margin got worse in
+    five of six year/fee cells. As a haircut the direction is guaranteed.
+
+    MEASURED, NOT ASSUMED. On 15,617 consensus trades across 2025-2026,
+    conviction does not predict whether a trade wins:
+
+        methods fired   1: 33.6% win   2: 35.1%   3: 33.8%   4: 32.8%   5: 33.3%
+        correlation of votes with gross return   -0.0011
+        correlation of vote margin with it       +0.0009
+
+    and the ranking flips between years -- in 2025 three-plus votes beat
+    one vote, in 2026 one vote beat three-plus. A factor that changes sign
+    across years is worse than no factor.
+
+    So this is a risk preference, not an edge: it stands smaller on the
+    setups the methods agreed on least. If the conviction reading is
+    meaningless -- and the measurement says it is -- the cost is sizing
+    some good trades smaller, never sizing a bad one larger.
+
+    AND IT WAS CHECKED AGAINST THE OBVIOUS NULL. At the default floor the
+    haircut cuts mean leverage 23.3%, which alone improves P&L per $1 of
+    margin from -15.48% to -11.85% at taker fees. That improvement is
+    NOT selection. Cutting every trade by a flat 0.7673 -- same mean
+    leverage, no conviction anywhere -- gives -11.88%. The difference
+    between choosing which trades to cut and cutting all of them equally
+    is +0.027%, and it flips sign by year (+0.086% in 2025, -0.076% in
+    2026). The haircut's correlation with the trade's own net return is
+    +0.0012.
+
+    Read plainly: this term is a deleveraging knob wearing a per-trade
+    shape. It is kept because the shape is the right one and it cannot do
+    harm, not because the data says agreement is worth anything. Set the
+    floor to 1.0 to switch it off entirely.
+    """
+    floor = float(np.clip(floor, 0.0, 1.0))
+    return float(floor + (1.0 - floor) * conviction_score(votes, vote_margin))
 
 
 def lev_base(atr14_pct: float) -> float:
@@ -146,13 +213,24 @@ def solvency_cap(atr14_pct: float) -> float:
     return float(LIQ_MARGIN_FRACTION / (SOLVENCY_BUFFER * sl_move))
 
 
-def leverage_potential(atr14_pct: float, cap: float | None = None) -> dict:
+def leverage_potential(atr14_pct: float, cap: float | None = None,
+                       votes: int | None = None,
+                       vote_margin: int | None = None,
+                       conviction_floor: float = CONVICTION_FLOOR) -> dict:
     """The full chain: base, score, multiplier, and the final leverage.
 
-    The product is capped at the base, exactly as the file has it, so a
-    high multiplier never raises leverage above what the stop allows — it
-    can only cut it. Then the solvency bound applies, which only ever
-    binds where the 17x floor would have put the stop past liquidation.
+    The file's own chain runs first and unchanged: potential_score is its
+    volatility rank, multiplier = score + 0.5, product capped at the base
+    so a high multiplier never raises leverage above what the stop allows.
+
+    Pass `votes` and `vote_margin` and a per-trade term is then applied on
+    top, as a haircut. That is the only quantity here belonging to the
+    individual trade rather than to the instrument: the file's score is
+    identical for a long and a short taken on the same bar, conviction is
+    not. Being a haircut, it can only reduce — see conviction_haircut().
+
+    Last comes the solvency bound, which only ever binds where the 17x
+    floor would have put the stop past the liquidation price.
 
     `tradeable` is False when even 1x cannot keep the stop inside the
     liquidation price — an instrument moving more than ~46% per 30m bar.
@@ -162,13 +240,21 @@ def leverage_potential(atr14_pct: float, cap: float | None = None) -> dict:
     base = lev_base(atr14_pct)
     score = potential_score(atr14_pct)
     mult = potential_multiplier(score)
-    lev = min(base * mult, base)
+    lev = min(base * mult, base)                    # the file's chain, as written
+    haircut = 1.0
+    if votes is not None and vote_margin is not None:
+        haircut = conviction_haircut(votes, vote_margin, conviction_floor)
+        lev *= haircut                              # per-trade, cuts only
     solvent = solvency_cap(atr14_pct)
     lev = min(lev, solvent)
     if cap is not None:
         lev = min(lev, cap)
     return {"lev_base": base, "potential_score": score,
             "potential_multiplier": mult, "solvency_cap": solvent,
+            "conviction": (conviction_score(votes, vote_margin)
+                           if votes is not None and vote_margin is not None
+                           else float("nan")),
+            "conviction_haircut": haircut,
             "leverage": max(1.0, lev), "tradeable": lev >= 1.0}
 
 

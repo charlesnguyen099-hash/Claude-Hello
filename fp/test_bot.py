@@ -80,7 +80,7 @@ class FakeHTTP:
 def broker_for(symbols, client, **kw):
     opts = dict(equity=10.0, max_positions=0, exit_name=L.DEFAULT_EXIT,
                 min_votes=1, fee=L.FEE_ROUND_TRIP, max_leverage=None,
-                margin_pct=0.10, max_notional_x=0.0)
+                margin_pct=0.10, max_notional_x=0.0, conviction_floor=1.0)
     opts.update(kw)
     return B.Broker(client, symbols, **opts)
 
@@ -177,7 +177,7 @@ def test_blocked_signal_is_filled_when_margin_frees():
     b.refresh_prices()
     for s in syms:
         b.signals[s] = B.Signal(bar_ts=B.closed_bar_ts(), direction=1,
-                                atr_pct=1.0, votes=1, methods="X")
+                                atr_pct=1.0, votes=1, vote_margin=1, methods="X")
 
     opened, waiting = b.fill_standing()
     check("margin blocks some of them", 0 < opened < len(syms),
@@ -208,7 +208,7 @@ def test_no_instant_reentry_after_stop():
     b.refresh_prices()
     bar = B.closed_bar_ts()
     b.signals["S0USDT"] = B.Signal(bar_ts=bar, direction=1, atr_pct=1.0,
-                                   votes=1, methods="X")
+                                   votes=1, vote_margin=1, methods="X")
 
     check("opens once", b.try_open("S0USDT") is True)
     pos = b.open["S0USDT"]
@@ -218,7 +218,7 @@ def test_no_instant_reentry_after_stop():
 
     # A new bar is a new decision, so it may trade again.
     b.signals["S0USDT"] = B.Signal(bar_ts=bar + BAR_MS, direction=1,
-                                   atr_pct=1.0, votes=1, methods="X")
+                                   atr_pct=1.0, votes=1, vote_margin=1, methods="X")
     check("reopens on the next bar", b.try_open("S0USDT") is True)
 
 
@@ -232,7 +232,7 @@ def test_take_profit_and_stop_prices():
         b.refresh_prices()
         b.signals["S0USDT"] = B.Signal(bar_ts=B.closed_bar_ts(),
                                        direction=direction, atr_pct=1.0,
-                                       votes=1, methods="X")
+                                       votes=1, vote_margin=1, methods="X")
         b.try_open("S0USDT")
         pos = b.open["S0USDT"]
         tp_mult = L.TP_MULTIPLES[L.DEFAULT_EXIT]
@@ -260,7 +260,7 @@ def test_take_profit_and_stop_prices():
         b.refresh_prices()
         b.signals["S0USDT"] = B.Signal(bar_ts=B.closed_bar_ts(),
                                        direction=direction, atr_pct=1.0,
-                                       votes=1, methods="X")
+                                       votes=1, vote_margin=1, methods="X")
         b.try_open("S0USDT")
         pos = b.open["S0USDT"]
         c.last["S0USDT"] = pos.sl_price - direction * 0.5
@@ -277,7 +277,7 @@ def test_liquidation_caps_the_loss():
     b = broker_for(syms, c)
     b.refresh_prices()
     b.signals["S0USDT"] = B.Signal(bar_ts=B.closed_bar_ts(), direction=1,
-                                   atr_pct=1.0, votes=1, methods="X")
+                                   atr_pct=1.0, votes=1, vote_margin=1, methods="X")
     b.try_open("S0USDT")
     pos = b.open["S0USDT"]
     equity_before = b.equity
@@ -339,7 +339,7 @@ def test_stop_always_sits_inside_liquidation():
     b = broker_for(syms, c)
     b.refresh_prices()
     b.signals["S0USDT"] = B.Signal(bar_ts=B.closed_bar_ts(), direction=1,
-                                   atr_pct=90.0, votes=1, methods="X")
+                                   atr_pct=90.0, votes=1, vote_margin=1, methods="X")
     check("a 90% ATR setup is refused", b.try_open("S0USDT") is False)
     check("and counted as unsolvent", b.skipped_unsolvent == 1,
           str(b.skipped_unsolvent))
@@ -355,7 +355,7 @@ def test_open_losses_reduce_free_margin():
     b.refresh_prices()
     for s in syms:
         b.signals[s] = B.Signal(bar_ts=B.closed_bar_ts(), direction=1,
-                                atr_pct=1.0, votes=1, methods="X")
+                                atr_pct=1.0, votes=1, vote_margin=1, methods="X")
     b.fill_standing()
     n_before = len(b.open)
     check("a book is open", n_before >= 5, f"{n_before}")
@@ -393,7 +393,7 @@ def test_exposure_ceiling():
     b.refresh_prices()
     for s in syms:
         b.signals[s] = B.Signal(bar_ts=B.closed_bar_ts(), direction=1,
-                                atr_pct=1.0, votes=1, methods="X")
+                                atr_pct=1.0, votes=1, vote_margin=1, methods="X")
     b.fill_standing()
     exposure = b.notional / b.equity_total
     check("notional stays under the ceiling", exposure <= 10.0 + 1e-6,
@@ -410,7 +410,7 @@ def test_exposure_ceiling():
     b2.refresh_prices()
     for s in syms:
         b2.signals[s] = B.Signal(bar_ts=B.closed_bar_ts(), direction=1,
-                                 atr_pct=1.0, votes=1, methods="X")
+                                 atr_pct=1.0, votes=1, vote_margin=1, methods="X")
     b2.fill_standing()
     check("uncapped exposure is much higher",
           b2.notional / b2.equity_total > exposure * 1.5,
@@ -426,7 +426,7 @@ def test_margin_never_oversubscribed():
     b.refresh_prices()
     for s in syms:
         b.signals[s] = B.Signal(bar_ts=B.closed_bar_ts(), direction=1,
-                                atr_pct=1.0, votes=1, methods="X")
+                                atr_pct=1.0, votes=1, vote_margin=1, methods="X")
     b.fill_standing()
     check("committed margin never exceeds equity",
           b.committed_margin <= b.equity + 1e-9,
@@ -442,7 +442,7 @@ def test_margin_never_oversubscribed():
     b2.refresh_prices()
     for s in syms:
         b2.signals[s] = B.Signal(bar_ts=B.closed_bar_ts(), direction=1,
-                                 atr_pct=1.0, votes=1, methods="X")
+                                 atr_pct=1.0, votes=1, vote_margin=1, methods="X")
     threads = [threading.Thread(target=b2.fill_standing) for _ in range(8)]
     for t in threads:
         t.start()
@@ -461,7 +461,7 @@ def test_summary_counts_add_up():
     b.refresh_prices()
     for s in syms:
         b.signals[s] = B.Signal(bar_ts=B.closed_bar_ts(), direction=1,
-                                atr_pct=1.0, votes=1, methods="X")
+                                atr_pct=1.0, votes=1, vote_margin=1, methods="X")
     b.fill_standing()
     opened = list(b.open)
     # Close half at a profit, a quarter at a loss, leave the rest open.
@@ -504,7 +504,7 @@ def test_fee_accounting():
     b = broker_for(syms, c)
     b.refresh_prices()
     b.signals["S0USDT"] = B.Signal(bar_ts=B.closed_bar_ts(), direction=1,
-                                   atr_pct=1.0, votes=1, methods="X")
+                                   atr_pct=1.0, votes=1, vote_margin=1, methods="X")
     start = b.equity
     b.try_open("S0USDT")
     pos = b.open["S0USDT"]
@@ -534,7 +534,8 @@ def test_leverage_chain_matches_logic():
         b.open.clear()
         b.traded_bar.clear()
         b.signals["S0USDT"] = B.Signal(bar_ts=B.closed_bar_ts(), direction=1,
-                                       atr_pct=atr_pct, votes=1, methods="X")
+                                       atr_pct=atr_pct, votes=1, vote_margin=1,
+                                       methods="X")
         b.try_open("S0USDT")
         pos = b.open["S0USDT"]
         chain = L.leverage_potential(atr_pct, None)
@@ -547,6 +548,67 @@ def test_leverage_chain_matches_logic():
               pos.leverage <= pos.lev_base + 1e-9)
 
 
+def test_conviction_is_per_trade_and_only_cuts():
+    print("\nthe conviction haircut belongs to the trade and can only cut")
+    # The file's own score is a property of the INSTRUMENT: a long and a
+    # short taken on the same bar get the same number. That was the whole
+    # complaint, so check the new term actually separates them.
+    atr = 0.5
+    weak = L.leverage_potential(atr, None, votes=1, vote_margin=1)
+    strong = L.leverage_potential(atr, None, votes=5, vote_margin=5)
+    check("same ATR gives the same file score",
+          abs(weak["potential_score"] - strong["potential_score"]) < 1e-12)
+    check("but different leverage per trade",
+          strong["leverage"] > weak["leverage"],
+          f"weak {weak['leverage']:.1f}x strong {strong['leverage']:.1f}x")
+    check("the strong one is the file's own leverage",
+          abs(strong["leverage"] - L.leverage_potential(atr, None)["leverage"]) < 1e-9)
+
+    # It must never raise leverage -- the first design did, which is why
+    # this check exists.
+    worst = 0.0
+    for atr_pct in (0.1, 0.2, 0.3, 0.5, 0.8, 1.0, 1.65, 2.0, 3.0, 5.0):
+        plain = L.leverage_potential(atr_pct, None)["leverage"]
+        for votes in range(1, 13):
+            for vm in range(0, votes + 1):
+                lev = L.leverage_potential(atr_pct, None, votes=votes,
+                                           vote_margin=vm)["leverage"]
+                worst = max(worst, lev - plain)
+    check("never exceeds the file's leverage, over 10 ATRs x 91 vote combos",
+          worst <= 1e-9, f"exceeded by {worst:.6f}")
+
+    check("the haircut is bounded below by the floor",
+          abs(L.conviction_haircut(1, 0) - L.CONVICTION_FLOOR) < 1e-12,
+          str(L.conviction_haircut(1, 0)))
+    check("and reaches exactly 1.0 at full agreement",
+          abs(L.conviction_haircut(5, 5) - 1.0) < 1e-12)
+    check("floor 1.0 disables it",
+          abs(L.conviction_haircut(1, 1, floor=1.0) - 1.0) < 1e-12)
+    check("a disabled haircut returns the file's chain unchanged",
+          abs(L.leverage_potential(0.5, None, votes=1, vote_margin=1,
+                                   conviction_floor=1.0)["leverage"]
+              - L.leverage_potential(0.5, None)["leverage"]) < 1e-9)
+
+    # And it must reach the broker, not just exist in logic.py.
+    syms = ["S0USDT", "S1USDT"]
+    c = FakeHTTP(syms, price=100.0)
+    b = broker_for(syms, c, conviction_floor=L.CONVICTION_FLOOR)
+    b.refresh_prices()
+    bar = B.closed_bar_ts()
+    b.signals["S0USDT"] = B.Signal(bar, 1, 0.5, 1, 1, "X")
+    b.signals["S1USDT"] = B.Signal(bar, 1, 0.5, 5, 5, "X, Y, Z")
+    b.try_open("S0USDT")
+    b.try_open("S1USDT")
+    check("the broker sizes the two differently",
+          b.open["S1USDT"].leverage > b.open["S0USDT"].leverage,
+          f"{b.open['S0USDT'].leverage:.1f}x vs {b.open['S1USDT'].leverage:.1f}x")
+    check("and the weaker one takes less notional",
+          b.open["S0USDT"].qty < b.open["S1USDT"].qty)
+    check("solvency still holds for both",
+          all(L.SL_MULTIPLE * 0.5 / 100 < 0.9 / p.leverage
+              for p in b.open.values()))
+
+
 def test_stale_excludes_open_positions():
     print("\nsymbols already holding a position are not rescored")
     syms = ["S0USDT", "S1USDT"]
@@ -554,7 +616,7 @@ def test_stale_excludes_open_positions():
     b = broker_for(syms, c)
     b.refresh_prices()
     b.signals["S0USDT"] = B.Signal(bar_ts=B.closed_bar_ts(), direction=1,
-                                   atr_pct=1.0, votes=1, methods="X")
+                                   atr_pct=1.0, votes=1, vote_margin=1, methods="X")
     b.try_open("S0USDT")
     stale = b.stale_symbols()
     check("the open symbol is left out", "S0USDT" not in stale, str(stale))
@@ -579,6 +641,7 @@ def main() -> int:
                test_margin_never_oversubscribed,
                test_fee_accounting,
                test_leverage_chain_matches_logic,
+               test_conviction_is_per_trade_and_only_cuts,
                test_stale_excludes_open_positions,
                test_summary_counts_add_up):
         fn()

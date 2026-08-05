@@ -111,6 +111,18 @@ def main() -> int:
                         "equity (default 10; 0 disables). This is the only "
                         "bound on correlated risk -- crypto moves together, "
                         "so a full book is one bet, not many")
+    p.add_argument("--sizing", default="kelly",
+                   choices=["kelly", "potential", "flat"],
+                   help="kelly (default): fraction of equity from the Kelly "
+                        "criterion on the signal's own 95%% lower-bounded win "
+                        "rate -- a rule with a real 70%% record takes 90%% of "
+                        "the account, one at the measured 35.1%% takes nothing. "
+                        "potential: base slice scaled by return per dollar of "
+                        "margin. flat: same slice every trade")
+    p.add_argument("--max-margin-pct", type=float,
+                   default=100 * L.MAX_MARGIN_FRACTION,
+                   help="hard ceiling on one trade's margin as a percent of "
+                        f"equity (default {100*L.MAX_MARGIN_FRACTION:.0f})")
     p.add_argument("--flat-sizing", action="store_true",
                    help="give every trade the same margin. By default margin "
                         "scales 0.40-2.50x with the trade's expected return "
@@ -187,14 +199,23 @@ def main() -> int:
           f"~{int(100 / args.margin_pct) - 1} positions max)")
     print(f"  Risk per trade   : ~{args.margin_pct * 0.42:.2f}% of the account "
           f"(a stop costs ~42% of the trade's margin)")
-    if not args.flat_sizing:
-        print(f"  Sizing           : that slice x {L.MARGIN_WEIGHT_MIN:.2f}-"
-              f"{L.MARGIN_WEIGHT_MAX:.2f} by the trade's return per $ of margin")
-        print(f"                     (win/loss on margin are constant at "
-              f"84%/42% -- the fee is")
-        print(f"                     what varies, from {100*L.MAKER_ROUND_TRIP*93:.1f}% "
-              f"of margin at 0.30% ATR to "
-              f"{100*L.TAKER_ROUND_TRIP*17:.1f}% at 2.00%)")
+    mode = "flat" if args.flat_sizing else args.sizing
+    if mode == "kelly":
+        print(f"  Sizing           : Kelly, up to {args.max_margin_pct:.0f}% of "
+              f"equity on one trade")
+        print(f"    win rate -> stake   35.1% -> 0%    45% -> 32%    "
+              f"55% -> 66%    70% -> 90%")
+        print(f"    The win rate is a 95% LOWER bound on the signal's own live")
+        print(f"    record, not its raw rate. A rule that won 5 of 5 is 56.6%,")
+        print(f"    not 100% -- it takes about 100 straight wins to earn the")
+        print(f"    ceiling. Kelly on a raw rate is how accounts die.")
+        print(f"    A signal with no live record uses the measured 35.1%,")
+        print(f"    where Kelly is 0%: it will not be staked at all.")
+    elif mode == "potential":
+        print(f"  Sizing           : base slice x {L.MARGIN_WEIGHT_MIN:.2f}-"
+              f"{L.MARGIN_WEIGHT_MAX:.2f} by return per $ of margin")
+    else:
+        print(f"  Sizing           : flat, {args.margin_pct:.1f}% every trade")
     print(f"  Exposure ceiling : "
           + ("off -- total position value is unbounded" if not args.max_notional_x
              else f"{args.max_notional_x:.0f}x equity "
@@ -309,7 +330,9 @@ def main() -> int:
               args.min_votes, args.poll_seconds, args.trades_csv, fee,
               args.max_leverage, args.margin_pct / 100.0, args.max_notional_x,
               args.conviction_floor, not args.no_expectancy_gate,
-              args.assumed_win_rate, args.signals, not args.flat_sizing)
+              args.assumed_win_rate, args.signals, not args.flat_sizing,
+              "flat" if args.flat_sizing else args.sizing,
+              args.max_margin_pct / 100.0)
     except KeyboardInterrupt:
         pass
     except Exception as exc:

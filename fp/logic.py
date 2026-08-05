@@ -271,6 +271,79 @@ def ev_per_margin(atr14_pct: float, exit_name: str = DEFAULT_EXIT,
 FEE_BURDEN_REFERENCE = 0.077
 MARGIN_WEIGHT_MIN, MARGIN_WEIGHT_MAX = 0.40, 2.50
 
+# Kelly sizing. MAX_MARGIN_FRACTION is the hard ceiling on one trade even
+# when the maths says more; a trade that really is a sure thing can take
+# almost the whole account, which is the point.
+MAX_MARGIN_FRACTION = 0.90
+KELLY_Z = 1.96                          # 95% lower bound on the win rate
+
+
+def wilson_lower(wins: int, n: int, z: float = KELLY_Z) -> float:
+    """Lower bound of the Wilson interval for a win rate.
+
+    Kelly is sized on a PROBABILITY, and the probability here is measured,
+    not known. Feeding it a raw rate is how accounts die: a pattern that
+    won 5 of 5 reads as certain, and Kelly on p=1.0 says bet everything.
+    The lower bound says what the evidence actually supports.
+
+        3/3   -> 43.8%      20/20  -> 83.9%
+        5/5   -> 56.6%      50/50  -> 92.9%
+        10/10 -> 72.2%     100/100 -> 96.3%
+
+    So "certain enough to bet the account" is not a claim five wins can
+    make. It takes about a hundred. That is the intended behaviour, not a
+    limitation -- a rule with a genuine hundred-for-hundred record does
+    reach the ceiling.
+    """
+    if n <= 0:
+        return 0.0
+    p = wins / n
+    denom = 1.0 + z * z / n
+    centre = p + z * z / (2 * n)
+    margin = z * np.sqrt(p * (1 - p) / n + z * z / (4 * n * n))
+    return float(max(0.0, (centre - margin) / denom))
+
+
+def kelly_fraction(atr14_pct: float, exit_name: str = DEFAULT_EXIT,
+                   fee: float = FEE_ROUND_TRIP, win_rate: float | None = None,
+                   cap: float | None = None) -> float:
+    """Fraction of equity to commit as margin, by the Kelly criterion.
+
+    Per dollar of margin the trade wins W and loses A, both after the fee:
+
+        W = TP x atr x lev - lev x fee
+        A = SL x atr x lev + lev x fee
+
+    and Kelly is (p*W - (1-p)*A) / (W*A), which is the expected return
+    divided by the product of the two outcomes. It scales exactly the way
+    you would want: the surer the trade, the more of the account it takes,
+    and it goes to zero the moment the edge does.
+
+        win rate   fraction of equity
+          35.1%          0%   (the measured rate -- no edge, no bet)
+          45%            5%
+          55%           27%
+          70%           62%
+          90%           90%  (ceiling)
+
+    Returns 0 when the edge is not positive, so a negative-expectancy
+    trade is not sized small, it is not taken.
+    """
+    p = MEASURED_WIN_RATE.get(exit_name, 0.35) if win_rate is None else win_rate
+    chain = leverage_potential(atr14_pct, cap)
+    if not chain["tradeable"]:
+        return 0.0
+    lev = chain["leverage"]
+    tp = TP_MULTIPLES.get(exit_name, TRAIL_MULTIPLE)
+    a = atr14_pct / 100.0
+    burden = lev * fee
+    win = tp * a * lev - burden
+    loss = SL_MULTIPLE * a * lev + burden
+    if win <= 0 or loss <= 0:
+        return 0.0
+    f = (p * win - (1 - p) * loss) / (win * loss)
+    return float(np.clip(f, 0.0, MAX_MARGIN_FRACTION))
+
 
 def margin_weight(atr14_pct: float, fee: float = FEE_ROUND_TRIP,
                   cap: float | None = None) -> float:

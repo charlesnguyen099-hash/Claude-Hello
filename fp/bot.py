@@ -110,6 +110,12 @@ class Signal:
     # Only the pattern library sets this; the voting methods leave it None
     # and their leverage haircut comes from the vote margin instead.
     confidence: float | None = None
+    # Win rate this signal is entitled to claim, as a 95% LOWER bound on
+    # its own live record. None means it has no record and falls back to
+    # the rate the exit achieved across 2025-2026.
+    p_win: float | None = None
+    live_n: int = 0
+    live_wins: int = 0
 
 
 @dataclass
@@ -160,7 +166,9 @@ class Broker:
                  expectancy_gate: bool = True,
                  assumed_win_rate: float | None = None,
                  signal_source: str = "methods",
-                 potential_sizing: bool = True):
+                 potential_sizing: bool = True,
+                 sizing: str = "kelly",
+                 max_margin_pct: float = L.MAX_MARGIN_FRACTION):
         self.client = client
         self.symbols = symbols
         self.equity = equity
@@ -192,6 +200,13 @@ class Broker:
         # Scale each trade's margin by its expected return per dollar of
         # margin. False restores a flat slice for every trade.
         self.potential_sizing = potential_sizing
+        # "kelly"     - fraction of equity from the Kelly criterion on the
+        #               signal's own lower-bounded win rate. The surer the
+        #               trade, the more of the account it takes.
+        # "potential" - base slice scaled by return per dollar of margin.
+        # "flat"      - the same slice for every trade.
+        self.sizing = sizing
+        self.max_margin_pct = max_margin_pct
         self.library = None
         self.bar_minutes = L.BAR_MINUTES
         if signal_source == "patterns":
@@ -277,17 +292,23 @@ class Broker:
         with self.lock:
             return self.equity_total - sum(p.margin for p in self.open.values())
 
-    def slice_size(self, atr_pct: float | None = None) -> float:
+    def slice_size(self, atr_pct: float | None = None,
+                   p_win: float | None = None) -> float:
         """Margin this trade commits.
 
-        The base is a fixed slice of equity. With an ATR it is then scaled
-        by the trade's potential PER DOLLAR OF MARGIN, which is what
-        capital is actually allocated in -- see logic.ev_per_margin(). A
-        flat slice hands the same money to a setup returning -8%/margin
-        and one returning +2%.
+        Under Kelly the answer does not start from a fixed slice at all:
+        it is the fraction of equity the trade's own edge justifies, from
+        zero up to max_margin_pct. A trade with a real 70% record takes
+        90% of the account; one at the system's measured 35.1% takes
+        nothing, because at that rate there is no edge to bet.
         """
-        base = max(0.0, self.equity_total) * self.margin_pct
-        if atr_pct is None or not self.potential_sizing:
+        eq = max(0.0, self.equity_total)
+        if self.sizing == "kelly" and atr_pct is not None:
+            f = L.kelly_fraction(atr_pct, self.exit_name, self.fee, p_win,
+                                 self.max_leverage)
+            return eq * min(f, self.max_margin_pct)
+        base = eq * self.margin_pct
+        if atr_pct is None or self.sizing == "flat":
             return base
         return base * L.margin_weight(atr_pct, self.fee, self.max_leverage)
 
@@ -314,6 +335,10 @@ class Broker:
                 return False
             if self.notional_headroom() <= 0:
                 return False
+            if self.sizing == "kelly":
+                # Under Kelly the slice is per-trade, so "is there room"
+                # can only mean "is there anything left at all".
+                return self.free_margin > 0
             return self.free_margin >= self.slice_size() > 0
 
     # ---------------------------------------------------------------- market
@@ -461,12 +486,18 @@ class Broker:
             self.no_signal += 1
             self.signals.pop(symbol, None)
             return None
+        # Only the LIVE record may size a bet. The training record is 100%
+        # by construction -- every rule was recorded because it won -- so
+        # Kelly on it would read every pattern as a certainty.
+        p_win = (L.wilson_lower(pat.live_wins, pat.n_live)
+                 if pat.n_live > 0 else None)
         sig = Signal(bar_ts=bar_ts, direction=pat.direction,
                      atr_pct=100.0 * atr / c[-1], votes=pat.n_train,
                      vote_margin=pat.n_train,
                      methods=f"pattern {key} ({pat.n_train} train, "
                              f"{pat.n_live} live)",
-                     confidence=pat.confidence())
+                     confidence=pat.confidence(),
+                     p_win=p_win, live_n=pat.n_live, live_wins=pat.live_wins)
         self.signals[symbol] = sig
         return sig
 
@@ -538,7 +569,7 @@ class Broker:
             if self.max_positions and len(self.open) >= self.max_positions:
                 self.skipped_no_margin += 1
                 return False
-            margin = self.slice_size(sig.atr_pct)
+            margin = self.slice_size(sig.atr_pct, sig.p_win)
             if margin <= 0 or self.free_margin < margin:
                 self.skipped_no_margin += 1
                 return False
@@ -581,10 +612,18 @@ class Broker:
                     chain["lev_base"], chain["conviction_haircut"], lev,
                     sig.votes, sig.vote_margin, sig.methods, self.exit_name,
                     pos.tp_price, pos.sl_price, margin)
-        logger.info("    %s sized at %.2fx the base slice "
-                    "(EV %+.2f%% per $ of margin, fee eats %.1f%% of it)",
-                    symbol, pos.margin_weight, 100 * pos.ev_per_margin,
-                    100 * lev * self.fee)
+        if self.sizing == "kelly":
+            p = (sig.p_win if sig.p_win is not None
+                 else L.MEASURED_WIN_RATE.get(self.exit_name, 0.35))
+            logger.info("    %s Kelly %.1f%% of equity on p=%.1f%% "
+                        "(%d/%d live), fee eats %.1f%% of margin",
+                        symbol, 100 * margin / max(self.equity_total, 1e-9),
+                        100 * p, sig.live_wins, sig.live_n, 100 * lev * self.fee)
+        else:
+            logger.info("    %s sized at %.2fx the base slice "
+                        "(EV %+.2f%% per $ of margin, fee eats %.1f%% of it)",
+                        symbol, pos.margin_weight, 100 * pos.ev_per_margin,
+                        100 * lev * self.fee)
         return True
 
     def fill_standing(self) -> tuple[int, int]:
@@ -605,12 +644,14 @@ class Broker:
         # dict order that is arrival order, which has nothing to do with
         # quality. Ranked by expected return per dollar of margin, the
         # budget goes to the setups that keep the most of it.
-        order = sorted(
-            self.signals,
-            key=lambda sy: -L.ev_per_margin(self.signals[sy].atr_pct,
-                                            self.exit_name, self.fee,
-                                            self.assumed_win_rate,
-                                            self.max_leverage))
+        def rank(sy):
+            sg = self.signals[sy]
+            if self.sizing == "kelly":
+                return -L.kelly_fraction(sg.atr_pct, self.exit_name, self.fee,
+                                         sg.p_win, self.max_leverage)
+            return -L.ev_per_margin(sg.atr_pct, self.exit_name, self.fee,
+                                    self.assumed_win_rate, self.max_leverage)
+        order = sorted(self.signals, key=rank)
         for sym in order:
             if sym in self.open:
                 continue
@@ -1049,11 +1090,12 @@ def run(client, symbols: list[str], equity: float, max_positions: int,
         expectancy_gate: bool = True,
         assumed_win_rate: float | None = None,
         signal_source: str = "methods",
-        potential_sizing: bool = True) -> None:
+        potential_sizing: bool = True, sizing: str = "kelly",
+        max_margin_pct: float = L.MAX_MARGIN_FRACTION) -> None:
     broker = Broker(client, symbols, equity, max_positions, exit_name,
                     min_votes, fee, max_leverage, margin_pct, max_notional_x,
                     conviction_floor, expectancy_gate, assumed_win_rate,
-                    signal_source, potential_sizing)
+                    signal_source, potential_sizing, sizing, max_margin_pct)
     stop_event = threading.Event()
 
     def stop(signum, frame):

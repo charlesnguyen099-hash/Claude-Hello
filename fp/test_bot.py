@@ -81,7 +81,7 @@ def broker_for(symbols, client, **kw):
     opts = dict(equity=10.0, max_positions=0, exit_name=L.DEFAULT_EXIT,
                 min_votes=1, fee=L.FEE_ROUND_TRIP, max_leverage=None,
                 margin_pct=0.10, max_notional_x=0.0, conviction_floor=1.0,
-                expectancy_gate=False, potential_sizing=False)
+                expectancy_gate=False, potential_sizing=False, sizing="flat")
     opts.update(kw)
     return B.Broker(client, symbols, **opts)
 
@@ -691,7 +691,7 @@ def test_margin_scales_with_potential():
     # The broker must actually use it.
     syms = ["LOWUSDT", "HIGHUSDT"]
     c = FakeHTTP(syms, price=100.0)
-    b = broker_for(syms, c, potential_sizing=True, margin_pct=0.05,
+    b = broker_for(syms, c, sizing="potential", margin_pct=0.05,
                    max_notional_x=0.0)
     b.refresh_prices()
     bar = B.closed_bar_ts()
@@ -714,7 +714,7 @@ def test_margin_scales_with_potential():
 
 def _flat_margins(syms):
     c = FakeHTTP(syms, price=100.0)
-    b = broker_for(syms, c, potential_sizing=False, margin_pct=0.05,
+    b = broker_for(syms, c, sizing="flat", margin_pct=0.05,
                    max_notional_x=0.0)
     b.refresh_prices()
     bar = B.closed_bar_ts()
@@ -731,7 +731,7 @@ def test_best_signals_are_filled_first():
     print("\nthe best signals get the budget, not the first to arrive")
     syms = [f"S{i}USDT" for i in range(12)]
     c = FakeHTTP(syms, price=100.0)
-    b = broker_for(syms, c, potential_sizing=True, margin_pct=0.05,
+    b = broker_for(syms, c, sizing="potential", margin_pct=0.05,
                    max_notional_x=6.0)
     b.refresh_prices()
     bar = B.closed_bar_ts()
@@ -748,6 +748,66 @@ def test_best_signals_are_filled_first():
     check("what opened beats what did not",
           min(opened_atr) > max(rejected) - 1e-9,
           f"opened {sorted(opened_atr)}, rejected {sorted(rejected)}")
+
+
+def test_kelly_stakes_by_certainty():
+    """The surer the trade, the more of the account -- and 5 wins is not
+    sure."""
+    print("\nKelly stakes by how certain the record actually is")
+    fee = L.TAKER_ROUND_TRIP
+    measured = L.MEASURED_WIN_RATE[L.DEFAULT_EXIT]
+    check("no edge means no bet, not a small bet",
+          L.kelly_fraction(1.0, L.DEFAULT_EXIT, fee, measured) == 0.0,
+          f"{L.kelly_fraction(1.0, L.DEFAULT_EXIT, fee, measured):.4f}")
+    fracs = [L.kelly_fraction(1.0, L.DEFAULT_EXIT, fee, p)
+             for p in (0.45, 0.55, 0.70, 0.90)]
+    check("stake rises with certainty", fracs == sorted(fracs), str(fracs))
+    check("a 70% rule reaches the ceiling", fracs[2] >= L.MAX_MARGIN_FRACTION,
+          f"{fracs[2]:.2f}")
+    check("nothing exceeds the ceiling",
+          max(fracs) <= L.MAX_MARGIN_FRACTION + 1e-12)
+    check("an unsolvent setup is never staked",
+          L.kelly_fraction(90.0, L.DEFAULT_EXIT, fee, 0.99) == 0.0)
+
+    # The lower bound is what keeps a lucky streak from betting the farm.
+    check("5 of 5 is not a certainty",
+          L.wilson_lower(5, 5) < 0.60, f"{L.wilson_lower(5,5):.3f}")
+    check("100 of 100 nearly is",
+          L.wilson_lower(100, 100) > 0.95, f"{L.wilson_lower(100,100):.3f}")
+    check("more evidence never lowers the bound",
+          L.wilson_lower(5, 5) < L.wilson_lower(50, 50) < L.wilson_lower(500, 500))
+    check("a losing record bounds near zero",
+          L.wilson_lower(1, 50) < 0.10, f"{L.wilson_lower(1,50):.3f}")
+    check("no record at all stakes nothing", L.wilson_lower(0, 0) == 0.0)
+
+    # And the broker honours it.
+    syms = ["SUREUSDT", "WEAKUSDT"]
+    c = FakeHTTP(syms, price=100.0)
+    b = broker_for(syms, c, sizing="kelly", max_notional_x=0.0)
+    b.refresh_prices()
+    bar = B.closed_bar_ts()
+    b.signals["SUREUSDT"] = B.Signal(bar, 1, 1.0, 1, 1, "X", p_win=0.75,
+                                     live_n=200, live_wins=150)
+    b.signals["WEAKUSDT"] = B.Signal(bar, 1, 1.0, 1, 1, "X", p_win=0.40,
+                                     live_n=200, live_wins=80)
+    eq = b.equity_total
+    b.try_open("SUREUSDT")
+    check("the sure trade takes most of the account",
+          b.open["SUREUSDT"].margin / eq > 0.5,
+          f"{100*b.open['SUREUSDT'].margin/eq:.1f}%")
+    b.try_open("WEAKUSDT")
+    check("the weak one takes what is left, and less",
+          "WEAKUSDT" not in b.open
+          or b.open["WEAKUSDT"].margin < b.open["SUREUSDT"].margin)
+    check("margin is still not oversubscribed", b.free_margin >= -1e-9,
+          f"{b.free_margin:.6f}")
+
+    # A signal with no live record must not be staked at all.
+    b2 = broker_for(syms, FakeHTTP(syms, price=100.0), sizing="kelly",
+                    max_notional_x=0.0)
+    b2.refresh_prices()
+    b2.signals["SUREUSDT"] = B.Signal(bar, 1, 1.0, 1, 1, "X")
+    check("an unproven signal is not staked", b2.try_open("SUREUSDT") is False)
 
 
 def test_stale_excludes_open_positions():
@@ -786,6 +846,7 @@ def main() -> int:
                test_expectancy_gate,
                test_margin_scales_with_potential,
                test_best_signals_are_filled_first,
+               test_kelly_stakes_by_certainty,
                test_stale_excludes_open_positions,
                test_summary_counts_add_up):
         fn()

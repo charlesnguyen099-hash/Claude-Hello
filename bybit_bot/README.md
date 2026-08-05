@@ -147,6 +147,53 @@ slice. That is what a real exchange does too.
 drawdown that happens while positions are open is a real drawdown, and
 cash-only accounting missed every one of them.
 
+### The walk-forward test, and what it found
+
+```bash
+python -m fp.research     # fit on 2025+2026, hold August 2026 out
+```
+
+August 2026 arrived after all the fitting was done, so it is a genuine
+holdout. The search was: score all twelve methods separately against all
+four exits, keep the ones positive in both fit years, and see whether
+that selection helps.
+
+**It did not. It made things worse.** The 17 surviving method/exit pairs
+returned +0.0342% gross on 38,379 fit trades with a t of **6.60** — and
+on the held-out month they returned **+0.0328% against +0.0974%** for
+taking all twelve methods with no selection at all. A t of 6.6 that
+reverses out of sample is the textbook signature of fitting noise, and it
+is why this module ranks by worst period and prints the Bonferroni
+threshold rather than the number you were hoping for.
+
+Nothing else survived either:
+
+| exit | 2025 | 2026 | Aug (held out) | worst period, net of maker fee |
+|---|---|---|---|---|
+| TP1.5/SL1.5 | -0.0011% | +0.0090% | +0.0704% | **-0.0411%** |
+| TP2.0/SL1.5 | -0.0082% | +0.0129% | +0.0470% | -0.0482% |
+| TP3.0/SL1.5 | -0.0129% | +0.0300% | +0.0974% | -0.0529% |
+| TRAILING | -0.1333% | -0.1399% | -0.0715% | -0.1799% |
+
+No exit is profitable in every period at any fee tier. Direction does not
+rescue it either — SHORT beat LONG in both fit years (+0.019 vs -0.045 in
+2025, +0.097 vs -0.037 in 2026) and LONG beat SHORT in the held-out month
+(+0.194 vs +0.016). A side that swaps out of sample is not an edge.
+
+### One real correction: the fee was overstated
+
+The 0.250% round trip inherited from the uploaded file adds 0.05% of
+slippage per side. For this bot that is simply wrong — a $10 account at
+5% margin and 30x leverage puts about **$15** of notional on the book,
+and $15 does not move the BTCUSDT spread. Bybit VIP0 taker is 0.055% per
+side, so **0.110% round trip**, which is now the default.
+
+It matters more than any signal change tried here. The same held-out
+August trades come to **-0.213% per trade at 0.250% and -0.013% at
+0.110%** — the gap between "hopeless" and "almost breakeven" was an
+assumption about slippage, not the market. `--fee taker-slip` restores
+the old figure if the size ever justifies it.
+
 ### What it does *not* claim
 
 The numbers above come from synthetic random-walk boards used to test the

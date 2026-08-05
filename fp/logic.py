@@ -83,8 +83,21 @@ SOLVENCY_BUFFER = 1.30
 CONVICTION_FULL_MARGIN = 3.0
 CONVICTION_FLOOR = 0.60
 
-FEE_ROUND_TRIP = 0.0025                 # taker, at the file's leveraged rate
-MAKER_ROUND_TRIP = 0.0004               # resting the order instead
+# Fees, round trip, against notional. Bybit VIP0 is 0.055% taker and
+# 0.020% maker per side.
+#
+# The 0.250% figure carried over from the uploaded file adds 0.05% of
+# slippage per side on top of taker. For this bot that is wrong and it
+# mattered: a $10 account at 5% margin and 30x leverage puts about $15 of
+# notional on the book, and $15 does not move the BTCUSDT spread at all.
+# Charging it 0.05% a side more than doubles the true cost. On the
+# held-out August data the same trades come to -0.213%/trade at 0.250%
+# and -0.013% at the real taker rate -- the difference between "hopeless"
+# and "near breakeven" was an assumption, not the market.
+TAKER_ROUND_TRIP = 0.0011               # 0.055% x 2, Bybit VIP0
+MAKER_ROUND_TRIP = 0.0004               # 0.020% x 2, resting orders
+TAKER_WITH_SLIPPAGE = 0.0025            # + 0.05%/side; only for large size
+FEE_ROUND_TRIP = TAKER_ROUND_TRIP       # what the bot assumes by default
 
 # potential_score is a percentile, so it needs a distribution to rank
 # against. These are the ATR percentiles of BTCUSDT 30m bars over

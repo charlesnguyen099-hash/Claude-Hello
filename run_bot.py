@@ -118,8 +118,15 @@ def main() -> int:
     p.add_argument("--max-leverage", type=float, default=None,
                    help="cap the potential-scaled leverage (default: no cap, "
                         "so the file's own 17-100x band is used as written)")
+    p.add_argument("--fee", default="taker",
+                   choices=["maker", "taker", "taker-slip"],
+                   help="maker 0.040%% (resting limit orders), taker 0.110%% "
+                        "(Bybit VIP0, the default -- this bot's positions are "
+                        "~$15 of notional and do not move the spread), or "
+                        "taker-slip 0.250%% (adds 0.05%%/side, only realistic "
+                        "for size large enough to walk the book)")
     p.add_argument("--maker-fee", action="store_true",
-                   help="assume resting limit orders (0.040%% instead of 0.250%%)")
+                   help="shorthand for --fee maker")
     p.add_argument("--poll-seconds", type=int, default=5,
                    help="seconds between dashboard reprints (default 5). "
                         "Scanning and position management are continuous "
@@ -137,7 +144,9 @@ def main() -> int:
     from fp import methods as M
 
     client = HTTP(testnet=args.testnet)
-    fee = L.MAKER_ROUND_TRIP if args.maker_fee else L.FEE_ROUND_TRIP
+    fee = {"maker": L.MAKER_ROUND_TRIP, "taker": L.TAKER_ROUND_TRIP,
+           "taker-slip": L.TAKER_WITH_SLIPPAGE}[
+        "maker" if args.maker_fee else args.fee]
 
     if args.symbols:
         symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
@@ -175,8 +184,10 @@ def main() -> int:
     print(f"  Min votes to open: {args.min_votes} (and they must agree)")
     print(f"  Exit strategy    : {args.exit} (fixed at entry)")
     print(f"  Leverage         : {lev_note}")
-    print(f"  Fee              : {fee*100:.3f}% round trip "
-          f"({'maker, resting orders' if args.maker_fee else 'taker'})")
+    fee_note = {L.MAKER_ROUND_TRIP: "maker, resting limit orders",
+                L.TAKER_ROUND_TRIP: "taker, Bybit VIP0, no slippage assumed",
+                L.TAKER_WITH_SLIPPAGE: "taker + 0.05%/side slippage"}[fee]
+    print(f"  Fee              : {fee*100:.3f}% round trip ({fee_note})")
     print(f"  Price source     : Bybit {'TESTNET' if args.testnet else 'MAINNET'} "
           f"public API (no key, no orders)")
     print("=" * 70)
@@ -250,6 +261,10 @@ def main() -> int:
     print("  ~90% of the stops have completed but only ~78-88% of the")
     print("  targets, so closed P&L reads worse than the position book is.")
     print("  Read 'incl. open positions', not 'realized only'.")
+    print("=" * 70)
+    print("  Measured on BTCUSDT 30m over 2025, 2026 and a held-out August:")
+    print("  no exit is profitable in every period at any fee tier. Run")
+    print("  python -m fp.research for the full walk-forward table.")
     print("=" * 70)
     print("  Ctrl+C stops the bot and prints the session summary.")
     print("=" * 70)

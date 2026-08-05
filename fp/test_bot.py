@@ -624,12 +624,17 @@ def test_expectancy_gate():
           L.expectancy(0.4, L.DEFAULT_EXIT, L.FEE_ROUND_TRIP)
           == L.expectancy(0.4, L.DEFAULT_EXIT, L.FEE_ROUND_TRIP))
 
-    taker_need = L.min_atr_for_edge(L.DEFAULT_EXIT, L.FEE_ROUND_TRIP)
+    taker_need = L.min_atr_for_edge(L.DEFAULT_EXIT, L.TAKER_ROUND_TRIP)
     maker_need = L.min_atr_for_edge(L.DEFAULT_EXIT, L.MAKER_ROUND_TRIP)
-    check("taker needs an ATR BTCUSDT never reached in two years",
-          taker_need > 2.42, f"needs {taker_need:.3f}%, two-year max was 2.42%")
-    check("maker needs one a quarter of bars clear",
+    slip_need = L.min_atr_for_edge(L.DEFAULT_EXIT, L.TAKER_WITH_SLIPPAGE)
+    check("taker needs an ATR only ~0.5% of bars reach",
+          1.0 < taker_need < 2.0, f"{taker_need:.3f}%")
+    check("maker needs one about a third of bars clear",
           0.3 < maker_need < 1.0, f"{maker_need:.3f}%")
+    check("the old slippage assumption needed one never seen in two years",
+          slip_need > 2.42, f"{slip_need:.3f}% vs a two-year max of 2.42%")
+    check("a higher fee always demands a bigger move",
+          maker_need < taker_need < slip_need)
     check("the gate's threshold is where expectancy crosses zero",
           abs(L.expectancy(taker_need, L.DEFAULT_EXIT, L.FEE_ROUND_TRIP)) < 1e-12)
 

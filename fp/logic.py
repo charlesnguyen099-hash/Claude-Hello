@@ -321,10 +321,12 @@ def ev_per_margin(atr14_pct: float, exit_name: str = DEFAULT_EXIT,
 FEE_BURDEN_REFERENCE = 0.077
 MARGIN_WEIGHT_MIN, MARGIN_WEIGHT_MAX = 0.40, 2.50
 
-# Kelly sizing. MAX_MARGIN_FRACTION is the hard ceiling on one trade even
-# when the maths says more; a trade that really is a sure thing can take
-# almost the whole account, which is the point.
-MAX_MARGIN_FRACTION = 0.90
+# Kelly sizing. A trade that really is a sure thing takes the whole
+# account -- there is no arbitrary ceiling, because how much to stake is
+# a property of the setup, not a number picked in advance. Full Kelly at
+# p -> 1 asks for 1/0.42 = 238% of equity, so this clip is only saying
+# "you cannot bet more than you have".
+MAX_MARGIN_FRACTION = 1.00
 KELLY_Z = 1.96                          # 95% lower bound on the win rate
 
 

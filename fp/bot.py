@@ -616,8 +616,17 @@ class Broker:
             if self.max_positions and len(self.open) >= self.max_positions:
                 self.skipped_no_margin += 1
                 return False
-            margin = self.slice_size(sig.atr_pct, sig.p_win, fee)
-            if margin <= 0 or self.free_margin < margin:
+            # Kelly may ask for the whole account, so the entry fee has
+            # to be reserved out of the same free margin: committing
+            # everything and paying the fee afterwards leaves the book
+            # oversubscribed. margin*(1 + lev*fee_rate) <= free.
+            want = self.slice_size(sig.atr_pct, sig.p_win, fee)
+            entry_rate = ((L.ENTRY_FEE_MAKER if self.limit_entry
+                           else L.ENTRY_FEE_TAKER) + self.slippage) * lev
+            affordable = self.free_margin / (1.0 + entry_rate)
+            margin = min(want, affordable)
+            # Below a cent of margin the fee dominates whatever is left.
+            if want <= 0 or margin < 0.01:
                 self.skipped_no_margin += 1
                 return False
             notional = margin * lev
@@ -838,12 +847,20 @@ class Broker:
                         if self.starting_equity else 0.0),
             "realized": gp + gl, "gross_profit": gp, "gross_loss": gl,
             "unrealized": unreal, "fees_paid": self.fees_paid,
-            "committed_margin": committed, "free_margin": equity - committed,
+            # Free margin is total equity minus committed, the same as the
+            # entry gate uses. It read cash-minus-committed here, which
+            # printed a negative number while the gate saw a positive one.
+            "committed_margin": committed, "free_margin": eq_open - committed,
             "margin_used_pct": (100 * committed / eq_open) if eq_open > 0 else 0.0,
             "slice_size": self.slice_size(),
-            "margin_cap_pct": (100 * self.max_notional_x / avg_lev
-                               if self.max_notional_x and avg_lev else 100.0),
-            "potential_sizing": self.potential_sizing,
+            "sizing_mode": self.sizing, "exit_name": self.exit_name,
+            # What the open book is worth if every position runs to its
+            # exit at the measured win rate, rather than at today's mark.
+            "expected_settle": sum(
+                (L.MEASURED_WIN_RATE.get(self.exit_name, 0.35) * 0.84
+                 - (1 - L.MEASURED_WIN_RATE.get(self.exit_name, 0.35)) * 0.42)
+                * p.margin - p.margin * p.leverage * self.fee
+                for p in self.open.values()),
             "notional": notional, "avg_leverage": avg_lev,
             "exposure_x": (notional / eq_open) if eq_open > 0 else 0.0,
             "max_notional_x": self.max_notional_x,
@@ -961,28 +978,41 @@ def print_dashboard(s: dict) -> None:
     pf = "inf" if s["profit_factor"] == float("inf") else f"{s['profit_factor']:.2f}"
     print()
     print("=" * 78)
-    print(f"  LIVE  up {_hms(s['elapsed'])}   "
-          f"equity ${s['equity_incl_open']:.4f}   "
-          f"net ${s['net']:+.4f}  ({s['roi_pct']:+.2f}%)")
+    settled = s["realized"]
+    print(f"  LIVE  up {_hms(s['elapsed'])}    "
+          f"SETTLED ${settled:+.4f} from {s['closed']} closed trades"
+          f"    open mark ${s['unrealized']:+.4f} on {s['open']}")
     print("-" * 78)
+    # The old single "net" line added these two together, and an open book
+    # marked to market dwarfed the settled figure -- which is how a session
+    # with three closed trades, all losses, read as +17.74%.
+    if s["open"] and abs(s["unrealized"]) > abs(settled):
+        print(f"  Most of what you see is UNSETTLED. Positions last "
+              f"{L.EXPECTED_HOLD_HOURS.get(s['exit_name'], 5.0):.1f}h on")
+        print(f"  average and stops finish sooner than targets, so an open "
+              f"book reads")
+        print(f"  better than it will settle. At the measured win rate this "
+              f"one settles")
+        print(f"  near ${s['expected_settle']:+.4f}, not ${s['unrealized']:+.4f}.")
+        print("-" * 78)
     print(f"  CAPITAL   start ${s['starting_equity']:.4f}"
           f"   cash ${s['equity']:.4f}"
           f"   equity+open ${s['equity_incl_open']:.4f}"
           f"   peak ${s['peak_equity']:.4f}")
-    cap = s["margin_cap_pct"]
-    binding = ("exposure ceiling" if s["margin_used_pct"] >= cap - 2
-               else "free margin")
     print(f"  MARGIN    committed ${s['committed_margin']:.4f}"
           f"   free ${s['free_margin']:.4f}"
-          f"   used {s['margin_used_pct']:.1f}% of a {cap:.0f}% cap"
-          f"   -> {binding} binds")
-    print(f"            base slice ${s['slice_size']:.4f}"
-          + (f", scaled {L.MARGIN_WEIGHT_MIN:.2f}-{L.MARGIN_WEIGHT_MAX:.2f}x "
-             "by each trade's return per $ of margin"
-             if s["potential_sizing"] else ", flat for every trade"))
+          f"   {s['margin_used_pct']:.1f}% of equity deployed")
+    # BUG: this line used to read potential_sizing, a different flag, and
+    # so described a mode the bot was not running.
+    how = {"kelly": "Kelly on each signal's own lower-bounded win rate, "
+                    "0% to 100% of equity",
+           "potential": f"base slice x {L.MARGIN_WEIGHT_MIN:.2f}-"
+                        f"{L.MARGIN_WEIGHT_MAX:.2f} by return per $ of margin",
+           "flat": "the same slice for every trade"}[s["sizing_mode"]]
+    print(f"            sizing: {how}")
     ceiling = (f"   ceiling {s['max_notional_x']:.0f}x"
                f" (${s['notional_headroom']:.2f} left)"
-               if s["max_notional_x"] else "   ceiling off")
+               if s["max_notional_x"] else "   no ceiling -- potential decides")
     print(f"  EXPOSURE  notional ${s['notional']:.2f}"
           f"   {s['exposure_x']:.1f}x equity"
           f"   avg leverage {s['avg_leverage']:.0f}x{ceiling}")

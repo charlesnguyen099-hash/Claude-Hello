@@ -106,11 +106,12 @@ def main() -> int:
                         f"{L.CONVICTION_FLOOR}; 1.0 turns the per-trade haircut "
                         "off). Measured equivalent to a flat deleveraging -- "
                         "see the note below")
-    p.add_argument("--max-notional-x", type=float, default=10.0,
+    p.add_argument("--max-notional-x", type=float, default=0.0,
                    help="ceiling on total position value as a multiple of "
-                        "equity (default 10; 0 disables). This is the only "
-                        "bound on correlated risk -- crypto moves together, "
-                        "so a full book is one bet, not many")
+                        "equity. 0 by default = no ceiling: how much to hold "
+                        "is decided by each trade's potential, not by a number "
+                        "fixed in advance. Set it if you want a hard stop on "
+                        "correlated exposure")
     p.add_argument("--sizing", default="kelly",
                    choices=["kelly", "potential", "flat"],
                    help="kelly (default): fraction of equity from the Kelly "
@@ -223,9 +224,15 @@ def main() -> int:
     else:
         print(f"  Sizing           : flat, {args.margin_pct:.1f}% every trade")
     print(f"  Exposure ceiling : "
-          + ("off -- total position value is unbounded" if not args.max_notional_x
+          + ("none -- position count, notional and leverage all follow the "
+             "market" if not args.max_notional_x
              else f"{args.max_notional_x:.0f}x equity "
                   f"(${args.equity * args.max_notional_x:.2f} at the start)"))
+    print(f"  Still enforced   : the stop must sit inside the liquidation "
+          f"price (a function")
+    print(f"                     of ATR, binding only above ~2.7%), and no "
+          f"trade whose")
+    print(f"                     expected value after all costs is negative")
     if args.signals == "patterns":
         from fp import patterns as P
         _lib = P.Library()

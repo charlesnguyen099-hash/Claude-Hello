@@ -111,6 +111,11 @@ def main() -> int:
                         "equity (default 10; 0 disables). This is the only "
                         "bound on correlated risk -- crypto moves together, "
                         "so a full book is one bet, not many")
+    p.add_argument("--flat-sizing", action="store_true",
+                   help="give every trade the same margin. By default margin "
+                        "scales 0.40-2.50x with the trade's expected return "
+                        "per dollar of margin, which spans a factor of ten "
+                        "across the ATR range because the fee does")
     p.add_argument("--signals", default="methods",
                    choices=["methods", "patterns"],
                    help="methods = the twelve voting rules on 30m bars; "
@@ -182,6 +187,14 @@ def main() -> int:
           f"~{int(100 / args.margin_pct) - 1} positions max)")
     print(f"  Risk per trade   : ~{args.margin_pct * 0.42:.2f}% of the account "
           f"(a stop costs ~42% of the trade's margin)")
+    if not args.flat_sizing:
+        print(f"  Sizing           : that slice x {L.MARGIN_WEIGHT_MIN:.2f}-"
+              f"{L.MARGIN_WEIGHT_MAX:.2f} by the trade's return per $ of margin")
+        print(f"                     (win/loss on margin are constant at "
+              f"84%/42% -- the fee is")
+        print(f"                     what varies, from {100*L.MAKER_ROUND_TRIP*93:.1f}% "
+              f"of margin at 0.30% ATR to "
+              f"{100*L.TAKER_ROUND_TRIP*17:.1f}% at 2.00%)")
     print(f"  Exposure ceiling : "
           + ("off -- total position value is unbounded" if not args.max_notional_x
              else f"{args.max_notional_x:.0f}x equity "
@@ -296,7 +309,7 @@ def main() -> int:
               args.min_votes, args.poll_seconds, args.trades_csv, fee,
               args.max_leverage, args.margin_pct / 100.0, args.max_notional_x,
               args.conviction_floor, not args.no_expectancy_gate,
-              args.assumed_win_rate, args.signals)
+              args.assumed_win_rate, args.signals, not args.flat_sizing)
     except KeyboardInterrupt:
         pass
     except Exception as exc:

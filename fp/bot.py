@@ -133,6 +133,8 @@ class Position:
     potential_score: float
     conviction: float
     lev_base: float
+    ev_per_margin: float = 0.0
+    margin_weight: float = 1.0
 
 
 @dataclass
@@ -157,7 +159,8 @@ class Broker:
                  conviction_floor: float = L.CONVICTION_FLOOR,
                  expectancy_gate: bool = True,
                  assumed_win_rate: float | None = None,
-                 signal_source: str = "methods"):
+                 signal_source: str = "methods",
+                 potential_sizing: bool = True):
         self.client = client
         self.symbols = symbols
         self.equity = equity
@@ -186,6 +189,9 @@ class Broker:
         # "patterns" = the hard-coded lookup table on 15m bars, which
         # carries its own per-shape confidence into the leverage.
         self.signal_source = signal_source
+        # Scale each trade's margin by its expected return per dollar of
+        # margin. False restores a flat slice for every trade.
+        self.potential_sizing = potential_sizing
         self.library = None
         self.bar_minutes = L.BAR_MINUTES
         if signal_source == "patterns":
@@ -271,9 +277,19 @@ class Broker:
         with self.lock:
             return self.equity_total - sum(p.margin for p in self.open.values())
 
-    def slice_size(self) -> float:
-        """Margin one trade commits: a fixed slice of current equity."""
-        return max(0.0, self.equity_total) * self.margin_pct
+    def slice_size(self, atr_pct: float | None = None) -> float:
+        """Margin this trade commits.
+
+        The base is a fixed slice of equity. With an ATR it is then scaled
+        by the trade's potential PER DOLLAR OF MARGIN, which is what
+        capital is actually allocated in -- see logic.ev_per_margin(). A
+        flat slice hands the same money to a setup returning -8%/margin
+        and one returning +2%.
+        """
+        base = max(0.0, self.equity_total) * self.margin_pct
+        if atr_pct is None or not self.potential_sizing:
+            return base
+        return base * L.margin_weight(atr_pct, self.fee, self.max_leverage)
 
     def notional_headroom(self) -> float:
         """How much more notional the exposure ceiling still allows."""
@@ -522,7 +538,7 @@ class Broker:
             if self.max_positions and len(self.open) >= self.max_positions:
                 self.skipped_no_margin += 1
                 return False
-            margin = self.slice_size()
+            margin = self.slice_size(sig.atr_pct)
             if margin <= 0 or self.free_margin < margin:
                 self.skipped_no_margin += 1
                 return False
@@ -548,6 +564,11 @@ class Broker:
                 potential_score=chain["potential_score"],
                 conviction=chain["conviction"],
                 lev_base=chain["lev_base"],
+                ev_per_margin=L.ev_per_margin(sig.atr_pct, self.exit_name,
+                                              self.fee, self.assumed_win_rate,
+                                              self.max_leverage),
+                margin_weight=(margin / (self.equity_total * self.margin_pct)
+                               if self.equity_total > 0 else 1.0),
             )
             self.open[symbol] = pos
             self.traded_bar[symbol] = sig.bar_ts
@@ -560,6 +581,10 @@ class Broker:
                     chain["lev_base"], chain["conviction_haircut"], lev,
                     sig.votes, sig.vote_margin, sig.methods, self.exit_name,
                     pos.tp_price, pos.sl_price, margin)
+        logger.info("    %s sized at %.2fx the base slice "
+                    "(EV %+.2f%% per $ of margin, fee eats %.1f%% of it)",
+                    symbol, pos.margin_weight, 100 * pos.ev_per_margin,
+                    100 * lev * self.fee)
         return True
 
     def fill_standing(self) -> tuple[int, int]:
@@ -575,7 +600,18 @@ class Broker:
         # screen -- what matters is why the CURRENT waiting set is waiting.
         before = (self.skipped_no_margin, self.skipped_max_notional,
                   self.skipped_unsolvent)
-        for sym in list(self.signals):
+        # Best first. The scarce resource is the exposure ceiling, not
+        # margin, so whichever signals are tried first spend it -- and in
+        # dict order that is arrival order, which has nothing to do with
+        # quality. Ranked by expected return per dollar of margin, the
+        # budget goes to the setups that keep the most of it.
+        order = sorted(
+            self.signals,
+            key=lambda sy: -L.ev_per_margin(self.signals[sy].atr_pct,
+                                            self.exit_name, self.fee,
+                                            self.assumed_win_rate,
+                                            self.max_leverage))
+        for sym in order:
             if sym in self.open:
                 continue
             sig = self.signals.get(sym)
@@ -717,6 +753,9 @@ class Broker:
             "committed_margin": committed, "free_margin": equity - committed,
             "margin_used_pct": (100 * committed / eq_open) if eq_open > 0 else 0.0,
             "slice_size": self.slice_size(),
+            "margin_cap_pct": (100 * self.max_notional_x / avg_lev
+                               if self.max_notional_x and avg_lev else 100.0),
+            "potential_sizing": self.potential_sizing,
             "notional": notional, "avg_leverage": avg_lev,
             "exposure_x": (notional / eq_open) if eq_open > 0 else 0.0,
             "max_notional_x": self.max_notional_x,
@@ -836,10 +875,17 @@ def print_dashboard(s: dict) -> None:
           f"   cash ${s['equity']:.4f}"
           f"   equity+open ${s['equity_incl_open']:.4f}"
           f"   peak ${s['peak_equity']:.4f}")
+    cap = s["margin_cap_pct"]
+    binding = ("exposure ceiling" if s["margin_used_pct"] >= cap - 2
+               else "free margin")
     print(f"  MARGIN    committed ${s['committed_margin']:.4f}"
           f"   free ${s['free_margin']:.4f}"
-          f"   used {s['margin_used_pct']:.1f}%"
-          f"   per trade ${s['slice_size']:.4f}")
+          f"   used {s['margin_used_pct']:.1f}% of a {cap:.0f}% cap"
+          f"   -> {binding} binds")
+    print(f"            base slice ${s['slice_size']:.4f}"
+          + (f", scaled {L.MARGIN_WEIGHT_MIN:.2f}-{L.MARGIN_WEIGHT_MAX:.2f}x "
+             "by each trade's return per $ of margin"
+             if s["potential_sizing"] else ", flat for every trade"))
     ceiling = (f"   ceiling {s['max_notional_x']:.0f}x"
                f" (${s['notional_headroom']:.2f} left)"
                if s["max_notional_x"] else "   ceiling off")
@@ -1002,11 +1048,12 @@ def run(client, symbols: list[str], equity: float, max_positions: int,
         conviction_floor: float = L.CONVICTION_FLOOR,
         expectancy_gate: bool = True,
         assumed_win_rate: float | None = None,
-        signal_source: str = "methods") -> None:
+        signal_source: str = "methods",
+        potential_sizing: bool = True) -> None:
     broker = Broker(client, symbols, equity, max_positions, exit_name,
                     min_votes, fee, max_leverage, margin_pct, max_notional_x,
                     conviction_floor, expectancy_gate, assumed_win_rate,
-                    signal_source)
+                    signal_source, potential_sizing)
     stop_event = threading.Event()
 
     def stop(signum, frame):

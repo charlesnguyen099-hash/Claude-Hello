@@ -81,7 +81,7 @@ def broker_for(symbols, client, **kw):
     opts = dict(equity=10.0, max_positions=0, exit_name=L.DEFAULT_EXIT,
                 min_votes=1, fee=L.FEE_ROUND_TRIP, max_leverage=None,
                 margin_pct=0.10, max_notional_x=0.0, conviction_floor=1.0,
-                expectancy_gate=False)
+                expectancy_gate=False, potential_sizing=False)
     opts.update(kw)
     return B.Broker(client, symbols, **opts)
 
@@ -660,6 +660,96 @@ def test_expectancy_gate():
     check("the gate can be switched off", b3.try_open("S0USDT") is True)
 
 
+def test_margin_scales_with_potential():
+    """A flat slice hands the same capital to a setup returning -8% per
+    dollar of margin and one returning +2%."""
+    print("\nmargin follows the trade's return per dollar of margin")
+    fee = L.TAKER_ROUND_TRIP
+    lows = [L.ev_per_margin(a, L.DEFAULT_EXIT, fee) for a in (0.2, 0.3, 0.4)]
+    highs = [L.ev_per_margin(a, L.DEFAULT_EXIT, fee) for a in (1.0, 1.5, 2.0)]
+    check("EV per margin rises with ATR", max(lows) < min(highs),
+          f"low {max(lows):.4f} high {min(highs):.4f}")
+    check("it spans a wide range", min(highs) - min(lows) > 0.05,
+          f"{min(lows):.4f} .. {max(highs):.4f}")
+    check("win and loss per margin are constant, only the fee moves",
+          abs(L.ev_per_margin(0.4, L.DEFAULT_EXIT, 0.0)
+              - L.ev_per_margin(1.0, L.DEFAULT_EXIT, 0.0)) < 0.02,
+          "at zero fee the ATR should barely matter")
+
+    w_low = L.margin_weight(0.30, fee)
+    w_mid = L.margin_weight(0.40, fee)
+    w_high = L.margin_weight(1.50, fee)
+    check("a fee-heavy setup gets less than the base slice", w_low < 1.0,
+          f"{w_low:.2f}")
+    check("a median setup gets about the base slice",
+          0.9 < w_mid < 1.1, f"{w_mid:.2f}")
+    check("a fee-light setup gets more", w_high > 1.5, f"{w_high:.2f}")
+    check("and it is bounded both ways",
+          L.MARGIN_WEIGHT_MIN <= L.margin_weight(0.05, fee)
+          and L.margin_weight(50.0, fee) <= L.MARGIN_WEIGHT_MAX)
+
+    # The broker must actually use it.
+    syms = ["LOWUSDT", "HIGHUSDT"]
+    c = FakeHTTP(syms, price=100.0)
+    b = broker_for(syms, c, potential_sizing=True, margin_pct=0.05,
+                   max_notional_x=0.0)
+    b.refresh_prices()
+    bar = B.closed_bar_ts()
+    b.signals["LOWUSDT"] = B.Signal(bar, 1, 0.30, 1, 1, "X")
+    b.signals["HIGHUSDT"] = B.Signal(bar, 1, 1.50, 1, 1, "X")
+    b.try_open("LOWUSDT")
+    b.try_open("HIGHUSDT")
+    check("the better setup is given more margin",
+          b.open["HIGHUSDT"].margin > b.open["LOWUSDT"].margin,
+          f"{b.open['LOWUSDT'].margin:.4f} vs {b.open['HIGHUSDT'].margin:.4f}")
+    ratio = b.open["HIGHUSDT"].margin / b.open["LOWUSDT"].margin
+    flat = _flat_margins(syms)
+    flat_ratio = flat[1] / flat[0]
+    check("by a wide margin", ratio > 2.0, f"{ratio:.2f}x")
+    # Flat sizing is not exactly equal -- the first entry's fee shrinks
+    # equity, so the second slice is a touch smaller. Within a percent.
+    check("flat sizing gives them the same to within the entry fee",
+          0.97 < flat_ratio < 1.0, f"{flat_ratio:.4f}")
+
+
+def _flat_margins(syms):
+    c = FakeHTTP(syms, price=100.0)
+    b = broker_for(syms, c, potential_sizing=False, margin_pct=0.05,
+                   max_notional_x=0.0)
+    b.refresh_prices()
+    bar = B.closed_bar_ts()
+    b.signals[syms[0]] = B.Signal(bar, 1, 0.30, 1, 1, "X")
+    b.signals[syms[1]] = B.Signal(bar, 1, 1.50, 1, 1, "X")
+    b.try_open(syms[0])
+    b.try_open(syms[1])
+    return [b.open[s].margin for s in syms]
+
+
+def test_best_signals_are_filled_first():
+    """The exposure ceiling is the scarce resource; whatever is tried
+    first spends it."""
+    print("\nthe best signals get the budget, not the first to arrive")
+    syms = [f"S{i}USDT" for i in range(12)]
+    c = FakeHTTP(syms, price=100.0)
+    b = broker_for(syms, c, potential_sizing=True, margin_pct=0.05,
+                   max_notional_x=6.0)
+    b.refresh_prices()
+    bar = B.closed_bar_ts()
+    # Worst first in insertion order, so arrival order and quality disagree.
+    atrs = [0.20, 0.22, 0.25, 0.28, 0.30, 0.35, 0.90, 1.10, 1.30, 1.60, 1.90, 2.20]
+    for s, a in zip(syms, atrs):
+        b.signals[s] = B.Signal(bar, 1, a, 1, 1, "X")
+    b.fill_standing()
+    check("something opened", len(b.open) > 0, f"{len(b.open)}")
+    opened_atr = [b.signals[s].atr_pct for s in b.open]
+    rejected = [b.signals[s].atr_pct for s in b.signals if s not in b.open]
+    check("the ceiling bound the book", b.skipped_max_notional > 0,
+          f"{b.skipped_max_notional}")
+    check("what opened beats what did not",
+          min(opened_atr) > max(rejected) - 1e-9,
+          f"opened {sorted(opened_atr)}, rejected {sorted(rejected)}")
+
+
 def test_stale_excludes_open_positions():
     print("\nsymbols already holding a position are not rescored")
     syms = ["S0USDT", "S1USDT"]
@@ -694,6 +784,8 @@ def main() -> int:
                test_leverage_chain_matches_logic,
                test_conviction_is_per_trade_and_only_cuts,
                test_expectancy_gate,
+               test_margin_scales_with_potential,
+               test_best_signals_are_filled_first,
                test_stale_excludes_open_positions,
                test_summary_counts_add_up):
         fn()

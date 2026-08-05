@@ -233,6 +233,71 @@ def expectancy(atr14_pct: float, exit_name: str = DEFAULT_EXIT,
     return p * tp * a - (1.0 - p) * SL_MULTIPLE * a - fee
 
 
+def ev_per_margin(atr14_pct: float, exit_name: str = DEFAULT_EXIT,
+                  fee: float = FEE_ROUND_TRIP, win_rate: float | None = None,
+                  cap: float | None = None) -> float:
+    """Expected return on the MARGIN this trade commits. The real potential.
+
+    expectancy() is per unit of notional, which is not what capital is
+    allocated in. Multiply by leverage and something surprising falls out:
+
+        win  on margin = TP x atr x lev = 84% -- constant
+        loss on margin = SL x atr x lev = 42% -- constant
+        fee  on margin = lev x fee_rate       -- the ONLY term that varies
+
+    The leverage chain is 28/atr, so it cancels the ATR in the payoff
+    exactly. Two trades at different volatility return the same dollars
+    per dollar of margin when they win, and lose the same when they lose.
+    What separates them is the fee, because leverage is high precisely
+    where ATR is low:
+
+        atr 0.30%  ->  93x  ->  fee eats 10.3% of margin  ->  EV -8.04%
+        atr 1.00%  ->  28x  ->  fee eats  3.1% of margin  ->  EV -0.85%
+        atr 2.00%  ->  17x  ->  fee eats  1.9% of margin  ->  EV +0.83%
+
+    So a trade's potential, measured in the unit capital is actually
+    allocated in, spans a factor of ten and is driven by one thing: how
+    much of the margin the fee takes. Sizing every trade the same ignores
+    all of it.
+    """
+    chain = leverage_potential(atr14_pct, cap)
+    if not chain["tradeable"]:
+        return float("-inf")
+    return chain["leverage"] * expectancy(atr14_pct, exit_name, fee, win_rate)
+
+
+# Fee burden on margin at a median-volatility setup, the anchor for
+# weighting. At atr 0.40% the chain gives 70x, so taker fees take 7.7%.
+FEE_BURDEN_REFERENCE = 0.077
+MARGIN_WEIGHT_MIN, MARGIN_WEIGHT_MAX = 0.40, 2.50
+
+
+def margin_weight(atr14_pct: float, fee: float = FEE_ROUND_TRIP,
+                  cap: float | None = None) -> float:
+    """How much margin this trade deserves, relative to the base slice.
+
+    Capital goes where the fee eats least of it. The weight is the fee
+    burden at a median setup divided by this trade's own burden, bounded
+    so no single trade can dominate the book:
+
+        atr 0.30%  ->  0.75x the base slice
+        atr 0.40%  ->  1.00x
+        atr 1.00%  ->  2.50x (bounded)
+
+    Bounded rather than proportional because the ranking is reliable but
+    its magnitude is not -- the win rate it rests on is measured, not
+    guaranteed, and an unbounded weight would put the account on one bet.
+    """
+    chain = leverage_potential(atr14_pct, cap)
+    if not chain["tradeable"]:
+        return 0.0
+    burden = chain["leverage"] * fee
+    if burden <= 0:
+        return MARGIN_WEIGHT_MAX
+    return float(np.clip(FEE_BURDEN_REFERENCE / burden,
+                         MARGIN_WEIGHT_MIN, MARGIN_WEIGHT_MAX))
+
+
 def min_atr_for_edge(exit_name: str = DEFAULT_EXIT, fee: float = FEE_ROUND_TRIP,
                      win_rate: float | None = None) -> float:
     """Smallest atr14_pct at which expectancy() turns positive.

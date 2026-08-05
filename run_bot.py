@@ -141,23 +141,17 @@ def main() -> int:
     p.add_argument("--max-leverage", type=float, default=None,
                    help="cap the potential-scaled leverage (default: no cap, "
                         "so the file's own 17-100x band is used as written)")
-    p.add_argument("--entry", default="taker", choices=["maker", "taker"],
-                   help="how the position is OPENED: maker 0.020%% (a resting "
-                        "limit order, which may not fill) or taker 0.055%% (a "
-                        "market order). The EXIT is always taker 0.055%% -- "
-                        "TP and SL are conditional market orders and cannot "
-                        "earn the maker rate")
-    p.add_argument("--funding-rate", type=float, default=L.FUNDING_RATE_TYPICAL,
-                   help="funding charged every 8h on notional (default "
-                        f"{L.FUNDING_RATE_TYPICAL:.4f} = 0.010%%; a strong "
-                        "trend pays 0.100%%). A TP3.0 trade lasts 7.11h on "
-                        "average, so it meets 0.89 of these")
+    p.add_argument("--limit-entry", action="store_true",
+                   help="assume the entry rests as a limit order and earns "
+                        "the 0.020%% maker rate instead of paying 0.055%% "
+                        "taker. Off by default because the bot sends market "
+                        "orders, and a resting order may simply not fill. "
+                        "The EXIT is taker either way -- TP and SL are "
+                        "conditional market orders")
     p.add_argument("--slippage", type=float, default=0.0,
                    help="extra cost per side, as a fraction (0.0005 = 0.05%%). "
                         "Zero by default: ~$15 of notional does not move the "
                         "BTCUSDT spread")
-    p.add_argument("--maker-fee", action="store_true",
-                   help="shorthand for --entry maker")
     p.add_argument("--poll-seconds", type=int, default=5,
                    help="seconds between dashboard reprints (default 5). "
                         "Scanning and position management are continuous "
@@ -175,8 +169,12 @@ def main() -> int:
     from fp import methods as M
 
     client = HTTP(testnet=args.testnet)
-    cost = L.round_trip_cost(args.exit, args.maker_fee or args.entry == "maker",
-                             args.funding_rate, args.slippage)
+    # Real costs, taken from the exchange. Entry and exit are both taker
+    # unless --limit-entry, and funding is each symbol's own live rate
+    # pulled from the ticker feed at trade time -- there is nothing to
+    # choose here, and nothing to guess.
+    cost = L.round_trip_cost(args.exit, args.limit_entry,
+                             L.FUNDING_RATE_TYPICAL, args.slippage)
     fee = cost["total"]
 
     if args.symbols:
@@ -247,13 +245,16 @@ def main() -> int:
     print(f"  Min votes to open: {args.min_votes} (and they must agree)")
     print(f"  Exit strategy    : {args.exit} (fixed at entry)")
     print(f"  Leverage         : {lev_note}")
-    entry_kind = "maker (resting limit)" if (args.maker_fee or args.entry == "maker") else "taker (market)"
+    entry_kind = "maker (resting limit)" if args.limit_entry else "taker (market order)"
     print(f"  Cost per round trip: {fee*100:.3f}% of notional -- everything")
     print(f"    entry   {cost['entry']*100:.3f}%  {entry_kind}")
     print(f"    exit    {cost['exit']*100:.3f}%  taker -- TP/SL are market orders,")
     print(f"                     they cannot earn the maker rate")
     print(f"    funding {cost['funding']*100:.4f}%  {cost['funding_events']:.2f} "
           f"charges over a {cost['hold_hours']:.2f}h average hold")
+    print(f"                     -- but the LIVE per-symbol rate off the ticker")
+    print(f"                     feed is what each trade is actually charged,")
+    print(f"                     signed: a short COLLECTS positive funding")
     print(f"  Price source     : Bybit {'TESTNET' if args.testnet else 'MAINNET'} "
           f"public API (no key, no orders)")
     print("=" * 70)
@@ -343,7 +344,7 @@ def main() -> int:
               args.conviction_floor, not args.no_expectancy_gate,
               args.assumed_win_rate, args.signals, not args.flat_sizing,
               "flat" if args.flat_sizing else args.sizing,
-              args.max_margin_pct / 100.0)
+              args.max_margin_pct / 100.0, args.limit_entry, args.slippage)
     except KeyboardInterrupt:
         pass
     except Exception as exc:

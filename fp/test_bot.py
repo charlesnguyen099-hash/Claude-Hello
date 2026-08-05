@@ -55,8 +55,9 @@ def make_rows(n=400, base=100.0, drift=0.0, seed=0, newest_bar=None):
 
 
 class FakeHTTP:
-    def __init__(self, symbols, price=100.0, newest_bar=None):
+    def __init__(self, symbols, price=100.0, newest_bar=None, funding=0.0001):
         self.symbols = symbols
+        self.funding = funding
         self.rows = {s: make_rows(seed=i, base=price, newest_bar=newest_bar)
                      for i, s in enumerate(symbols)}
         self.last = dict.fromkeys(symbols, price)
@@ -73,7 +74,9 @@ class FakeHTTP:
             return {"result": {"list": [{"symbol": symbol,
                                          "lastPrice": str(self.last[symbol])}]}}
         return {"result": {"list": [{"symbol": s, "lastPrice": str(p),
-                                     "turnover24h": "1000"}
+                                     "turnover24h": "1000",
+                                     "fundingRate": str(self.funding),
+                                     "nextFundingTime": "0"}
                                     for s, p in self.last.items()]}}
 
 
@@ -868,6 +871,64 @@ def test_full_cost_model():
     check("a big-ATR trade clears them", b.try_open("S0USDT") is True)
 
 
+def test_real_costs_come_from_the_exchange():
+    """No fee to choose: taker both sides, and the symbol's own live
+    funding rate, signed."""
+    print("\ncosts are taken from the exchange, not from a flag")
+    syms = ["S0USDT"]
+    c = FakeHTTP(syms, price=100.0, funding=0.0002)
+    b = broker_for(syms, c, sizing="flat")
+    b.refresh_prices()
+    check("the funding rate is read off the ticker feed",
+          abs(b.funding["S0USDT"] - 0.0002) < 1e-12, str(b.funding))
+
+    long_cost = b.trade_cost("S0USDT", 1)
+    short_cost = b.trade_cost("S0USDT", -1)
+    taker = L.ENTRY_FEE_TAKER + L.EXIT_FEE_TAKER
+    check("both sides are taker by default",
+          abs((long_cost + short_cost) / 2 - taker) < 1e-9,
+          f"{100*(long_cost+short_cost)/2:.4f}% vs {100*taker:.4f}%")
+    check("a long PAYS positive funding", long_cost > taker,
+          f"{100*long_cost:.4f}%")
+    check("a short COLLECTS it", short_cost < taker, f"{100*short_cost:.4f}%")
+
+    # Negative funding flips who pays.
+    c2 = FakeHTTP(syms, price=100.0, funding=-0.0002)
+    b2 = broker_for(syms, c2, sizing="flat")
+    b2.refresh_prices()
+    check("negative funding reverses that",
+          b2.trade_cost("S0USDT", 1) < b2.trade_cost("S0USDT", -1))
+
+    # A limit entry saves only the entry side.
+    b3 = broker_for(syms, FakeHTTP(syms, funding=0.0), sizing="flat",
+                    limit_entry=True)
+    b3.refresh_prices()
+    saved = taker - b3.trade_cost("S0USDT", 1)
+    check("a limit entry saves the entry side only",
+          abs(saved - (L.ENTRY_FEE_TAKER - L.ENTRY_FEE_MAKER)) < 1e-9,
+          f"saved {100*saved:.4f}%")
+    check("the exit is still taker",
+          b3.trade_cost("S0USDT", 1) >= L.EXIT_FEE_TAKER)
+
+    # Slippage is charged on both sides.
+    b4 = broker_for(syms, FakeHTTP(syms, funding=0.0), sizing="flat",
+                    slippage=0.0005)
+    b4.refresh_prices()
+    check("slippage is charged twice",
+          abs(b4.trade_cost("S0USDT", 1) - taker - 0.001) < 1e-9,
+          f"{100*(b4.trade_cost('S0USDT',1)-taker):.4f}%")
+
+    # An expensive symbol should be rejected where a cheap one is taken.
+    hi = FakeHTTP(["XUSDT"], price=100.0, funding=0.01)   # 1% per 8h, extreme
+    bh = broker_for(["XUSDT"], hi, sizing="flat", expectancy_gate=True)
+    bh.refresh_prices()
+    bh.signals["XUSDT"] = B.Signal(B.closed_bar_ts(), 1, 2.0, 1, 1, "X")
+    check("extreme funding blocks the long", bh.try_open("XUSDT") is False)
+    bh.signals["XUSDT"] = B.Signal(B.closed_bar_ts(), -1, 2.0, 1, 1, "X")
+    check("while the short is paid to take it",
+          bh.try_open("XUSDT") is True)
+
+
 def test_stale_excludes_open_positions():
     print("\nsymbols already holding a position are not rescored")
     syms = ["S0USDT", "S1USDT"]
@@ -906,6 +967,7 @@ def main() -> int:
                test_best_signals_are_filled_first,
                test_kelly_stakes_by_certainty,
                test_full_cost_model,
+               test_real_costs_come_from_the_exchange,
                test_stale_excludes_open_positions,
                test_summary_counts_add_up):
         fn()

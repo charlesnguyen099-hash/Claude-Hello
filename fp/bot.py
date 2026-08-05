@@ -168,7 +168,9 @@ class Broker:
                  signal_source: str = "methods",
                  potential_sizing: bool = True,
                  sizing: str = "kelly",
-                 max_margin_pct: float = L.MAX_MARGIN_FRACTION):
+                 max_margin_pct: float = L.MAX_MARGIN_FRACTION,
+                 limit_entry: bool = False, slippage: float = 0.0,
+                 fee_override: float | None = None):
         self.client = client
         self.symbols = symbols
         self.equity = equity
@@ -207,6 +209,11 @@ class Broker:
         # "flat"      - the same slice for every trade.
         self.sizing = sizing
         self.max_margin_pct = max_margin_pct
+        # Real costs, no choosing: market in, market out, and each
+        # symbol's live funding rate straight off the ticker feed.
+        self.limit_entry = limit_entry
+        self.slippage = slippage
+        self.fee_override = fee_override
         self.library = None
         self.bar_minutes = L.BAR_MINUTES
         if signal_source == "patterns":
@@ -249,6 +256,10 @@ class Broker:
 
         # Whole-board ticker snapshot, refreshed by the manager thread and
         # read by everything else, so no thread makes its own price call.
+        # The same call already carries each symbol's REAL funding rate, so
+        # the cost of a trade is the exchange's own number, not a guess.
+        self.funding: dict[str, float] = {}
+        self.next_funding: dict[str, int] = {}
         self.prices: dict[str, float] = {}
         self.prices_at = 0.0
         # Scanning, management and reporting run on separate threads and
@@ -293,7 +304,8 @@ class Broker:
             return self.equity_total - sum(p.margin for p in self.open.values())
 
     def slice_size(self, atr_pct: float | None = None,
-                   p_win: float | None = None) -> float:
+                   p_win: float | None = None,
+                   fee: float | None = None) -> float:
         """Margin this trade commits.
 
         Under Kelly the answer does not start from a fixed slice at all:
@@ -303,14 +315,15 @@ class Broker:
         nothing, because at that rate there is no edge to bet.
         """
         eq = max(0.0, self.equity_total)
+        fee = self.fee if fee is None else fee
         if self.sizing == "kelly" and atr_pct is not None:
-            f = L.kelly_fraction(atr_pct, self.exit_name, self.fee, p_win,
+            f = L.kelly_fraction(atr_pct, self.exit_name, fee, p_win,
                                  self.max_leverage)
             return eq * min(f, self.max_margin_pct)
         base = eq * self.margin_pct
         if atr_pct is None or self.sizing == "flat":
             return base
-        return base * L.margin_weight(atr_pct, self.fee, self.max_leverage)
+        return base * L.margin_weight(atr_pct, fee, self.max_leverage)
 
     def notional_headroom(self) -> float:
         """How much more notional the exposure ceiling still allows."""
@@ -371,16 +384,27 @@ class Broker:
         except Exception:
             logger.debug("whole-board ticker fetch failed", exc_info=True)
             return 0
-        snap = {}
+        snap, fund, nxt = {}, {}, {}
         for r in rows:
             try:
                 p = float(r["lastPrice"])
             except (TypeError, ValueError, KeyError):
                 continue
-            if p > 0:
-                snap[r["symbol"]] = p
+            if p <= 0:
+                continue
+            snap[r["symbol"]] = p
+            try:
+                fund[r["symbol"]] = float(r.get("fundingRate") or 0.0)
+            except (TypeError, ValueError):
+                fund[r["symbol"]] = 0.0
+            try:
+                nxt[r["symbol"]] = int(r.get("nextFundingTime") or 0)
+            except (TypeError, ValueError):
+                nxt[r["symbol"]] = 0
         if snap:
             self.prices = snap
+            self.funding = fund
+            self.next_funding = nxt
             self.prices_at = time.time()
         return len(snap)
 
@@ -520,6 +544,28 @@ class Broker:
         return [s for s in self.symbols
                 if s not in self.open and self.evaluated_bar.get(s, -1) < want]
 
+    def trade_cost(self, symbol: str, direction: int) -> float:
+        """What THIS trade will really cost, as a fraction of notional.
+
+        Taker in and taker out, because the bot sends market orders and a
+        TP/SL is a market order either way, plus the symbol's own funding
+        rate as Bybit is publishing it right now.
+
+        Funding is signed. A positive rate means longs pay shorts, so a
+        short collects it -- for that side it is a rebate, not a cost, and
+        pretending otherwise would reject trades that are actually cheaper
+        than average.
+        """
+        if self.fee_override is not None:
+            return self.fee_override
+        base = L.ENTRY_FEE_TAKER + L.EXIT_FEE_TAKER + 2 * self.slippage
+        if self.limit_entry:
+            base = L.ENTRY_FEE_MAKER + L.EXIT_FEE_TAKER + 2 * self.slippage
+        rate = self.funding.get(symbol, L.FUNDING_RATE_TYPICAL)
+        events = L.EXPECTED_HOLD_HOURS.get(self.exit_name,
+                                           5.0) / L.FUNDING_INTERVAL_HOURS
+        return base + direction * rate * events
+
     # ----------------------------------------------------------------- entry
 
     def try_open(self, symbol: str) -> bool:
@@ -538,7 +584,8 @@ class Broker:
 
         # Expectancy first: it costs nothing and it is the only test that
         # can tell this trade is not worth taking at all.
-        ev = L.expectancy(sig.atr_pct, self.exit_name, self.fee,
+        fee = self.trade_cost(symbol, sig.direction)
+        ev = L.expectancy(sig.atr_pct, self.exit_name, fee,
                           self.assumed_win_rate)
         if self.expectancy_gate and ev <= 0:
             self.skipped_negative_ev += 1
@@ -569,7 +616,7 @@ class Broker:
             if self.max_positions and len(self.open) >= self.max_positions:
                 self.skipped_no_margin += 1
                 return False
-            margin = self.slice_size(sig.atr_pct, sig.p_win)
+            margin = self.slice_size(sig.atr_pct, sig.p_win, fee)
             if margin <= 0 or self.free_margin < margin:
                 self.skipped_no_margin += 1
                 return False
@@ -734,7 +781,7 @@ class Broker:
                 # The margin is gone; the exit fee comes out of it, not on top.
                 pnl = -pos.margin
             else:
-                exit_fee = pos.qty * price * self.fee / 2
+                exit_fee = pos.qty * price * (L.EXIT_FEE_TAKER + self.slippage)
                 pnl = move * pos.qty * pos.entry - exit_fee
                 self.fees_paid += exit_fee
             self.equity += pnl
@@ -821,6 +868,12 @@ class Broker:
             "skipped_max_notional": self.skipped_max_notional,
             "skipped_unsolvent": self.skipped_unsolvent,
             "skipped_negative_ev": self.skipped_negative_ev,
+            "live_funding": (float(np.median(list(self.funding.values())))
+                             if self.funding else 0.0),
+            "cost_long": (L.ENTRY_FEE_TAKER + L.EXIT_FEE_TAKER
+                          + float(np.median(list(self.funding.values())) or 0.0)
+                          * L.EXPECTED_HOLD_HOURS.get(self.exit_name, 5.0)
+                          / L.FUNDING_INTERVAL_HOURS) if self.funding else 0.0,
             "min_atr_for_edge": L.min_atr_for_edge(self.exit_name, self.fee,
                                                    self.assumed_win_rate),
             "blocked_by": dict(self.blocked_by),
@@ -955,8 +1008,11 @@ def print_dashboard(s: dict) -> None:
     print(f"  BLOCKED   this pass: margin {bb['margin']}"
           f"   exposure ceiling {bb['exposure']}"
           f"   stop past liquidation {bb['unsolvent']}")
+    print(f"  COST      taker in+out {100*(L.ENTRY_FEE_TAKER+L.EXIT_FEE_TAKER):.3f}%"
+          f"   live funding median {100*s['live_funding']:+.4f}%/8h"
+          f"   -> a long costs {100*s['cost_long']:.3f}% round trip")
     print(f"  EDGE      negative-expectancy skips {s['skipped_negative_ev']:,}"
-          f"   (needs atr14 >= {s['min_atr_for_edge']:.3f}% at this fee)")
+          f"   (needs atr14 >= {s['min_atr_for_edge']:.3f}% at this cost)")
     print(f"  SCAN      fill pass #{s['passes']:,}"
           f"   bar refreshes {s['refreshes']:,} (last {s['last_refresh_seconds']:.1f}s)"
           f"   universe {s['universe']}"
@@ -1091,11 +1147,14 @@ def run(client, symbols: list[str], equity: float, max_positions: int,
         assumed_win_rate: float | None = None,
         signal_source: str = "methods",
         potential_sizing: bool = True, sizing: str = "kelly",
-        max_margin_pct: float = L.MAX_MARGIN_FRACTION) -> None:
+        max_margin_pct: float = L.MAX_MARGIN_FRACTION,
+        limit_entry: bool = False, slippage: float = 0.0,
+        fee_override: float | None = None) -> None:
     broker = Broker(client, symbols, equity, max_positions, exit_name,
                     min_votes, fee, max_leverage, margin_pct, max_notional_x,
                     conviction_floor, expectancy_gate, assumed_win_rate,
-                    signal_source, potential_sizing, sizing, max_margin_pct)
+                    signal_source, potential_sizing, sizing, max_margin_pct,
+                    limit_entry, slippage, fee_override)
     stop_event = threading.Event()
 
     def stop(signum, frame):

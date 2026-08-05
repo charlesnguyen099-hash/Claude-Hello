@@ -1,2 +1,3 @@
 __pycache__/
 *.pyc
+.wf_cache.pkl

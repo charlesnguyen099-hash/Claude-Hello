@@ -87,8 +87,16 @@ def main() -> int:
     p.add_argument("--max-positions", type=int, default=0,
                    help="cap concurrent positions (default 0 = no cap; "
                         "free margin is the limit)")
-    p.add_argument("--margin-pct", type=float, default=10.0,
-                   help="percent of equity committed per trade (default 10)")
+    p.add_argument("--margin-pct", type=float, default=5.0,
+                   help="percent of equity committed per trade (default 5). "
+                        "At the file's leverage a trade that hits its stop "
+                        "costs ~42%% of its margin, so this is ~2.1%% of the "
+                        "account per trade")
+    p.add_argument("--max-notional-x", type=float, default=10.0,
+                   help="ceiling on total position value as a multiple of "
+                        "equity (default 10; 0 disables). This is the only "
+                        "bound on correlated risk -- crypto moves together, "
+                        "so a full book is one bet, not many")
     p.add_argument("--min-votes", type=int, default=1,
                    help="methods that must fire and agree before a trade")
     p.add_argument("--exit", default=L.DEFAULT_EXIT, choices=L.EXIT_STRATEGIES,
@@ -142,7 +150,13 @@ def main() -> int:
              else str(args.max_positions)))
     print(f"  Margin per trade : {args.margin_pct:.1f}% of equity "
           f"(${args.equity * args.margin_pct / 100:.2f} at the start, "
-          f"~{int(100 / args.margin_pct)} positions max)")
+          f"~{int(100 / args.margin_pct) - 1} positions max)")
+    print(f"  Risk per trade   : ~{args.margin_pct * 0.42:.2f}% of the account "
+          f"(a stop costs ~42% of the trade's margin)")
+    print(f"  Exposure ceiling : "
+          + ("off -- total position value is unbounded" if not args.max_notional_x
+             else f"{args.max_notional_x:.0f}x equity "
+                  f"(${args.equity * args.max_notional_x:.2f} at the start)"))
     print(f"  Methods          : {len(M.METHOD_NAMES)} voting on 30m bars")
     print(f"  Min votes to open: {args.min_votes} (and they must agree)")
     print(f"  Exit strategy    : {args.exit} (fixed at entry)")
@@ -158,6 +172,13 @@ def main() -> int:
     print("  Leverage = min(lev_base x (potential_score + 0.5), lev_base),")
     print("  with lev_base = 28/atr14_pct clipped to 17-100x. The multiplier")
     print("  can only cut leverage, never raise it above what the stop allows.")
+    print()
+    print("  One further bound, also computed from ATR: leverage is held")
+    print("  below 0.9 / (1.3 x 1.5 x atr14_pct), the point where the stop")
+    print("  would sit past the liquidation price. Through the normal range")
+    print("  it never binds -- only above ~2.7% ATR, where the 17x floor")
+    print("  would otherwise make the trade die at 100% of margin instead")
+    print("  of the 42% its stop was sized for.")
     print()
     print("  Direction comes from the methods' consensus. The file's own")
     print("  final_direction column agrees with that consensus 50.4% of the")
@@ -180,7 +201,7 @@ def main() -> int:
     try:
         B.run(client, symbols, args.equity, args.max_positions, args.exit,
               args.min_votes, args.poll_seconds, args.trades_csv, fee,
-              args.max_leverage, args.margin_pct / 100.0)
+              args.max_leverage, args.margin_pct / 100.0, args.max_notional_x)
     except KeyboardInterrupt:
         pass
     except Exception as exc:

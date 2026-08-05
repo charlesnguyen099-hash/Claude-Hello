@@ -140,7 +140,7 @@ class Broker:
     def __init__(self, client, symbols: list[str], equity: float,
                  max_positions: int, exit_name: str, min_votes: int,
                  fee: float = L.FEE_ROUND_TRIP, max_leverage: float | None = None,
-                 margin_pct: float = 0.10):
+                 margin_pct: float = 0.05, max_notional_x: float = 10.0):
         self.client = client
         self.symbols = symbols
         self.equity = equity
@@ -151,6 +151,11 @@ class Broker:
         # limits it then is free margin, which is the real constraint.
         self.max_positions = max_positions
         self.margin_pct = margin_pct
+        # Ceiling on total notional as a multiple of equity. Per-trade
+        # limits do not bound this: nine positions each risking a modest
+        # slice still put ~25x the account into the market, and crypto
+        # moves together, so they are one bet, not nine. 0 disables it.
+        self.max_notional_x = max_notional_x
         self.exit_name = exit_name
         self.min_votes = min_votes
         self.fee = fee
@@ -172,7 +177,11 @@ class Broker:
         self.evaluations = 0
         self.no_signal = 0
         self.skipped_no_margin = 0
+        self.skipped_max_notional = 0
+        self.skipped_unsolvent = 0
         self.blocked_signals = 0
+        self.blocked_by: dict[str, int] = {"margin": 0, "exposure": 0,
+                                           "unsolvent": 0}
         self.fees_paid = 0.0
         self.passes = 0
         self.refreshes = 0
@@ -199,19 +208,60 @@ class Broker:
             return sum(p.margin for p in self.open.values())
 
     @property
+    def notional(self) -> float:
+        with self.lock:
+            return sum(p.margin * p.leverage for p in self.open.values())
+
+    @property
+    def equity_total(self) -> float:
+        """Cash plus open P&L -- what the account is really worth now.
+
+        Sizing and free margin both key off this rather than off cash. A
+        real cross-margin account works this way, and the difference is
+        not cosmetic: with cash-only accounting the bot kept opening at
+        full size while its open book was 25% underwater, because losses
+        it had not yet realised were invisible to it.
+        """
+        with self.lock:
+            total = self.equity
+            for p in self.open.values():
+                price = self.prices.get(p.symbol) or p.entry
+                total += (price - p.entry) / p.entry * p.direction * p.qty * p.entry
+            return total
+
+    @property
     def free_margin(self) -> float:
         with self.lock:
-            return self.equity - sum(p.margin for p in self.open.values())
+            return self.equity_total - sum(p.margin for p in self.open.values())
 
     def slice_size(self) -> float:
         """Margin one trade commits: a fixed slice of current equity."""
-        return self.equity * self.margin_pct
+        return max(0.0, self.equity_total) * self.margin_pct
+
+    def notional_headroom(self) -> float:
+        """How much more notional the exposure ceiling still allows."""
+        if not self.max_notional_x:
+            return float("inf")
+        return max(0.0, self.equity_total * self.max_notional_x - self.notional)
+
+    def mark(self) -> float:
+        """Mark to market: update the peak and the drawdown off total
+        equity, not cash. A drawdown that happens while positions are
+        still open is a real drawdown, and cash-only accounting missed
+        every one of them."""
+        with self.lock:
+            total = self.equity_total
+            self.peak_equity = max(self.peak_equity, total)
+            self.max_drawdown = max(self.max_drawdown, self.peak_equity - total)
+            return total
 
     def has_room(self) -> bool:
         with self.lock:
             if self.max_positions and len(self.open) >= self.max_positions:
                 return False
-            return self.free_margin >= self.slice_size()
+            if self.notional_headroom() <= 0:
+                return False
+            return self.free_margin >= self.slice_size() > 0
 
     # ---------------------------------------------------------------- market
 
@@ -374,6 +424,10 @@ class Broker:
         d = sig.direction
         atr = sig.atr_pct / 100.0 * price
         chain = L.leverage_potential(sig.atr_pct, self.max_leverage)
+        if not chain["tradeable"]:
+            # Even 1x cannot keep the stop inside the liquidation price.
+            self.skipped_unsolvent += 1
+            return False
         lev = chain["leverage"]
         tp_mult = L.TP_MULTIPLES.get(self.exit_name)
 
@@ -393,6 +447,12 @@ class Broker:
                 self.skipped_no_margin += 1
                 return False
             notional = margin * lev
+            # The exposure ceiling is the only thing bounding correlated
+            # risk: nine uncorrelated-looking positions in crypto are one
+            # bet, and per-trade sizing cannot see that.
+            if notional > self.notional_headroom():
+                self.skipped_max_notional += 1
+                return False
             entry_fee = notional * self.fee / 2
             self.equity -= entry_fee
             self.fees_paid += entry_fee
@@ -427,6 +487,11 @@ class Broker:
         raised while the book was full is taken the moment a slot frees.
         """
         opened, waiting = 0, 0
+        # Per-pass reason gauges. The cumulative counters keep rising every
+        # pass a signal stays blocked, which says nothing useful on a live
+        # screen -- what matters is why the CURRENT waiting set is waiting.
+        before = (self.skipped_no_margin, self.skipped_max_notional,
+                  self.skipped_unsolvent)
         for sym in list(self.signals):
             if sym in self.open:
                 continue
@@ -444,6 +509,11 @@ class Broker:
             except Exception:
                 logger.debug("entry failed for %s", sym, exc_info=True)
         self.blocked_signals = waiting
+        self.blocked_by = {
+            "margin": self.skipped_no_margin - before[0],
+            "exposure": self.skipped_max_notional - before[1],
+            "unsolvent": self.skipped_unsolvent - before[2],
+        }
         return opened, waiting
 
     # ------------------------------------------------------------------ exit
@@ -492,6 +562,7 @@ class Broker:
                 self.manage(sym, self.prices.get(sym))
             except Exception:
                 logger.debug("manage failed for %s", sym, exc_info=True)
+        self.mark()
 
     def _close(self, symbol: str, price: float, reason: str) -> None:
         with self.lock:
@@ -507,15 +578,13 @@ class Broker:
                 pnl = move * pos.qty * pos.entry - exit_fee
                 self.fees_paid += exit_fee
             self.equity += pnl
-            self.peak_equity = max(self.peak_equity, self.equity)
-            self.max_drawdown = max(self.max_drawdown,
-                                    self.peak_equity - self.equity)
             self.closed.append(Closed(
                 symbol=symbol, direction=pos.direction, entry=pos.entry,
                 exit_price=price, opened_at=pos.opened_at,
                 closed_at=pd.Timestamp.now(tz="UTC"), reason=reason, pnl_usd=pnl,
                 return_pct_leveraged=100 * move * pos.leverage,
                 methods=pos.methods))
+        self.mark()
         logger.info("%s CLOSE %s @%.6f (%s) pnl=$%.4f equity=$%.4f",
                     symbol, "LONG" if pos.direction > 0 else "SHORT",
                     price, reason, pnl, self.equity)
@@ -563,10 +632,12 @@ class Broker:
             "realized": gp + gl, "gross_profit": gp, "gross_loss": gl,
             "unrealized": unreal, "fees_paid": self.fees_paid,
             "committed_margin": committed, "free_margin": equity - committed,
-            "margin_used_pct": (100 * committed / equity) if equity else 0.0,
+            "margin_used_pct": (100 * committed / eq_open) if eq_open > 0 else 0.0,
             "slice_size": self.slice_size(),
             "notional": notional, "avg_leverage": avg_lev,
             "exposure_x": (notional / eq_open) if eq_open > 0 else 0.0,
+            "max_notional_x": self.max_notional_x,
+            "notional_headroom": self.notional_headroom(),
             "max_drawdown": self.max_drawdown, "peak_equity": self.peak_equity,
             "open": n_open, "open_wins": ow, "open_losses": ol,
             "open_profit": sum(r[4] for r in rows if r[4] > 0),
@@ -584,6 +655,9 @@ class Broker:
             "last_refresh_seconds": self.last_refresh_seconds,
             "evaluations": self.evaluations, "no_signal": self.no_signal,
             "skipped_no_margin": self.skipped_no_margin,
+            "skipped_max_notional": self.skipped_max_notional,
+            "skipped_unsolvent": self.skipped_unsolvent,
+            "blocked_by": dict(self.blocked_by),
             "standing_signals": standing, "blocked_signals": self.blocked_signals,
             "stale": len(self.stale_symbols()), "kline_calls": self.kline_calls,
             "universe": len(self.symbols),
@@ -600,6 +674,8 @@ class Broker:
         gp, gl = sum(t.pnl_usd for t in wins), sum(t.pnl_usd for t in losses)
         op = sum(r[4] for r in rows if r[4] > 0)
         olo = sum(r[4] for r in rows if r[4] <= 0)
+        eq_total = self.equity + unreal
+        exposure = (self.notional / eq_total) if eq_total > 0 else 0.0
         return {
             "closed": len(self.closed), "closed_wins": len(wins),
             "closed_losses": len(losses),
@@ -621,6 +697,9 @@ class Broker:
             "peak_equity": self.peak_equity,
             "evaluations": self.evaluations, "no_signal": self.no_signal,
             "skipped_no_margin": self.skipped_no_margin,
+            "skipped_max_notional": self.skipped_max_notional,
+            "skipped_unsolvent": self.skipped_unsolvent,
+            "notional": self.notional, "exposure_x": exposure,
             "standing_signals": len(self.signals),
             "blocked_signals": self.blocked_signals,
             "passes": self.passes, "refreshes": self.refreshes,
@@ -674,9 +753,12 @@ def print_dashboard(s: dict) -> None:
           f"   free ${s['free_margin']:.4f}"
           f"   used {s['margin_used_pct']:.1f}%"
           f"   per trade ${s['slice_size']:.4f}")
+    ceiling = (f"   ceiling {s['max_notional_x']:.0f}x"
+               f" (${s['notional_headroom']:.2f} left)"
+               if s["max_notional_x"] else "   ceiling off")
     print(f"  EXPOSURE  notional ${s['notional']:.2f}"
           f"   {s['exposure_x']:.1f}x equity"
-          f"   avg leverage {s['avg_leverage']:.0f}x")
+          f"   avg leverage {s['avg_leverage']:.0f}x{ceiling}")
     print(f"  P&L       realized ${s['realized']:+.4f}"
           f"   unrealized ${s['unrealized']:+.4f}"
           f"   fees ${s['fees_paid']:.4f}"
@@ -692,9 +774,13 @@ def print_dashboard(s: dict) -> None:
           f"   in profit {s['open_wins']} (${s['open_profit']:+.4f})"
           f" / in loss {s['open_losses']} (${s['open_loss']:+.4f})")
     print(f"  SIGNALS   standing {s['standing_signals']}"
-          f"   waiting on margin {s['blocked_signals']}"
+          f"   waiting {s['blocked_signals']}"
           f"   due a refresh {s['stale']}"
           f"   no signal {s['no_signal']:,}")
+    bb = s["blocked_by"]
+    print(f"  BLOCKED   this pass: margin {bb['margin']}"
+          f"   exposure ceiling {bb['exposure']}"
+          f"   stop past liquidation {bb['unsolvent']}")
     print(f"  SCAN      fill pass #{s['passes']:,}"
           f"   bar refreshes {s['refreshes']:,} (last {s['last_refresh_seconds']:.1f}s)"
           f"   universe {s['universe']}"
@@ -750,6 +836,8 @@ def print_summary(s: dict) -> None:
     print(f"  Fees paid             : ${s['fees_paid']:.4f}")
     print(f"  Margin committed      : ${s['committed_margin']:.4f}")
     print(f"  Margin free           : ${s['free_margin']:.4f}")
+    print(f"  Notional at shutdown  : ${s['notional']:.2f} "
+          f"({s['exposure_x']:.1f}x equity)")
     net = s["equity_incl_open"] - s["starting_equity"]
     pct = 100 * net / s["starting_equity"] if s["starting_equity"] else 0.0
     print(f"  Net result            : ${net:+.4f}  ({pct:+.2f}%)")
@@ -761,7 +849,10 @@ def print_summary(s: dict) -> None:
     print(f"  Evaluations           : {s['evaluations']:,}"
           f"  ({s['no_signal']:,} produced no qualifying vote)")
     print(f"  Signals still standing: {s['standing_signals']}"
-          f"  ({s['blocked_signals']} of them waiting on margin)")
+          f"  ({s['blocked_signals']} of them still waiting)")
+    print(f"  Entries blocked by    : margin {s['skipped_no_margin']:,}, "
+          f"exposure ceiling {s['skipped_max_notional']:,}, "
+          f"stop past liquidation {s['skipped_unsolvent']:,}")
     print("=" * 70)
 
 
@@ -796,9 +887,10 @@ def _scanner(broker: Broker, stop_event: threading.Event) -> None:
         opened, waiting = broker.fill_standing()
         broker.passes += 1
         if opened:
-            logger.info("filled %d standing signal(s), %d still waiting on "
-                        "margin, open %d, free $%.3f",
-                        opened, waiting, len(broker.open), broker.free_margin)
+            logger.info("filled %d standing signal(s), %d still waiting, "
+                        "open %d, free $%.3f, exposure %.1fx",
+                        opened, waiting, len(broker.open), broker.free_margin,
+                        broker.notional / max(broker.equity_total, 1e-9))
         stop_event.wait(FILL_INTERVAL_SECONDS)
 
 
@@ -815,9 +907,10 @@ def _manager(broker: Broker, stop_event: threading.Event) -> None:
 def run(client, symbols: list[str], equity: float, max_positions: int,
         exit_name: str, min_votes: int, poll_seconds: int,
         trades_csv: str | None = None, fee: float = L.FEE_ROUND_TRIP,
-        max_leverage: float | None = None, margin_pct: float = 0.10) -> None:
+        max_leverage: float | None = None, margin_pct: float = 0.05,
+        max_notional_x: float = 10.0) -> None:
     broker = Broker(client, symbols, equity, max_positions, exit_name,
-                    min_votes, fee, max_leverage, margin_pct)
+                    min_votes, fee, max_leverage, margin_pct, max_notional_x)
     stop_event = threading.Event()
 
     def stop(signum, frame):

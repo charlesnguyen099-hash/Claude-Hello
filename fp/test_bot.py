@@ -80,7 +80,7 @@ class FakeHTTP:
 def broker_for(symbols, client, **kw):
     opts = dict(equity=10.0, max_positions=0, exit_name=L.DEFAULT_EXIT,
                 min_votes=1, fee=L.FEE_ROUND_TRIP, max_leverage=None,
-                margin_pct=0.10)
+                margin_pct=0.10, max_notional_x=0.0)
     opts.update(kw)
     return B.Broker(client, symbols, **opts)
 
@@ -276,14 +276,12 @@ def test_liquidation_caps_the_loss():
     c = FakeHTTP(syms, price=100.0)
     b = broker_for(syms, c)
     b.refresh_prices()
-    # Huge ATR so the stop sits beyond the liquidation price.
     b.signals["S0USDT"] = B.Signal(bar_ts=B.closed_bar_ts(), direction=1,
-                                   atr_pct=90.0, votes=1, methods="X")
+                                   atr_pct=1.0, votes=1, methods="X")
     b.try_open("S0USDT")
     pos = b.open["S0USDT"]
-    check("liq price is above the stop for a long", pos.liq_price > pos.sl_price,
-          f"liq {pos.liq_price} sl {pos.sl_price}")
     equity_before = b.equity
+    # Gap straight through both levels; liquidation is checked first.
     c.last["S0USDT"] = pos.liq_price * 0.5
     b.manage_all()
     t = b.closed[-1]
@@ -293,6 +291,131 @@ def test_liquidation_caps_the_loss():
     check("equity falls by the margin",
           abs((equity_before - b.equity) - pos.margin) < 1e-9)
     check("equity stays positive", b.equity > 0, f"{b.equity}")
+
+
+def test_stop_always_sits_inside_liquidation():
+    """The hole the solvency cap closes: above ~3.5% ATR the 17x floor put
+    the stop PAST the liquidation price, so the trade died at 100% of
+    margin instead of the 42% it was sized for."""
+    print("\nthe stop is inside the liquidation price at every tradeable ATR")
+    worst_ratio, worst_atr = 0.0, None
+    checked = 0
+    for atr_pct in [round(0.05 * i, 2) for i in range(1, 1200)]:
+        chain = L.leverage_potential(atr_pct, None)
+        if not chain["tradeable"]:
+            continue
+        checked += 1
+        lev = chain["leverage"]
+        sl_move = L.SL_MULTIPLE * atr_pct / 100.0
+        liq_move = L.LIQ_MARGIN_FRACTION / lev
+        ratio = sl_move / liq_move
+        if ratio > worst_ratio:
+            worst_ratio, worst_atr = ratio, atr_pct
+    check(f"checked {checked} ATR levels from 0.05% to 60%", checked > 500)
+    check("the stop always fires before liquidation", worst_ratio < 1.0,
+          f"worst ratio {worst_ratio:.3f} at atr={worst_atr}%")
+    check("with the intended safety buffer",
+          abs(worst_ratio - 1 / L.SOLVENCY_BUFFER) < 0.01,
+          f"{worst_ratio:.4f} vs {1/L.SOLVENCY_BUFFER:.4f}")
+
+    # The file's chain must be untouched where it was already safe.
+    for atr_pct in (0.10, 0.20, 0.30, 0.50, 0.80, 1.00, 1.65):
+        chain = L.leverage_potential(atr_pct, None)
+        base = L.lev_base(atr_pct)
+        mult = L.potential_multiplier(L.potential_score(atr_pct))
+        check(f"atr {atr_pct}% keeps the file's leverage",
+              abs(chain["leverage"] - min(base * mult, base)) < 1e-9,
+              f"{chain['leverage']} vs {min(base*mult, base)}")
+
+    # And it must still be flexible, not clamped to one number.
+    levs = {round(L.leverage_potential(a, None)["leverage"], 2)
+            for a in (0.1, 0.3, 0.5, 1.0, 2.0, 3.0, 5.0, 8.0)}
+    check("leverage still varies with potential", len(levs) >= 7,
+          f"only {len(levs)} distinct values: {sorted(levs)}")
+
+    # Beyond the point where even 1x is unsound, the trade is skipped.
+    syms = ["S0USDT"]
+    c = FakeHTTP(syms, price=100.0)
+    b = broker_for(syms, c)
+    b.refresh_prices()
+    b.signals["S0USDT"] = B.Signal(bar_ts=B.closed_bar_ts(), direction=1,
+                                   atr_pct=90.0, votes=1, methods="X")
+    check("a 90% ATR setup is refused", b.try_open("S0USDT") is False)
+    check("and counted as unsolvent", b.skipped_unsolvent == 1,
+          str(b.skipped_unsolvent))
+
+
+def test_open_losses_reduce_free_margin():
+    """Cash-only accounting let the bot keep opening at full size while its
+    book was 25% underwater."""
+    print("\nunrealized losses shrink the margin available")
+    syms = [f"S{i}USDT" for i in range(20)]
+    c = FakeHTTP(syms, price=100.0)
+    b = broker_for(syms, c, margin_pct=0.10)
+    b.refresh_prices()
+    for s in syms:
+        b.signals[s] = B.Signal(bar_ts=B.closed_bar_ts(), direction=1,
+                                atr_pct=1.0, votes=1, methods="X")
+    b.fill_standing()
+    n_before = len(b.open)
+    check("a book is open", n_before >= 5, f"{n_before}")
+    check("equity_total equals cash when flat on the mark",
+          abs(b.equity_total - b.equity) < 1e-6,
+          f"{b.equity_total} vs {b.equity}")
+
+    for s in list(b.open):
+        c.last[s] = 99.0                     # 1% against, at ~28x
+    b.refresh_prices()
+    unreal = b.equity_total - b.equity
+    check("the loss is visible in equity_total", unreal < -1.0, f"{unreal:.4f}")
+    check("free margin absorbs it",
+          b.free_margin < b.equity - b.committed_margin,
+          f"free {b.free_margin:.4f}")
+    check("and no new trade opens while underwater", not b.has_room(),
+          f"free {b.free_margin:.4f} slice {b.slice_size():.4f}")
+
+    opened, _ = b.fill_standing()
+    check("fill_standing opens nothing", opened == 0, f"opened {opened}")
+
+    # Recovering should restore capacity, so this is not a one-way ratchet.
+    for s in list(b.open):
+        c.last[s] = 101.0
+    b.refresh_prices()
+    check("a profitable book restores room", b.has_room(),
+          f"free {b.free_margin:.4f} slice {b.slice_size():.4f}")
+
+
+def test_exposure_ceiling():
+    print("\ntotal notional is capped as a multiple of equity")
+    syms = [f"S{i}USDT" for i in range(40)]
+    c = FakeHTTP(syms, price=100.0)
+    b = broker_for(syms, c, margin_pct=0.05, max_notional_x=10.0)
+    b.refresh_prices()
+    for s in syms:
+        b.signals[s] = B.Signal(bar_ts=B.closed_bar_ts(), direction=1,
+                                atr_pct=1.0, votes=1, methods="X")
+    b.fill_standing()
+    exposure = b.notional / b.equity_total
+    check("notional stays under the ceiling", exposure <= 10.0 + 1e-6,
+          f"{exposure:.2f}x")
+    check("the ceiling is what stopped it, not margin",
+          b.skipped_max_notional > 0 and b.free_margin > b.slice_size(),
+          f"blocked {b.skipped_max_notional}, free {b.free_margin:.4f}")
+    check("headroom is exhausted", b.notional_headroom() < b.slice_size() * 28,
+          f"{b.notional_headroom():.4f}")
+
+    # Without the ceiling the same board runs far hotter -- that is the point.
+    b2 = broker_for(syms, FakeHTTP(syms, price=100.0), margin_pct=0.05,
+                    max_notional_x=0.0)
+    b2.refresh_prices()
+    for s in syms:
+        b2.signals[s] = B.Signal(bar_ts=B.closed_bar_ts(), direction=1,
+                                 atr_pct=1.0, votes=1, methods="X")
+    b2.fill_standing()
+    check("uncapped exposure is much higher",
+          b2.notional / b2.equity_total > exposure * 1.5,
+          f"capped {exposure:.1f}x vs uncapped "
+          f"{b2.notional / b2.equity_total:.1f}x")
 
 
 def test_margin_never_oversubscribed():
@@ -450,6 +573,9 @@ def main() -> int:
                test_no_instant_reentry_after_stop,
                test_take_profit_and_stop_prices,
                test_liquidation_caps_the_loss,
+               test_stop_always_sits_inside_liquidation,
+               test_open_losses_reduce_free_margin,
+               test_exposure_ceiling,
                test_margin_never_oversubscribed,
                test_fee_accounting,
                test_leverage_chain_matches_logic,

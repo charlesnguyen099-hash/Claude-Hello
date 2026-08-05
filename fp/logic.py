@@ -70,6 +70,13 @@ LEVERAGE_MIN, LEVERAGE_MAX = 17.0, 100.0
 LEV_BASE_K = 28.0                       # lev_base = clip(K / atr14_pct, 17, 100)
 POTENTIAL_OFFSET = 0.50                 # multiplier = score + 0.50
 
+# Solvency. The bot's liquidation model puts the liquidation price where
+# 90% of the margin is gone; the stop must sit inside that with room to
+# spare, or the position dies at 100% of margin instead of the 42% the
+# stop was sized for. See solvency_cap().
+LIQ_MARGIN_FRACTION = 0.90
+SOLVENCY_BUFFER = 1.30
+
 FEE_ROUND_TRIP = 0.0025                 # taker, at the file's leveraged rate
 MAKER_ROUND_TRIP = 0.0004               # resting the order instead
 
@@ -110,21 +117,59 @@ def lev_base(atr14_pct: float) -> float:
     return float(np.clip(LEV_BASE_K / atr14_pct, LEVERAGE_MIN, LEVERAGE_MAX))
 
 
+def solvency_cap(atr14_pct: float) -> float:
+    """Highest leverage at which the 1.5-ATR stop still sits INSIDE the
+    liquidation price.
+
+    Why this is needed. The stop is a fixed multiple of ATR, so the move
+    it sits at is 1.5 x atr_pct. Liquidation is a fixed fraction of
+    margin, so the move IT sits at is 0.90 / leverage. Setting the first
+    below the second gives
+
+        1.5 x atr_pct/100 <= 0.90 / lev     ->    lev <= 60 / atr_pct
+
+    and lev_base is 28/atr_pct, comfortably below it — so through the
+    normal range the file's chain is already solvent and this cap never
+    binds. What breaks it is the 17x FLOOR: once atr_pct passes 3.53%,
+    28/atr_pct falls under 17, the clip lifts leverage back to 17, and
+    the stop lands past the liquidation price. The position then dies at
+    100% of margin instead of the 42% the stop was sized for.
+
+    Measured across the ATR range, that is the only place the chain is
+    unsafe, so this is the only place the cap acts. It is a function of
+    ATR like every other term, so leverage stays continuous and
+    volatility-driven — nothing here is a fixed number of x.
+    """
+    if not np.isfinite(atr14_pct) or atr14_pct <= 0:
+        return LEVERAGE_MAX
+    sl_move = SL_MULTIPLE * atr14_pct / 100.0
+    return float(LIQ_MARGIN_FRACTION / (SOLVENCY_BUFFER * sl_move))
+
+
 def leverage_potential(atr14_pct: float, cap: float | None = None) -> dict:
     """The full chain: base, score, multiplier, and the final leverage.
 
     The product is capped at the base, exactly as the file has it, so a
     high multiplier never raises leverage above what the stop allows — it
-    can only cut it.
+    can only cut it. Then the solvency bound applies, which only ever
+    binds where the 17x floor would have put the stop past liquidation.
+
+    `tradeable` is False when even 1x cannot keep the stop inside the
+    liquidation price — an instrument moving more than ~46% per 30m bar.
+    The bot skips those rather than clamping to 1x and taking a position
+    it knows is unsound.
     """
     base = lev_base(atr14_pct)
     score = potential_score(atr14_pct)
     mult = potential_multiplier(score)
     lev = min(base * mult, base)
+    solvent = solvency_cap(atr14_pct)
+    lev = min(lev, solvent)
     if cap is not None:
         lev = min(lev, cap)
     return {"lev_base": base, "potential_score": score,
-            "potential_multiplier": mult, "leverage": max(1.0, lev)}
+            "potential_multiplier": mult, "solvency_cap": solvent,
+            "leverage": max(1.0, lev), "tradeable": lev >= 1.0}
 
 
 def simulate_exit(high, low, close, i: int, direction: int, atr: float,

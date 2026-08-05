@@ -76,28 +76,76 @@ Two guards that follow from the same design:
 - one entry per coin per bar, otherwise a stop-out is instantly reopened
   by the same standing verdict.
 
-### What the dashboard shows
+### How trading capital is sized
 
 ```
-  CAPITAL   start $10.0000   cash $8.4197   equity+open $8.1646   peak $13.0635
-  MARGIN    committed $8.2733   free $0.1464   used 98.3%   per trade $0.8420
-  EXPOSURE  notional $225.05   27.6x equity   avg leverage 27x
-  P&L       realized $-0.3394   unrealized $-0.2550   fees $2.1569   max DD $4.6200
-  CLOSED    26   win 10 / loss 16   rate 38.5%   TP 10 / SL 15 / liq 1   PF 0.96
-  OPEN      8 positions   in profit 3 ($+0.2866) / in loss 5 ($-0.5416)
-  SIGNALS   standing 56   waiting on margin 22   due a refresh 0   no signal 64
-  SCAN      fill pass #49   bar refreshes 3   universe 120   klines 120
+margin per trade = equity × --margin-pct        (default 5%)
+leverage         = the file's potential chain, then a solvency bound
+notional         = margin × leverage
 ```
 
-Read the `EXPOSURE` line. At the default 10% margin per trade with the
-file's own 17–100x leverage band, a full book runs **~25x the account in
-notional**. A 4% adverse move across the book is the whole account. That
-is what the file's leverage chain does as written; the dashboard shows it
-rather than hiding it.
+The chain and the stop cancel out into a clean invariant. `lev_base` is
+`28/atr_pct` and the stop is `1.5 × ATR`, so a trade that stops out loses
+
+```
+1.5 × atr_pct × 28/atr_pct = 42% of its margin — whatever the coin, whatever the volatility
+```
+
+Risk per trade is therefore normalised automatically: **42% of 5% = 2.1%
+of the account**, on any instrument.
+
+**Leverage stays flexible and potential-driven.** Nothing is pinned to a
+fixed number of x — `potential_score` (the ATR percentile) still sets the
+multiplier, and leverage still varies continuously with volatility. What
+was added is a bound that is *also* a function of ATR:
+
+```
+leverage ≤ 0.9 / (1.3 × 1.5 × atr_pct/100)
+```
+
+that is, the point where the stop would sit past the liquidation price.
+Through the normal range it never binds — at 0.3% ATR it allows 154x
+against a chain that asks for 93x. It binds only above ~2.7% ATR, where
+the **17x floor** was lifting leverage back up until the stop landed
+*beyond* liquidation and the trade died at 100% of margin instead of the
+42% it was sized for. Verified across 923 ATR levels from 0.05% to 60%:
+the stop now always fires first. Above ~46% ATR even 1x is unsound, and
+the setup is skipped rather than clamped.
+
+Two other limits, because per-trade sizing cannot see them:
+
+- **Free margin counts open losses.** Sizing keys off `cash + unrealized
+  P&L`, the way a real cross-margin account does. With cash-only
+  accounting the bot kept opening at full size while its book was 25%
+  underwater, because losses it had not realised were invisible to it.
+- **Total notional is capped** at `--max-notional-x` (default 10x
+  equity). Crypto moves together, so nine positions are one bet; nothing
+  in per-trade sizing bounds that.
+
+Measured effect on the same 120-coin board: exposure **25.6x → 9.8x**,
+max drawdown **$4.62 → $1.53**.
 
 `--margin-pct` gives slightly fewer than `100/pct` positions (9 at 10%,
 not 10) because each entry fee shrinks equity and so shrinks the next
 slice. That is what a real exchange does too.
+
+### What the dashboard shows
+
+```
+  CAPITAL   start $10.0000   cash $8.5435   equity+open $9.6162   peak $10.4399
+  MARGIN    committed $3.2936   free $5.2499   used 34.3%   per trade $0.4808
+  EXPOSURE  notional $94.55   9.8x equity   avg leverage 29x   ceiling 10x ($1.61 left)
+  P&L       realized $-1.0839   unrealized $+1.0728   fees $0.6248   max DD $1.5325
+  CLOSED    16   win 4 / loss 12   rate 25.0%   TP 4 / SL 12 / liq 0   PF 0.59
+  OPEN      7 positions   in profit 5 ($+1.0939) / in loss 2 ($-0.0211)
+  SIGNALS   standing 56   waiting 33   due a refresh 0   no signal 64
+  BLOCKED   this pass: margin 0   exposure ceiling 33   stop past liquidation 0
+  SCAN      fill pass #53   bar refreshes 3   universe 120   klines 120
+```
+
+`max DD` and `peak` mark to market off total equity, not cash — a
+drawdown that happens while positions are open is a real drawdown, and
+cash-only accounting missed every one of them.
 
 ### What it does *not* claim
 

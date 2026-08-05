@@ -99,6 +99,56 @@ MAKER_ROUND_TRIP = 0.0004               # 0.020% x 2, resting orders
 TAKER_WITH_SLIPPAGE = 0.0025            # + 0.05%/side; only for large size
 FEE_ROUND_TRIP = TAKER_ROUND_TRIP       # what the bot assumes by default
 
+# --- the full cost of a round trip, which is not two equal sides -------
+#
+# The exit is ALWAYS taker. TP and SL are conditional market orders: they
+# fire by crossing the book, so they cannot earn the maker rebate no
+# matter how the position was opened. The cheapest a round trip can
+# honestly be is maker in + taker out = 0.075%, not the 0.040% that
+# "--maker-fee" implied.
+ENTRY_FEE_MAKER = 0.00020
+ENTRY_FEE_TAKER = 0.00055
+EXIT_FEE_TAKER = 0.00055
+
+# Funding. A perpetual charges it every 8 hours, on notional, like the
+# fees. It is not an exchange fee -- longs and shorts pay each other --
+# but it leaves the account just the same, and it was missing from every
+# number this project produced before now.
+FUNDING_INTERVAL_HOURS = 8.0
+FUNDING_RATE_TYPICAL = 0.0001           # 0.010% per 8h, the usual band
+FUNDING_RATE_TRENDING = 0.0010          # 0.100%, what a strong trend pays
+
+# Hours a trade actually lasts, measured on BTCUSDT 30m over 2026 across
+# 5,667 consensus trades. This decides how many funding charges it meets.
+EXPECTED_HOLD_HOURS = {
+    "net_TP1.5_SL1.5": 4.23,
+    "net_TP2.0_SL1.5": 5.30,
+    "net_TP3.0_SL1.5": 7.11,
+    "net_TRAILING": 3.36,
+}
+
+
+def round_trip_cost(exit_name: str = DEFAULT_EXIT, entry_maker: bool = False,
+                    funding_rate: float = FUNDING_RATE_TYPICAL,
+                    slippage_per_side: float = 0.0) -> dict:
+    """Everything the trade pays, as a fraction of notional.
+
+    Entry fee + exit fee + the funding it expects to sit through. The
+    exit side is taker whatever the entry was, because a stop or a target
+    is a market order.
+
+    For TP3.0, which lasts 7.11 hours on average, that is 0.89 funding
+    charges -- so nearly every trade meets one.
+    """
+    entry = (ENTRY_FEE_MAKER if entry_maker else ENTRY_FEE_TAKER) + slippage_per_side
+    exit_ = EXIT_FEE_TAKER + slippage_per_side
+    hold = EXPECTED_HOLD_HOURS.get(exit_name, 5.0)
+    events = hold / FUNDING_INTERVAL_HOURS
+    funding = events * funding_rate
+    return {"entry": entry, "exit": exit_, "funding": funding,
+            "funding_events": events, "hold_hours": hold,
+            "total": entry + exit_ + funding}
+
 # potential_score is a percentile, so it needs a distribution to rank
 # against. These are the ATR percentiles of BTCUSDT 30m bars over
 # 2025-2026, so a live bar can be scored without waiting for history.

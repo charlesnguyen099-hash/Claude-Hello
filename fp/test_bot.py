@@ -810,6 +810,64 @@ def test_kelly_stakes_by_certainty():
     check("an unproven signal is not staked", b2.try_open("SUREUSDT") is False)
 
 
+def test_full_cost_model():
+    """Only trade what is profitable after EVERY cost -- which means the
+    exit fee is taker even on a maker entry, and funding is counted."""
+    print("\nthe cost model counts entry, exit and funding")
+    c = L.round_trip_cost(L.DEFAULT_EXIT, entry_maker=True)
+    check("a maker entry still pays a taker exit",
+          abs(c["exit"] - L.EXIT_FEE_TAKER) < 1e-12,
+          f"exit {c['exit']:.5f} vs taker {L.EXIT_FEE_TAKER:.5f}")
+    check("so the cheapest round trip is 0.075%, not 0.040%",
+          abs((c["entry"] + c["exit"]) - 0.00075) < 1e-9,
+          f"{100*(c['entry']+c['exit']):.4f}%")
+    check("funding is included", c["funding"] > 0, f"{c['funding']:.6f}")
+    check("and matches the measured hold",
+          abs(c["funding_events"] - c["hold_hours"] / L.FUNDING_INTERVAL_HOURS) < 1e-9)
+    check("total is the sum of the three",
+          abs(c["total"] - (c["entry"] + c["exit"] + c["funding"])) < 1e-12)
+
+    t = L.round_trip_cost(L.DEFAULT_EXIT, entry_maker=False)
+    check("a market entry costs more", t["total"] > c["total"],
+          f"{100*c['total']:.3f}% vs {100*t['total']:.3f}%")
+    trend = L.round_trip_cost(L.DEFAULT_EXIT, True, L.FUNDING_RATE_TRENDING)
+    check("a trending market costs more still", trend["total"] > c["total"])
+    slip = L.round_trip_cost(L.DEFAULT_EXIT, True, L.FUNDING_RATE_TYPICAL, 0.0005)
+    check("slippage is charged on both sides",
+          abs(slip["total"] - c["total"] - 0.001) < 1e-9,
+          f"{100*(slip['total']-c['total']):.4f}%")
+
+    # A longer-held exit meets more funding.
+    short = L.round_trip_cost("net_TRAILING", True)
+    long_ = L.round_trip_cost("net_TP3.0_SL1.5", True)
+    check("a longer hold meets more funding",
+          long_["funding"] > short["funding"],
+          f"{long_['funding_events']:.2f} vs {short['funding_events']:.2f}")
+
+    # And the gate must move with the cost.
+    needs = [L.min_atr_for_edge(L.DEFAULT_EXIT,
+                                L.round_trip_cost(L.DEFAULT_EXIT, mk, fr)["total"])
+             for mk, fr in ((True, L.FUNDING_RATE_TYPICAL),
+                            (False, L.FUNDING_RATE_TYPICAL),
+                            (False, L.FUNDING_RATE_TRENDING))]
+    check("a costlier trade needs a bigger move", needs == sorted(needs),
+          str([round(x, 3) for x in needs]))
+    check("even the cheapest needs more than a typical bar",
+          needs[0] > 1.0, f"{needs[0]:.3f}%")
+
+    # The broker refuses what the full cost makes negative.
+    syms = ["S0USDT"]
+    cl = FakeHTTP(syms, price=100.0)
+    b = broker_for(syms, cl, fee=L.round_trip_cost(L.DEFAULT_EXIT, True)["total"],
+                   expectancy_gate=True, sizing="flat")
+    b.refresh_prices()
+    b.signals["S0USDT"] = B.Signal(B.closed_bar_ts(), 1, 0.5, 1, 1, "X")
+    check("a median-ATR trade is refused on full costs",
+          b.try_open("S0USDT") is False)
+    b.signals["S0USDT"] = B.Signal(B.closed_bar_ts(), 1, 2.0, 1, 1, "X")
+    check("a big-ATR trade clears them", b.try_open("S0USDT") is True)
+
+
 def test_stale_excludes_open_positions():
     print("\nsymbols already holding a position are not rescored")
     syms = ["S0USDT", "S1USDT"]
@@ -847,6 +905,7 @@ def main() -> int:
                test_margin_scales_with_potential,
                test_best_signals_are_filled_first,
                test_kelly_stakes_by_certainty,
+               test_full_cost_model,
                test_stale_excludes_open_positions,
                test_summary_counts_add_up):
         fn()

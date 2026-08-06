@@ -107,22 +107,76 @@ And it is not "short the things that crashed". Those three fell 39%,
 and always-short on it still loses 0.231% per trade. The 345 rules make
 +0.400%. The signal is worth 0.465 points over the blind short.
 
-TIER 3, UNIVERSAL: zero rules, and the reason is now measurable
+COMPLETING THE SWEEP: 30m IS THE STRONGEST TIMEFRAME
 
-Nothing pays on eight of ten. The correlation matrix explains it -- ten
-symbols are about FOUR independent bets:
+    ratio against the rotation null, by symbols paid
+    symbols     15m      30m       1h
+      >= 6      inf    88.82     2.18
+      >= 5    20.76    14.25     3.44
+      >= 4     3.65     4.69     3.52
+      >= 3     2.05     2.39     2.35
+      >= 1     0.94     0.97     1.07     <- per-coin, at chance everywhere
 
-    semiconductors  SKHYNIX/SNDK/SOXL      mean pairwise r = 0.72
-    crypto majors   ETH/SOL/BTC/XRP        mean pairwise r = 0.81
-    BLESSUSDT       correlated with nothing        r = 0.02-0.09
-    XAUUSDT         gold, weakly attached         r = 0.22-0.30
+TIER 1, PER-COIN: no evidence, on any timeframe
 
-    semis vs crypto cross-correlation             r = 0.37
+18,641 rules at 15m, 16,310 at 30m and 5,019 at 1h pay on exactly one
+symbol, and the ratio against the null is 0.94, 0.97 and 1.07. Randomly
+timed positions produce as many single-symbol winners as the real rules
+do. A rule that works on one instrument and nowhere else is what a
+searchof this size returns by construction, and three independent
+timeframes say the same thing.
 
-So "pays on three symbols" can mean one bet confirmed once, and "pays on
-eight" would require spanning at least three blocks that share almost
-nothing. Counting symbols is not counting evidence, and blocks() in this
-module prints the matrix that says how much of each is which.
+TIER 2, GROUP: real, and the groups are interpretable
+
+The excess concentrates where a real effect belongs -- 2.39x at three
+symbols rising to 88.82x at six on 30m bars. And the groups are not
+arbitrary: the largest recurring sets are SKHYNIXUSDT+SNDKUSDT+SOXLUSDT
+and subsets of it. The data found the semiconductor sector without being
+told it exists.
+
+It is not "short the things that crashed" either. Those three fell 39%,
+44% and 51%, blind shorting them returns -0.065%/trade, and SOXL halved
+while always-short on it still lost 0.231% per trade. The signal rules
+on that trio make +0.400%.
+
+TIER 3, UNIVERSAL: the criterion had to be fixed before it meant anything
+
+Counting symbols was wrong, so it was replaced by counting correlation
+blocks. That was still wrong, and the data said so: 98% of the rules
+that "spanned three blocks" contained BLESSUSDT, which is a block of
+ONE. BLESS plus any crypto plus any semiconductor reaches three blocks
+for free, and BLESS is the symbol that rose 258%.
+
+Recounted with BLESSUSDT excluded entirely:
+
+    blocks without BLESS    rules   mean test
+                       3       16     +0.733%
+                       2     2177     +0.523%
+                       1     1748     +0.766%
+
+Only SIXTEEN rules span three genuinely uncorrelated blocks without
+leaning on the one runaway symbol. Those, plus rules on 3+ non-BLESS
+symbols spanning 2+ blocks, are what the book keeps -- 26 after capping
+three per factor family per timeframe, 16 short and 10 long:
+
+    1h   ma_dist13|zfollow90_0.5  long   BTC + SNDK + SOXL + XAU   +1.082%
+    1h   mom3|zfade180_1.0        long   SKHYNIX+SNDK+SOL+XAU      +0.477%
+    30m  pos34|zfollow90_1.5      short  ETH+SOXL+XAU+XRP          +0.375%
+    30m  mom160|breakfade120      long   HYPE+SOXL+XAU             +1.754%
+    30m  mom8|zfade180_1.0        short  HYPE+SOXL+XAU             +1.004%
+
+Gold appears in almost every one of them, which is the point: XAUUSDT
+correlates 0.22-0.30 with everything else, so a rule that pays on gold
+AND on a semiconductor AND on a crypto major has been confirmed on three
+things that genuinely do not move together.
+
+WHAT IS STILL NOT ESTABLISHED
+
+37 days. One semiconductor selloff, one BLESSUSDT run. The 26 rules are
+the residue after every control this project knows how to apply --
+rotation null, always-on control, time split, correlation blocks and
+BLESS exclusion -- and they are 26 out of 161,904 tested. That ratio is
+what a longer sample has to confirm.
 """
 from __future__ import annotations
 

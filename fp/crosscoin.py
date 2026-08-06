@@ -49,6 +49,52 @@ offset. That preserves every coin's own drift and volatility, and the
 book's long/short structure, and destroys only which coin is picked
 when. A book that merely held BLESSUSDT long all week scores the same
 rotated as it does real.
+
+WHAT IT MEASURED, and the diagnostic that decided it
+
+Twenty books were positive after fees and beat the rotation null at
+p<=0.10; thirteen reached p<=0.05. Then leave-one-out:
+
+    tf   factor      hold  dir       total   without its worst symbol
+    5m   pos5          48  follow   +34.33%   +12.08%   (BLESSUSDT)
+    15m  volr30        12  follow   +49.80%   +11.98%
+    15m  pos5          48  follow   +82.70%    +8.36%
+    15m  volr30        48  follow   +86.05%    +4.48%
+    5m   madist240     48  follow  +149.04%    +3.43%
+    15m  mom240        48  reverse +128.57%    +1.25%
+    15m  mom240        12  reverse  +93.15%    +0.72%
+    15m  mom5          48  follow   +96.07%    +0.20%
+    5m   volr30        48  follow  +101.90%    -7.45%
+    5m   madist240     12  follow  +131.55%    -6.81%
+    15m  mom60          1  follow  +135.02%    -6.44%
+
+The symbol removed is BLESSUSDT every time, and it is the same story in
+every row: BLESSUSDT rose 223.91% in 5.7 days, and a momentum ranking
+holds whatever is running. Decomposed by symbol, BLESSUSDT contributed
++82.35% of the +81.8% gross on volr30, +94.05% of +99.5% on madist240,
++89.81% of +97.1% on mom240 -- the other eight symbols together are
+noise around zero.
+
+So most of these are not books. They are one coin wearing nine names,
+and their effective sample size is ONE event, not 1,638 bars. Sharpe 27
+on a single parabolic move is arithmetic, not evidence.
+
+WHAT SURVIVES, AND HOW MUCH IT IS WORTH
+
+pos5 held 48 bars is the only rule positive at both timeframes with its
+best symbol removed: +12.08% at 5m and +8.36% at 15m. It is long the
+coins sitting near the top of their own recent range and short those
+near the bottom -- short-horizon cross-sectional momentum.
+
+It still does not clear a multiple-testing bar. Twelve factors x four
+holds x two directions x two timeframes is 192 tests; Bonferroni at 0.05
+needs p < 0.00026 and the best pos5 p is 0.008. Eight survivors out of
+twenty is also close to what half-noise would give.
+
+So: one candidate worth watching, no confirmed logic, and the honest
+resolution needs the same nine symbols over months rather than days --
+enough that a BLESSUSDT-style run is one event among many instead of
+the whole sample.
 """
 from __future__ import annotations
 
@@ -120,6 +166,33 @@ def run_book(p: pd.DataFrame, score: pd.DataFrame, legs: int, hold: int,
     return (gross - turnover * (FEE_ROUND_TRIP / 2.0) - fund).values[:-1]
 
 
+def leave_one_out(p: pd.DataFrame, F_of, legs: int, hold: int, minutes: int,
+                  fname: str, rev: bool) -> tuple[str, float]:
+    """Re-run the book with each symbol removed. The worst result is the
+    number that matters.
+
+    A cross-sectional book is supposed to be a book. If dropping one
+    symbol collapses it, then the other symbols were decoration and the
+    effective sample size is one trade, not one per bar -- however many
+    bars there were.
+
+    This is not hypothetical. Every positive book found on this week
+    died here: volr30 went +101.9% to -7.5%, madist240 +149.0% to +3.4%
+    and mom240 +130.6% to -7.9% when BLESSUSDT was removed, while
+    dropping any OTHER symbol changed almost nothing.
+    """
+    worst_sym, worst = "", float("inf")
+    for drop in p.columns:
+        q = p.drop(columns=[drop])
+        if q.shape[1] < 2 * legs + 1:
+            continue
+        t = stat(run_book(q, F_of(q)[fname], legs, hold, minutes, rev),
+                 minutes)[0]
+        if t < worst:
+            worst, worst_sym = t, drop
+    return worst_sym, worst
+
+
 def stat(x: np.ndarray, minutes: int) -> tuple[float, float, float]:
     x = x[np.isfinite(x)]
     if len(x) < 10:
@@ -161,7 +234,8 @@ def main(argv=None) -> int:
         print(f"{label}: {len(p)} shared bars across {p.shape[1]} symbols")
         print("=" * 78)
         print(f"{'factor':>10} {'hold':>6} {'dir':>8} {'total':>9} "
-              f"{'Sharpe':>8} {'per bar':>9} {'null p':>8}")
+              f"{'Sharpe':>8} {'per bar':>9} {'null p':>8} {'w/o worst':>10} "
+              f"{'that coin':>13}")
         for fname, S in F.items():
             for hold in HOLDS:
                 for rev in (False, True):
@@ -180,14 +254,19 @@ def main(argv=None) -> int:
                                                   minutes, rev), minutes)[0])
                     null = np.array(null)
                     pv = float((null >= total).mean())
-                    if pv <= 0.10:
-                        print(f"{fname:>10} {hold:>6} "
-                              f"{'reverse' if rev else 'follow':>8} "
-                              f"{100*total:>8.2f}% {sh:>8.2f} "
-                              f"{100*mean:>8.4f}% {pv:>8.3f}")
-                        best.append({"tf": label, "factor": fname,
-                                     "hold": hold, "reverse": rev,
-                                     "total": total, "sharpe": sh, "p": pv})
+                    if pv > 0.10:
+                        continue
+                    sym, worst = leave_one_out(p, factors, a.legs, hold,
+                                               minutes, fname, rev)
+                    print(f"{fname:>10} {hold:>6} "
+                          f"{'reverse' if rev else 'follow':>8} "
+                          f"{100*total:>8.2f}% {sh:>8.2f} "
+                          f"{100*mean:>8.4f}% {pv:>8.3f} "
+                          f"{100*worst:>9.2f}% {sym:>13}")
+                    best.append({"tf": label, "factor": fname,
+                                 "hold": hold, "reverse": rev,
+                                 "total": total, "sharpe": sh, "p": pv,
+                                 "worst_loo": worst, "worst_sym": sym})
         if not best:
             print("  nothing positive after fees at this timeframe")
         print()
@@ -197,13 +276,21 @@ def main(argv=None) -> int:
     print("=" * 78)
     if best:
         strong = [b for b in best if b["p"] <= 0.05]
-        print(f"  {len(best)} factor/hold/direction books were positive after "
-              f"fees, {len(strong)} of them beat the rotation null at p<=0.05")
-        for b in sorted(strong, key=lambda x: -x["total"])[:10]:
+        survive = [b for b in best if b["worst_loo"] > 0]
+        print(f"  {len(best)} books were positive after fees and beat the "
+              f"rotation null at p<=0.10")
+        print(f"  {len(strong)} of those reached p<=0.05")
+        print(f"  {len(survive)} of those still made money with their worst "
+              f"single symbol removed")
+        for b in sorted(survive, key=lambda x: -x["worst_loo"])[:10]:
             print(f"    {b['tf']:>4} {b['factor']:<9} hold {b['hold']:>3} "
                   f"{'reverse' if b['reverse'] else 'follow':>8} "
-                  f"{100*b['total']:+.2f}% Sharpe {b['sharpe']:.2f} "
-                  f"p={b['p']:.3f}")
+                  f"{100*b['total']:+.2f}% -> {100*b['worst_loo']:+.2f}% "
+                  f"without {b['worst_sym']}")
+        if not survive:
+            print("\n  None of them survived leave-one-out. Every positive")
+            print("  book on this week was one symbol wearing nine names --")
+            print("  the effective sample size is 1, not 1,638 bars.")
         print("\n  Five days is five days. This says the ranking carried")
         print("  information in THIS week, not that it will next week.")
     else:

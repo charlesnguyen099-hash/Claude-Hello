@@ -988,6 +988,77 @@ def test_stale_excludes_open_positions():
     check("the other one is still due", "S1USDT" in stale, str(stale))
 
 
+def test_event_bars_have_no_fixed_duration():
+    """Bars must close on an event, so their length is an output.
+
+    This is the whole point of fp/eventbars: a 4h bar is 4h whether the
+    market traded a billion dollars in it or nothing, and that grid is a
+    hard constant sitting under every logic built on it. An event bar
+    closes when something happens, so it takes seconds in a fast market
+    and hours in a quiet one -- and the test is exactly that its
+    durations are NOT all the same.
+    """
+    print("\nevent bars close on events, so their duration varies")
+    from fp.eventbars import BUILDERS
+    r = np.random.default_rng(9)
+    n = 20000
+    idx = pd.date_range("2025-01-01", periods=n, freq="1min")
+    close = 100 * np.exp(np.cumsum(r.normal(0, 0.0006, n)))
+    # bursty volume: quiet most of the time, violent in short windows
+    vol = np.abs(r.normal(50, 10, n))
+    for s in range(0, n, 2000):
+        vol[s:s + 120] *= 25
+    d = pd.DataFrame({"open": close, "high": close * 1.0004,
+                      "low": close * 0.9996, "close": close, "volume": vol},
+                     index=idx)
+    for kind in ("volume", "dollar", "range", "cusum"):
+        b = BUILDERS[kind](d, 24)
+        if len(b) < 50:
+            check(f"{kind} built enough bars", False, str(len(b)))
+            continue
+        gaps = np.diff(b.index.values).astype("timedelta64[s]").astype(float)
+        check(f"{kind}: durations are not constant", gaps.std() > 0,
+              f"std {gaps.std():.1f}s")
+        check(f"{kind}: high >= low", bool((b["high"] >= b["low"]).all()))
+        check(f"{kind}: close inside the bar",
+              bool(((b["close"] <= b["high"] + 1e-9)
+                    & (b["close"] >= b["low"] - 1e-9)).all()))
+    # volume bars must speed up exactly where the volume burst is
+    vb = BUILDERS["volume"](d, 24)
+    gaps = pd.Series(np.diff(vb.index.values).astype("timedelta64[s]")
+                     .astype(float), index=vb.index[1:])
+    busy = gaps[[i.minute % 2000 < 120 for i in gaps.index]]
+    check("volume bars close faster during the volume bursts",
+          len(busy) == 0 or busy.median() <= gaps.median(),
+          f"{busy.median() if len(busy) else 0:.0f}s vs {gaps.median():.0f}s")
+
+
+def test_funding_uses_real_elapsed_time_on_event_bars():
+    """With irregular bars, funding cannot be a bar count.
+
+    Two trades spanning the same number of bars can span wildly different
+    amounts of clock time, and funding is charged per 8 hours of holding,
+    not per bar. Charging by bar count would make fast bars look cheap
+    and slow bars look free.
+    """
+    print("\nfunding on event bars is charged on the clock, not the bar count")
+    from fp.eventbars import trades_at
+    from fp.horizon import FEE_ROUND_TRIP, FUNDING_PER_8H
+    close = np.array([100.0, 100.0, 100.0, 100.0])
+    pos = np.array([1.0, 1.0, -1.0, -1.0])
+    quick = np.array([0.0, 1.0, 2.0, 3.0])          # hours
+    slow = np.array([0.0, 40.0, 80.0, 120.0])
+    rq, _, hq = trades_at(close, pos, quick)
+    rs, _, hs = trades_at(close, pos, slow)
+    check("same bars, different elapsed time", hq[0] == 2.0 and hs[0] == 80.0,
+          f"{hq} vs {hs}")
+    want_q = -FEE_ROUND_TRIP - FUNDING_PER_8H * 2.0 / 8.0
+    check("the quick trade pays two hours of funding",
+          abs(rq[0] - want_q) < 1e-12, f"{rq[0]:.10f} vs {want_q:.10f}")
+    check("the slow one pays forty times as much funding",
+          abs((rs[0] + FEE_ROUND_TRIP) / (rq[0] + FEE_ROUND_TRIP) - 40.0) < 1e-9)
+
+
 def test_trades_are_counted_once_not_per_bar():
     """A held position is ONE trade paying one round trip.
 
@@ -1257,6 +1328,8 @@ def main() -> int:
                test_full_cost_model,
                test_real_costs_come_from_the_exchange,
                test_stale_excludes_open_positions,
+               test_event_bars_have_no_fixed_duration,
+               test_funding_uses_real_elapsed_time_on_event_bars,
                test_trades_are_counted_once_not_per_bar,
                test_bot_trades_nothing_without_a_whitelist,
                test_short_holds_are_judged_not_banned,

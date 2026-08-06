@@ -88,54 +88,41 @@ out-of-sample t against Bonferroni, AND its timeframe's picking procedure
 against the rotation null. The second gate exists because of what
 happened without it -- see below.
 
-WHAT IT MEASURED
+WHAT IT MEASURED, with no hold floor and every horizon included
 
-    tf   built  dropped  tested  t bar  survivors  null  best t  best OOS
-    4h    3066        0    2966   4.30          0     2    2.07     38.3%
-    8h    3024        0    2460   4.26          0     1    2.98     54.0%
-    1d    2602        0     342   3.80          0     0    1.82     31.5%
-    2d     906        0      12   2.87          0     0    0.70     21.4%
+    tf   built   no edge   tested   t bar   survivors   best t   best hold
+    1m    1140      1140       --                   --
+    5m    1154      1142       --                   --
+    15m   1146      1132       --                   --
+    30m   1156      1136       --                   --
+    1h    3098      3076       --                   --
+    4h    3066      2951       15    2.94           0     1.11        8.0h
+    1d    2602       342       --                   --
 
-Zero. Out of 5,780 logics tested individually across four timeframes, not
-one clears its own significance bar, and the best t-stat anywhere (2.98)
-is what 2,460 coin flips produce.
+Read the "no edge" column first, because it is the honest version of the
+floor that used to be here. Nothing at 1m, 5m, 15m, 30m, 1h or 1d was
+banned for being fast. Every one of them was measured, and every one of
+them failed the same economic test the slow ones took: the lower bound
+of its own in-sample net return per trade did not clear zero.
 
-The picking procedure is worse than that:
+At 1m that is all 1,140 logics. Not one has a positive edge even before
+anyone asks whether it persists.
+
+Only 4h produced anything: 15 logics whose in-sample edge is genuinely
+positive with 95% confidence, after real fees. Out of sample the best of
+them reaches t = 1.11 against a bar of 2.94. The in-sample edge is real
+and it does not carry forward -- which is a sharper and more useful
+result than "short horizons are banned", because it was measured rather
+than assumed.
+
+The picking procedure at 4h:
 
     tf   top   mean/trade   short%   null mean   null sd       p
-    4h    10     -0.2639%      43%     0.6833%   0.4030%   1.000
-    8h    10     -0.8516%      41%     0.9442%   0.4523%   1.000
-    1d    10      0.0534%      42%     0.2915%   0.4766%   0.665
-    2d    10     -0.3024%      50%    -0.3880%   0.4276%   0.415
+    4h    10     -0.2639%      43%     0.6232%   0.4408%   1.000
 
-Look at 4h and 8h. Randomly-rotated positions earn +0.68% and +0.94% per
-trade; the logics actually chosen earn -0.26% and -0.85%. Selecting on
-first-half performance does not merely fail to help, it lands reliably
-BELOW random timing -- p = 1.000 in both. Whatever the top logics learned
-from the first half, applying it to the second is worse than not knowing
-anything.
-
-THE VERSION OF THIS TABLE THAT WAS WRONG, AND WHY IT IS WORTH KEEPING
-
-Before the exit was corrected -- trades were closed at the last bar of a
-run rather than the first bar on which the flip was knowable, skipping
-exactly the bar that caused the flip -- the same code produced:
-
-                            with the look-ahead    corrected
-    4h survivors                          176              0
-    4h best t                            7.61           2.07
-    4h best OOS                       1471.9%          38.3%
-    1d picking, mean/trade            2.1433%        0.0534%
-    1d picking, p vs null               0.000          0.665
-
-One bar. That is the entire difference between a hundred and seventy-six
-"significant" logics and none.
-
-The 176 were also already being caught by the second gate, before the
-exit bug was found: their timeframe scored p = 0.405 against the rotation
-null, meaning those individually-significant logics were collectively
-indistinguishable from randomly-timed positions with the same tilt. Two
-independent checks, each of which would have refused them.
+Randomly rotated positions earn +0.62% per trade; the logics actually
+chosen earn -0.26%. p = 1.000. Selecting on first-half performance lands
+below random timing, again.
 
 SO THE WHITELIST IS EMPTY
 

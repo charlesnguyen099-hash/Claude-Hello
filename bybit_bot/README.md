@@ -58,25 +58,51 @@ removed.
 
 ### Every logic tested on its own (`python -m fp.survivors`)
 
-5,780 logics, four timeframes, each measured alone out of sample against
-a Bonferroni threshold for the number tested — and against a rotation
-null that rolls each logic's timing at random while keeping the market,
-the drift, and that logic's own long/short tilt.
+No hold floor. A logic qualifies on its own economics — the lower 95%
+bound of its in-sample net return per trade must exceed zero, already
+net of 0.055% each way and of funding over the hold it actually ran — so
+a ten-minute logic and a ten-day logic face the identical bar. Then it
+must clear a Bonferroni threshold out of sample, and its timeframe must
+beat a rotation null that rolls each logic's timing at random while
+keeping the market, the drift, and that logic's own long/short tilt.
 
-| tf | tested | t bar | survivors | best t | picking, mean/trade | null mean | p |
+| tf | built | no edge | tested | t bar | survivors | best t | best hold |
 |---|---|---|---|---|---|---|---|
-| 4h | 2,966 | 4.30 | **0** | 2.07 | -0.2639% | +0.6833% | 1.000 |
-| 8h | 2,460 | 4.26 | **0** | 2.98 | -0.8516% | +0.9442% | 1.000 |
-| 1d | 342 | 3.80 | **0** | 1.82 | +0.0534% | +0.2915% | 0.665 |
-| 2d | 12 | 2.87 | **0** | 0.70 | -0.3024% | -0.3880% | 0.415 |
+| 1m | 1,140 | 1,140 | — | | | | |
+| 5m | 1,154 | 1,142 | — | | | | |
+| 15m | 1,146 | 1,132 | — | | | | |
+| 30m | 1,156 | 1,136 | — | | | | |
+| 1h | 3,098 | 3,076 | — | | | | |
+| 4h | 3,066 | 2,951 | 15 | 2.94 | **0** | 1.11 | 8.0h |
+| 1d | 2,602 | 342 | — | | | | |
 
-Zero survivors. And at 4h and 8h, *randomly rotated* positions earn
-+0.68% and +0.94% per trade while the logics actually selected earn
--0.26% and -0.85% — picking on past performance lands reliably **below**
-random timing, p = 1.000.
+The "no edge" column is the honest version of the floor that used to be
+here. Nothing was banned for being fast — every fast logic was measured,
+and every one failed the same economic test the slow ones took. At 1m
+that is all 1,140 of them.
+
+Only 4h produced anything: 15 logics whose in-sample edge is genuinely
+positive at 95% confidence after real fees. Out of sample the best
+reaches t = 1.11 against a bar of 2.94. **The in-sample edge is real and
+does not carry forward.**
+
+And the picking procedure at 4h: -0.2639% per trade against a rotation
+null of +0.6232% — selecting on past performance lands **below** random
+timing, p = 1.000.
 
 `fp/survivors.json` is therefore empty and `--signals survivors` opens
 nothing. That is the output, not a missing setting.
+
+### Correction: the hold floor was wrong
+
+An earlier version refused any logic held under an hour, arguing from
+the average one-minute move (0.040%) being smaller than the round trip
+(0.110%). That is true of a *random* one-minute position and says
+nothing about a *selected* one — it compares the fee to the mean and
+discards the distribution. **39.1% of ten-minute moves already exceed
+the round trip**, and with leverage a 0.3% move is 30% on margin. The
+floor threw every such logic away untested. Replaced by the economic
+gate above; no time constant remains in the search or the bot.
 
 ### Correction: a second look-ahead, in the exit
 

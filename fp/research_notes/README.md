@@ -60,9 +60,53 @@ method is profitable in every period either way.
 ADX_TrendStrength shows +0.337% in 2026 and -0.148% in 2025 -- a sign
 flip of that size across adjacent years is regime, not edge.
 
+## 5. Learn per cell: forward, reversed, or dropped — fails worst of all
+
+    python fp/research_notes/adapt.py
+
+The full proposal, implemented as described. Split trades into cells by
+what is visible at entry (ATR band, previous outcome, direction, vote
+count, RSI side). In each cell measure what the forward trade returned
+and what the reverse would have returned. Trade forward where forward
+pays, reverse where reverse pays, drop the cell where neither does.
+
+On the data it was fitted to, it is spectacular:
+
+    min n   cells  fwd  rev  drop   fit net/trade   fit total
+       20     118   23   18    77       +0.1753%     +439.2%
+
+Walk-forward over the same data -- learn on everything before a block,
+trade that block, never look ahead:
+
+    min n    out-of-sample trades   net/trade      total       t
+       20                   3,319    -0.1439%    -477.7%   -7.24
+       50                   1,791    -0.1727%    -309.3%   -6.39
+      100                     636    -0.2680%    -170.4%   -5.89
+      200                      41    -0.6568%     -26.9%   -3.94
+
+Fit +439%, out of sample -478%. The sign does not survive at all, and
+t = -7.24 on 3,319 trades means that is not bad luck.
+
+Worse, it is beaten by doing nothing clever: trading every signal forward
+returns -0.1094%, and the adaptive rule returns -0.1439%. Choosing which
+cells to reverse and which to drop DESTROYS value out of sample.
+
+And the more selective the rule, the worse it gets -- -0.144% at 20
+trades per cell down to -0.657% at 200. If the cells held signal, more
+evidence per cell would make them more reliable. Instead the cells that
+clear a higher bar are the ones whose in-sample deviation was most
+extreme, which is selection on noise by construction.
+
 ## Summary
 
-Four searches, four different framings, one consistent answer: the
+Five searches, five different framings, one consistent answer: the
 difference between a winning trade and a losing one is not visible before
 the trade. The one effect that is real -- outcome mean-reversion -- is
 about a fifth of the size needed to pay the fee.
+
+The fifth search is the important one, because it is the natural thing to
+try and it fails in the most informative way. Reading the winners'
+features and applying them next time is exactly what it does, and out of
+sample it lands at -0.1439% against -0.1094% for making no decisions at
+all. The features of a winning trade are the features of a trade that
+happened to win. Applying them forward costs money.

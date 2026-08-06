@@ -193,7 +193,7 @@ class Broker:
                  expectancy_gate: bool = True,
                  assumed_win_rate: float | None = None,
                  signal_source: str = "methods",
-                 book_file: str = "btc_book.json",
+                 book_file: str = "book.json",
                  potential_sizing: bool = True,
                  sizing: str = "kelly",
                  max_margin_pct: float = L.MAX_MARGIN_FRACTION,
@@ -246,6 +246,7 @@ class Broker:
         self.survivors: list[dict] = []
         self.book: list[dict] = []
         self._book_cache: dict[tuple, tuple] = {}
+        self._fired_cache: dict[tuple, tuple] = {}
         self.bar_minutes = L.BAR_MINUTES
         if signal_source == "book":
             # Every rule brings its own timeframe, so the scan runs at the
@@ -707,8 +708,23 @@ class Broker:
 
         best = None
         for tf in sorted({r["tf"] for r in self.book}):
+            # A 4h rule cannot change its mind between 15m scans, so its
+            # verdict is cached against the bar it was taken on. Without
+            # this, a book spanning 15m/4h/1d rebuilds the slow logics
+            # sixteen and ninety-six times per bar for nothing.
+            fkey = (symbol, tf)
+            tf_bar = closed_bar_ts(self.BOOK_MINUTES[tf])
+            hit = self._fired_cache.get(fkey)
+            if hit is not None and hit[0] == tf_bar:
+                cand = hit[1]
+                if cand is not None and (
+                        best is None
+                        or cand[0].get("mean", 0) > best[0].get("mean", 0)):
+                    best = cand
+                continue
             d = self._book_bars(symbol, tf)
             if d is None:
+                self._fired_cache[fkey] = (tf_bar, None)
                 continue
             want = {r["name"] for r in self.book if r["tf"] == tf}
             try:
@@ -725,12 +741,15 @@ class Broker:
             except Exception:
                 logger.debug("book logics failed %s %s", symbol, tf,
                              exc_info=True)
+                self._fired_cache[fkey] = (tf_bar, None)
                 continue
             close = d["close"].values.astype(float)
             sigma = X.sigma_at(close)[-1]
             if not np.isfinite(sigma) or sigma <= 0:
+                self._fired_cache[fkey] = (tf_bar, None)
                 continue
             price = float(close[-1])
+            tf_best = None
             for r in self.book:
                 if r["tf"] != tf or r["name"] not in logics:
                     continue
@@ -741,8 +760,13 @@ class Broker:
                 # fires only on the bar the entry TURNS ON, as measured
                 if not (p[-1] == side and p[-2] != side):
                     continue
-                if best is None or r.get("mean", 0) > best[0].get("mean", 0):
-                    best = (r, side, price, sigma, tf)
+                if tf_best is None or r.get("mean", 0) > tf_best[0].get("mean", 0):
+                    tf_best = (r, side, price, sigma, tf)
+            self._fired_cache[fkey] = (tf_bar, tf_best)
+            if tf_best is not None and (
+                    best is None
+                    or tf_best[0].get("mean", 0) > best[0].get("mean", 0)):
+                best = tf_best
 
         if best is None:
             self.no_signal += 1
@@ -1663,7 +1687,7 @@ def run(client, symbols: list[str], equity: float, max_positions: int,
         max_margin_pct: float = L.MAX_MARGIN_FRACTION,
         limit_entry: bool = False, slippage: float = 0.0,
         fee_override: float | None = None,
-        book_file: str = "btc_book.json") -> None:
+        book_file: str = "book.json") -> None:
     broker = Broker(client, symbols, equity, max_positions, exit_name,
                     min_votes, fee, max_leverage, margin_pct, max_notional_x,
                     conviction_floor, expectancy_gate, assumed_win_rate,

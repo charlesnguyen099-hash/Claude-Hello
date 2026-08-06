@@ -152,11 +152,13 @@ def main() -> int:
                         "to lose -10.92%% and -6.53%% in two live sessions; it "
                         "is kept only for comparison and must now be asked "
                         "for by name")
-    p.add_argument("--book-file", default="btc_book.json",
-                   help="which book --signals book trades: btc_book.json "
-                        "(30 rules on 4h/1d BTC), coin_book.json (15 rules "
-                        "on 15m across the nine symbols), or "
-                        "coin_tiers.json (the rules that paid on 7+ coins)")
+    p.add_argument("--book-file", default="book.json",
+                   help="which book to trade. The default book.json is every "
+                        "rule from every study merged together (python -m "
+                        "fp.book rebuilds it), and it is what a bare "
+                        "`python run_bot.py` runs. The parts are still there "
+                        "if you want one alone: btc_book.json, "
+                        "coin_tiers.json, coin_book.json")
     p.add_argument("--min-votes", type=int, default=1,
                    help="methods that must fire and agree before a trade")
     p.add_argument("--exit", default=L.DEFAULT_EXIT, choices=L.EXIT_STRATEGIES,

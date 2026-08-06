@@ -277,6 +277,27 @@ def expectancy(atr14_pct: float, exit_name: str = DEFAULT_EXIT,
     ATR threshold, because ATR scales the win and the loss together.
     What has to clear the fee is the EDGE, not the move.
     """
+    # MEASURED FIRST. The formula below assumes a constant win rate, and
+    # that assumption made this gate actively harmful: it concluded that
+    # higher ATR always clears the fee, set a floor at atr >= 1.384%, and
+    # let everything above through. The region it selected measures
+    # 30.6% win and -0.1837% gross, and a 9h live session confirmed it at
+    # 30.1% over 113 closed trades. So when the band has been measured,
+    # its own number is used and nothing is assumed.
+    if win_rate is None:
+        from fp import calibrate as C
+        tbl = C.load_table()
+        if tbl:
+            edge = C.measured_edge(atr14_pct, exit_name, tbl)
+            if edge is not None:
+                return edge - fee
+            # Band exists but was never measured with enough samples. An
+            # unmeasured band is NOT a profitable one, and falling back to
+            # the formula here would reintroduce exactly the failure this
+            # table exists to prevent -- the formula's answer is always
+            # "the bigger the ATR the better", and the thinnest bands are
+            # the biggest ones.
+            return float("-inf")
     p = MEASURED_WIN_RATE.get(exit_name, 0.35) if win_rate is None else win_rate
     tp = TP_MULTIPLES.get(exit_name, TRAIL_MULTIPLE)
     a = atr14_pct / 100.0
@@ -427,11 +448,10 @@ def min_atr_for_edge(exit_name: str = DEFAULT_EXIT, fee: float = FEE_ROUND_TRIP,
                      win_rate: float | None = None) -> float:
     """Smallest atr14_pct at which expectancy() turns positive.
 
-    At taker fees and the measured 35.1% win rate this is 3.33%, and
-    BTCUSDT 30m never reached it in two years (max 2.42%). Read plainly:
-    at taker fees this logic has no positive-expectancy trade, and no
-    filter over ATR, votes or anything else changes that. At maker fees
-    the same figure is 0.53%, which about a quarter of bars clear.
+    Only meaningful for the fallback formula. Once the edge table is
+    built there is no single threshold: expectancy is a lookup per band,
+    and bands do not have to be monotonic in ATR -- measured, they are
+    not. Use calibrate.show() to see which cells are tradeable.
     """
     p = MEASURED_WIN_RATE.get(exit_name, 0.35) if win_rate is None else win_rate
     tp = TP_MULTIPLES.get(exit_name, TRAIL_MULTIPLE)

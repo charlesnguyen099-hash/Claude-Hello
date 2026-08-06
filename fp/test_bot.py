@@ -620,12 +620,18 @@ def test_expectancy_gate():
     check("expectancy is negative at taker for a typical ATR",
           L.expectancy(0.4, L.DEFAULT_EXIT, L.FEE_ROUND_TRIP) < 0,
           f"{L.expectancy(0.4, L.DEFAULT_EXIT, L.FEE_ROUND_TRIP):.6f}")
-    check("and positive at maker for a high ATR",
-          L.expectancy(1.5, L.DEFAULT_EXIT, L.MAKER_ROUND_TRIP) > 0,
-          f"{L.expectancy(1.5, L.DEFAULT_EXIT, L.MAKER_ROUND_TRIP):.6f}")
-    check("leverage cannot rescue it -- it is absent from the formula",
-          L.expectancy(0.4, L.DEFAULT_EXIT, L.FEE_ROUND_TRIP)
-          == L.expectancy(0.4, L.DEFAULT_EXIT, L.FEE_ROUND_TRIP))
+    # The old formula concluded that a big enough ATR always clears the
+    # fee. Measured, it does not -- the 1.10-1.50% band is the WORST of
+    # them all, and a live session lost 113 trades at 30.1% inside exactly
+    # the region the formula recommended.
+    check("a big ATR does not rescue it either",
+          L.expectancy(1.3, L.DEFAULT_EXIT, L.MAKER_ROUND_TRIP) < 0,
+          f"{L.expectancy(1.3, L.DEFAULT_EXIT, L.MAKER_ROUND_TRIP):.6f}")
+    check("expectancy is not monotonic in ATR any more",
+          L.expectancy(0.9, L.DEFAULT_EXIT, 0.0)
+          < L.expectancy(0.5, L.DEFAULT_EXIT, 0.0)
+          or L.expectancy(1.3, L.DEFAULT_EXIT, 0.0)
+          < L.expectancy(0.9, L.DEFAULT_EXIT, 0.0))
 
     taker_need = L.min_atr_for_edge(L.DEFAULT_EXIT, L.TAKER_ROUND_TRIP)
     maker_need = L.min_atr_for_edge(L.DEFAULT_EXIT, L.MAKER_ROUND_TRIP)
@@ -638,8 +644,25 @@ def test_expectancy_gate():
           slip_need > 2.42, f"{slip_need:.3f}% vs a two-year max of 2.42%")
     check("a higher fee always demands a bigger move",
           maker_need < taker_need < slip_need)
-    check("the gate's threshold is where expectancy crosses zero",
-          abs(L.expectancy(taker_need, L.DEFAULT_EXIT, L.FEE_ROUND_TRIP)) < 1e-12)
+    # Once the measured table exists, expectancy is a per-band lookup and
+    # there is no single crossing point -- measured, the bands are not
+    # monotonic in ATR, which is the whole reason the formula was wrong.
+    from fp import calibrate as C
+    tbl = C.load_table()
+    if tbl:
+        row = tbl["table"][L.DEFAULT_EXIT]
+        check("the table covers every band", len(row) == len(tbl["bands"]) - 1)
+        check("an unmeasured band is refused outright, not guessed at",
+              all(L.expectancy(_mid, L.DEFAULT_EXIT, L.TAKER_ROUND_TRIP)
+                  == float("-inf")
+                  for _mid, _v in zip(
+                      [(tbl["bands"][i] + min(tbl["bands"][i+1], 5.0)) / 2
+                       for i in range(len(row))], row) if _v is None))
+        check("measured bands report their own number",
+              all(abs(L.expectancy(
+                      (tbl["bands"][i] + min(tbl["bands"][i+1], 5.0)) / 2,
+                      L.DEFAULT_EXIT, 0.0) - row[i]) < 1e-9
+                  for i in range(len(row)) if row[i] is not None))
 
     # The broker must actually apply it.
     syms = ["S0USDT"]
@@ -653,8 +676,17 @@ def test_expectancy_gate():
     b2 = broker_for(syms, FakeHTTP(syms, price=100.0), fee=L.MAKER_ROUND_TRIP,
                     expectancy_gate=True)
     b2.refresh_prices()
-    b2.signals["S0USDT"] = B.Signal(B.closed_bar_ts(), 1, 1.5, 1, 1, "X")
-    check("the same setup at maker fees is taken", b2.try_open("S0USDT") is True)
+    b2.signals["S0USDT"] = B.Signal(B.closed_bar_ts(), 1, 1.3, 1, 1, "X")
+    check("cheaper fees do not rescue a band the table measures negative",
+          b2.try_open("S0USDT") is False)
+    # An override forces the formula back, which is the only way to trade
+    # a band the table has condemned.
+    b2b = broker_for(syms, FakeHTTP(syms, price=100.0), fee=L.MAKER_ROUND_TRIP,
+                     expectancy_gate=True, assumed_win_rate=0.60)
+    b2b.refresh_prices()
+    b2b.signals["S0USDT"] = B.Signal(B.closed_bar_ts(), 1, 1.3, 1, 1, "X")
+    check("an explicit win rate bypasses the table",
+          b2b.try_open("S0USDT") is True)
 
     b3 = broker_for(syms, FakeHTTP(syms, price=100.0), fee=L.FEE_ROUND_TRIP,
                     expectancy_gate=False)
@@ -668,15 +700,19 @@ def test_margin_scales_with_potential():
     dollar of margin and one returning +2%."""
     print("\nmargin follows the trade's return per dollar of margin")
     fee = L.TAKER_ROUND_TRIP
-    lows = [L.ev_per_margin(a, L.DEFAULT_EXIT, fee) for a in (0.2, 0.3, 0.4)]
-    highs = [L.ev_per_margin(a, L.DEFAULT_EXIT, fee) for a in (1.0, 1.5, 2.0)]
-    check("EV per margin rises with ATR", max(lows) < min(highs),
-          f"low {max(lows):.4f} high {min(highs):.4f}")
+    # Hold the win rate fixed so this measures the FEE BURDEN, which is
+    # what margin weighting is about. Expectancy itself now comes from the
+    # measured table and is deliberately not monotonic in ATR.
+    p = L.MEASURED_WIN_RATE[L.DEFAULT_EXIT]
+    lows = [L.ev_per_margin(a, L.DEFAULT_EXIT, fee, p) for a in (0.2, 0.3, 0.4)]
+    highs = [L.ev_per_margin(a, L.DEFAULT_EXIT, fee, p) for a in (1.0, 1.5, 2.0)]
+    check("at a fixed win rate, EV per margin rises with ATR",
+          max(lows) < min(highs), f"low {max(lows):.4f} high {min(highs):.4f}")
     check("it spans a wide range", min(highs) - min(lows) > 0.05,
           f"{min(lows):.4f} .. {max(highs):.4f}")
     check("win and loss per margin are constant, only the fee moves",
-          abs(L.ev_per_margin(0.4, L.DEFAULT_EXIT, 0.0)
-              - L.ev_per_margin(1.0, L.DEFAULT_EXIT, 0.0)) < 0.02,
+          abs(L.ev_per_margin(0.4, L.DEFAULT_EXIT, 0.0, p)
+              - L.ev_per_margin(1.0, L.DEFAULT_EXIT, 0.0, p)) < 0.02,
           "at zero fee the ATR should barely matter")
 
     w_low = L.margin_weight(0.30, fee)
@@ -744,13 +780,19 @@ def test_best_signals_are_filled_first():
         b.signals[s] = B.Signal(bar, 1, a, 1, 1, "X")
     b.fill_standing()
     check("something opened", len(b.open) > 0, f"{len(b.open)}")
-    opened_atr = [b.signals[s].atr_pct for s in b.open]
-    rejected = [b.signals[s].atr_pct for s in b.signals if s not in b.open]
     check("the ceiling bound the book", b.skipped_max_notional > 0,
           f"{b.skipped_max_notional}")
-    check("what opened beats what did not",
-          min(opened_atr) > max(rejected) - 1e-9,
-          f"opened {sorted(opened_atr)}, rejected {sorted(rejected)}")
+    # Ranking follows expected return per dollar of margin, which now
+    # comes from the measured table -- so it is NOT simply "highest ATR
+    # first" any more. What matters is that what opened ranks above what
+    # did not, on the measure actually used.
+    score = lambda sy: L.ev_per_margin(b.signals[sy].atr_pct, b.exit_name,
+                                       b.fee, b.assumed_win_rate)
+    opened = [score(s) for s in b.open]
+    rejected = [score(s) for s in b.signals if s not in b.open]
+    check("what opened outranks what did not, on the measure used",
+          min(opened) >= max(rejected) - 1e-9,
+          f"opened {sorted(opened)[:3]}, rejected {sorted(rejected)[-3:]}")
 
 
 def test_kelly_stakes_by_certainty():
@@ -868,7 +910,8 @@ def test_full_cost_model():
     check("a median-ATR trade is refused on full costs",
           b.try_open("S0USDT") is False)
     b.signals["S0USDT"] = B.Signal(B.closed_bar_ts(), 1, 2.0, 1, 1, "X")
-    check("a big-ATR trade clears them", b.try_open("S0USDT") is True)
+    check("and so is a big-ATR one -- no band clears the full cost",
+          b.try_open("S0USDT") is False)
 
 
 def test_real_costs_come_from_the_exchange():
@@ -919,14 +962,16 @@ def test_real_costs_come_from_the_exchange():
           f"{100*(b4.trade_cost('S0USDT',1)-taker):.4f}%")
 
     # An expensive symbol should be rejected where a cheap one is taken.
+    # The sign reaches the gate: with an extreme rate the long is charged
+    # far more than the short, even though the table refuses both.
     hi = FakeHTTP(["XUSDT"], price=100.0, funding=0.01)   # 1% per 8h, extreme
     bh = broker_for(["XUSDT"], hi, sizing="flat", expectancy_gate=True)
     bh.refresh_prices()
+    check("an extreme rate splits the two sides widely",
+          bh.trade_cost("XUSDT", 1) - bh.trade_cost("XUSDT", -1) > 0.015,
+          f"{100*(bh.trade_cost('XUSDT',1)-bh.trade_cost('XUSDT',-1)):.3f}%")
     bh.signals["XUSDT"] = B.Signal(B.closed_bar_ts(), 1, 2.0, 1, 1, "X")
     check("extreme funding blocks the long", bh.try_open("XUSDT") is False)
-    bh.signals["XUSDT"] = B.Signal(B.closed_bar_ts(), -1, 2.0, 1, 1, "X")
-    check("while the short is paid to take it",
-          bh.try_open("XUSDT") is True)
 
 
 def test_stale_excludes_open_positions():

@@ -544,6 +544,14 @@ class Broker:
         return [s for s in self.symbols
                 if s not in self.open and self.evaluated_bar.get(s, -1) < want]
 
+    def _tradeable_bands(self) -> tuple[int, int]:
+        """How many measured ATR bands still clear the full cost."""
+        from fp import calibrate as C
+        row = C.load_table().get("table", {}).get(self.exit_name) or []
+        ok = sum(1 for v in row
+                 if v is not None and v - self.fee > 0)
+        return ok, len(row)
+
     def trade_cost(self, symbol: str, direction: int) -> float:
         """What THIS trade will really cost, as a fraction of notional.
 
@@ -893,6 +901,8 @@ class Broker:
                           / L.FUNDING_INTERVAL_HOURS) if self.funding else 0.0,
             "min_atr_for_edge": L.min_atr_for_edge(self.exit_name, self.fee,
                                                    self.assumed_win_rate),
+            "tradeable_bands": self._tradeable_bands()[0],
+            "total_bands": self._tradeable_bands()[1],
             "blocked_by": dict(self.blocked_by),
             "standing_signals": standing, "blocked_signals": self.blocked_signals,
             "stale": len(self.stale_symbols()), "kline_calls": self.kline_calls,
@@ -1042,7 +1052,8 @@ def print_dashboard(s: dict) -> None:
           f"   live funding median {100*s['live_funding']:+.4f}%/8h"
           f"   -> a long costs {100*s['cost_long']:.3f}% round trip")
     print(f"  EDGE      negative-expectancy skips {s['skipped_negative_ev']:,}"
-          f"   (needs atr14 >= {s['min_atr_for_edge']:.3f}% at this cost)")
+          f"   ({s['tradeable_bands']} of {s['total_bands']} measured ATR bands"
+          f" clear the cost)")
     print(f"  SCAN      fill pass #{s['passes']:,}"
           f"   bar refreshes {s['refreshes']:,} (last {s['last_refresh_seconds']:.1f}s)"
           f"   universe {s['universe']}"

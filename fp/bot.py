@@ -194,6 +194,7 @@ class Broker:
                  assumed_win_rate: float | None = None,
                  signal_source: str = "methods",
                  book_file: str = "book.json",
+                 book_anywhere: bool = False,
                  potential_sizing: bool = True,
                  sizing: str = "kelly",
                  max_margin_pct: float = L.MAX_MARGIN_FRACTION,
@@ -245,6 +246,7 @@ class Broker:
         self.library = None
         self.survivors: list[dict] = []
         self.book: list[dict] = []
+        self.book_anywhere = book_anywhere
         self._book_cache: dict[tuple, tuple] = {}
         self._fired_cache: dict[tuple, tuple] = {}
         self.bar_minutes = L.BAR_MINUTES
@@ -638,8 +640,10 @@ class Broker:
             logger.warning("%s unreadable", path, exc_info=True)
             return []
         got = data.get("logics", [])
-        logger.info("%s: %d rules, fitted on %s", path, len(got),
-                    data.get("fitted_on", "?"))
+        self_scope = data.get("scope", [])
+        logger.info("%s: %d rules, validated on %d symbols%s", path, len(got),
+                    len(self_scope),
+                    f" ({', '.join(self_scope)})" if self_scope else "")
         if data.get("in_sample"):
             logger.warning("%s is FITTED to its own data. Forward "
                            "performance is unknown.", path)
@@ -752,6 +756,14 @@ class Broker:
             tf_best = None
             for r in self.book:
                 if r["tf"] != tf or r["name"] not in logics:
+                    continue
+                # A rule fires only on the symbols it was validated on.
+                # A rule proven on BTC, SNDK, SOXL and XAU has evidence
+                # for those four; firing it on a symbol nobody measured
+                # is a different claim wearing the same numbers.
+                scope = r.get("coins") or ""
+                if (not self.book_anywhere) and scope \
+                        and symbol not in scope.split(","):
                     continue
                 p = logics[r["name"]].values.astype(float)
                 if len(p) < 2:
@@ -1687,12 +1699,14 @@ def run(client, symbols: list[str], equity: float, max_positions: int,
         max_margin_pct: float = L.MAX_MARGIN_FRACTION,
         limit_entry: bool = False, slippage: float = 0.0,
         fee_override: float | None = None,
-        book_file: str = "book.json") -> None:
+        book_file: str = "book.json",
+        book_anywhere: bool = False) -> None:
     broker = Broker(client, symbols, equity, max_positions, exit_name,
                     min_votes, fee, max_leverage, margin_pct, max_notional_x,
                     conviction_floor, expectancy_gate, assumed_win_rate,
-                    signal_source, book_file, potential_sizing, sizing,
-                    max_margin_pct, limit_entry, slippage, fee_override)
+                    signal_source, book_file, book_anywhere, potential_sizing,
+                    sizing, max_margin_pct, limit_entry, slippage,
+                    fee_override)
     stop_event = threading.Event()
 
     def stop(signum, frame):

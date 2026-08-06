@@ -5,6 +5,18 @@
     "coin_tiers.json (33 rules)",
     "coin_book.json (15 rules)"
   ],
+  "scope": [
+    "BLESSUSDT",
+    "BTCUSDT",
+    "ETHUSDT",
+    "HYPEUSDT",
+    "SKHYNIXUSDT",
+    "SNDKUSDT",
+    "SOLUSDT",
+    "SOXLUSDT",
+    "XAUUSDT",
+    "XRPUSDT"
+  ],
   "in_sample": true,
   "note": "Every rule is fitted to the data it was found on. Merging changes convenience, not evidence. Rules run on every symbol scanned; 'evidence' says where each was measured.",
   "logics": [
@@ -19,7 +31,8 @@
       "mean": 0.00557952973264761,
       "from": "coin_tiers.json",
       "evidence": "9 symbols 2026-07-31..08-06, paid on 7+ of 9",
-      "n_coins": 9
+      "n_coins": 9,
+      "coins": "BLESSUSDT,ETHUSDT,HYPEUSDT,SKHYNIXUSDT,SNDKUSDT,SOLUSDT,SOXLUSDT,XAUUSDT,XRPUSDT"
     },
     {
       "tf": "15m",
@@ -32,7 +45,8 @@
       "mean": 0.010897297369051675,
       "from": "coin_tiers.json",
       "evidence": "9 symbols 2026-07-31..08-06, paid on 7+ of 9",
-      "n_coins": 8
+      "n_coins": 8,
+      "coins": "BLESSUSDT,HYPEUSDT,SKHYNIXUSDT,SNDKUSDT,SOLUSDT,SOXLUSDT,XAUUSDT,XRPUSDT"
     },
     {
       "tf": "15m",
@@ -45,7 +59,8 @@
       "mean": 0.008267488409956806,
       "from": "coin_tiers.json",
       "evidence": "9 symbols 2026-07-31..08-06, paid on 7+ of 9",
-      "n_coins": 8
+      "n_coins": 8,
+      "coins": "BLESSUSDT,ETHUSDT,HYPEUSDT,SKHYNIXUSDT,SNDKUSDT,SOLUSDT,SOXLUSDT,XRPUSDT"
     },
     {
       "tf": "15m",
@@ -58,7 +73,8 @@
       "mean": 0.00653043845195599,
       "from": "coin_tiers.json",
       "evidence": "9 symbols 2026-07-31..08-06, paid on 7+ of 9",
-      "n_coins": 8
+      "n_coins": 8,
+      "coins": "BLESSUSDT,ETHUSDT,HYPEUSDT,SKHYNIXUSDT,SNDKUSDT,SOLUSDT,XAUUSDT,XRPUSDT"
     },
     {
       "tf": "15m",
@@ -71,7 +87,8 @@
       "mean": 0.006224645116344336,
       "from": "coin_tiers.json",
       "evidence": "9 symbols 2026-07-31..08-06, paid on 7+ of 9",
-      "n_coins": 8
+      "n_coins": 8,
+      "coins": "BLESSUSDT,ETHUSDT,HYPEUSDT,SNDKUSDT,SOLUSDT,SOXLUSDT,XAUUSDT,XRPUSDT"
     },
     {
       "tf": "15m",
@@ -84,7 +101,8 @@
       "mean": 0.003221353967022546,
       "from": "coin_tiers.json",
       "evidence": "9 symbols 2026-07-31..08-06, paid on 7+ of 9",
-      "n_coins": 8
+      "n_coins": 8,
+      "coins": "BLESSUSDT,ETHUSDT,SKHYNIXUSDT,SNDKUSDT,SOLUSDT,SOXLUSDT,XAUUSDT,XRPUSDT"
     },
     {
       "tf": "15m",
@@ -97,7 +115,8 @@
       "mean": 0.002940483070436279,
       "from": "coin_tiers.json",
       "evidence": "9 symbols 2026-07-31..08-06, paid on 7+ of 9",
-      "n_coins": 8
+      "n_coins": 8,
+      "coins": "BLESSUSDT,ETHUSDT,HYPEUSDT,SKHYNIXUSDT,SNDKUSDT,SOLUSDT,SOXLUSDT,XAUUSDT"
     },
     {
       "tf": "15m",
@@ -110,7 +129,8 @@
       "mean": 0.013386650388099455,
       "from": "coin_tiers.json",
       "evidence": "9 symbols 2026-07-31..08-06, paid on 7+ of 9",
-      "n_coins": 7
+      "n_coins": 7,
+      "coins": "BLESSUSDT,HYPEUSDT,SKHYNIXUSDT,SNDKUSDT,SOXLUSDT,XAUUSDT,XRPUSDT"
     },
     {
       "tf": "15m",
@@ -123,7 +143,8 @@
       "mean": 0.012860627785097098,
       "from": "coin_tiers.json",
       "evidence": "9 symbols 2026-07-31..08-06, paid on 7+ of 9",
-      "n_coins": 7
+      "n_coins": 7,
+      "coins": "BLESSUSDT,HYPEUSDT,SKHYNIXUSDT,SNDKUSDT,SOXLUSDT,XAUUSDT,XRPUSDT"
     },
     {
       "tf": "15m",
@@ -136,7 +157,8 @@
       "mean": 0.012323222351810003,
       "from": "coin_tiers.json",
       "evidence": "9 symbols 2026-07-31..08-06, paid on 7+ of 9",
-      "n_coins": 7
+      "n_coins": 7,
+      "coins": "BLESSUSDT,HYPEUSDT,SKHYNIXUSDT,SNDKUSDT,SOXLUSDT,XAUUSDT,XRPUSDT"
     },
     {
       "tf": "15m",
@@ -149,7 +171,8 @@
       "mean": 0.01083969741282744,
       "from": "coin_tiers.json",
       "evidence": "9 symbols 2026-07-31..08-06, paid on 7+ of 9",
-      "n_coins": 7
+      "n_coins": 7,
+      "coins": "BLESSUSDT,HYPEUSDT,SKHYNIXUSDT,SNDKUSDT,SOXLUSDT,XAUUSDT,XRPUSDT"
     },
     {
       "tf": "15m",
@@ -162,7 +185,8 @@
       "mean": 0.008050210813864603,
       "from": "coin_tiers.json",
       "evidence": "9 symbols 2026-07-31..08-06, paid on 7+ of 9",
-      "n_coins": 7
+      "n_coins": 7,
+      "coins": "BLESSUSDT,HYPEUSDT,SKHYNIXUSDT,SNDKUSDT,SOLUSDT,SOXLUSDT,XAUUSDT"
     },
     {
       "tf": "15m",
@@ -175,7 +199,8 @@
       "mean": 0.007987911737592444,
       "from": "coin_tiers.json",
       "evidence": "9 symbols 2026-07-31..08-06, paid on 7+ of 9",
-      "n_coins": 7
+      "n_coins": 7,
+      "coins": "BLESSUSDT,HYPEUSDT,SKHYNIXUSDT,SNDKUSDT,SOLUSDT,SOXLUSDT,XAUUSDT"
     },
     {
       "tf": "15m",
@@ -188,7 +213,8 @@
       "mean": 0.00777127818146584,
       "from": "coin_tiers.json",
       "evidence": "9 symbols 2026-07-31..08-06, paid on 7+ of 9",
-      "n_coins": 7
+      "n_coins": 7,
+      "coins": "BLESSUSDT,ETHUSDT,HYPEUSDT,SNDKUSDT,SOXLUSDT,XAUUSDT,XRPUSDT"
     },
     {
       "tf": "15m",
@@ -201,7 +227,8 @@
       "mean": 0.007561409938094384,
       "from": "coin_tiers.json",
       "evidence": "9 symbols 2026-07-31..08-06, paid on 7+ of 9",
-      "n_coins": 7
+      "n_coins": 7,
+      "coins": "BLESSUSDT,ETHUSDT,SKHYNIXUSDT,SNDKUSDT,SOLUSDT,SOXLUSDT,XAUUSDT"
     },
     {
       "tf": "15m",
@@ -214,7 +241,8 @@
       "mean": 0.006127163903767427,
       "from": "coin_tiers.json",
       "evidence": "9 symbols 2026-07-31..08-06, paid on 7+ of 9",
-      "n_coins": 7
+      "n_coins": 7,
+      "coins": "BLESSUSDT,ETHUSDT,HYPEUSDT,SNDKUSDT,SOLUSDT,SOXLUSDT,XAUUSDT"
     },
     {
       "tf": "30m",
@@ -227,7 +255,8 @@
       "mean": 0.006097780870920029,
       "from": "tier_book.json",
       "evidence": "10 symbols 2026-06-30..08-06, paid in BOTH halves on 3+ correlated-block members, 2-21x the rotation null",
-      "n_coins": 7
+      "n_coins": 7,
+      "coins": "BTCUSDT,ETHUSDT,HYPEUSDT,SKHYNIXUSDT,SNDKUSDT,SOLUSDT,SOXLUSDT"
     },
     {
       "tf": "15m",
@@ -240,7 +269,8 @@
       "mean": 0.005822686925410577,
       "from": "coin_tiers.json",
       "evidence": "9 symbols 2026-07-31..08-06, paid on 7+ of 9",
-      "n_coins": 7
+      "n_coins": 7,
+      "coins": "BLESSUSDT,ETHUSDT,HYPEUSDT,SKHYNIXUSDT,SOLUSDT,SOXLUSDT,XAUUSDT"
     },
     {
       "tf": "15m",
@@ -253,7 +283,8 @@
       "mean": 0.005749706003051312,
       "from": "coin_tiers.json",
       "evidence": "9 symbols 2026-07-31..08-06, paid on 7+ of 9",
-      "n_coins": 7
+      "n_coins": 7,
+      "coins": "BLESSUSDT,HYPEUSDT,SKHYNIXUSDT,SNDKUSDT,SOLUSDT,SOXLUSDT,XAUUSDT"
     },
     {
       "tf": "15m",
@@ -266,7 +297,8 @@
       "mean": 0.005718418305448417,
       "from": "coin_tiers.json",
       "evidence": "9 symbols 2026-07-31..08-06, paid on 7+ of 9",
-      "n_coins": 7
+      "n_coins": 7,
+      "coins": "BLESSUSDT,ETHUSDT,HYPEUSDT,SNDKUSDT,SOLUSDT,SOXLUSDT,XRPUSDT"
     },
     {
       "tf": "15m",
@@ -279,7 +311,8 @@
       "mean": 0.0051431833717245174,
       "from": "coin_tiers.json",
       "evidence": "9 symbols 2026-07-31..08-06, paid on 7+ of 9",
-      "n_coins": 7
+      "n_coins": 7,
+      "coins": "BLESSUSDT,ETHUSDT,SKHYNIXUSDT,SNDKUSDT,SOLUSDT,SOXLUSDT,XRPUSDT"
     },
     {
       "tf": "15m",
@@ -292,7 +325,8 @@
       "mean": 0.0046142125935991,
       "from": "coin_tiers.json",
       "evidence": "9 symbols 2026-07-31..08-06, paid on 7+ of 9",
-      "n_coins": 7
+      "n_coins": 7,
+      "coins": "BLESSUSDT,ETHUSDT,HYPEUSDT,SKHYNIXUSDT,SOLUSDT,XAUUSDT,XRPUSDT"
     },
     {
       "tf": "15m",
@@ -305,7 +339,8 @@
       "mean": 0.004288215462634852,
       "from": "coin_tiers.json",
       "evidence": "9 symbols 2026-07-31..08-06, paid on 7+ of 9",
-      "n_coins": 7
+      "n_coins": 7,
+      "coins": "BLESSUSDT,ETHUSDT,SKHYNIXUSDT,SNDKUSDT,SOLUSDT,SOXLUSDT,XRPUSDT"
     },
     {
       "tf": "15m",
@@ -318,7 +353,8 @@
       "mean": 0.003647830325651722,
       "from": "coin_tiers.json",
       "evidence": "9 symbols 2026-07-31..08-06, paid on 7+ of 9",
-      "n_coins": 7
+      "n_coins": 7,
+      "coins": "BLESSUSDT,ETHUSDT,HYPEUSDT,SNDKUSDT,SOLUSDT,SOXLUSDT,XRPUSDT"
     },
     {
       "tf": "15m",
@@ -331,7 +367,8 @@
       "mean": 0.0034311231464394915,
       "from": "coin_tiers.json",
       "evidence": "9 symbols 2026-07-31..08-06, paid on 7+ of 9",
-      "n_coins": 7
+      "n_coins": 7,
+      "coins": "BLESSUSDT,ETHUSDT,HYPEUSDT,SKHYNIXUSDT,SNDKUSDT,SOLUSDT,SOXLUSDT"
     },
     {
       "tf": "15m",
@@ -344,7 +381,8 @@
       "mean": 0.0032797291964256135,
       "from": "coin_tiers.json",
       "evidence": "9 symbols 2026-07-31..08-06, paid on 7+ of 9",
-      "n_coins": 7
+      "n_coins": 7,
+      "coins": "BLESSUSDT,ETHUSDT,SKHYNIXUSDT,SNDKUSDT,SOLUSDT,SOXLUSDT,XRPUSDT"
     },
     {
       "tf": "15m",
@@ -357,7 +395,8 @@
       "mean": 0.002887631179246164,
       "from": "coin_tiers.json",
       "evidence": "9 symbols 2026-07-31..08-06, paid on 7+ of 9",
-      "n_coins": 7
+      "n_coins": 7,
+      "coins": "BLESSUSDT,ETHUSDT,HYPEUSDT,SNDKUSDT,SOLUSDT,SOXLUSDT,XRPUSDT"
     },
     {
       "tf": "15m",
@@ -370,7 +409,8 @@
       "mean": 0.0028534567754265254,
       "from": "coin_tiers.json",
       "evidence": "9 symbols 2026-07-31..08-06, paid on 7+ of 9",
-      "n_coins": 7
+      "n_coins": 7,
+      "coins": "BLESSUSDT,ETHUSDT,SKHYNIXUSDT,SNDKUSDT,SOLUSDT,SOXLUSDT,XRPUSDT"
     },
     {
       "tf": "15m",
@@ -383,7 +423,8 @@
       "mean": 0.0027082281130299435,
       "from": "coin_tiers.json",
       "evidence": "9 symbols 2026-07-31..08-06, paid on 7+ of 9",
-      "n_coins": 7
+      "n_coins": 7,
+      "coins": "BLESSUSDT,HYPEUSDT,SKHYNIXUSDT,SNDKUSDT,SOLUSDT,SOXLUSDT,XAUUSDT"
     },
     {
       "tf": "15m",
@@ -396,7 +437,8 @@
       "mean": 0.0023329209912095555,
       "from": "coin_tiers.json",
       "evidence": "9 symbols 2026-07-31..08-06, paid on 7+ of 9",
-      "n_coins": 7
+      "n_coins": 7,
+      "coins": "BLESSUSDT,ETHUSDT,HYPEUSDT,SKHYNIXUSDT,SNDKUSDT,SOLUSDT,XRPUSDT"
     },
     {
       "tf": "15m",
@@ -409,7 +451,8 @@
       "mean": 0.0015224061184774752,
       "from": "coin_tiers.json",
       "evidence": "9 symbols 2026-07-31..08-06, paid on 7+ of 9",
-      "n_coins": 7
+      "n_coins": 7,
+      "coins": "BLESSUSDT,ETHUSDT,SKHYNIXUSDT,SNDKUSDT,SOLUSDT,SOXLUSDT,XRPUSDT"
     },
     {
       "tf": "15m",
@@ -422,7 +465,8 @@
       "mean": 0.0014017762526384904,
       "from": "coin_tiers.json",
       "evidence": "9 symbols 2026-07-31..08-06, paid on 7+ of 9",
-      "n_coins": 7
+      "n_coins": 7,
+      "coins": "BLESSUSDT,ETHUSDT,SKHYNIXUSDT,SNDKUSDT,SOLUSDT,SOXLUSDT,XRPUSDT"
     },
     {
       "tf": "15m",
@@ -435,7 +479,8 @@
       "mean": 0.0013613224284610222,
       "from": "coin_tiers.json",
       "evidence": "9 symbols 2026-07-31..08-06, paid on 7+ of 9",
-      "n_coins": 7
+      "n_coins": 7,
+      "coins": "BLESSUSDT,ETHUSDT,HYPEUSDT,SKHYNIXUSDT,SNDKUSDT,SOLUSDT,SOXLUSDT"
     },
     {
       "tf": "15m",
@@ -448,7 +493,8 @@
       "mean": 0.0005927568980345372,
       "from": "coin_tiers.json",
       "evidence": "9 symbols 2026-07-31..08-06, paid on 7+ of 9",
-      "n_coins": 7
+      "n_coins": 7,
+      "coins": "ETHUSDT,HYPEUSDT,SKHYNIXUSDT,SNDKUSDT,SOLUSDT,SOXLUSDT,XRPUSDT"
     },
     {
       "tf": "15m",
@@ -461,7 +507,8 @@
       "mean": 0.009710677787835636,
       "from": "coin_book.json",
       "evidence": "9 symbols 2026-07-31..08-06, survived leave-one-out",
-      "n_coins": 6
+      "n_coins": 6,
+      "coins": "BLESSUSDT,HYPEUSDT,SKHYNIXUSDT,SNDKUSDT,SOXLUSDT,XAUUSDT"
     },
     {
       "tf": "15m",
@@ -474,7 +521,8 @@
       "mean": 0.009119134231455345,
       "from": "coin_book.json",
       "evidence": "9 symbols 2026-07-31..08-06, survived leave-one-out",
-      "n_coins": 6
+      "n_coins": 6,
+      "coins": "BLESSUSDT,HYPEUSDT,SKHYNIXUSDT,SNDKUSDT,SOXLUSDT,XAUUSDT"
     },
     {
       "tf": "1h",
@@ -487,7 +535,8 @@
       "mean": 0.005651507354353863,
       "from": "tier_book.json",
       "evidence": "10 symbols 2026-06-30..08-06, paid in BOTH halves on 3+ correlated-block members, 2-21x the rotation null",
-      "n_coins": 6
+      "n_coins": 6,
+      "coins": "BLESSUSDT,HYPEUSDT,SKHYNIXUSDT,SNDKUSDT,SOLUSDT,XRPUSDT"
     },
     {
       "tf": "30m",
@@ -500,7 +549,8 @@
       "mean": 0.005560612499478086,
       "from": "tier_book.json",
       "evidence": "10 symbols 2026-06-30..08-06, paid in BOTH halves on 3+ correlated-block members, 2-21x the rotation null",
-      "n_coins": 6
+      "n_coins": 6,
+      "coins": "BTCUSDT,SKHYNIXUSDT,SNDKUSDT,SOLUSDT,SOXLUSDT,XRPUSDT"
     },
     {
       "tf": "30m",
@@ -513,7 +563,8 @@
       "mean": 0.005188709502996234,
       "from": "tier_book.json",
       "evidence": "10 symbols 2026-06-30..08-06, paid in BOTH halves on 3+ correlated-block members, 2-21x the rotation null",
-      "n_coins": 6
+      "n_coins": 6,
+      "coins": "BTCUSDT,ETHUSDT,HYPEUSDT,SKHYNIXUSDT,SNDKUSDT,SOLUSDT"
     },
     {
       "tf": "30m",
@@ -526,7 +577,8 @@
       "mean": 0.00498261845483159,
       "from": "tier_book.json",
       "evidence": "10 symbols 2026-06-30..08-06, paid in BOTH halves on 3+ correlated-block members, 2-21x the rotation null",
-      "n_coins": 6
+      "n_coins": 6,
+      "coins": "BTCUSDT,ETHUSDT,HYPEUSDT,SKHYNIXUSDT,SNDKUSDT,SOLUSDT"
     },
     {
       "tf": "1h",
@@ -539,7 +591,8 @@
       "mean": 0.0035276767028960504,
       "from": "tier_book.json",
       "evidence": "10 symbols 2026-06-30..08-06, paid in BOTH halves on 3+ correlated-block members, 2-21x the rotation null",
-      "n_coins": 6
+      "n_coins": 6,
+      "coins": "BTCUSDT,SKHYNIXUSDT,SNDKUSDT,SOLUSDT,SOXLUSDT,XRPUSDT"
     },
     {
       "tf": "15m",
@@ -552,7 +605,8 @@
       "mean": 0.003306125483242248,
       "from": "coin_book.json",
       "evidence": "9 symbols 2026-07-31..08-06, survived leave-one-out",
-      "n_coins": 6
+      "n_coins": 6,
+      "coins": "BLESSUSDT,HYPEUSDT,SKHYNIXUSDT,SNDKUSDT,SOXLUSDT,XAUUSDT"
     },
     {
       "tf": "30m",
@@ -565,7 +619,8 @@
       "mean": 0.0031540311881519726,
       "from": "tier_book.json",
       "evidence": "10 symbols 2026-06-30..08-06, paid in BOTH halves on 3+ correlated-block members, 2-21x the rotation null",
-      "n_coins": 6
+      "n_coins": 6,
+      "coins": "BTCUSDT,ETHUSDT,SNDKUSDT,SOLUSDT,SOXLUSDT,XRPUSDT"
     },
     {
       "tf": "15m",
@@ -578,7 +633,8 @@
       "mean": 0.0025264502725230874,
       "from": "coin_book.json",
       "evidence": "9 symbols 2026-07-31..08-06, survived leave-one-out",
-      "n_coins": 6
+      "n_coins": 6,
+      "coins": "ETHUSDT,HYPEUSDT,SKHYNIXUSDT,SNDKUSDT,SOLUSDT,SOXLUSDT"
     },
     {
       "tf": "1h",
@@ -591,7 +647,8 @@
       "mean": 0.011647463542555792,
       "from": "tier_book.json",
       "evidence": "10 symbols 2026-06-30..08-06, paid in BOTH halves on 3+ correlated-block members, 2-21x the rotation null",
-      "n_coins": 5
+      "n_coins": 5,
+      "coins": "BLESSUSDT,ETHUSDT,SKHYNIXUSDT,SNDKUSDT,SOXLUSDT"
     },
     {
       "tf": "1h",
@@ -604,7 +661,8 @@
       "mean": 0.010819591204067416,
       "from": "tier_book.json",
       "evidence": "10 symbols 2026-06-30..08-06, paid in BOTH halves on 3+ correlated-block members, 2-21x the rotation null",
-      "n_coins": 5
+      "n_coins": 5,
+      "coins": "BLESSUSDT,BTCUSDT,SNDKUSDT,SOXLUSDT,XAUUSDT"
     },
     {
       "tf": "1h",
@@ -617,7 +675,8 @@
       "mean": 0.00955715473297831,
       "from": "tier_book.json",
       "evidence": "10 symbols 2026-06-30..08-06, paid in BOTH halves on 3+ correlated-block members, 2-21x the rotation null",
-      "n_coins": 5
+      "n_coins": 5,
+      "coins": "BLESSUSDT,BTCUSDT,ETHUSDT,SOXLUSDT,XRPUSDT"
     },
     {
       "tf": "1h",
@@ -630,7 +689,8 @@
       "mean": 0.009117255730190383,
       "from": "tier_book.json",
       "evidence": "10 symbols 2026-06-30..08-06, paid in BOTH halves on 3+ correlated-block members, 2-21x the rotation null",
-      "n_coins": 5
+      "n_coins": 5,
+      "coins": "BLESSUSDT,BTCUSDT,HYPEUSDT,SOLUSDT,SOXLUSDT"
     },
     {
       "tf": "1h",
@@ -643,7 +703,8 @@
       "mean": 0.008856664029486535,
       "from": "tier_book.json",
       "evidence": "10 symbols 2026-06-30..08-06, paid in BOTH halves on 3+ correlated-block members, 2-21x the rotation null",
-      "n_coins": 5
+      "n_coins": 5,
+      "coins": "BLESSUSDT,ETHUSDT,SKHYNIXUSDT,SNDKUSDT,SOXLUSDT"
     },
     {
       "tf": "15m",
@@ -656,7 +717,8 @@
       "mean": 0.007926770940474576,
       "from": "coin_book.json",
       "evidence": "9 symbols 2026-07-31..08-06, survived leave-one-out",
-      "n_coins": 5
+      "n_coins": 5,
+      "coins": "BLESSUSDT,HYPEUSDT,SKHYNIXUSDT,SNDKUSDT,SOXLUSDT"
     },
     {
       "tf": "1h",
@@ -669,7 +731,8 @@
       "mean": 0.0040866941722170124,
       "from": "tier_book.json",
       "evidence": "10 symbols 2026-06-30..08-06, paid in BOTH halves on 3+ correlated-block members, 2-21x the rotation null",
-      "n_coins": 5
+      "n_coins": 5,
+      "coins": "BTCUSDT,HYPEUSDT,SNDKUSDT,SOXLUSDT,XRPUSDT"
     },
     {
       "tf": "1h",
@@ -682,7 +745,8 @@
       "mean": 0.003712173892703186,
       "from": "tier_book.json",
       "evidence": "10 symbols 2026-06-30..08-06, paid in BOTH halves on 3+ correlated-block members, 2-21x the rotation null",
-      "n_coins": 5
+      "n_coins": 5,
+      "coins": "BTCUSDT,HYPEUSDT,SNDKUSDT,SOXLUSDT,XRPUSDT"
     },
     {
       "tf": "15m",
@@ -695,7 +759,8 @@
       "mean": 0.0017419749122626917,
       "from": "coin_book.json",
       "evidence": "9 symbols 2026-07-31..08-06, survived leave-one-out",
-      "n_coins": 5
+      "n_coins": 5,
+      "coins": "HYPEUSDT,SNDKUSDT,SOLUSDT,XAUUSDT,XRPUSDT"
     },
     {
       "tf": "15m",
@@ -708,7 +773,8 @@
       "mean": 0.025730181580143074,
       "from": "coin_book.json",
       "evidence": "9 symbols 2026-07-31..08-06, survived leave-one-out",
-      "n_coins": 4
+      "n_coins": 4,
+      "coins": "BLESSUSDT,SKHYNIXUSDT,SNDKUSDT,SOXLUSDT"
     },
     {
       "tf": "15m",
@@ -721,7 +787,8 @@
       "mean": 0.016566884615596682,
       "from": "coin_book.json",
       "evidence": "9 symbols 2026-07-31..08-06, survived leave-one-out",
-      "n_coins": 4
+      "n_coins": 4,
+      "coins": "BLESSUSDT,HYPEUSDT,SNDKUSDT,SOXLUSDT"
     },
     {
       "tf": "15m",
@@ -734,7 +801,8 @@
       "mean": 0.014034562749198854,
       "from": "coin_book.json",
       "evidence": "9 symbols 2026-07-31..08-06, survived leave-one-out",
-      "n_coins": 4
+      "n_coins": 4,
+      "coins": "BLESSUSDT,SNDKUSDT,SOXLUSDT,XAUUSDT"
     },
     {
       "tf": "15m",
@@ -747,7 +815,8 @@
       "mean": 0.013158561266494844,
       "from": "coin_book.json",
       "evidence": "9 symbols 2026-07-31..08-06, survived leave-one-out",
-      "n_coins": 4
+      "n_coins": 4,
+      "coins": "BLESSUSDT,SKHYNIXUSDT,SOXLUSDT,XAUUSDT"
     },
     {
       "tf": "15m",
@@ -760,7 +829,8 @@
       "mean": 0.011769016190298588,
       "from": "coin_book.json",
       "evidence": "9 symbols 2026-07-31..08-06, survived leave-one-out",
-      "n_coins": 4
+      "n_coins": 4,
+      "coins": "BLESSUSDT,SKHYNIXUSDT,SOXLUSDT,XAUUSDT"
     },
     {
       "tf": "15m",
@@ -773,7 +843,8 @@
       "mean": 0.009300876500348132,
       "from": "coin_book.json",
       "evidence": "9 symbols 2026-07-31..08-06, survived leave-one-out",
-      "n_coins": 4
+      "n_coins": 4,
+      "coins": "BLESSUSDT,HYPEUSDT,SNDKUSDT,SOXLUSDT"
     },
     {
       "tf": "30m",
@@ -786,7 +857,8 @@
       "mean": 0.009272715511211307,
       "from": "tier_book.json",
       "evidence": "10 symbols 2026-06-30..08-06, paid in BOTH halves on 3+ correlated-block members, 2-21x the rotation null",
-      "n_coins": 4
+      "n_coins": 4,
+      "coins": "BLESSUSDT,BTCUSDT,SNDKUSDT,XAUUSDT"
     },
     {
       "tf": "1h",
@@ -799,7 +871,8 @@
       "mean": 0.008615936296594118,
       "from": "tier_book.json",
       "evidence": "10 symbols 2026-06-30..08-06, paid in BOTH halves on 3+ correlated-block members, 2-21x the rotation null",
-      "n_coins": 4
+      "n_coins": 4,
+      "coins": "HYPEUSDT,SKHYNIXUSDT,SNDKUSDT,SOXLUSDT"
     },
     {
       "tf": "15m",
@@ -812,7 +885,8 @@
       "mean": 0.007542164696376499,
       "from": "coin_book.json",
       "evidence": "9 symbols 2026-07-31..08-06, survived leave-one-out",
-      "n_coins": 4
+      "n_coins": 4,
+      "coins": "BLESSUSDT,SKHYNIXUSDT,SNDKUSDT,SOXLUSDT"
     },
     {
       "tf": "15m",
@@ -825,7 +899,8 @@
       "mean": 0.00603714758122675,
       "from": "coin_book.json",
       "evidence": "9 symbols 2026-07-31..08-06, survived leave-one-out",
-      "n_coins": 4
+      "n_coins": 4,
+      "coins": "BLESSUSDT,SKHYNIXUSDT,SNDKUSDT,SOXLUSDT"
     },
     {
       "tf": "15m",
@@ -838,7 +913,8 @@
       "mean": 0.005971367576562926,
       "from": "coin_book.json",
       "evidence": "9 symbols 2026-07-31..08-06, survived leave-one-out",
-      "n_coins": 4
+      "n_coins": 4,
+      "coins": "HYPEUSDT,SKHYNIXUSDT,SNDKUSDT,SOXLUSDT"
     },
     {
       "tf": "30m",
@@ -851,7 +927,8 @@
       "mean": 0.005249079825991086,
       "from": "tier_book.json",
       "evidence": "10 symbols 2026-06-30..08-06, paid in BOTH halves on 3+ correlated-block members, 2-21x the rotation null",
-      "n_coins": 4
+      "n_coins": 4,
+      "coins": "BLESSUSDT,BTCUSDT,SOXLUSDT,XAUUSDT"
     },
     {
       "tf": "1h",
@@ -864,7 +941,8 @@
       "mean": 0.004770535598012267,
       "from": "tier_book.json",
       "evidence": "10 symbols 2026-06-30..08-06, paid in BOTH halves on 3+ correlated-block members, 2-21x the rotation null",
-      "n_coins": 4
+      "n_coins": 4,
+      "coins": "SKHYNIXUSDT,SNDKUSDT,SOLUSDT,XAUUSDT"
     },
     {
       "tf": "30m",
@@ -877,7 +955,8 @@
       "mean": 0.00374631182865723,
       "from": "tier_book.json",
       "evidence": "10 symbols 2026-06-30..08-06, paid in BOTH halves on 3+ correlated-block members, 2-21x the rotation null",
-      "n_coins": 4
+      "n_coins": 4,
+      "coins": "ETHUSDT,SOXLUSDT,XAUUSDT,XRPUSDT"
     },
     {
       "tf": "30m",
@@ -890,7 +969,8 @@
       "mean": 0.017544109772650068,
       "from": "tier_book.json",
       "evidence": "10 symbols 2026-06-30..08-06, paid in BOTH halves on 3+ correlated-block members, 2-21x the rotation null",
-      "n_coins": 3
+      "n_coins": 3,
+      "coins": "HYPEUSDT,SOXLUSDT,XAUUSDT"
     },
     {
       "tf": "30m",
@@ -903,7 +983,8 @@
       "mean": 0.0100374939159806,
       "from": "tier_book.json",
       "evidence": "10 symbols 2026-06-30..08-06, paid in BOTH halves on 3+ correlated-block members, 2-21x the rotation null",
-      "n_coins": 3
+      "n_coins": 3,
+      "coins": "HYPEUSDT,SOXLUSDT,XAUUSDT"
     },
     {
       "tf": "30m",
@@ -916,7 +997,8 @@
       "mean": 0.004904669374866017,
       "from": "tier_book.json",
       "evidence": "10 symbols 2026-06-30..08-06, paid in BOTH halves on 3+ correlated-block members, 2-21x the rotation null",
-      "n_coins": 3
+      "n_coins": 3,
+      "coins": "ETHUSDT,SNDKUSDT,XAUUSDT"
     },
     {
       "tf": "30m",
@@ -929,7 +1011,8 @@
       "mean": 0.004349265317256291,
       "from": "tier_book.json",
       "evidence": "10 symbols 2026-06-30..08-06, paid in BOTH halves on 3+ correlated-block members, 2-21x the rotation null",
-      "n_coins": 3
+      "n_coins": 3,
+      "coins": "ETHUSDT,SOXLUSDT,XAUUSDT"
     },
     {
       "tf": "30m",
@@ -942,7 +1025,8 @@
       "mean": 0.0038085761072798523,
       "from": "tier_book.json",
       "evidence": "10 symbols 2026-06-30..08-06, paid in BOTH halves on 3+ correlated-block members, 2-21x the rotation null",
-      "n_coins": 3
+      "n_coins": 3,
+      "coins": "ETHUSDT,SOLUSDT,SOXLUSDT"
     },
     {
       "tf": "30m",
@@ -955,7 +1039,8 @@
       "mean": 0.0015766213759896431,
       "from": "tier_book.json",
       "evidence": "10 symbols 2026-06-30..08-06, paid in BOTH halves on 3+ correlated-block members, 2-21x the rotation null",
-      "n_coins": 3
+      "n_coins": 3,
+      "coins": "HYPEUSDT,SKHYNIXUSDT,SOLUSDT"
     },
     {
       "tf": "1h",
@@ -968,7 +1053,8 @@
       "mean": 0.001561187501211149,
       "from": "tier_book.json",
       "evidence": "10 symbols 2026-06-30..08-06, paid in BOTH halves on 3+ correlated-block members, 2-21x the rotation null",
-      "n_coins": 3
+      "n_coins": 3,
+      "coins": "ETHUSDT,SKHYNIXUSDT,XAUUSDT"
     },
     {
       "tf": "1d",
@@ -981,7 +1067,8 @@
       "mean": 0.030795621655993328,
       "from": "btc_book.json",
       "evidence": "BTCUSDT 2025-2026, profitable in both years separately",
-      "n_coins": 1
+      "n_coins": 1,
+      "coins": ""
     },
     {
       "tf": "1d",
@@ -994,7 +1081,8 @@
       "mean": 0.01952138516574045,
       "from": "btc_book.json",
       "evidence": "BTCUSDT 2025-2026, profitable in both years separately",
-      "n_coins": 1
+      "n_coins": 1,
+      "coins": ""
     },
     {
       "tf": "1d",
@@ -1007,7 +1095,8 @@
       "mean": 0.018322507675344706,
       "from": "btc_book.json",
       "evidence": "BTCUSDT 2025-2026, profitable in both years separately",
-      "n_coins": 1
+      "n_coins": 1,
+      "coins": ""
     },
     {
       "tf": "1d",
@@ -1020,7 +1109,8 @@
       "mean": 0.012897425515289647,
       "from": "btc_book.json",
       "evidence": "BTCUSDT 2025-2026, profitable in both years separately",
-      "n_coins": 1
+      "n_coins": 1,
+      "coins": ""
     },
     {
       "tf": "1d",
@@ -1033,7 +1123,8 @@
       "mean": 0.012801490483105941,
       "from": "btc_book.json",
       "evidence": "BTCUSDT 2025-2026, profitable in both years separately",
-      "n_coins": 1
+      "n_coins": 1,
+      "coins": ""
     },
     {
       "tf": "4h",
@@ -1046,7 +1137,8 @@
       "mean": 0.012626727649562896,
       "from": "btc_book.json",
       "evidence": "BTCUSDT 2025-2026, profitable in both years separately",
-      "n_coins": 1
+      "n_coins": 1,
+      "coins": ""
     },
     {
       "tf": "1d",
@@ -1059,7 +1151,8 @@
       "mean": 0.011970973310440492,
       "from": "btc_book.json",
       "evidence": "BTCUSDT 2025-2026, profitable in both years separately",
-      "n_coins": 1
+      "n_coins": 1,
+      "coins": ""
     },
     {
       "tf": "4h",
@@ -1072,7 +1165,8 @@
       "mean": 0.011878872667919208,
       "from": "btc_book.json",
       "evidence": "BTCUSDT 2025-2026, profitable in both years separately",
-      "n_coins": 1
+      "n_coins": 1,
+      "coins": ""
     },
     {
       "tf": "1d",
@@ -1085,7 +1179,8 @@
       "mean": 0.011824118956787174,
       "from": "btc_book.json",
       "evidence": "BTCUSDT 2025-2026, profitable in both years separately",
-      "n_coins": 1
+      "n_coins": 1,
+      "coins": ""
     },
     {
       "tf": "4h",
@@ -1098,7 +1193,8 @@
       "mean": 0.01163848248198102,
       "from": "btc_book.json",
       "evidence": "BTCUSDT 2025-2026, profitable in both years separately",
-      "n_coins": 1
+      "n_coins": 1,
+      "coins": ""
     },
     {
       "tf": "4h",
@@ -1111,7 +1207,8 @@
       "mean": 0.011572397033742774,
       "from": "btc_book.json",
       "evidence": "BTCUSDT 2025-2026, profitable in both years separately",
-      "n_coins": 1
+      "n_coins": 1,
+      "coins": ""
     },
     {
       "tf": "1d",
@@ -1124,7 +1221,8 @@
       "mean": 0.011311082939961714,
       "from": "btc_book.json",
       "evidence": "BTCUSDT 2025-2026, profitable in both years separately",
-      "n_coins": 1
+      "n_coins": 1,
+      "coins": ""
     },
     {
       "tf": "4h",
@@ -1137,7 +1235,8 @@
       "mean": 0.011000069258368612,
       "from": "btc_book.json",
       "evidence": "BTCUSDT 2025-2026, profitable in both years separately",
-      "n_coins": 1
+      "n_coins": 1,
+      "coins": ""
     },
     {
       "tf": "4h",
@@ -1150,7 +1249,8 @@
       "mean": 0.010826187405569869,
       "from": "btc_book.json",
       "evidence": "BTCUSDT 2025-2026, profitable in both years separately",
-      "n_coins": 1
+      "n_coins": 1,
+      "coins": ""
     },
     {
       "tf": "4h",
@@ -1163,7 +1263,8 @@
       "mean": 0.010822963906221937,
       "from": "btc_book.json",
       "evidence": "BTCUSDT 2025-2026, profitable in both years separately",
-      "n_coins": 1
+      "n_coins": 1,
+      "coins": ""
     },
     {
       "tf": "1d",
@@ -1176,7 +1277,8 @@
       "mean": 0.01041198336664109,
       "from": "btc_book.json",
       "evidence": "BTCUSDT 2025-2026, profitable in both years separately",
-      "n_coins": 1
+      "n_coins": 1,
+      "coins": ""
     },
     {
       "tf": "4h",
@@ -1189,7 +1291,8 @@
       "mean": 0.010149531227822554,
       "from": "btc_book.json",
       "evidence": "BTCUSDT 2025-2026, profitable in both years separately",
-      "n_coins": 1
+      "n_coins": 1,
+      "coins": ""
     },
     {
       "tf": "4h",
@@ -1202,7 +1305,8 @@
       "mean": 0.009774132118909002,
       "from": "btc_book.json",
       "evidence": "BTCUSDT 2025-2026, profitable in both years separately",
-      "n_coins": 1
+      "n_coins": 1,
+      "coins": ""
     },
     {
       "tf": "4h",
@@ -1215,7 +1319,8 @@
       "mean": 0.009702596591845173,
       "from": "btc_book.json",
       "evidence": "BTCUSDT 2025-2026, profitable in both years separately",
-      "n_coins": 1
+      "n_coins": 1,
+      "coins": ""
     },
     {
       "tf": "1d",
@@ -1228,7 +1333,8 @@
       "mean": 0.009551661556228962,
       "from": "btc_book.json",
       "evidence": "BTCUSDT 2025-2026, profitable in both years separately",
-      "n_coins": 1
+      "n_coins": 1,
+      "coins": ""
     },
     {
       "tf": "4h",
@@ -1241,7 +1347,8 @@
       "mean": 0.009506505048079495,
       "from": "btc_book.json",
       "evidence": "BTCUSDT 2025-2026, profitable in both years separately",
-      "n_coins": 1
+      "n_coins": 1,
+      "coins": ""
     },
     {
       "tf": "1d",
@@ -1254,7 +1361,8 @@
       "mean": 0.009304759349029116,
       "from": "btc_book.json",
       "evidence": "BTCUSDT 2025-2026, profitable in both years separately",
-      "n_coins": 1
+      "n_coins": 1,
+      "coins": ""
     },
     {
       "tf": "1d",
@@ -1267,7 +1375,8 @@
       "mean": 0.008913925565789228,
       "from": "btc_book.json",
       "evidence": "BTCUSDT 2025-2026, profitable in both years separately",
-      "n_coins": 1
+      "n_coins": 1,
+      "coins": ""
     },
     {
       "tf": "4h",
@@ -1280,7 +1389,8 @@
       "mean": 0.008575122619907376,
       "from": "btc_book.json",
       "evidence": "BTCUSDT 2025-2026, profitable in both years separately",
-      "n_coins": 1
+      "n_coins": 1,
+      "coins": ""
     },
     {
       "tf": "4h",
@@ -1293,7 +1403,8 @@
       "mean": 0.008470750769336725,
       "from": "btc_book.json",
       "evidence": "BTCUSDT 2025-2026, profitable in both years separately",
-      "n_coins": 1
+      "n_coins": 1,
+      "coins": ""
     },
     {
       "tf": "4h",
@@ -1306,7 +1417,8 @@
       "mean": 0.007787774966249462,
       "from": "btc_book.json",
       "evidence": "BTCUSDT 2025-2026, profitable in both years separately",
-      "n_coins": 1
+      "n_coins": 1,
+      "coins": ""
     },
     {
       "tf": "4h",
@@ -1319,7 +1431,8 @@
       "mean": 0.00746975675220943,
       "from": "btc_book.json",
       "evidence": "BTCUSDT 2025-2026, profitable in both years separately",
-      "n_coins": 1
+      "n_coins": 1,
+      "coins": ""
     },
     {
       "tf": "4h",
@@ -1332,7 +1445,8 @@
       "mean": 0.006744910189164536,
       "from": "btc_book.json",
       "evidence": "BTCUSDT 2025-2026, profitable in both years separately",
-      "n_coins": 1
+      "n_coins": 1,
+      "coins": ""
     },
     {
       "tf": "4h",
@@ -1345,7 +1459,8 @@
       "mean": 0.0065863511209730856,
       "from": "btc_book.json",
       "evidence": "BTCUSDT 2025-2026, profitable in both years separately",
-      "n_coins": 1
+      "n_coins": 1,
+      "coins": ""
     },
     {
       "tf": "4h",
@@ -1358,7 +1473,8 @@
       "mean": 0.0060815776050557584,
       "from": "btc_book.json",
       "evidence": "BTCUSDT 2025-2026, profitable in both years separately",
-      "n_coins": 1
+      "n_coins": 1,
+      "coins": ""
     }
   ]
 }

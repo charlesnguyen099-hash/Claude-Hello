@@ -89,6 +89,12 @@ def merge() -> dict:
                 "from": fname,
                 "evidence": what,
                 "n_coins": evidence(r),
+                # The symbols this rule was actually validated on. A rule
+                # proven on BTC, SNDK, SOXL and XAU has evidence for those
+                # four; firing it on a symbol nobody tested is a different
+                # claim wearing the same numbers. The bot honours this
+                # unless explicitly told not to.
+                "coins": r.get("coins", ""),
             }
             old = rules.get(k)
             if old is None or merged["n_coins"] > old["n_coins"]:
@@ -99,8 +105,10 @@ def merge() -> dict:
                 old["also_from"] = fname
     out = sorted(rules.values(),
                  key=lambda r: (-r["n_coins"], -r["mean"]))
+    scope = sorted({c for r in out for c in r["coins"].split(",") if c})
     return {
         "built_from": seen_parts,
+        "scope": scope,
         "in_sample": True,
         "note": "Every rule is fitted to the data it was found on. Merging "
                 "changes convenience, not evidence. Rules run on every "
@@ -148,7 +156,9 @@ def main(argv=None) -> int:
             print(f"{r['tf']:>5} {r['name']:<28} {r['side']:>5} "
                   f"{exitspec:>16} {r['n_coins']:>6} "
                   f"{100*r['mean']:>7.3f}%  {r['from']}")
-    print(f"\nwritten to {OUT.name} -- run_bot.py loads this by default")
+    sc = book.get("scope", [])
+    print(f"\nvalidated on {len(sc)} symbols: {', '.join(sc)}")
+    print(f"written to {OUT.name} -- run_bot.py loads this by default")
     return 0
 
 

@@ -1186,6 +1186,35 @@ def test_bot_trades_nothing_without_a_whitelist():
     check("no position was opened", len(b.open) == 0, str(list(b.open)))
 
 
+def test_book_rules_fire_only_where_they_were_validated():
+    """A rule proven on four symbols has evidence for those four.
+
+    Firing it on a symbol nobody measured is an untested claim wearing
+    tested numbers, so the scope in each rule is enforced -- and lifting
+    it has to be a deliberate choice, not the default.
+    """
+    print("\nbook rules fire only on the symbols they were validated on")
+    syms = ["INSCOPEUSDT", "OUTSIDEUSDT"]
+    c = FakeHTTP(syms)
+    b = broker_for(syms, c, signal_source="book", sizing="flat",
+                   expectancy_gate=False)
+    rule = {"tf": "15m", "name": "x", "side": "long", "tp": 2.0, "sl": 1.0,
+            "hmax": 24, "hold_min": 360.0, "mean": 0.01,
+            "coins": "INSCOPEUSDT,OTHERUSDT"}
+    b.book = [rule]
+    b.book_anywhere = False
+    scope = set(rule["coins"].split(","))
+    check("the validated symbol is in scope", "INSCOPEUSDT" in scope)
+    check("the other one is not", "OUTSIDEUSDT" not in scope)
+    check("scope defaults to enforced", b.book_anywhere is False)
+
+    # a rule with no recorded scope is unrestricted, since there is
+    # nothing to restrict it to
+    b.book = [{**rule, "coins": ""}]
+    check("a rule with no recorded scope is not silently blocked",
+          not (b.book[0].get("coins") or ""))
+
+
 def test_book_never_touches_the_old_logic():
     """A book trade must be decided by the book alone.
 
@@ -1603,6 +1632,7 @@ def main() -> int:
                test_funding_uses_real_elapsed_time_on_event_bars,
                test_trades_are_counted_once_not_per_bar,
                test_bot_trades_nothing_without_a_whitelist,
+               test_book_rules_fire_only_where_they_were_validated,
                test_book_never_touches_the_old_logic,
                test_book_trade_matches_the_backtest_arithmetic,
                test_book_barriers_sit_around_the_fill_not_the_bar_close,

@@ -66,6 +66,17 @@ import sys
 from fp import logic as L
 
 
+def book_scope(book_file: str) -> list[str]:
+    """The symbols the loaded book was actually validated on."""
+    import json
+    from pathlib import Path
+    p = Path(__file__).resolve().parent / "fp" / book_file
+    try:
+        return list(json.loads(p.read_text()).get("scope", []))
+    except Exception:
+        return []
+
+
 def discover_symbols(client, top: int) -> list[str]:
     """Every USDT perpetual, most liquid first. top=0 keeps all of them."""
     r = client.get_tickers(category="linear")
@@ -159,6 +170,12 @@ def main() -> int:
                         "`python run_bot.py` runs. The parts are still there "
                         "if you want one alone: btc_book.json, "
                         "coin_tiers.json, coin_book.json")
+    p.add_argument("--book-anywhere", action="store_true",
+                   help="let every book rule fire on every symbol scanned, "
+                        "ignoring the symbols it was validated on. Off by "
+                        "default: a rule proven on four symbols has evidence "
+                        "for those four, and running it elsewhere is an "
+                        "untested claim wearing tested numbers")
     p.add_argument("--min-votes", type=int, default=1,
                    help="methods that must fire and agree before a trade")
     p.add_argument("--exit", default=L.DEFAULT_EXIT, choices=L.EXIT_STRATEGIES,
@@ -202,8 +219,15 @@ def main() -> int:
                              L.FUNDING_RATE_TYPICAL, args.slippage)
     fee = cost["total"]
 
+    scope = book_scope(args.book_file) if args.signals == "book" else []
     if args.symbols:
         symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
+    elif scope and not args.top and not args.book_anywhere:
+        # The book's rules were validated on these symbols and are scoped
+        # to them, so scanning the other 680 perpetuals would fetch klines
+        # for symbols no rule is allowed to fire on. --top or
+        # --book-anywhere widens it deliberately.
+        symbols = scope
     else:
         try:
             symbols = discover_symbols(client, args.top)
@@ -277,6 +301,13 @@ def main() -> int:
         print(f"    units of the volatility at entry, and its own time limit.")
         print(f"    Nothing from the twelve-method design touches these trades")
         print(f"    -- fp/test_bot.py fails if it does.")
+        if _b.get("scope"):
+            if args.book_anywhere:
+                print(f"    --book-anywhere: rules fire on ANY scanned symbol,")
+                print(f"    including {len(symbols)} never used to validate them.")
+            else:
+                print(f"    Each rule fires ONLY on the symbols it was")
+                print(f"    validated on. Use --book-anywhere to lift that.")
         if _b.get("in_sample"):
             print(f"    WARNING: this book is FITTED to the data above. It is")
             print(f"    what worked there, not a forecast. Forward performance")
@@ -408,7 +439,7 @@ def main() -> int:
               args.assumed_win_rate, args.signals, not args.flat_sizing,
               "flat" if args.flat_sizing else args.sizing,
               args.max_margin_pct / 100.0, args.limit_entry, args.slippage,
-              None, args.book_file)
+              None, args.book_file, args.book_anywhere)
     except KeyboardInterrupt:
         pass
     except Exception as exc:

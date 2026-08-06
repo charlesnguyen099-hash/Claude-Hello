@@ -39,11 +39,13 @@ is what makes nothing get missed; polling harder would not.
 from __future__ import annotations
 
 import concurrent.futures
+import json
 import logging
 import signal
 import threading
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -51,6 +53,13 @@ import pandas as pd
 from fp import features as F
 from fp import logic as L
 from fp import methods as M
+
+# Any position shorter than this cannot pay for its own round trip at
+# Bybit's fees -- fp/horizon.py measures the average 1m move at 0.040%
+# against a 0.110% round trip, so even a perfect forecast loses. Kept
+# here rather than imported so the bot never depends on the research
+# module at runtime.
+MIN_HOLD_MINUTES = 60
 
 logger = logging.getLogger("potential_leverage.bot")
 
@@ -217,8 +226,14 @@ class Broker:
         self.slippage = slippage
         self.fee_override = fee_override
         self.library = None
+        self.survivors: list[dict] = []
         self.bar_minutes = L.BAR_MINUTES
-        if signal_source == "regime":
+        if signal_source == "survivors":
+            # Daily bars, and only the logics that earned their place.
+            from fp import slow as S
+            self.bar_minutes = S.TREND_BAR_MINUTES
+            self.survivors = self._load_survivors()
+        elif signal_source == "regime":
             # Daily bars, and the direction is the consensus of the logics
             # that have historically paid in the state the market is in
             # right now -- see fp/regime.py.
@@ -236,6 +251,13 @@ class Broker:
         self.min_votes = min_votes
         self.fee = fee
         self.max_leverage = max_leverage
+        # Below this a round trip costs more than the average move is
+        # worth, so a position that short is a loss with extra steps --
+        # see fp/horizon.py. Enforced here as well as in the search, so a
+        # hand-edited whitelist cannot smuggle a two-minute logic in.
+        self.min_hold_minutes = MIN_HOLD_MINUTES
+        self.survivors = [w for w in self.survivors
+                          if w.get("hold_min", 0) >= self.min_hold_minutes]
 
         self.open: dict[str, Position] = {}
         self.closed: list[Closed] = []
@@ -256,6 +278,7 @@ class Broker:
         self.skipped_max_notional = 0
         self.skipped_unsolvent = 0
         self.skipped_negative_ev = 0
+        self.no_survivors = 0
         self.blocked_signals = 0
         self.blocked_by: dict[str, int] = {"margin": 0, "exposure": 0,
                                            "unsolvent": 0}
@@ -480,6 +503,9 @@ class Broker:
         bar_ts = int(bars["ts"].iloc[-1])
         self.evaluated_bar[symbol] = max(bar_ts, now_bar)
 
+        if self.signal_source == "survivors":
+            return self._evaluate_survivors(symbol, bars, bar_ts)
+
         if self.signal_source in ("slow", "regime"):
             return self._evaluate_slow(symbol, bars, bar_ts,
                                        regime=self.signal_source == "regime")
@@ -545,6 +571,93 @@ class Broker:
                      votes=1, vote_margin=1,
                      methods=(f"slow MA{S.TREND_LOOKBACK} "
                               f"move={100*move:.1f}% vol={100*vol:.2f}%/d "
+                              f"lev={chain['leverage']:.2f}x"),
+                     confidence=None, slow_leverage=chain["leverage"])
+        self.signals[symbol] = sig
+        return sig
+
+    @staticmethod
+    def _load_survivors() -> list[dict]:
+        """The whitelist, or an empty list if none was ever earned."""
+        p = Path(__file__).resolve().parent / "survivors.json"
+        if not p.exists():
+            logger.warning("no survivors.json -- run python -m fp.survivors; "
+                           "until then this mode opens nothing")
+            return []
+        try:
+            data = json.loads(p.read_text())
+        except Exception:
+            logger.warning("survivors.json unreadable", exc_info=True)
+            return []
+        got = data.get("logics", [])
+        logger.info("survivors.json: %d logics cleared the bar", len(got))
+        return got
+
+    def _evaluate_survivors(self, symbol: str, bars: pd.DataFrame,
+                            bar_ts: int) -> Signal | None:
+        """Trade ONLY the logics that earned a place in survivors.json.
+
+        The whitelist is produced by fp/survivors.py, which tests every
+        logic on its own out of sample and keeps the ones that clear a
+        Bonferroni threshold for the number tested and beat a null that
+        rotates the logic's timing at random.
+
+        An empty whitelist means no logic earned a place, and then this
+        opens nothing. That is not a failure mode to work around -- it is
+        what "only trade profitable logics" means on a day when none are.
+        """
+        wl = self.survivors
+        if not wl:
+            self.no_survivors += 1
+            self.signals.pop(symbol, None)
+            return None
+        try:
+            from fp import ensemble as E
+            from fp import slow as S
+        except Exception:
+            return None
+        d = bars.rename(columns=str.lower)
+        if len(d) < 320:
+            self.signals.pop(symbol, None)
+            return None
+        try:
+            logics = E.build_logics(d, fast=True)
+        except Exception:
+            logger.debug("survivor evaluation failed", exc_info=True)
+            self.signals.pop(symbol, None)
+            return None
+
+        votes = [float(logics[w["name"]].iloc[-1]) for w in wl
+                 if w["name"] in logics]
+        if not votes:
+            self.no_survivors += 1
+            self.signals.pop(symbol, None)
+            return None
+        v = float(np.mean(votes))
+        direction = 1 if v > 0.2 else (-1 if v < -0.2 else 0)
+
+        c = d["close"].values
+        vol = S.daily_volatility(c)
+        if direction == 0 or not np.isfinite(vol) or vol <= 0:
+            self.no_signal += 1
+            self.signals.pop(symbol, None)
+            return None
+        # The whitelist carries the hold each logic was measured at, and
+        # the leverage is solved over that hold rather than a guess.
+        hold_days = max(1.0, float(np.mean([w["hold_min"] for w in wl])) / 1440.0)
+        ma = float(np.mean(c[-S.TREND_LOOKBACK:]))
+        move = abs(c[-1] - ma) / ma
+        chain = S.best_leverage(move, hold_days, vol,
+                                self.max_leverage or S.LEVERAGE_MAX)
+        if not chain["tradeable"]:
+            self.skipped_negative_ev += 1
+            self.signals.pop(symbol, None)
+            return None
+        sig = Signal(bar_ts=bar_ts, direction=direction,
+                     atr_pct=100.0 * vol, votes=len(votes),
+                     vote_margin=len(votes),
+                     methods=(f"survivors {len(votes)}/{len(wl)} agree "
+                              f"vote={v:+.2f} hold={hold_days:.1f}d "
                               f"lev={chain['leverage']:.2f}x"),
                      confidence=None, slow_leverage=chain["leverage"])
         self.signals[symbol] = sig

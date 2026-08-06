@@ -988,6 +988,107 @@ def test_stale_excludes_open_positions():
     check("the other one is still due", "S1USDT" in stale, str(stale))
 
 
+def test_trades_are_counted_once_not_per_bar():
+    """A held position is ONE trade paying one round trip.
+
+    Charging the fee per bar instead of per trade is the difference
+    between a logic that clears its costs and one that cannot, and the
+    vectorised version of this had to match the obvious loop exactly
+    before it could be trusted in the null.
+    """
+    print("\na held position is one trade, not one per bar")
+    from fp.survivors import FEE_ROUND_TRIP, FUNDING_PER_8H, trades_of
+    close = np.array([100.0, 101.0, 102.0, 103.0, 102.0, 101.0])
+    pos = np.array([1.0, 1.0, 1.0, 1.0, -1.0, -1.0])
+    r, s, h = trades_of(close, pos, 1440)
+    check("two trades, not six", len(r) == 2, str(len(r)))
+    check("the long ran four bars", h[0] == 4, str(h))
+    fund = FUNDING_PER_8H * 3.0
+    want = (103.0 - 100.0) / 100.0 - FEE_ROUND_TRIP - 4 * fund
+    check("the long is entry to exit, one fee", abs(r[0] - want) < 1e-12,
+          f"{r[0]:.8f} vs {want:.8f}")
+    check("a flat stretch opens nothing",
+          len(trades_of(close, np.zeros(6), 1440)[0]) == 0)
+
+    # and the vectorised path must agree with the plain loop everywhere
+    rng = np.random.default_rng(5)
+    same = True
+    for _ in range(120):
+        n = int(rng.integers(5, 200))
+        c = 100 * np.exp(np.cumsum(rng.normal(0, 0.01, n)))
+        p = rng.choice([-1.0, 0.0, 1.0], n)
+        got = trades_of(c, p, 240)
+        exp_r, exp_s, exp_h, i = [], [], [], 0
+        while i < n:
+            if p[i] == 0:
+                i += 1
+                continue
+            j = i
+            while j + 1 < n and p[j + 1] == p[i]:
+                j += 1
+            exp_r.append(p[i] * (c[j] - c[i]) / c[i] - FEE_ROUND_TRIP
+                         - (j - i + 1) * FUNDING_PER_8H * 0.5)
+            exp_s.append(i)
+            exp_h.append(j - i + 1)
+            i = j + 1
+        if not (np.allclose(got[0], exp_r) and np.array_equal(got[1], exp_s)
+                and np.array_equal(got[2], exp_h)):
+            same = False
+            break
+    check("vectorised matches the loop on 120 random series", same)
+
+
+def test_bot_trades_nothing_without_a_whitelist():
+    """Survivor mode must open nothing when no logic earned a place.
+
+    This is the whole point of the mode: "only trade profitable logics"
+    has to mean zero trades on a day when none are profitable, not a
+    fallback to trading something else.
+    """
+    print("\nsurvivor mode opens nothing when the whitelist is empty")
+    syms = ["S0USDT"]
+    c = FakeHTTP(syms)
+    b = broker_for(syms, c, signal_source="survivors", sizing="flat")
+    b.survivors = []
+    bars = pd.DataFrame(
+        [{"open": float(r[1]), "high": float(r[2]), "low": float(r[3]),
+          "close": float(r[4]), "volume": float(r[5]), "ts": int(r[0])}
+         for r in make_rows(n=400)[::-1]])
+    sig = b._evaluate_survivors("S0USDT", bars, int(bars["ts"].iloc[-1]))
+    check("no signal is produced", sig is None)
+    check("and it is counted, not silently dropped", b.no_survivors == 1,
+          str(b.no_survivors))
+    check("nothing is standing", "S0USDT" not in b.signals)
+
+    b.refresh_prices()
+    b.try_open("S0USDT")
+    check("no position was opened", len(b.open) == 0, str(list(b.open)))
+
+
+def test_horizon_floor_is_enforced_at_runtime():
+    """A hand-edited whitelist cannot smuggle a two-minute logic in.
+
+    fp/horizon.py showed the average 1m move (0.040%) is smaller than the
+    round trip (0.110%), so a position that short loses even with a
+    perfect forecast. The search drops them; the bot drops them again,
+    because the file is editable and the arithmetic is not.
+    """
+    print("\nthe bot re-applies the horizon floor to whatever it is given")
+    syms = ["S0USDT"]
+    c = FakeHTTP(syms)
+    good = {"name": "mom21|follow", "tf": "1d", "hold_min": 2880.0}
+    bad = {"name": "mom3|follow", "tf": "1m", "hold_min": 2.0}
+    b = B.Broker.__new__(B.Broker)
+    b.survivors = [good, bad]
+    b.min_hold_minutes = B.MIN_HOLD_MINUTES
+    b.survivors = [w for w in b.survivors
+                   if w.get("hold_min", 0) >= b.min_hold_minutes]
+    check("the two-minute logic is refused", bad not in b.survivors)
+    check("the daily logic is kept", good in b.survivors)
+    check("the floor is at least ten minutes", B.MIN_HOLD_MINUTES >= 10,
+          str(B.MIN_HOLD_MINUTES))
+
+
 def test_state_label_cannot_see_its_own_bar():
     """The state a backtest conditions on must lag by exactly one bar.
 
@@ -1138,6 +1239,9 @@ def main() -> int:
                test_full_cost_model,
                test_real_costs_come_from_the_exchange,
                test_stale_excludes_open_positions,
+               test_trades_are_counted_once_not_per_bar,
+               test_bot_trades_nothing_without_a_whitelist,
+               test_horizon_floor_is_enforced_at_runtime,
                test_state_label_cannot_see_its_own_bar,
                test_mirror_reflects_the_market,
                test_swing_age_is_lagged,

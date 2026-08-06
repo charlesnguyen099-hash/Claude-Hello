@@ -130,11 +130,17 @@ def main() -> int:
                         "per dollar of margin, which spans a factor of ten "
                         "across the ATR range because the fee does")
     p.add_argument("--signals", default="methods",
-                   choices=["methods", "slow", "regime"],
-                   help="regime: direction from the logics that have paid in "
+                   choices=["methods", "slow", "regime", "survivors"],
+                   help="survivors: ONLY the logics in fp/survivors.json, "
+                        "each of which was tested on its own out of sample, "
+                        "cleared a Bonferroni threshold for the number tested, "
+                        "and beat a timing-rotation null. If that file is "
+                        "empty no position is ever opened -- which is what "
+                        "'trade only profitable logics' means when none are. "
+                        "regime: direction from the logics that have paid in "
                         "the state this coin is in now, out of 2,602 built "
-                        "from ~100 factors x 38 methods. slow: daily trend, "
-                        "position held until "
+                        "from ~100 factors x 38 methods -- measured to lose. "
+                        "slow: daily trend, position held until "
                         "the trend flips, leverage solved for including "
                         "volatility drag. methods: the twelve voting rules on "
                         "30m bars -- kept for comparison, and measured to lose")

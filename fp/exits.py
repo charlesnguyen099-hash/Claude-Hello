@@ -55,6 +55,65 @@ THE GATES ARE UNCHANGED
                 entry x exit combinations tested, which is large
     honesty     the exit grid is searched on the first half only; the
                 second half is never consulted while choosing
+
+WHAT IT MEASURED
+
+    tf     entries  exits  combinations  cleared gates  t bar  survivors
+    15m      1,146     90       206,280              0     --          0
+    30m      3,096     90       543,060              6   5.34          0
+    1h       3,098     90       541,080             95   5.34          0
+    4h       3,066     90       442,980          1,447   5.30          0
+    1d       2,602     90         2,700              3   4.28          0
+
+1.74 million entry x exit x side combinations. Zero survivors. The best
+out-of-sample t anywhere is 2.75, against a bar of 5.30.
+
+The exit grid itself, averaged over every entry that reached it, is
+negative out of sample at every single setting -- the best 4h exit
+(tp2.0/sl3.0 over 6 bars) returns +0.167% at t=0.56, and everything else
+is below zero. Freeing the exit did not free anything.
+
+Long and short separately, which had never been split before:
+
+    tf    side   combos   IS mean   OOS mean
+    4h    long    1,075    0.726%    -0.211%
+    4h    short     372    0.715%    -0.183%
+    1h    long       79    0.287%    -0.130%
+    1h    short      16    0.378%    -0.139%
+
+Both sides look identical in sample and both fail identically out of
+sample. The asymmetry that exists in the market is not one this library
+can trade.
+
+THE TRAP THIS RUN CAUGHT, WHICH IS THE REASON THE GATES CHANGED
+
+A first version of this file reported three survivors at 4h, the best at
+t = 18.45. It was wrong twice over.
+
+    vol21|breakfade120  short  tp0.5 sigma / sl3.0 sigma
+      first half    n=35   win 94.3%   2 losses at -2.068%   t=2.14
+      second half   n=28   win  100%   0 losses             t=18.45
+
+The t-stat of 18.45 measures a sample that happens to contain none of
+the tail, not a logic that avoids it. tp0.5/sl3.0 hits its target 86% of
+the time by geometry alone -- P(target first) = SL/(TP+SL) = 3.0/3.5 --
+and one -2.068% stop erases 5.9 wins of +0.353%. Twenty-eight trades
+show zero losses about 1.2% of the time, and across half a million
+combinations that happens thousands of times.
+
+The losses were not hypothetical: the first half of the same data shows
+them, twice, and they drag that logic's t from 18.45 down to 2.14.
+
+Two fixes followed, both of which this file now applies:
+
+  1. the win rate gets a Wilson lower bound and the loss is priced at
+     its DESIGNED size -- the stop is known by construction, so a sample
+     with no losses in it cannot price them at zero
+  2. Bonferroni counts every combination attempted, not the handful that
+     survived the in-sample gate, since that gate is itself a selection
+     over all of them. At 4h that moved the bar from |t| > 4.37 to 5.30
+
+Under the corrected gates all three vanish.
 """
 from __future__ import annotations
 
@@ -68,6 +127,26 @@ from fp.ensemble import build_logics
 from fp.horizon import (FEE_ROUND_TRIP, FUNDING_PER_8H, TIMEFRAMES, load_1m,
                         resample)
 from fp.survivors import POTENTIAL_Z, bonferroni_t, tstat
+
+
+def wilson_lower(wins: int, n: int, z: float = 1.96) -> float:
+    """Lower bound on a win rate, so a sample with no losses in it cannot
+    claim there are none.
+
+    A tp of 0.5 sigma against a stop of 3.0 sigma hits its target 86% of
+    the time by geometry alone. Twenty-eight trades will show zero losses
+    about 1.2% of the time, and across half a million combinations that
+    happens thousands of times -- each one reading as a perfect record
+    with a t-stat in the teens, because the variance of a sample with no
+    tail in it collapses.
+    """
+    if n <= 0:
+        return 0.0
+    ph = wins / n
+    d = 1.0 + z * z / n
+    c = ph + z * z / (2 * n)
+    m = z * np.sqrt(ph * (1 - ph) / n + z * z / (4 * n * n))
+    return max(0.0, (c - m) / d)
 
 TP_MULTS = (0.5, 1.0, 1.5, 2.0, 3.0, 4.0)
 SL_MULTS = (0.5, 1.0, 1.5, 2.0, 3.0)
@@ -182,6 +261,20 @@ def evaluate(d: pd.DataFrame, minutes: int, max_hold: int, min_trades: int
                                 / np.sqrt(len(a)))
                         if not (lo_b > 0):
                             continue
+                        # A barrier trade's loss size is KNOWN -- it is the
+                        # stop -- so a sample that happens to contain no
+                        # losses must not be allowed to price them at zero.
+                        # The win rate gets a Wilson lower bound and the
+                        # loss gets its designed size, which is what stops
+                        # tp0.5/sl3.0 from reading as a 100% strategy.
+                        aw = a[a > 0]
+                        avg_win = float(aw.mean()) if len(aw) else 0.0
+                        stop_loss = -(sl / max(tp, 1e-9)) * avg_win
+                        pl = wilson_lower(int((a > 0).sum()), len(a))
+                        safe = (pl * avg_win + (1 - pl) * stop_loss
+                                - FEE_ROUND_TRIP)
+                        if not (safe > 0):
+                            continue
                         rows.append({
                             "logic": name, "side": "long" if side > 0 else "short",
                             "tp": tp, "sl": sl, "hmax": hmax,
@@ -191,7 +284,11 @@ def evaluate(d: pd.DataFrame, minutes: int, max_hold: int, min_trades: int
                             "oos_t": tstat(b),
                             "hold": float(np.median(held[e2])) * minutes,
                         })
-    return pd.DataFrame(rows)
+    out = pd.DataFrame(rows)
+    out.attrs["attempted"] = (len(entries) *
+                              len([h for h in HOLDS if h <= max_hold]) *
+                              len(TP_MULTS) * len(SL_MULTS))
+    return out
 
 
 def main(argv=None) -> int:
@@ -220,10 +317,14 @@ def main(argv=None) -> int:
             print("  no entry x exit combination has a positive in-sample "
                   "edge after fees\n")
             continue
-        thr = bonferroni_t(len(R))
+        # Correct for EVERY combination attempted, not the handful that
+        # survived the in-sample gate. The gate is itself a selection over
+        # all of them, so counting only its output understates the search.
+        attempted = R.attrs.get("attempted", len(R))
+        thr = bonferroni_t(attempted)
         surv = R[R["oos_t"] > thr]
-        print(f"  {len(R):,} combinations cleared the potential gate, "
-              f"Bonferroni bar |t| > {thr:.2f}")
+        print(f"  {len(R):,} of {attempted:,} combinations cleared the gates, "
+              f"Bonferroni bar for {attempted:,} tests |t| > {thr:.2f}")
 
         # what the exit grid itself says, before any significance test
         print(f"\n  {'exit':>22} {'combos':>7} {'IS mean':>9} {'OOS mean':>9} "

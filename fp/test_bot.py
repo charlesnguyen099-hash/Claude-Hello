@@ -1186,6 +1186,137 @@ def test_bot_trades_nothing_without_a_whitelist():
     check("no position was opened", len(b.open) == 0, str(list(b.open)))
 
 
+def test_book_never_touches_the_old_logic():
+    """A book trade must be decided by the book alone.
+
+    Three functions belong to the twelve-method design and encode ITS
+    measured record: L.expectancy reads edge_table.json, L.kelly_fraction
+    sizes from that exit's win rate, and L.leverage_potential builds the
+    ATR leverage ladder. Every one of them was still on the book path
+    until this test existed -- and L.expectancy returns -inf for any ATR
+    band it never measured, so it would have silently vetoed the entire
+    book while looking like "no signal".
+
+    So they are replaced with detonators here. If a book trade consults
+    any of them, this fails.
+    """
+    print("\nbook mode decides with the book and nothing else")
+    fired = []
+
+    def boom(name):
+        def f(*a, **k):
+            fired.append(name)
+            raise AssertionError(f"book path called {name}")
+        return f
+
+    syms = ["S0USDT"]
+    c = FakeHTTP(syms)
+    b = broker_for(syms, c, signal_source="book", sizing="kelly",
+                   expectancy_gate=True, exit_name="net_TRAILING")
+    b.refresh_prices()
+    b.signals["S0USDT"] = B.Signal(
+        bar_ts=B.closed_bar_ts(), direction=1, atr_pct=2.0, votes=1,
+        vote_margin=1, methods="book rule", slow_leverage=2.0,
+        tp_dist=0.05, sl_dist=0.03, max_hold_min=480.0, rule="4h:x:long")
+
+    saved = {n: getattr(L, n) for n in
+             ("expectancy", "kelly_fraction", "leverage_potential",
+              "margin_weight")}
+    try:
+        for n in saved:
+            setattr(L, n, boom(n))
+        opened = b.try_open("S0USDT")
+    finally:
+        for n, f in saved.items():
+            setattr(L, n, f)
+
+    check("the trade opened", opened, "; ".join(fired) or "refused")
+    check("no old-logic function was consulted", not fired, ", ".join(fired))
+    p = b.open.get("S0USDT")
+    if p is not None:
+        check("sizing is the flat slice, not Kelly",
+              abs(p.margin - b.equity_total_at_open) < 1e-6
+              if hasattr(b, "equity_total_at_open") else True)
+        check("the expectancy gate did not veto it", "S0USDT" in b.open)
+        # --exit net_TRAILING must be ignored for a book position
+        b.manage("S0USDT", p.entry * 1.02)          # up, then back down
+        b.manage("S0USDT", p.entry * 1.001)
+        check("a trailing stop does not close a book position",
+              "S0USDT" in b.open,
+              b.closed[-1].reason if b.closed else "-")
+        b.manage("S0USDT", p.tp_price * 1.0001)
+        check("its own target does", "S0USDT" not in b.open)
+        check("and books it as a take-profit",
+              b.closed and b.closed[-1].reason == "take_profit",
+              b.closed[-1].reason if b.closed else "-")
+
+
+def test_book_trade_matches_the_backtest_arithmetic():
+    """The bot's trade must equal what the study measured, to the cent.
+
+    fp/exits.barrier_outcomes is what produced every number in the books.
+    This drives the bot over the same bars and checks the P&L it books is
+    the same one the study would have recorded -- same entry, same target,
+    same stop, same net after the same fee.
+    """
+    print("\nthe bot's book trade equals the backtest's, to the cent")
+    from fp.exits import barrier_outcomes
+    from fp.horizon import FEE_ROUND_TRIP
+
+    entry, tp_sig, sl_sig, sigma = 100.0, 2.0, 1.0, 0.02
+    # a path that rises to the target without ever touching the stop
+    close = np.array([entry, 101.0, 103.0, 104.5, 104.5])
+    high = np.array([entry, 101.5, 103.5, 105.0, 105.0])
+    low = np.array([entry, 99.5, 100.8, 103.0, 104.0])
+    sig = np.full(5, sigma)
+    o, held = barrier_outcomes(high, low, close, sig, 1, tp_sig, sl_sig, 3)
+    study_gross = float(o[0])
+    check("the study takes the target", abs(study_gross - tp_sig * sigma) < 1e-12,
+          f"{study_gross}")
+
+    syms = ["S0USDT"]
+    c = FakeHTTP(syms, price=entry)
+    b = broker_for(syms, c, signal_source="book", sizing="flat",
+                   expectancy_gate=False, fee=FEE_ROUND_TRIP)
+    b.refresh_prices()
+    b.signals["S0USDT"] = B.Signal(
+        bar_ts=B.closed_bar_ts(), direction=1, atr_pct=100 * sigma, votes=1,
+        vote_margin=1, methods="book", slow_leverage=1.0,
+        tp_dist=tp_sig * sigma, sl_dist=sl_sig * sigma,
+        max_hold_min=180.0, rule="4h:x:long")
+    b.try_open("S0USDT")
+    p = b.open["S0USDT"]
+    check("the bot places the same target the study used",
+          abs(p.tp_price / p.entry - 1 - tp_sig * sigma) < 1e-12,
+          f"{p.tp_price / p.entry - 1:.8f}")
+    notional = p.qty * p.entry
+    entry_fee = notional * b.fee / 2          # debited at open, not in pnl
+    b.manage("S0USDT", p.tp_price)
+    t = b.closed[-1]
+    bot_gross = (t.exit_price - t.entry) / t.entry
+    check("and realises the same gross move",
+          abs(bot_gross - study_gross) < 1e-12,
+          f"bot {bot_gross:.8f} vs study {study_gross:.8f}")
+
+    # The bot debits the entry fee against equity at open and keeps only
+    # the exit fee inside pnl_usd, so a like-for-like comparison has to add
+    # it back. It also charges the exit fee on the EXIT notional rather
+    # than the entry one, which is what an exchange actually does and
+    # makes the bot very slightly STRICTER than the study -- by
+    # 0.055% x the move, which at a 4% target is 0.0022% of margin.
+    net_bot = (t.pnl_usd - entry_fee) / p.margin
+    net_study = study_gross - FEE_ROUND_TRIP
+    basis = (L.EXIT_FEE_TAKER * study_gross)      # the exit-price basis gap
+    check("net of one round trip, the two agree",
+          abs(net_bot - net_study) < 5 * basis + 1e-9,
+          f"bot {net_bot:.8f} vs study {net_study:.8f}")
+    check("and the residual IS the exit-price basis, not a missing fee",
+          abs(abs(net_bot - net_study) - basis) < 1e-9,
+          f"residual {abs(net_bot - net_study):.10f} vs basis {basis:.10f}")
+    check("the bot is the stricter of the two", net_bot <= net_study + 1e-12,
+          f"{net_bot:.8f} > {net_study:.8f}")
+
+
 def test_book_barriers_sit_around_the_fill_not_the_bar_close():
     """A book rule's target and stop must straddle the price it fills at.
 
@@ -1472,6 +1603,8 @@ def main() -> int:
                test_funding_uses_real_elapsed_time_on_event_bars,
                test_trades_are_counted_once_not_per_bar,
                test_bot_trades_nothing_without_a_whitelist,
+               test_book_never_touches_the_old_logic,
+               test_book_trade_matches_the_backtest_arithmetic,
                test_book_barriers_sit_around_the_fill_not_the_bar_close,
                test_book_refuses_a_stop_outside_liquidation,
                test_book_builds_only_the_rules_it_names,

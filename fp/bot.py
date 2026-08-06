@@ -132,6 +132,12 @@ class Signal:
     sl_dist: float | None = None
     max_hold_min: float | None = None
     rule: str = ""
+    # What this rule actually earned per trade where it was measured. The
+    # dashboard's expected-value column comes from here for a book trade,
+    # because the alternative -- L.ev_per_margin -- rebuilds the old ATR
+    # leverage ladder internally and would report one rule's prospects
+    # using another rule's model.
+    rule_mean: float = 0.0
 
 
 @dataclass
@@ -372,12 +378,15 @@ class Broker:
         """
         eq = max(0.0, self.equity_total)
         fee = self.fee if fee is None else fee
-        if self.signal_source in ("slow", "regime"):
+        if self.signal_source in ("slow", "regime", "book", "survivors"):
             # The potential scaling already lives in the leverage, which
             # slow.best_leverage() solved WITH drag in it. Kelly on top of
-            # that would double-count, and Kelly's win-rate input belongs
-            # to the old TP/SL logic which this mode does not use -- it
-            # returned zero for every slow signal and opened nothing.
+            # that would double-count, and Kelly's win-rate input is the
+            # measured record of the OLD TP3.0/SL1.5 exit -- a statistic
+            # about a different rule. A book rule carries its own target,
+            # its own stop and its own measured win rate; sizing it from
+            # another rule's table is exactly the mixing this mode exists
+            # to avoid.
             return eq * self.margin_pct
         if self.sizing == "kelly" and atr_pct is not None:
             f = L.kelly_fraction(atr_pct, self.exit_name, fee, p_win,
@@ -759,7 +768,8 @@ class Broker:
                      f"lev={chain['leverage']:.2f}x"),
             confidence=None, slow_leverage=chain["leverage"],
             tp_dist=tp_dist, sl_dist=sl_dist, max_hold_min=hold_min,
-            rule=f"{tf}:{r['name']}:{r['side']}")
+            rule=f"{tf}:{r['name']}:{r['side']}",
+            rule_mean=float(r.get("mean") or 0.0))
         self.signals[symbol] = sig
         return sig
 
@@ -996,7 +1006,14 @@ class Broker:
         # Expectancy first: it costs nothing and it is the only test that
         # can tell this trade is not worth taking at all.
         fee = self.trade_cost(symbol, sig.direction)
-        ev = (1.0 if self.signal_source in ("slow", "regime")
+        # L.expectancy reads fp/edge_table.json, which was measured for the
+        # twelve-method logic on its own TP/SL ladder. Applying it to a
+        # book rule would judge one rule by another rule's record -- and
+        # since the table returns -inf for any band it never measured, it
+        # would silently veto the whole book. Every source that brings its
+        # own tested edge is exempt.
+        ev = (1.0 if self.signal_source in ("slow", "regime", "book",
+                                            "survivors")
               else L.expectancy(sig.atr_pct, self.exit_name, fee,
                                 self.assumed_win_rate))
         if self.expectancy_gate and ev <= 0:
@@ -1087,9 +1104,12 @@ class Broker:
                 potential_score=chain["potential_score"],
                 conviction=chain["conviction"],
                 lev_base=chain["lev_base"],
-                ev_per_margin=L.ev_per_margin(sig.atr_pct, self.exit_name,
-                                              self.fee, self.assumed_win_rate,
-                                              self.max_leverage),
+                ev_per_margin=(sig.rule_mean * lev if sig.rule is not None
+                               and sig.rule
+                               else L.ev_per_margin(sig.atr_pct,
+                                                    self.exit_name, self.fee,
+                                                    self.assumed_win_rate,
+                                                    self.max_leverage)),
                 margin_weight=(margin / (self.equity_total * self.margin_pct)
                                if self.equity_total > 0 else 1.0),
                 max_hold_min=sig.max_hold_min, rule=sig.rule,
@@ -1197,7 +1217,17 @@ class Broker:
                 self._close(symbol, price, "trend_flip")
             return
 
-        if pos.exit_name == "net_TRAILING":
+        if pos.rule:
+            # A book position is managed ONLY by the barriers its rule was
+            # measured with: the stop above, the target below, and the time
+            # limit after that. --exit is not consulted, because a trailing
+            # stop laid over a barrier rule is a third rule that nobody
+            # tested.
+            if np.isfinite(pos.tp_price):
+                if (price >= pos.tp_price) if d > 0 else (price <= pos.tp_price):
+                    self._close(symbol, pos.tp_price, "take_profit")
+                    return
+        elif pos.exit_name == "net_TRAILING":
             pos.best_price = max(pos.best_price, price) if d > 0 else min(pos.best_price, price)
             trail = pos.best_price - d * pos.trail_dist
             if (price <= trail) if d > 0 else (price >= trail):

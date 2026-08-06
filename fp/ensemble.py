@@ -206,6 +206,13 @@ def trade_returns(close: np.ndarray, pos: np.ndarray) -> np.ndarray:
     This is the whole point. A position that survives twenty days is one
     trade paying one round trip and twenty days of funding -- not twenty
     daily positions each paying drag.
+
+    The exit is the bar AFTER the run ends. The signal still says `d` on
+    the run's last bar and only changes on the next one, so the next one
+    is when the change can be acted on. Closing a bar earlier books the
+    price from before the bar that caused the flip -- and that bar is
+    usually the one that went against the position, so skipping it
+    flatters every logic measured this way.
     """
     out = []
     n = len(pos)
@@ -218,10 +225,11 @@ def trade_returns(close: np.ndarray, pos: np.ndarray) -> np.ndarray:
         j = i
         while j + 1 < n and pos[j + 1] == d:
             j += 1
-        p0, p1 = close[i], close[j]
-        if p0 > 0 and np.isfinite(p1):
-            held = j - i + 1
-            out.append(d * (p1 - p0) / p0 - FEE - held * FUND_DAY)
+        if j + 1 < n:                     # a trade still open at the end
+            p0, p1 = close[i], close[j + 1]
+            if p0 > 0 and np.isfinite(p1):
+                held = j + 1 - i
+                out.append(d * (p1 - p0) / p0 - FEE - held * FUND_DAY)
         i = j + 1
     return np.array(out)
 

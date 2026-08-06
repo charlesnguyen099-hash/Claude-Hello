@@ -1001,16 +1001,24 @@ def test_trades_are_counted_once_not_per_bar():
     close = np.array([100.0, 101.0, 102.0, 103.0, 102.0, 101.0])
     pos = np.array([1.0, 1.0, 1.0, 1.0, -1.0, -1.0])
     r, s, h = trades_of(close, pos, 1440)
-    check("two trades, not six", len(r) == 2, str(len(r)))
-    check("the long ran four bars", h[0] == 4, str(h))
+    check("one closed trade, not six", len(r) == 1, str(len(r)))
+    # The long runs bars 0..3 and the signal flips at bar 4, so the exit is
+    # close[4] = 102, NOT close[3] = 103. Bar 4 fell, and it is the bar that
+    # caused the flip -- skipping it is the look-ahead this guards.
     fund = FUNDING_PER_8H * 3.0
-    want = (103.0 - 100.0) / 100.0 - FEE_ROUND_TRIP - 4 * fund
-    check("the long is entry to exit, one fee", abs(r[0] - want) < 1e-12,
-          f"{r[0]:.8f} vs {want:.8f}")
+    want = (102.0 - 100.0) / 100.0 - FEE_ROUND_TRIP - 4 * fund
+    check("it exits where the flip became knowable, not a bar early",
+          abs(r[0] - want) < 1e-12, f"{r[0]:.8f} vs {want:.8f}")
+    check("the hold spans entry to exit", h[0] == 4, str(h))
+    naive = (103.0 - 100.0) / 100.0 - FEE_ROUND_TRIP - 4 * fund
+    check("and that is worse than the look-ahead version", r[0] < naive,
+          f"{r[0]:.6f} vs {naive:.6f}")
+    check("the still-open final position is not counted",
+          len(trades_of(close, np.ones(6), 1440)[0]) == 0)
     check("a flat stretch opens nothing",
           len(trades_of(close, np.zeros(6), 1440)[0]) == 0)
 
-    # and the vectorised path must agree with the plain loop everywhere
+    # and the vectorised path must agree with a plain loop everywhere
     rng = np.random.default_rng(5)
     same = True
     for _ in range(120):
@@ -1026,10 +1034,11 @@ def test_trades_are_counted_once_not_per_bar():
             j = i
             while j + 1 < n and p[j + 1] == p[i]:
                 j += 1
-            exp_r.append(p[i] * (c[j] - c[i]) / c[i] - FEE_ROUND_TRIP
-                         - (j - i + 1) * FUNDING_PER_8H * 0.5)
-            exp_s.append(i)
-            exp_h.append(j - i + 1)
+            if j + 1 < n:                      # only closed trades count
+                exp_r.append(p[i] * (c[j + 1] - c[i]) / c[i] - FEE_ROUND_TRIP
+                             - (j + 1 - i) * FUNDING_PER_8H * 0.5)
+                exp_s.append(i)
+                exp_h.append(j + 1 - i)
             i = j + 1
         if not (np.allclose(got[0], exp_r) and np.array_equal(got[1], exp_s)
                 and np.array_equal(got[2], exp_h)):

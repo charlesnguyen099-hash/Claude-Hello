@@ -98,22 +98,31 @@ def trades_of(close: np.ndarray, pos: np.ndarray, minutes: int
     if n == 0:
         return np.empty(0), np.empty(0, int), np.empty(0, int)
     p = np.where(np.isfinite(pos), pos, 0.0)
-    # Segment boundaries: a trade runs from where the position changes to
-    # the bar before it changes again. Done with run-length arithmetic
-    # rather than a loop, because the rotation null re-does this a few
-    # hundred thousand times.
+    # Segment boundaries, by run-length arithmetic rather than a loop
+    # because the rotation null re-does this a few hundred thousand times.
     edges = np.flatnonzero(np.diff(p) != 0) + 1
     starts_all = np.concatenate([[0], edges])
-    ends_all = np.concatenate([edges - 1, [n - 1]])
+    last_all = np.concatenate([edges - 1, [n - 1]])
     d = p[starts_all]
     keep = d != 0
-    starts, ends, d = starts_all[keep], ends_all[keep], d[keep]
-    if len(starts) == 0:
+    starts, last, d = starts_all[keep], last_all[keep], d[keep]
+    # THE EXIT IS ONE BAR AFTER THE RUN ENDS, and this is not a detail.
+    # The signal is still `d` at bar `last`; it changes at `last + 1`, and
+    # `last + 1` is when that change becomes knowable. Exiting at
+    # close[last] would mean closing on the strength of a flip nobody has
+    # seen yet -- and the bar it skips is precisely the bar that caused
+    # the flip, which is usually the one that ran against the position.
+    # Dropping it inflates every logic in the library.
+    exits = last + 1
+    ok = exits < n
+    starts, exits, d = starts[ok], exits[ok], d[ok]     # the last open
+    if len(starts) == 0:                                # trade is unclosed
         return np.empty(0), np.empty(0, int), np.empty(0, int)
-    p0, p1 = close[starts], close[ends]
-    ok = (p0 > 0) & np.isfinite(p1)
-    starts, ends, d, p0, p1 = (starts[ok], ends[ok], d[ok], p0[ok], p1[ok])
-    holds = ends - starts + 1
+    p0, p1 = close[starts], close[exits]
+    fin = (p0 > 0) & np.isfinite(p1)
+    starts, exits, d, p0, p1 = (starts[fin], exits[fin], d[fin], p0[fin],
+                                p1[fin])
+    holds = exits - starts
     fund = FUNDING_PER_8H * (minutes / 480.0)
     rets = d * (p1 - p0) / p0 - FEE_ROUND_TRIP - holds * fund
     return rets, starts, holds
@@ -268,6 +277,9 @@ def main(argv=None) -> int:
                          "minutes -- the frontier says these cannot pay")
     ap.add_argument("--min-trades", type=int, default=20)
     ap.add_argument("--top", type=int, default=10)
+    ap.add_argument("--null-alpha", type=float, default=0.05,
+                    help="a timeframe must beat the rotation null at this "
+                         "level before ANY of its logics may be traded")
     ap.add_argument("--null-runs", type=int, default=200,
                     help="rotation-null repeats for the picking procedure")
     ap.add_argument("--seed", type=int, default=17)
@@ -326,9 +338,19 @@ def main(argv=None) -> int:
               f"{100*res['null_mean']:>10.4f}% {100*res['null_sd']:>8.4f}% "
               f"{ps:>7}")
 
-    keep = []
+    # A logic gets in only if BOTH bars are cleared: its own out-of-sample
+    # t against the Bonferroni threshold, and its timeframe's picking
+    # procedure against the rotation null. The second is what stops a
+    # timeframe whose apparent winners are pure directional tilt from
+    # exporting a hundred and seventy of them into the live bot.
+    keep, rejected = [], []
     for res in results:
         if "note" in res:
+            continue
+        p = res["null_p"]
+        if not (p == p and p <= a.null_alpha):
+            if res["survivors"]:
+                rejected.append((res["tf"], len(res["survivors"]), p))
             continue
         for s in res["survivors"]:
             if s["is_t"] > 0:            # must also have worked before
@@ -342,6 +364,12 @@ def main(argv=None) -> int:
     print("\n" + "=" * 78)
     print("WHAT THE BOT MAY TRADE")
     print("=" * 78)
+    for tf, n, p in rejected:
+        print(f"  {tf}: {n} logics cleared their own significance bar and are")
+        print(f"  REFUSED anyway -- that timeframe's picking procedure scores")
+        print(f"  p={p:.3f} against the rotation null, so its winners are not")
+        print(f"  distinguishable from randomly-timed positions with the same")
+        print(f"  long/short tilt. Individually significant, collectively noise.\n")
     if keep:
         for s in keep:
             print(f"  {s['tf']:>4} {s['name']:<34} OOS t={s['oos_t']:.2f} "

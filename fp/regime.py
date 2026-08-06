@@ -75,6 +75,45 @@ one regime, and untested against a rising or choppy market because the
 data barely contains one. Treat the size of the number as a property of
 that decline, not as an expectation.
 
+HOW MANY LOGICS THE DATA CAN ACTUALLY CARRY
+
+The natural next step is to slice the state space finer -- many narrow
+states, each with its own specialist logic. That was measured, sweeping
+from two states to a hundred and forty:
+
+    state dimensions            states   days traded    total   Sharpe
+    trend (k=2)                      2           274    +89.5%     2.72
+    trend (k=3)                      3           247   +123.6%     3.71
+    trend,dir (k=3)                  8           136    +27.4%     2.01
+    vol,trend,dir (k=3)             24            50     +5.2%     3.27
+    vol,trend,dir,mom (k=3)         46            21     +4.7%     6.55
+    +pos (k=3)                      70             7     -0.7%    -4.90
+    +volr (k=3)                    140             0        --       --
+
+The binding constraint is not how much code can be written. It is that
+there are 583 daily bars. Cut them into 140 states and each holds about
+four days of history -- below any threshold at which a logic could be
+judged -- so nothing trades at all. At 70 states, seven days qualify in
+nineteen months.
+
+More logics do not cover more signals here; finer states cover fewer,
+because coverage is bounded by samples per state and the samples are
+fixed. The returns above shrink monotonically with granularity for that
+reason, not because the narrow logics are worse.
+
+AND THE STATES WHERE NOTHING WORKS DO NOT EXIST
+
+The other half of the idea -- where no logic is profitable, invert the
+losing ones instead of dropping the state -- was implemented and never
+fired. Across every configuration above, zero inversions.
+
+The reason is worth stating: with 2,602 logics in hand, the five best by
+in-state Sharpe have a positive in-state mean in EVERY state, always.
+There is no state without an apparent winner. That is not evidence the
+states are all tradeable; it is the overfitting warning in its clearest
+form -- a large enough logic library guarantees an in-sample winner
+inside any slice you draw, including slices that are pure noise.
+
 EVERYTHING ELSE IS AS ESTABLISHED
 
 Daily bars, positions held until the logic flips, returns measured entry

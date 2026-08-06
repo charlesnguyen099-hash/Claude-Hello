@@ -988,6 +988,47 @@ def test_stale_excludes_open_positions():
     check("the other one is still due", "S1USDT" in stale, str(stale))
 
 
+def test_barriers_take_the_first_touch_and_assume_the_worse_one():
+    """A target reached inside a bar was reached, and ties go to the loss.
+
+    Two things a close-only backtest gets wrong and that manufacture edge
+    if left wrong: a barrier touched intrabar must count, and when both
+    barriers sit inside the same bar the path is unknown, so the loss has
+    to be assumed. Assuming the win there is how a backtest invents money.
+    """
+    print("\nbarriers resolve on first touch, ties resolved against the trade")
+    from fp.exits import barrier_outcomes
+
+    # a steady 1%/bar rise, sigma 1%: a long with tp=2 sigma exits at +2%
+    n = 12
+    close = np.array([100.0 * 1.01 ** i for i in range(n)])
+    sig = np.full(n, 0.01)
+    o, h = barrier_outcomes(close, close, close, sig, 1, 2.0, 1.0, 4)
+    check("the long takes its target", abs(o[0] - 0.02) < 1e-12, f"{o[0]}")
+    check("and takes it on the bar that reached it", h[0] == 2, str(h[0]))
+    o, h = barrier_outcomes(close, close, close, sig, -1, 2.0, 1.0, 4)
+    check("the short takes its stop in the same market",
+          abs(o[0] + 0.01) < 1e-12, f"{o[0]}")
+    check("on the first bar that reached it", h[0] == 1, str(h[0]))
+
+    # a bar wide enough to contain BOTH barriers must resolve as the loss
+    close2 = np.array([100.0, 100.0, 100.0, 100.0])
+    high2 = np.array([100.0, 110.0, 100.0, 100.0])
+    low2 = np.array([100.0, 90.0, 100.0, 100.0])
+    sig2 = np.full(4, 0.02)
+    o2, _ = barrier_outcomes(high2, low2, close2, sig2, 1, 1.0, 1.0, 2)
+    check("a bar containing both barriers is booked as the loss",
+          o2[0] < 0, f"{o2[0]}")
+
+    # a trade with no room left to complete is not counted at all
+    o3, _ = barrier_outcomes(close, close, close, sig, 1, 2.0, 1.0, 4)
+    check("trades too close to the end are left out",
+          bool(np.isnan(o3[-1])), str(o3[-3:]))
+    check("the barrier scales with volatility, not with price",
+          abs(barrier_outcomes(close, close, close, np.full(n, 0.02), 1,
+                               1.0, 1.0, 4)[0][0] - 0.02) < 1e-12)
+
+
 def test_event_bars_have_no_fixed_duration():
     """Bars must close on an event, so their length is an output.
 
@@ -1328,6 +1369,7 @@ def main() -> int:
                test_full_cost_model,
                test_real_costs_come_from_the_exchange,
                test_stale_excludes_open_positions,
+               test_barriers_take_the_first_touch_and_assume_the_worse_one,
                test_event_bars_have_no_fixed_duration,
                test_funding_uses_real_elapsed_time_on_event_bars,
                test_trades_are_counted_once_not_per_bar,

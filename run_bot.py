@@ -130,8 +130,13 @@ def main() -> int:
                         "per dollar of margin, which spans a factor of ten "
                         "across the ATR range because the fee does")
     p.add_argument("--signals", default="methods",
-                   choices=["methods", "slow", "regime", "survivors"],
-                   help="survivors: ONLY the logics in fp/survivors.json, "
+                   choices=["methods", "slow", "regime", "survivors", "book"],
+                   help="book: trade the rules in --book-file, each with its "
+                        "OWN entry, side, volatility-scaled target, stop and "
+                        "time limit, on its own timeframe. This is what "
+                        "fp/btc_book.py and fp/coin_book.py produce, and the "
+                        "books are FITTED to the data they were built on. "
+                        "survivors: ONLY the logics in fp/survivors.json, "
                         "each of which was tested on its own out of sample, "
                         "cleared a Bonferroni threshold for the number tested, "
                         "and beat a timing-rotation null. If that file is "
@@ -144,6 +149,11 @@ def main() -> int:
                         "the trend flips, leverage solved for including "
                         "volatility drag. methods: the twelve voting rules on "
                         "30m bars -- kept for comparison, and measured to lose")
+    p.add_argument("--book-file", default="btc_book.json",
+                   help="which book --signals book trades: btc_book.json "
+                        "(30 rules on 4h/1d BTC), coin_book.json (15 rules "
+                        "on 15m across the nine symbols), or "
+                        "coin_tiers.json (the rules that paid on 7+ coins)")
     p.add_argument("--min-votes", type=int, default=1,
                    help="methods that must fire and agree before a trade")
     p.add_argument("--exit", default=L.DEFAULT_EXIT, choices=L.EXIT_STRATEGIES,
@@ -360,7 +370,8 @@ def main() -> int:
               args.conviction_floor, not args.no_expectancy_gate,
               args.assumed_win_rate, args.signals, not args.flat_sizing,
               "flat" if args.flat_sizing else args.sizing,
-              args.max_margin_pct / 100.0, args.limit_entry, args.slippage)
+              args.max_margin_pct / 100.0, args.limit_entry, args.slippage,
+              None, args.book_file)
     except KeyboardInterrupt:
         pass
     except Exception as exc:

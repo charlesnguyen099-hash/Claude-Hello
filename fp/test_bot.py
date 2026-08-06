@@ -1186,6 +1186,104 @@ def test_bot_trades_nothing_without_a_whitelist():
     check("no position was opened", len(b.open) == 0, str(list(b.open)))
 
 
+def test_book_barriers_sit_around_the_fill_not_the_bar_close():
+    """A book rule's target and stop must straddle the price it fills at.
+
+    The signal is computed on a bar close and the position fills at the
+    live ticker. An earlier version pinned absolute prices to the bar
+    close, which put the barriers off by exactly that gap -- and in the
+    test that caught it a SHORT opened with its target ABOVE the entry
+    and its stop below, i.e. the trade inverted.
+    """
+    print("\nbook barriers straddle the fill price, not the signal bar")
+    syms = ["S0USDT"]
+    c = FakeHTTP(syms)
+    b = broker_for(syms, c, signal_source="book", sizing="flat",
+                   expectancy_gate=False)
+    b.book = [{"tf": "4h", "name": "x", "side": "short", "tp": 2.0,
+               "sl": 1.0, "hmax": 24, "hold_min": 480.0, "mean": 0.01}]
+    for d_, label in ((1, "long"), (-1, "short")):
+        b.signals["S0USDT"] = B.Signal(
+            bar_ts=B.closed_bar_ts(), direction=d_, atr_pct=2.0, votes=1,
+            vote_margin=1, methods="book test", slow_leverage=2.0,
+            tp_dist=0.04, sl_dist=0.02, max_hold_min=480.0, rule="t")
+        b.open.clear()
+        b.traded_bar.clear()
+        b.refresh_prices()
+        b.try_open("S0USDT")
+        p = b.open.get("S0USDT")
+        if p is None:
+            check(f"{label}: a position opened", False)
+            continue
+        if d_ > 0:
+            ok = p.tp_price > p.entry > p.sl_price
+        else:
+            ok = p.tp_price < p.entry < p.sl_price
+        check(f"{label}: target and stop straddle the entry the right way",
+              ok, f"tp={p.tp_price:.4f} entry={p.entry:.4f} sl={p.sl_price:.4f}")
+        check(f"{label}: target is 4% away as the rule says",
+              abs(abs(p.tp_price / p.entry - 1) - 0.04) < 1e-9,
+              f"{abs(p.tp_price / p.entry - 1):.6f}")
+        check(f"{label}: the rule's time limit is carried onto the position",
+              p.max_hold_min == 480.0, str(p.max_hold_min))
+
+
+def test_book_refuses_a_stop_outside_liquidation():
+    """A stop further out than liquidation is a stop that never fires.
+
+    At leverage L liquidation sits ~0.9/L away, so a rule whose stop is
+    wider than that gets liquidated first and its risk model is fiction.
+    """
+    print("\nbook mode refuses a stop the account cannot survive")
+    syms = ["S0USDT"]
+    c = FakeHTTP(syms)
+    b = broker_for(syms, c, signal_source="book", sizing="flat",
+                   expectancy_gate=False)
+    b.refresh_prices()
+    before = b.skipped_unsolvent
+    b.signals["S0USDT"] = B.Signal(
+        bar_ts=B.closed_bar_ts(), direction=1, atr_pct=2.0, votes=1,
+        vote_margin=1, methods="wide stop", slow_leverage=10.0,
+        tp_dist=0.05, sl_dist=0.50, max_hold_min=480.0, rule="t")
+    opened = b.try_open("S0USDT")
+    check("the trade is refused", not opened)
+    check("and counted as unsolvent", b.skipped_unsolvent == before + 1)
+
+    b.signals["S0USDT"] = B.Signal(
+        bar_ts=B.closed_bar_ts() + 1, direction=1, atr_pct=2.0, votes=1,
+        vote_margin=1, methods="tight stop", slow_leverage=2.0,
+        tp_dist=0.05, sl_dist=0.02, max_hold_min=480.0, rule="t")
+    check("a stop inside liquidation is allowed", b.try_open("S0USDT"))
+
+
+def test_book_builds_only_the_rules_it_names():
+    """Building 2,602 logics to read thirty is what breaks a live scan.
+
+    `only=` must prune the factor and method loops, and must return
+    exactly what a full build would have returned for those keys -- a
+    faster path that changes the numbers is not a faster path.
+    """
+    print("\nbook mode builds only the logics its rules name")
+    from fp.ensemble import build_logics
+    r = np.random.default_rng(2)
+    n = 900
+    close = 100 * np.exp(np.cumsum(r.normal(0, 0.02, n)))
+    d = pd.DataFrame({"open": close, "high": close * 1.006,
+                      "low": close * 0.994, "close": close,
+                      "volume": np.abs(r.normal(1e6, 2e5, n))})
+    full = build_logics(d)
+    want = set(list(full)[:8])
+    sub = build_logics(d, only=want)
+    check("only the named keys come back", set(sub) <= want, str(set(sub) - want))
+    check("and they are identical to the full build",
+          all(np.array_equal(sub[k].values, full[k].values) for k in sub))
+    check("the full build is much larger", len(full) > 20 * max(len(sub), 1),
+          f"{len(full)} vs {len(sub)}")
+    check("an unknown name simply does not appear",
+          "nosuchfactor|nosuchmethod" not in build_logics(
+              d, only={"nosuchfactor|nosuchmethod"}))
+
+
 def test_short_holds_are_judged_not_banned():
     """A ten-minute logic must be admitted on its economics, not its clock.
 
@@ -1374,6 +1472,9 @@ def main() -> int:
                test_funding_uses_real_elapsed_time_on_event_bars,
                test_trades_are_counted_once_not_per_bar,
                test_bot_trades_nothing_without_a_whitelist,
+               test_book_barriers_sit_around_the_fill_not_the_bar_close,
+               test_book_refuses_a_stop_outside_liquidation,
+               test_book_builds_only_the_rules_it_names,
                test_short_holds_are_judged_not_banned,
                test_state_label_cannot_see_its_own_bar,
                test_mirror_reflects_the_market,

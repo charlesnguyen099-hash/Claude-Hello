@@ -121,6 +121,17 @@ class Signal:
     live_wins: int = 0
     # Set only in slow mode: leverage already solved for, with drag.
     slow_leverage: float | None = None
+    # Set only in book mode. The rule that fired carries its OWN target and
+    # stop, as FRACTIONAL distances already scaled by the volatility at the
+    # signal bar. They are distances rather than prices on purpose: the
+    # signal is computed on a bar close and the position fills at the live
+    # ticker, and pinning absolute prices to the bar close puts the
+    # barriers in the wrong place by exactly that gap -- which in a fast
+    # market can be larger than the target itself.
+    tp_dist: float | None = None
+    sl_dist: float | None = None
+    max_hold_min: float | None = None
+    rule: str = ""
 
 
 @dataclass
@@ -146,6 +157,11 @@ class Position:
     lev_base: float
     ev_per_margin: float = 0.0
     margin_weight: float = 1.0
+    # Book mode: the rule's own time limit, in minutes. A barrier trade
+    # that touches neither side is closed at the limit it was measured
+    # with, not at the generic timeout.
+    max_hold_min: float | None = None
+    rule: str = ""
 
 
 @dataclass
@@ -171,6 +187,7 @@ class Broker:
                  expectancy_gate: bool = True,
                  assumed_win_rate: float | None = None,
                  signal_source: str = "methods",
+                 book_file: str = "btc_book.json",
                  potential_sizing: bool = True,
                  sizing: str = "kelly",
                  max_margin_pct: float = L.MAX_MARGIN_FRACTION,
@@ -221,8 +238,19 @@ class Broker:
         self.fee_override = fee_override
         self.library = None
         self.survivors: list[dict] = []
+        self.book: list[dict] = []
+        self._book_cache: dict[tuple, tuple] = {}
         self.bar_minutes = L.BAR_MINUTES
-        if signal_source == "survivors":
+        if signal_source == "book":
+            # Every rule brings its own timeframe, so the scan runs at the
+            # FINEST one in the book -- anything slower would miss the bar
+            # a fast rule fires on, and anything faster only re-asks the
+            # same question before the answer can change.
+            self.book = self._load_book(book_file)
+            if self.book:
+                self.bar_minutes = min(self.BOOK_MINUTES[r["tf"]]
+                                       for r in self.book)
+        elif signal_source == "survivors":
             # Daily bars, and only the logics that earned their place.
             from fp import slow as S
             self.bar_minutes = S.TREND_BAR_MINUTES
@@ -392,6 +420,8 @@ class Broker:
     # ---------------------------------------------------------------- market
 
     def klines(self, symbol: str) -> pd.DataFrame | None:
+        if self.signal_source == "book":
+            return None          # book mode fetches per-timeframe itself
         try:
             rows = self.client.get_kline(category="linear", symbol=symbol,
                                          interval=str(self.bar_minutes),
@@ -483,6 +513,16 @@ class Broker:
         """
         self.evaluations += 1
         now_bar = closed_bar_ts(bar_minutes=self.bar_minutes)
+
+        # Book mode fetches its OWN history, one series per timeframe the
+        # book names, so the generic fetch above is dead weight for it.
+        # Answering here rather than below saves one kline call per symbol
+        # per bar, which across 690 symbols is the difference between a
+        # polite scan and a rate-limit ban.
+        if self.signal_source == "book":
+            self.evaluated_bar[symbol] = now_bar
+            return self._evaluate_book(symbol, now_bar)
+
         if bars is None or len(bars) < MIN_BARS:
             # Mark it evaluated anyway: a symbol Bybit cannot serve, or one
             # too young to have 250 bars, must not be retried every pass.
@@ -566,6 +606,160 @@ class Broker:
                               f"move={100*move:.1f}% vol={100*vol:.2f}%/d "
                               f"lev={chain['leverage']:.2f}x"),
                      confidence=None, slow_leverage=chain["leverage"])
+        self.signals[symbol] = sig
+        return sig
+
+    # Bybit kline intervals for the timeframes a book can name.
+    BOOK_INTERVAL = {"15m": "15", "30m": "30", "1h": "60", "4h": "240",
+                     "1d": "D"}
+    BOOK_MINUTES = {"15m": 15, "30m": 30, "1h": 60, "4h": 240, "1d": 1440}
+
+    @staticmethod
+    def _load_book(path: str) -> list[dict]:
+        """The rules a book mode may trade, or an empty list."""
+        p = Path(__file__).resolve().parent / path
+        if not p.exists():
+            logger.warning("%s missing -- run the builder; nothing will be "
+                           "opened until it exists", path)
+            return []
+        try:
+            data = json.loads(p.read_text())
+        except Exception:
+            logger.warning("%s unreadable", path, exc_info=True)
+            return []
+        got = data.get("logics", [])
+        logger.info("%s: %d rules, fitted on %s", path, len(got),
+                    data.get("fitted_on", "?"))
+        if data.get("in_sample"):
+            logger.warning("%s is FITTED to its own data. Forward "
+                           "performance is unknown.", path)
+        return got
+
+    def _book_bars(self, symbol: str, tf: str) -> pd.DataFrame | None:
+        """Bars for one timeframe, fetched once per symbol per bar.
+
+        A book spans several timeframes, so a rule on daily bars and one
+        on 4h bars each need their own history. The cache is keyed on the
+        bar the request lands in, which is what stops a 690-symbol scan
+        from re-fetching the same daily candles every pass.
+        """
+        minutes = self.BOOK_MINUTES[tf]
+        now_bar = closed_bar_ts(minutes)
+        key = (symbol, tf)
+        hit = self._book_cache.get(key)
+        if hit is not None and hit[0] == now_bar:
+            return hit[1]
+        try:
+            rows = self.client.get_kline(
+                category="linear", symbol=symbol,
+                interval=self.BOOK_INTERVAL[tf], limit=1000)["result"]["list"]
+        except Exception:
+            logger.debug("book kline failed %s %s", symbol, tf, exc_info=True)
+            return None
+        with self.counter_lock:
+            self.kline_calls += 1
+        if not rows or len(rows) < 320:
+            self._book_cache[key] = (now_bar, None)
+            return None
+        d = pd.DataFrame(rows, columns=["ts", "open", "high", "low", "close",
+                                        "volume", "turnover"])
+        d = d.iloc[::-1].reset_index(drop=True)
+        for c in ("open", "high", "low", "close", "volume"):
+            d[c] = d[c].astype(float)
+        d["ts"] = d["ts"].astype("int64")
+        # drop the bar still forming: a rule fires on a CLOSED bar
+        d = d.iloc[:-1].reset_index(drop=True)
+        self._book_cache[key] = (now_bar, d)
+        return d
+
+    def _evaluate_book(self, symbol: str, bar_ts: int) -> Signal | None:
+        """Fire the book's rules on this symbol and take the best one.
+
+        Each rule brings its own entry logic, side, target, stop and time
+        limit. A rule fires when its entry logic TURNS ON in its own
+        direction on the last closed bar of its own timeframe -- the same
+        definition the book was measured with, so what is traded here is
+        what was tested there.
+
+        When several fire at once the one with the best measured mean per
+        trade wins, and the rest are left standing rather than averaged:
+        averaging two rules produces a third rule nobody tested.
+        """
+        if not self.book:
+            self.no_survivors += 1
+            self.signals.pop(symbol, None)
+            return None
+        try:
+            from fp import ensemble as E
+            from fp import exits as X
+            from fp import slow as S
+        except Exception:
+            return None
+
+        best = None
+        for tf in sorted({r["tf"] for r in self.book}):
+            d = self._book_bars(symbol, tf)
+            if d is None:
+                continue
+            want = {r["name"] for r in self.book if r["tf"] == tf}
+            try:
+                # ONLY the rules this book names. The full library is 2,602
+                # logics and a book names thirty, so building the rest to
+                # read thirty is what would push a 690-symbol scan past its
+                # own bar. `only` prunes both the factor and the method
+                # loop, which is why fast= is NOT used here: fast drops the
+                # rank methods and every factor outside five families, and
+                # twelve of the eighteen 4h rules in btc_book.json live in
+                # the families it drops. Pruning to the named set is both
+                # cheaper than fast and, unlike fast, lossless.
+                logics = E.build_logics(d, only=want)
+            except Exception:
+                logger.debug("book logics failed %s %s", symbol, tf,
+                             exc_info=True)
+                continue
+            close = d["close"].values.astype(float)
+            sigma = X.sigma_at(close)[-1]
+            if not np.isfinite(sigma) or sigma <= 0:
+                continue
+            price = float(close[-1])
+            for r in self.book:
+                if r["tf"] != tf or r["name"] not in logics:
+                    continue
+                p = logics[r["name"]].values.astype(float)
+                if len(p) < 2:
+                    continue
+                side = 1 if r["side"] == "long" else -1
+                # fires only on the bar the entry TURNS ON, as measured
+                if not (p[-1] == side and p[-2] != side):
+                    continue
+                if best is None or r.get("mean", 0) > best[0].get("mean", 0):
+                    best = (r, side, price, sigma, tf)
+
+        if best is None:
+            self.no_signal += 1
+            self.signals.pop(symbol, None)
+            return None
+
+        r, side, price, sigma, tf = best
+        tp_dist = float(r["tp"]) * sigma
+        sl_dist = float(r["sl"]) * sigma
+        hold_min = float(r.get("hold_min") or
+                         r["hmax"] * self.BOOK_MINUTES[tf])
+        chain = S.best_leverage(float(r["tp"]) * sigma, hold_min / 1440.0,
+                                sigma, self.max_leverage or S.LEVERAGE_MAX)
+        if not chain["tradeable"]:
+            self.skipped_negative_ev += 1
+            self.signals.pop(symbol, None)
+            return None
+        sig = Signal(
+            bar_ts=bar_ts, direction=side, atr_pct=100.0 * sigma,
+            votes=1, vote_margin=1,
+            methods=(f"book {tf} {r['name']} {r['side']} "
+                     f"tp{r['tp']}/sl{r['sl']} hold<={hold_min:.0f}m "
+                     f"lev={chain['leverage']:.2f}x"),
+            confidence=None, slow_leverage=chain["leverage"],
+            tp_dist=tp_dist, sl_dist=sl_dist, max_hold_min=hold_min,
+            rule=f"{tf}:{r['name']}:{r['side']}")
         self.signals[symbol] = sig
         return sig
 
@@ -828,6 +1022,14 @@ class Broker:
             return False
         lev = chain["leverage"]
         tp_mult = L.TP_MULTIPLES.get(self.exit_name)
+        if sig.sl_dist is not None:
+            # Liquidation sits at 0.9/lev away, so a stop further out than
+            # that is never reached -- the position is liquidated first and
+            # the rule's risk model is a fiction. Refuse rather than trade
+            # a stop the account cannot survive.
+            if not (sig.sl_dist * lev < 0.9):
+                self.skipped_unsolvent += 1
+                return False
 
         # A fixed slice of current equity per trade, and only if that whole
         # slice is free -- with no position cap, free margin is what stops
@@ -866,8 +1068,18 @@ class Broker:
             pos = Position(
                 symbol=symbol, direction=d, entry=price, qty=notional / price,
                 leverage=lev, margin=margin, opened_at=pd.Timestamp.now(tz="UTC"),
-                tp_price=(price + d * tp_mult * atr) if tp_mult else float("nan"),
-                sl_price=price - d * L.SL_MULTIPLE * atr,
+                # A book rule's barriers ARE the rule, so they are used
+                # verbatim rather than replaced by the generic ATR ladder --
+                # and they are placed around the price this position
+                # ACTUALLY fills at, not around the bar close that produced
+                # the signal.
+                tp_price=(price * (1 + d * sig.tp_dist)
+                          if sig.tp_dist is not None
+                          else ((price + d * tp_mult * atr) if tp_mult
+                                else float("nan"))),
+                sl_price=(price * (1 - d * sig.sl_dist)
+                          if sig.sl_dist is not None
+                          else price - d * L.SL_MULTIPLE * atr),
                 liq_price=price * (1 - d * 0.9 / lev),
                 exit_name=self.exit_name, methods=sig.methods,
                 votes=sig.votes, vote_margin=sig.vote_margin,
@@ -880,6 +1092,7 @@ class Broker:
                                               self.max_leverage),
                 margin_weight=(margin / (self.equity_total * self.margin_pct)
                                if self.equity_total > 0 else 1.0),
+                max_hold_min=sig.max_hold_min, rule=sig.rule,
             )
             self.open[symbol] = pos
             self.traded_bar[symbol] = sig.bar_ts
@@ -995,11 +1208,15 @@ class Broker:
                 self._close(symbol, pos.tp_price, "take_profit")
                 return
 
-        # The same timeout simulate_exit applies, so a position cannot tie
-        # capital up indefinitely if neither side is ever touched.
+        # A barrier trade that touches neither side is closed at the time
+        # limit it was MEASURED with. Using the generic timeout instead
+        # would trade a different rule from the one that was tested.
         held = (pd.Timestamp.now(tz="UTC") - pos.opened_at).total_seconds()
-        if held >= L.MAX_HOLD_BARS * L.BAR_MINUTES * 60:
-            self._close(symbol, price, "timeout")
+        limit = ((pos.max_hold_min * 60) if pos.max_hold_min
+                 else L.MAX_HOLD_BARS * L.BAR_MINUTES * 60)
+        if held >= limit:
+            self._close(symbol, price, "time_limit" if pos.max_hold_min
+                        else "timeout")
 
     def manage_all(self) -> None:
         """Re-price the whole open book off one ticker snapshot."""
@@ -1415,12 +1632,13 @@ def run(client, symbols: list[str], equity: float, max_positions: int,
         potential_sizing: bool = True, sizing: str = "kelly",
         max_margin_pct: float = L.MAX_MARGIN_FRACTION,
         limit_entry: bool = False, slippage: float = 0.0,
-        fee_override: float | None = None) -> None:
+        fee_override: float | None = None,
+        book_file: str = "btc_book.json") -> None:
     broker = Broker(client, symbols, equity, max_positions, exit_name,
                     min_votes, fee, max_leverage, margin_pct, max_notional_x,
                     conviction_floor, expectancy_gate, assumed_win_rate,
-                    signal_source, potential_sizing, sizing, max_margin_pct,
-                    limit_entry, slippage, fee_override)
+                    signal_source, book_file, potential_sizing, sizing,
+                    max_margin_pct, limit_entry, slippage, fee_override)
     stop_event = threading.Event()
 
     def stop(signum, frame):

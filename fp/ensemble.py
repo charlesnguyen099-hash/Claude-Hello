@@ -248,13 +248,34 @@ def daily_net(close: pd.Series, pos: pd.Series) -> pd.Series:
 
 # --------------------------------------------------------------- the run
 
-def build_logics(d: pd.DataFrame, fast: bool = False) -> dict[str, pd.Series]:
+def build_logics(d: pd.DataFrame, fast: bool = False,
+                 only: set[str] | None = None) -> dict[str, pd.Series]:
     """`fast` drops the rolling-rank methods, which are O(n*window) and
     dominate the cost. Live, on 690 symbols, the full set takes 11 seconds
     per symbol; the fast set takes a fraction of that and keeps the
-    families the study actually selected."""
+    families the study actually selected.
+
+    `only` restricts the build to a named set of "factor|method" keys and
+    is what makes a book tradeable live. A book names thirty rules; the
+    full library is 2,602 and the fast one 1,150, so building everything
+    to read thirty of them is roughly forty times the work -- the
+    difference between a scan that finishes inside its bar and one that
+    does not. Both the factor and the method loops are pruned, not just
+    the output, so nothing unused is ever computed.
+
+    The filters below still apply: a named logic that is too static or too
+    churny on THIS symbol is dropped exactly as it would be in a full
+    build, so a book rule is never traded on a symbol where it degenerates.
+    """
+    want_f = want_m = None
+    if only:
+        want_f = {k.split("|", 1)[0] for k in only}
+        want_m = {k.split("|", 1)[1] for k in only if "|" in k}
     F = factors(d)
     M = methods()
+    if want_f is not None:
+        F = {k: v for k, v in F.items() if k in want_f}
+        M = [(n, f) for n, f in M if n in want_m]
     if fast:
         F = {k: v for k, v in F.items()
              if k.startswith(("mom", "ma_dist", "macross", "pos", "maxdd"))}
@@ -273,7 +294,10 @@ def build_logics(d: pd.DataFrame, fast: bool = False) -> dict[str, pd.Series]:
         turns = int((p.diff().abs() > 0).sum())
         if turns < 3 or turns > len(p) / 4:      # too static, or too churny
             continue
-        logics[f"{fname}|{mname}"] = p
+        key = f"{fname}|{mname}"
+        if only is not None and key not in only:
+            continue
+        logics[key] = p
     return logics
 
 

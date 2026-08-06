@@ -17,193 +17,104 @@
 > what the data actually said, kept because the measurements outlast the
 > code that produced them.
 >
-> **The bot that runs today is `fp/` + `run_bot.py`**, built from
-> `FINAL_Logic_PotentialScaledLeverage`. See the section immediately
-> below; everything after it is the older research record.
+> A third generation followed and has now been removed too -- see the
+> section immediately below. Everything after that is the older record.
 
-## The current bot: `fp/` + `run_bot.py`
+## All trading logic has been removed again, on request
+
+`fp/` and `run_bot.py` are gone. Only the datasets in `data/` and this
+write-up remain. Nothing is lost -- restore any of it from git:
 
 ```bash
-pip install -r requirements.txt
-python run_bot.py                    # $10 virtual, every USDT perpetual
-python run_bot.py --maker-fee        # 0.040% round trip instead of 0.250%
-python run_bot.py --top 50           # only the 50 most liquid
-python -m fp.test_bot                # 78 checks, no network needed
+git log --oneline                          # every version
+git checkout 068ad0c -- fp run_bot.py      # the last complete bot
 ```
 
-Paper trading only: real Bybit public prices, virtual money, no API key,
-no order ever submitted.
+`068ad0c` is the last commit holding it. What was there:
 
-### It runs continuously and shows continuously
+| module | what it did |
+|---|---|
+| `bot.py` | paper broker: continuous scan of 690 symbols, per-second position management, live dashboard, Kelly sizing, solvency bound, real per-symbol costs |
+| `logic.py` | the leverage chain, cost model, expectancy gate |
+| `methods.py` `features.py` | the twelve voting methods and the 106-feature library |
+| `calibrate.py` | measured edge table by ATR band -- what the gate actually reads |
+| `walkforward.py` `search.py` `resolution.py` `research.py` | the validation harnesses |
+| `diagnose.py` `research_notes/` | why the losers lost; every proposal, measured |
+| `patterns.py` `altdata.py` `crosssearch.py` | the pattern library, and the positioning/cross-section fetch and search |
+| `test_bot.py` | 182 checks, all passing at deletion |
 
-Three threads, so none waits on another:
+## What the work established
 
-| thread | does | rate |
+**The data contains profitable trades. It does not contain a rule that
+finds them.** On 2026 alone, 2,003 of 5,667 consensus trades clear every
+cost, worth +2,617% if only those were taken. The 3,664 losers are worth
+-3,001%. Trading all of them returns -0.0678% per trade.
+
+The gap between those two facts is the whole project. Six independent
+searches tried to close it:
+
+| search | in-sample | out-of-sample |
 |---|---|---|
-| scanner | keeps a standing signal for every coin, opens each as margin allows | continuous |
-| manager | re-prices every open position off one whole-board ticker call | 1 s |
-| dashboard | prints capital, P&L, margin, exposure, scan stats | 5 s (`--poll-seconds`) |
+| 106 features, one at a time | best AUC 0.5122 | 0 of 106 clear the bar |
+| 48 method x exit combinations | t = 6.60 | worse than no selection |
+| 55,752 pattern keys | 100% win rate | 0.0% coverage |
+| 118 adaptive forward/reverse/drop cells | +439% | **-478%, t = -7.24** |
+| 67,070 threshold rules, 621 significant | best t = 10.45 | **-0.27%/trade, t = -6.56** |
+| prior-signal context, 9 features | best AUC 0.5080 | 0 of 9 clear the bar |
 
-### How "miss no potential trade" is actually achieved
+Every one improved as the search grew and reversed out of sample. Two of
+them ended up **worse than making no decisions at all** -- selection
+subtracts value when there is nothing to select on.
 
-The obvious reading is "refetch every coin in a tight loop." That was
-measured and it does not work: on a 40-coin board it made **125 kline
-calls a second**, and on the real ~690-coin board that is a rate-limit
-ban — a banned bot misses *everything*. It is also pointless, because the
-twelve methods read a **30-minute bar**, so the verdict cannot change
-until that bar closes. The tight loop asks the same question hundreds of
-times and gets the same answer.
+### The one real effect found
 
-So instead:
+After a LOSS the next trade does better than after a WIN, and the sign
+holds in every period: 33.5% vs 30.3% in 2025 (p = 0.022), 35.5% vs 33.5%
+in 2026, 54.0% vs 15.4% in August. It is the only thing here that
+survived a holdout with its sign intact.
 
-- klines are fetched **once per coin per 30m bar**, and the verdict is
-  kept as a *standing signal* — measured at exactly 120 calls for a
-  120-coin board over a 40-second run, down from 3,132;
-- the **fill loop runs continuously** over those standing signals and
-  opens each one the moment there is margin for it.
+It is also about a fifth of what is needed. The gap is 2-3 points of win
+rate; the cost needs roughly 12.
 
-That second half is what stops trades being missed. A signal raised while
-the book was full is not discarded — it stays standing until its bar
-rolls over, and the next position to close frees the margin that takes
-it. The logs show this directly: `filled 1 standing signal(s), 21 still
-waiting on margin`.
+### Why the losses happen, and why raising TP cannot fix them
 
-Two guards that follow from the same design:
+Of 3,664 losing trades, **99.9% lost by hitting the stop**. Not one
+reached its target and was turned negative by the fee, and none can be --
+a target pays ~1.425% gross against a ~0.119% cost. The fee never
+converts a winning trade into a losing one; it converts a break-even
+system into a losing one.
 
-- a coin the methods pass over is still marked *evaluated*, otherwise it
-  looks unscored and gets refetched on every pass forever (this was a
-  real bug — it refetched the same 24 coins indefinitely);
-- one entry per coin per bar, otherwise a stop-out is instantly reopened
-  by the same standing verdict.
+Raising the target does shrink the fee's share of it, from 16.4% at
+TP1.5 to 2.5% at TP12, exactly as expected. But the win rate falls in
+step, 51.3% to 12.7%, tracking SL/(TP+SL) the way a random walk demands.
+Net per trade does not move.
 
-### How trading capital is sized
+### The cost, stated properly
 
-```
-margin per trade = equity × --margin-pct        (default 5%)
-leverage         = the file's potential chain, then a solvency bound
-notional         = margin × leverage
-```
+Taker in 0.055% + taker out 0.055% + funding. The exit is always taker --
+a TP or SL is a conditional market order and cannot earn the maker rate,
+so the cheapest honest round trip is 0.075%, not 0.040%. A TP3.0 trade
+lasts 7.11 hours on average and meets 0.89 funding charges.
 
-The chain and the stop cancel out into a clean invariant. `lev_base` is
-`28/atr_pct` and the stop is `1.5 × ATR`, so a trade that stops out loses
+At the measured 35.1% win rate, no ATR band of any exit clears that.
+The closest cell in the whole table is TP2.0 at 0.80-1.10% ATR, still
+losing 0.047% per trade in its worst period.
 
-```
-1.5 × atr_pct × 28/atr_pct = 42% of its margin — whatever the coin, whatever the volatility
-```
+### What was never searched
 
-Risk per trade is therefore normalised automatically: **42% of 5% = 2.1%
-of the account**, on any instrument.
+Every one of the six searches used the same family of input: indicators
+computed from BTCUSDT's own OHLCV. If price is near a martingale, so is
+every rearrangement of price. Two families were built but never run,
+because this container cannot reach api.bybit.com:
 
-**Leverage stays flexible and potential-driven.** Nothing is pinned to a
-fixed number of x — `potential_score` (the ATR percentile) still sets the
-multiplier, and leverage still varies continuously with volatility. What
-was added is a bound that is *also* a function of ATR:
+- **positioning** -- funding rate, open interest, long/short ratio. What
+  traders are actually holding and paying to hold, which no price series
+  can express.
+- **cross-section** -- 120 coins ranked against each other rather than
+  each against its own past.
 
-```
-leverage ≤ 0.9 / (1.3 × 1.5 × atr_pct/100)
-```
-
-that is, the point where the stop would sit past the liquidation price.
-Through the normal range it never binds — at 0.3% ATR it allows 154x
-against a chain that asks for 93x. It binds only above ~2.7% ATR, where
-the **17x floor** was lifting leverage back up until the stop landed
-*beyond* liquidation and the trade died at 100% of margin instead of the
-42% it was sized for. Verified across 923 ATR levels from 0.05% to 60%:
-the stop now always fires first. Above ~46% ATR even 1x is unsound, and
-the setup is skipped rather than clamped.
-
-Two other limits, because per-trade sizing cannot see them:
-
-- **Free margin counts open losses.** Sizing keys off `cash + unrealized
-  P&L`, the way a real cross-margin account does. With cash-only
-  accounting the bot kept opening at full size while its book was 25%
-  underwater, because losses it had not realised were invisible to it.
-- **Total notional is capped** at `--max-notional-x` (default 10x
-  equity). Crypto moves together, so nine positions are one bet; nothing
-  in per-trade sizing bounds that.
-
-Measured effect on the same 120-coin board: exposure **25.6x → 9.8x**,
-max drawdown **$4.62 → $1.53**.
-
-`--margin-pct` gives slightly fewer than `100/pct` positions (9 at 10%,
-not 10) because each entry fee shrinks equity and so shrinks the next
-slice. That is what a real exchange does too.
-
-### What the dashboard shows
-
-```
-  CAPITAL   start $10.0000   cash $8.5435   equity+open $9.6162   peak $10.4399
-  MARGIN    committed $3.2936   free $5.2499   used 34.3%   per trade $0.4808
-  EXPOSURE  notional $94.55   9.8x equity   avg leverage 29x   ceiling 10x ($1.61 left)
-  P&L       realized $-1.0839   unrealized $+1.0728   fees $0.6248   max DD $1.5325
-  CLOSED    16   win 4 / loss 12   rate 25.0%   TP 4 / SL 12 / liq 0   PF 0.59
-  OPEN      7 positions   in profit 5 ($+1.0939) / in loss 2 ($-0.0211)
-  SIGNALS   standing 56   waiting 33   due a refresh 0   no signal 64
-  BLOCKED   this pass: margin 0   exposure ceiling 33   stop past liquidation 0
-  SCAN      fill pass #53   bar refreshes 3   universe 120   klines 120
-```
-
-`max DD` and `peak` mark to market off total equity, not cash — a
-drawdown that happens while positions are open is a real drawdown, and
-cash-only accounting missed every one of them.
-
-### The walk-forward test, and what it found
-
-```bash
-python -m fp.research     # fit on 2025+2026, hold August 2026 out
-```
-
-August 2026 arrived after all the fitting was done, so it is a genuine
-holdout. The search was: score all twelve methods separately against all
-four exits, keep the ones positive in both fit years, and see whether
-that selection helps.
-
-**It did not. It made things worse.** The 17 surviving method/exit pairs
-returned +0.0342% gross on 38,379 fit trades with a t of **6.60** — and
-on the held-out month they returned **+0.0328% against +0.0974%** for
-taking all twelve methods with no selection at all. A t of 6.6 that
-reverses out of sample is the textbook signature of fitting noise, and it
-is why this module ranks by worst period and prints the Bonferroni
-threshold rather than the number you were hoping for.
-
-Nothing else survived either:
-
-| exit | 2025 | 2026 | Aug (held out) | worst period, net of maker fee |
-|---|---|---|---|---|
-| TP1.5/SL1.5 | -0.0011% | +0.0090% | +0.0704% | **-0.0411%** |
-| TP2.0/SL1.5 | -0.0082% | +0.0129% | +0.0470% | -0.0482% |
-| TP3.0/SL1.5 | -0.0129% | +0.0300% | +0.0974% | -0.0529% |
-| TRAILING | -0.1333% | -0.1399% | -0.0715% | -0.1799% |
-
-No exit is profitable in every period at any fee tier. Direction does not
-rescue it either — SHORT beat LONG in both fit years (+0.019 vs -0.045 in
-2025, +0.097 vs -0.037 in 2026) and LONG beat SHORT in the held-out month
-(+0.194 vs +0.016). A side that swaps out of sample is not an edge.
-
-### One real correction: the fee was overstated
-
-The 0.250% round trip inherited from the uploaded file adds 0.05% of
-slippage per side. For this bot that is simply wrong — a $10 account at
-5% margin and 30x leverage puts about **$15** of notional on the book,
-and $15 does not move the BTCUSDT spread. Bybit VIP0 taker is 0.055% per
-side, so **0.110% round trip**, which is now the default.
-
-It matters more than any signal change tried here. The same held-out
-August trades come to **-0.213% per trade at 0.250% and -0.013% at
-0.110%** — the gap between "hopeless" and "almost breakeven" was an
-assumption about slippage, not the market. `--fee taker-slip` restores
-the old figure if the size ever justifies it.
-
-### What it does *not* claim
-
-The numbers above come from synthetic random-walk boards used to test the
-machinery, where the expected result is exactly minus the fees. They say
-the plumbing is correct. They say nothing about profit. Everything in the
-research record below still applies: across ~15 independent experiments
-the measured gross directional edge on this data was between -0.013% and
-+0.0056% — indistinguishable from zero — so the net result tracks the
-fee, which is why `--maker-fee` (0.040% vs 0.250%) changes more than any
-signal change tried here.
+`altdata.py` and `crosssearch.py` in `068ad0c` do both, with the same
+nested walk-forward. That question is still open.
 
 ---
 

@@ -1074,28 +1074,37 @@ def test_bot_trades_nothing_without_a_whitelist():
     check("no position was opened", len(b.open) == 0, str(list(b.open)))
 
 
-def test_horizon_floor_is_enforced_at_runtime():
-    """A hand-edited whitelist cannot smuggle a two-minute logic in.
+def test_short_holds_are_judged_not_banned():
+    """A ten-minute logic must be admitted on its economics, not its clock.
 
-    fp/horizon.py showed the average 1m move (0.040%) is smaller than the
-    round trip (0.110%), so a position that short loses even with a
-    perfect forecast. The search drops them; the bot drops them again,
-    because the file is editable and the arithmetic is not.
+    An earlier version refused anything held under an hour, reasoning
+    from the AVERAGE one-minute move (0.040%) being smaller than the
+    round trip (0.110%). That argument is about a RANDOM one-minute
+    position; 39% of ten-minute moves already exceed the round trip, so a
+    selected one can pay. The gate is the edge, and time is only ever
+    reported.
     """
-    print("\nthe bot re-applies the horizon floor to whatever it is given")
-    syms = ["S0USDT"]
-    c = FakeHTTP(syms)
-    good = {"name": "mom21|follow", "tf": "1d", "hold_min": 2880.0}
-    bad = {"name": "mom3|follow", "tf": "1m", "hold_min": 2.0}
+    print("\na short hold is judged on its edge, not banned for being short")
+    fast_good = {"name": "mom3|follow", "tf": "10m", "hold_min": 10.0,
+                 "oos_mean": 0.004}
+    fast_bad = {"name": "mom3|fade", "tf": "10m", "hold_min": 10.0,
+                "oos_mean": -0.001}
+    slow_good = {"name": "mom21|follow", "tf": "1d", "hold_min": 2880.0,
+                 "oos_mean": 0.02}
     b = B.Broker.__new__(B.Broker)
-    b.survivors = [good, bad]
-    b.min_hold_minutes = B.MIN_HOLD_MINUTES
-    b.survivors = [w for w in b.survivors
-                   if w.get("hold_min", 0) >= b.min_hold_minutes]
-    check("the two-minute logic is refused", bad not in b.survivors)
-    check("the daily logic is kept", good in b.survivors)
-    check("the floor is at least ten minutes", B.MIN_HOLD_MINUTES >= 10,
-          str(B.MIN_HOLD_MINUTES))
+    b.survivors = [fast_good, fast_bad, slow_good]
+    b.survivors = [w for w in b.survivors if float(w.get("oos_mean", 0)) > 0]
+    check("a profitable ten-minute logic is kept", fast_good in b.survivors)
+    check("an unprofitable one is dropped whatever its hold",
+          fast_bad not in b.survivors)
+    check("the daily logic is kept on the same rule", slow_good in b.survivors)
+    check("no hold constant survives in the bot",
+          not hasattr(B, "MIN_HOLD_MINUTES"))
+
+    from fp import survivors as S
+    check("nor in the search", not hasattr(S, "MIN_HOLD_MINUTES"))
+    check("the gate is a confidence bound on the edge instead",
+          getattr(S, "POTENTIAL_Z", 0) > 0, str(getattr(S, "POTENTIAL_Z", None)))
 
 
 def test_state_label_cannot_see_its_own_bar():
@@ -1250,7 +1259,7 @@ def main() -> int:
                test_stale_excludes_open_positions,
                test_trades_are_counted_once_not_per_bar,
                test_bot_trades_nothing_without_a_whitelist,
-               test_horizon_floor_is_enforced_at_runtime,
+               test_short_holds_are_judged_not_banned,
                test_state_label_cannot_see_its_own_bar,
                test_mirror_reflects_the_market,
                test_swing_age_is_lagged,

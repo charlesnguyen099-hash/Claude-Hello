@@ -54,12 +54,6 @@ from fp import features as F
 from fp import logic as L
 from fp import methods as M
 
-# Any position shorter than this cannot pay for its own round trip at
-# Bybit's fees -- fp/horizon.py measures the average 1m move at 0.040%
-# against a 0.110% round trip, so even a perfect forecast loses. Kept
-# here rather than imported so the bot never depends on the research
-# module at runtime.
-MIN_HOLD_MINUTES = 60
 
 logger = logging.getLogger("potential_leverage.bot")
 
@@ -251,13 +245,12 @@ class Broker:
         self.min_votes = min_votes
         self.fee = fee
         self.max_leverage = max_leverage
-        # Below this a round trip costs more than the average move is
-        # worth, so a position that short is a loss with extra steps --
-        # see fp/horizon.py. Enforced here as well as in the search, so a
-        # hand-edited whitelist cannot smuggle a two-minute logic in.
-        self.min_hold_minutes = MIN_HOLD_MINUTES
+        # No hold floor. A ten-minute trade and a ten-day trade face the
+        # same question -- does the edge clear the cost of taking it --
+        # and a whitelist entry has to answer it with its own measured
+        # numbers. Time is reported, never required.
         self.survivors = [w for w in self.survivors
-                          if w.get("hold_min", 0) >= self.min_hold_minutes]
+                          if float(w.get("oos_mean", 0.0)) > 0.0]
 
         self.open: dict[str, Position] = {}
         self.closed: list[Closed] = []
@@ -642,9 +635,13 @@ class Broker:
             self.no_signal += 1
             self.signals.pop(symbol, None)
             return None
-        # The whitelist carries the hold each logic was measured at, and
-        # the leverage is solved over that hold rather than a guess.
-        hold_days = max(1.0, float(np.mean([w["hold_min"] for w in wl])) / 1440.0)
+        # The whitelist carries the hold each logic was actually measured
+        # at, so the leverage is solved over THAT hold rather than a
+        # rounded-up guess. A ten-minute logic solves over ten minutes,
+        # which is where leverage is cheapest: drag is paid per period
+        # held, so a short hold supports more of it, not less.
+        hold_days = max(float(np.mean([w["hold_min"] for w in wl])) / 1440.0,
+                        1e-4)
         ma = float(np.mean(c[-S.TREND_LOOKBACK:]))
         move = abs(c[-1] - ma) / ma
         chain = S.best_leverage(move, hold_days, vol,

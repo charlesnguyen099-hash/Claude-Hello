@@ -13,18 +13,43 @@ asked, which is whether ANY single logic has an edge that survives.
 So this tests them one at a time, all of them, and applies the bar that
 testing thousands of things requires.
 
-THE HORIZON FLOOR, applied before anything is tested
+NO HOLD FLOOR, AND WHY THE ONE THAT WAS HERE WAS WRONG
 
-fp/horizon.py established by arithmetic that below ten minutes no logic
-can be profitable at Bybit's fees: the average one-minute move is 0.040%
-and the round trip costs 0.110%, so a forecast right every single time
-still loses. A one-to-two-minute position is not a hard trade, it is a
-closed one, and it is also where reversal risk is highest.
+An earlier version of this file refused any logic whose median hold fell
+under an hour, reasoning from fp/horizon.py: the average one-minute move
+is 0.040% and the round trip costs 0.110%, so a one-minute position
+cannot pay.
 
-So any logic whose median hold falls under --min-hold minutes is dropped
-before it is scored. Not down-weighted -- dropped. The count of what the
-floor removed is reported, because a filter that silently removes most
-of the library is worth seeing.
+That argument is sound about a RANDOM one-minute position and says
+nothing about a SELECTED one. It compares the fee to the mean of the
+move distribution and quietly discards the distribution. The same table
+it came from carries the correction in its last column:
+
+    hold        E|move|      cost    share of moves ABOVE the cost
+    1 min        0.040%    0.110%                            6.8%
+    10 min       0.127%    0.110%                           39.1%
+    15 min       0.155%    0.110%                           46.6%
+    30 min       0.218%    0.111%                           58.9%
+
+Thirty-nine percent of ten-minute moves already clear the round trip. A
+logic that picks direction inside that group is profitable at ten
+minutes, and with leverage a 0.3% move is a 30% return on margin. The
+floor threw every such logic away untested -- which is exactly the
+hard-coded constant this project keeps being told not to introduce.
+
+So there is no floor. A logic qualifies on its own economics:
+
+    lower 95% bound of its in-sample mean net return per trade > 0
+
+where the return is already net of 0.055% each way and of funding over
+the hold it actually ran. A ten-minute logic and a ten-day logic meet
+the identical bar. Hold length is reported in every table below so the
+answer can be read off the data instead of assumed.
+
+Sizing follows the same principle: leverage is solved over the hold each
+logic was measured at, and a short hold supports MORE leverage, not less
+-- volatility drag is paid per period held, so a ten-minute position
+pays a fraction of what a ten-day one does for the same exposure.
 
 THE BAR A LOGIC HAS TO CLEAR
 
@@ -136,12 +161,13 @@ from fp.horizon import (FEE_ROUND_TRIP, FUNDING_PER_8H, TIMEFRAMES, load_1m,
 
 OUT = Path(__file__).resolve().parent / "survivors.json"
 
-# Below this, fp/horizon.py showed the fee exceeds the move even with a
-# perfect forecast. Ten minutes is where break-even first becomes possible
-# at all; sixty is where it stops requiring a hit rate nobody has.
-MIN_HOLD_MINUTES = 60
-
 EXTRA_TF = {"2d": 2880, "3d": 4320, "5d": 7200}
+
+# How sure the in-sample edge has to be before a logic is worth judging
+# out of sample. This is the potential gate, and it is deliberately not a
+# time: a logic qualifies by what its own trades earn after real fees,
+# whether it holds them for ten minutes or ten days.
+POTENTIAL_Z = 1.64                      # one-sided 95%
 
 
 def trades_of(close: np.ndarray, pos: np.ndarray, minutes: int
@@ -218,7 +244,7 @@ def pick_and_score(recs: list[dict], top: int) -> float:
 
 
 def shift_null(logics: dict, close: np.ndarray, minutes: int, split: int,
-               min_hold: int, min_trades: int, top: int, runs: int,
+               min_trades: int, top: int, runs: int,
                rng: np.random.Generator, thr: float = 99.0
                ) -> tuple[np.ndarray, np.ndarray]:
     """The same picking procedure on logics whose timing has been broken.
@@ -242,10 +268,13 @@ def shift_null(logics: dict, close: np.ndarray, minutes: int, split: int,
         for k in keys:
             p = np.roll(arrs[k], int(rng.integers(1, n)))
             r, s, h = trades_of(close, p, minutes)
-            if len(r) == 0 or float(np.median(h)) * minutes < min_hold:
+            if len(r) == 0:
                 continue
             a, b = r[s < split], r[s >= split]
             if len(a) < min_trades or len(b) < min_trades:
+                continue
+            if not (a.mean() - POTENTIAL_Z * a.std(ddof=1)
+                    / np.sqrt(len(a)) > 0):        # same gate as the real
                 continue
             ot = tstat(b)
             n_surv += ot > thr
@@ -256,14 +285,19 @@ def shift_null(logics: dict, close: np.ndarray, minutes: int, split: int,
     return np.array(out), np.array(counts)
 
 
-def study_tf(d1m: pd.DataFrame, label: str, minutes: int, min_hold: int,
+def study_tf(d1m: pd.DataFrame, label: str, minutes: int,
              min_trades: int, top: int, rng: np.random.Generator,
-             null_runs: int = 0) -> dict:
+             null_runs: int = 0, max_bars: int = 60000) -> dict:
     d = resample(d1m, minutes)
+    if len(d) > max_bars:
+        d = d.iloc[-max_bars:]
     if len(d) < 150:
         return {"tf": label, "note": "too few bars"}
     close = d["close"].values.astype(float)
-    logics = build_logics(d)
+    # The rolling-rank methods are O(n*window) and unusable at minute
+    # resolution; below an hour the faster family is used and the count
+    # built is reported so the difference is visible rather than hidden.
+    logics = build_logics(d, fast=minutes < 60)
     split = len(d) // 2
 
     rows, dropped_hold, dropped_few = [], 0, 0
@@ -271,12 +305,20 @@ def study_tf(d1m: pd.DataFrame, label: str, minutes: int, min_hold: int,
         r, s, h = trades_of(close, pos.values.astype(float), minutes)
         if len(r) == 0:
             continue
-        if float(np.median(h)) * minutes < min_hold:
-            dropped_hold += 1
-            continue
         a, b = r[s < split], r[s >= split]
         if len(a) < min_trades or len(b) < min_trades:
             dropped_few += 1
+            continue
+        # THE POTENTIAL GATE. Not "is the hold long enough" but "does this
+        # logic's own edge clear its own costs" -- a is already net of the
+        # round trip and of funding over the hold it actually ran, so a
+        # lower confidence bound above zero says the trade is worth taking
+        # on its own economics. A ten-minute logic and a ten-day logic
+        # meet exactly the same bar, and the hold is reported rather than
+        # required.
+        lo = a.mean() - POTENTIAL_Z * a.std(ddof=1) / np.sqrt(len(a))
+        if not (lo > 0):
+            dropped_hold += 1
             continue
         pv = pos.values.astype(float)
         rows.append({"name": name, "tf": label,
@@ -293,7 +335,7 @@ def study_tf(d1m: pd.DataFrame, label: str, minutes: int, min_hold: int,
                      # a library that certainly has nothing in it
                      "null_t": tstat(b * rng.choice([-1.0, 1.0], len(b)))})
     if not rows:
-        return {"tf": label, "note": "nothing passed the floor",
+        return {"tf": label, "note": "no logic's edge cleared its costs",
                 "dropped_hold": dropped_hold, "dropped_few": dropped_few,
                 "logics": len(logics)}
 
@@ -307,7 +349,7 @@ def study_tf(d1m: pd.DataFrame, label: str, minutes: int, min_hold: int,
     # market's own fall it would collect by standing still.
     short_share = float(np.mean([x["short_share"] for x in ranked])) if ranked else 0.0
 
-    null, null_counts = (shift_null(logics, close, minutes, split, min_hold,
+    null, null_counts = (shift_null(logics, close, minutes, split,
                                     min_trades, top, null_runs, rng, thr)
                          if null_runs else (np.array([]), np.array([])))
     pval = (float((null >= picked).mean()) if len(null)
@@ -331,9 +373,9 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--tf", default="1h,4h,8h,1d,2d,3d")
-    ap.add_argument("--min-hold", type=int, default=MIN_HOLD_MINUTES,
-                    help="drop any logic whose median hold is shorter, in "
-                         "minutes -- the frontier says these cannot pay")
+    ap.add_argument("--max-bars", type=int, default=60000,
+                    help="memory cap per timeframe; the fine ones cover a "
+                         "shorter span and the span is reported")
     ap.add_argument("--min-trades", type=int, default=20)
     ap.add_argument("--top", type=int, default=10)
     ap.add_argument("--null-alpha", type=float, default=0.05,
@@ -351,32 +393,36 @@ def main(argv=None) -> int:
 
     d1m = load_1m()
     print(f"{len(d1m):,} one-minute bars, {d1m.index[0]} .. {d1m.index[-1]}")
-    print(f"horizon floor: any logic holding under {a.min_hold} minutes is "
-          f"dropped before scoring")
+    print("no hold floor: a logic qualifies by whether its own trades clear "
+          "their own\nfees, at any horizon -- the hold is reported, never "
+          "required")
 
     print("\n" + "=" * 78)
     print("PER-TIMEFRAME: every logic tested on its own, out of sample")
     print("=" * 78)
-    print(f"{'tf':>4} {'built':>7} {'dropped':>8} {'tested':>7} {'t bar':>6} "
-          f"{'survivors':>10} {'null':>5} {'best t':>7} {'best OOS':>10}")
+    print(f"{'tf':>4} {'built':>7} {'no edge':>8} {'tested':>7} {'t bar':>6} "
+          f"{'survivors':>10} {'null':>5} {'best t':>7} {'best hold':>10}")
 
     results = []
     for label in a.tf.split(","):
         label = label.strip()
         if label not in tfs:
             continue
-        res = study_tf(d1m, label, tfs[label], a.min_hold, a.min_trades,
-                       a.top, rng, a.null_runs)
+        res = study_tf(d1m, label, tfs[label], a.min_trades,
+                       a.top, rng, a.null_runs, a.max_bars)
         results.append(res)
         if "note" in res:
             print(f"{res['tf']:>4} {res.get('logics', 0):>7} "
                   f"{res.get('dropped_hold', 0):>8} {'--':>7}  {res['note']}")
             continue
         b = res["best"]
+        hm = b["hold_min"]
+        hs = (f"{hm:.0f}m" if hm < 120 else f"{hm/60:.1f}h" if hm < 2880
+              else f"{hm/1440:.1f}d")
         print(f"{res['tf']:>4} {res['logics']:>7} {res['dropped_hold']:>8} "
               f"{res['tested']:>7} {res['threshold']:>6.2f} "
               f"{len(res['survivors']):>10} {res['rot_survivors']:>5.0f} "
-              f"{b['oos_t']:>7.2f} {100*b['oos_total']:>9.1f}%")
+              f"{b['oos_t']:>7.2f} {hs:>10}")
 
     print("\n" + "=" * 78)
     print("PICKING THE GOOD ONES: rank on the first half, hold through the second")
@@ -416,7 +462,7 @@ def main(argv=None) -> int:
                 keep.append(s)
 
     OUT.write_text(json.dumps(
-        {"min_hold_minutes": a.min_hold,
+        {"potential_z": POTENTIAL_Z,
          "generated_from": f"{len(d1m)} 1m bars ending {d1m.index[-1]}",
          "logics": keep}, indent=2))
 
@@ -437,7 +483,7 @@ def main(argv=None) -> int:
     else:
         tot_null = sum(r.get("flip_survivors", 0) for r in results
                        if "note" not in r)
-        print("  None. Every logic that cleared the horizon floor failed the")
+        print("  None. Every logic whose own edge cleared its own fees failed the")
         print("  significance bar for the number of logics tested, and the")
         print(f"  sign-flipped null produced {tot_null} 'survivors' by chance")
         print("  under the same test -- so the best real numbers are not")

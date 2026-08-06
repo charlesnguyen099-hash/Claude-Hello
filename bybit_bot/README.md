@@ -26,8 +26,72 @@
 pip install -r requirements.txt
 python -m fp.slow                    # the measurement it is built on
 python run_bot.py --signals slow     # $10 virtual, every USDT perpetual
-python -m fp.test_bot                # 182 checks, no network
+python -m fp.test_bot                # 198 checks, no network
+python -m fp.horizon                 # which horizon can pay for its fees
 ```
+
+### Correction: the one positive result was a one-bar look-ahead
+
+`fp/regime.py` reported the only out-of-sample-positive result in this
+repo — state-conditioned logic selection, `trend` top5, **+89.5%** at
+Sharpe 2.72, picked twice independently by nested validation. It is
+wrong, and the cause is one line.
+
+`states()` labels bar `i` from bar `i`'s own close. The return the
+backtest credits to bar `i` is `close[i]/close[i-1] - 1`, driven by that
+same close. Conditioning the choice of logic on the unlagged label let
+the choice see part of the outcome it was about to collect. With 2,602
+logics competing to exploit it, that sliver was the whole result:
+
+| | before | after lagging the label |
+|---|---|---|
+| `trend` top5, daily | **+89.5%** | **-21.5%** |
+| 36-cell state sweep | 9 positive | **0 positive** |
+| 1h, same procedure | **+600,007%** | **-26.8%** |
+| 4h, same procedure | **+10,632%** | **-35.4%** |
+
+The live bot was never affected — it reads the last *closed* bar and
+holds through the next one, which is the lag. Only the measurements were
+misaligned. Every state label now goes through
+`fp.regime.lagged_states()`, and `fp/test_bot.py` fails if the lag is
+removed.
+
+### Which horizon can pay for its own fees (`python -m fp.horizon`)
+
+Bybit charges 0.055% in and 0.055% out. A move's size grows with the
+square root of time; the fee does not grow at all. So each hold length
+has a minimum hit rate below which nothing can work, `p* = 0.5·(1 +
+cost/E|move|)`, computed on all 838,112 one-minute bars:
+
+| hold | E&#124;move&#124; | cost | hit rate needed |
+|---|---|---|---|
+| 1 min | 0.040% | 0.110% | **185.9% — impossible** |
+| 5 min | 0.090% | 0.110% | **111.2% — impossible** |
+| 15 min | 0.155% | 0.110% | 85.6% |
+| 1 hour | 0.307% | 0.111% | 68.1% |
+| 4 hours | 0.623% | 0.115% | 59.2% |
+| 1 day | 1.617% | 0.140% | 54.3% |
+| **2-3 days** | 2.78% | 0.200% | **53.6% — the minimum** |
+| 10 days | 5.020% | 0.410% | 54.1% |
+
+Below ten minutes, a forecast that is right *every single time* still
+loses money: the move it captures is smaller than the fee it pays. The
+requirement bottoms out at **2-3 days**, then rises again as funding
+outgrows the move.
+
+Running the full search at every timeframe, all of it lags correctly:
+
+| tf | bars | days | trades | median hold | total | Sharpe |
+|---|---|---|---|---|---|---|
+| 1d | 583 | 582 | 1 | 2.0d | -3.4% | -9.16 |
+| 4h | 3,493 | 582 | 290 | 8.0h | -35.4% | -2.20 |
+| 1h | 13,969 | 582 | 1,127 | 3.0h | -26.8% | -0.61 |
+| 30m | 27,938 | 582 | 2,168 | 90m | -64.6% | -2.32 |
+| 15m | 55,875 | 582 | 3,526 | 45m | -71.2% | -2.32 |
+| 5m | 60,000 | 208 | 2,524 | 15m | -41.2% | -1.91 |
+| 1m | 60,000 | 41 | 7,039 | 3m | -16.4% | -5.00 |
+
+Seven timeframes, seven losses, on both sides in every one.
 
 ### The finding that produced it
 

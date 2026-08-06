@@ -2,16 +2,17 @@
 
     python -m fp.symmetry
 
-THE TWO CLAIMS BEING TESTED
+WHAT THIS WAS FOR, AND WHAT IT IS FOR NOW
 
-fp/regime.py earned +123.6% over a period in which BTC fell 31.6%. Two
-things have to be true before that is a strategy rather than a short:
+It was written to check whether fp/regime.py's +89.5% was a strategy or
+just a short taken during a fall. That question is closed by a different
+route: the +89.5% was a one-bar look-ahead in the state label and is
+gone (see fp/regime.py). Every number this module first reported went
+with it.
 
-    1. it must go LONG and be paid for it, not only short
-    2. an up-market must work the same way with the factors reversed
-
-Both are measurable on the data in hand, and the second is measurable
-even though the data contains no sustained rise -- by mirroring it.
+What survives is the instrument, which is worth keeping, because it
+answers a question no amount of real data here can. The data contains no
+sustained rise, so a rising market is built from the falling one.
 
 HOW THE MIRROR WORKS
 
@@ -20,10 +21,6 @@ High and low swap (in log space the mirror of the high IS the low), so
 the synthetic series has the same volatility, the same clustering, the
 same range structure and the same autocorrelation -- and rises where the
 real one fell. A 31.6% fall becomes a 46.2% rise.
-
-If the logic is symmetric, it must earn on the mirror too. If it earns
-only on the real series, it is a short dressed as a strategy, and the
-mirror is the only way to find that out before a bull market does.
 
 Fees and funding are charged the same on both sides here, which is the
 conservative choice: in reality a short in a positive-funding market
@@ -36,67 +33,46 @@ exp(-x)-1 is not the negative of exp(x)-1. At daily volatility the gap
 is a few tenths of a percent, relative -- small enough not to move any
 conclusion below, and stated rather than glossed.
 
-WHAT THE HOLDING-PERIOD TEST ANSWERS
+WHAT IT MEASURED, once the state label was lagged correctly
 
-A logic that flips every thirty days cannot take a three-day drop. The
-run-length distribution of the consensus position says directly which
-swings are reachable, and the swing table says what was actually
-collected from the short ones.
+                buy & hold   strategy   Sharpe   LONG days     SHORT days
+    real            -31.6%     -21.5%    -1.56   49  -15.4%   66   -1.8%
+    mirror          +46.2%     -22.0%    -1.87   59  -14.5%   44  -15.2%
 
-WHAT IT MEASURED
+Two things follow, and they are worth separating.
 
-Both sides are traded, and both sides are paid:
+The method is direction-neutral. It loses 21.5% on a falling market and
+22.0% on the same market rising -- half a point apart -- and it takes
+both sides in both worlds. So the loss is NOT "it was long in a bear
+market" or any other directional accident. Whatever is wrong with it is
+wrong symmetrically, which is what a strategy with no edge and real fees
+looks like.
 
-                buy & hold   strategy   Sharpe    LONG days      SHORT days
-    real            -31.6%     +89.5%     2.72   65  +20.1%   122  +55.1%
-    mirror          +46.2%     +78.7%     2.47  121  +61.5%    49   +6.5%
+The mirror is therefore doing its job. Had the procedure been a
+disguised short, the mirror would have shown a much larger loss than the
+real series; had it been a disguised long, the reverse. It shows neither.
 
-Long alone on the real series returns +20.1% at Sharpe 5.67 over 65 days
--- the highest Sharpe of any bucket in the table, inside the year BTC
-fell a third. The strategy is not a short with extra steps.
-
-The mirror settles the up-market question the data could not: run on a
-market that rises 46.2%, the same procedure returns +78.7% and does it
-by being long 121 days instead of short 122. The weight moves to the
-other side by itself, because the factors reverse sign and the state
-labels follow them. That is the symmetry claim, confirmed.
-
-It reaches short swings. Median hold is TWO days, and 65% of positions
-last one to three days:
-
-    hold        1-3d    4-7d   8-20d    21+d
-    positions    24       7       4       2      (real, 37 positions)
-
-SO A FEW DOWN DAYS IS EXACTLY WHAT IT TRADES, and the return breakdown
-by how long the move had already run before entry says the same:
+By how long the move had run before entry -- lagged a day, so it is
+knowable at entry -- every bucket is negative on both series:
 
     run before entry    real          mirror
-    1 day              +43.9%        +37.6%
-    2-3 days           +62.7%        +57.8%
-    4-6 days           -14.1%        -15.2%
-    7+ days             -5.2%         -2.4%
+    1 day              -11.1%        -10.5%
+    2-3 days            -8.2%         -4.3%
+    4-6 days            -0.7%         -7.3%
+    7+ days             -2.5%         -1.2%
 
-Fresh and few-day-old moves carry everything; moves already four days
-old lose on both series. Note this table is lagged by a day on purpose
--- labelling a day by its own return would use the outcome to pick the
-trade, and the unlagged version says the opposite, which is exactly how
-that mistake looks from the inside.
+The holding periods are still short -- median two days on the real
+series, one on the mirror, 65-74% of positions lasting one to three days
+-- so short swings were reached. They were reached and lost on.
 
-THE FILTER THAT LOOKS OBVIOUS AND IS NOT WIRED IN
+THE ONE PIECE OF METHOD WORTH CARRYING FORWARD
 
-Dropping entries into moves older than three days lifts the real series
-to +132.6% at Sharpe 4.09 and the mirror to +115.7% at 3.66. Half by
-half, it does not hold:
-
-                                   first half   second half
-    unfiltered                          33.4%         42.0%
-    skip stale moves (run > 3d)         63.6%         42.1%
-
-All of the gain is in the first half; in the second it is worth nothing.
-That is 34 excluded days carrying the whole effect, which is a fit, and
-the mirror agreeing does not make it independent evidence -- the mirror
-is the same 583 days reflected, not a new sample. So it stays measured
-and unwired until a period of fresh data either repeats it or does not.
+The unlagged version of that swing table says the opposite of the lagged
+one: fresh moves flip from worst bucket to best. Both look equally
+plausible printed on a page. That is the same class of error, found
+twice in this file alone, and it is why every state label now goes
+through fp.regime.lagged_states() and why fp/test_bot.py fails if the
+lag is removed.
 """
 from __future__ import annotations
 
@@ -107,7 +83,7 @@ import numpy as np
 import pandas as pd
 
 from fp.ensemble import build_logics, daily_net, load_daily
-from fp.regime import states
+from fp.regime import lagged_states
 
 
 # ------------------------------------------------------------------ mirror
@@ -148,7 +124,7 @@ def run(d: pd.DataFrame, state_dims=("trend",), top=5, min_days=40,
     keys = list(logics)
     N = np.column_stack([daily_net(close, logics[k]).values for k in keys])
     P = np.column_stack([logics[k].values for k in keys])
-    S = states(d, list(state_dims))
+    S = lagged_states(d, list(state_dims))
     sv = S.values
     mkt = close.pct_change().values
 

@@ -988,6 +988,42 @@ def test_stale_excludes_open_positions():
     check("the other one is still due", "S1USDT" in stale, str(stale))
 
 
+def test_state_label_cannot_see_its_own_bar():
+    """The state a backtest conditions on must lag by exactly one bar.
+
+    states() labels bar i from bar i's own close, and the return credited
+    to bar i is driven by that same close. Conditioning on the unlagged
+    label let the choice of logic see part of the outcome it was about to
+    collect, and with 2,602 logics to pick from that was worth the whole
+    of this project's only positive result: `trend` top5 read +89.5% with
+    it and -21.5% without. Nothing else in the code changed.
+
+    So the lag is load-bearing, and this fails if anyone removes it.
+    """
+    print("\nthe state label a backtest uses lags the bar it trades")
+    from fp.regime import lagged_states, states
+    n = 400
+    r = np.random.default_rng(11)
+    close = 100 * np.exp(np.cumsum(r.normal(0, 0.01, n)))
+    d = pd.DataFrame({"open": close, "high": close * 1.001,
+                      "low": close * 0.999, "close": close,
+                      "volume": np.full(n, 1e6)},
+                     index=pd.date_range("2025-01-01", periods=n, freq="D"))
+    raw = states(d, ["trend", "vol"])
+    lag = lagged_states(d, ["trend", "vol"])
+    check("the lagged label is the previous bar's label",
+          lag.iloc[1:].tolist() == raw.iloc[:-1].tolist())
+    check("the first bar has no label to inherit", pd.isna(lag.iloc[0]))
+    labelled = raw.notna()
+    check("the raw label is not already lagged",
+          not raw.iloc[1:].equals(raw.iloc[:-1].set_axis(raw.index[1:])),
+          "states() appears to shift already -- the backtests would "
+          "then double-lag")
+    check("lagging does not invent labels",
+          int(lag.notna().sum()) <= int(labelled.sum()),
+          f"{int(lag.notna().sum())} vs {int(labelled.sum())}")
+
+
 def test_mirror_reflects_the_market():
     """fp.symmetry.mirror must invert the drift and keep everything else.
 
@@ -1102,6 +1138,7 @@ def main() -> int:
                test_full_cost_model,
                test_real_costs_come_from_the_exchange,
                test_stale_excludes_open_positions,
+               test_state_label_cannot_see_its_own_bar,
                test_mirror_reflects_the_market,
                test_swing_age_is_lagged,
                test_regime_direction_is_symmetric,

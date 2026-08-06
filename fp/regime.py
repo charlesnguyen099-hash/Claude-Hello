@@ -35,102 +35,50 @@ using data from the future:
 Crossed, that is up to 36 states. A state with too little history is not
 traded rather than guessed at.
 
-WHAT IT MEASURED
+WHAT IT MEASURED, AND THE CORRECTION THAT REPLACED IT
 
-Sweeping nine state definitions x four basket sizes, two are positive at
-EVERY basket size -- parameter stability, not a lone spike:
+This module once reported the only out-of-sample-positive result in the
+project: `trend` top5 at +89.5%, Sharpe 2.72, chosen twice independently
+by nested validation, +78.1% and +40.1% forward. All of it came from a
+one-bar misalignment.
 
-    states        top5    top15    top50   top200
-    vol,trend   +37.6%   +23.3%   +20.0%   +24.9%
-    trend,dir   +43.0%   +53.9%   +35.9%   +22.0%
-    vol,dir      -5.8%   -16.5%   -10.8%    -9.1%
+states() labels bar i from bar i's own close. The return the backtest
+credited to bar i is close[i]/close[i-1] - 1, driven by that same close.
+So conditioning the choice of logic on the unlagged label let the choice
+see part of the outcome it was about to collect. With 2,602 logics to
+choose from, that sliver was enough to manufacture the entire result.
 
-Choosing a state definition after seeing that table is a leak, so it was
-redone with the definition itself picked from past data only. Both splits
-independently chose `trend`, and both were positive forward:
+Lagging the label one bar -- which is what the live bot does anyway,
+since it reads the last CLOSED bar and holds through the next one --
+turns every cell of the sweep negative:
 
-    picked on            chose         traded on            result  Sharpe
-    2025-10..2025-12     trend top5    2025-12..2026-08     +78.1%    3.00
-    2025-10..2026-03     trend top5    2026-03..2026-08     +40.1%    4.18
+    states            top5    top15    top50   top200      before (top5)
+    vol             -14.2%    -9.2%   -16.1%   -15.9%              +4.6%
+    trend           -21.5%   -18.9%   -22.4%   -19.8%             +89.5%
+    dir             -19.7%   -23.6%   -21.6%   -16.9%             +41.9%
+    vol,trend       -17.4%   -10.3%   -15.0%   -13.6%             +37.6%
+    vol,dir         -15.0%   -21.2%   -20.2%   -20.4%              -5.8%
+    trend,dir       -14.8%   -15.9%   -15.4%    -7.2%             +43.0%
+    vol,trend,dir   -23.6%   -16.8%   -18.5%   -14.6%              +4.4%
+    vol,pos,dir     -13.1%   -15.0%   -18.5%   -17.2%              +8.5%
+    vol,trend,pos   -20.3%   -14.4%   -15.8%   -12.1%              +5.0%
 
-First and second half separately, `trend` is the only definition positive
-in both (+4.5%, +69.2%).
+36 cells, 36 negative. Sharpe runs from -0.30 to -5.97. The granularity
+sweep and the mirror study built on top of this result inherit the same
+correction; their numbers are void, and the shape of the conclusion they
+drew -- that coverage bounds how many logics the data can carry, and
+that a large library always finds an in-sample winner -- survives, since
+neither depended on the sign.
 
-AND THE LIMIT OF THAT EVIDENCE, WHICH IS THE IMPORTANT PART
+Every measurement now goes through lagged_states() so this cannot recur
+in one caller and not another, and fp/test_bot.py fails if the lag is
+removed.
 
-Broken out by period, it pays when the market falls and does nothing when
-it rises:
+WHAT REMAINS TRUE
 
-    2025 Q4    BTC -22.4%    strategy  +7.1%   Sharpe  1.59
-    2026 Q1    BTC -23.2%    strategy +26.6%   Sharpe  2.38
-    2026 Q3    BTC  +7.8%    strategy  -0.3%   Sharpe -0.16
-
-That is trend-following working in a trend, which is its known property
-rather than a discovery. The warm-up leaves usable history only from late
-2025, so essentially all of the evidence comes from ONE sustained decline.
-The single rising quarter available is 36 days long and returns nothing.
-
-So: the first out-of-sample-positive result in this project, produced by
-one regime, and untested against a rising or choppy market because the
-data barely contains one. Treat the size of the number as a property of
-that decline, not as an expectation.
-
-AND THEN THE RISING MARKET WAS TESTED ANYWAY -- see fp/symmetry.py
-
-The data contains no sustained rise, so one was built: every daily log
-return reflected, r -> -r, which turns the 31.6% fall into a 46.2% rise
-while preserving volatility, clustering and range structure exactly.
-Run unchanged on that series the same procedure returns +78.7% at
-Sharpe 2.47, and it gets there by being LONG 121 days rather than short
-122. The weight moves to the other side on its own, because the factors
-change sign and the state labels follow them.
-
-On the real series both sides already paid -- short 122 days +55.1%,
-long 65 days +20.1% at Sharpe 5.67, the best bucket in the table, taken
-during the year BTC fell a third. This is not a short with extra steps.
-
-It also reaches short swings: median hold is TWO days and 65% of
-positions last one to three, so a two-day drop is inside what it trades
-rather than something it waits out.
-
-HOW MANY LOGICS THE DATA CAN ACTUALLY CARRY
-
-The natural next step is to slice the state space finer -- many narrow
-states, each with its own specialist logic. That was measured, sweeping
-from two states to a hundred and forty:
-
-    state dimensions            states   days traded    total   Sharpe
-    trend (k=2)                      2           274    +89.5%     2.72
-    trend (k=3)                      3           247   +123.6%     3.71
-    trend,dir (k=3)                  8           136    +27.4%     2.01
-    vol,trend,dir (k=3)             24            50     +5.2%     3.27
-    vol,trend,dir,mom (k=3)         46            21     +4.7%     6.55
-    +pos (k=3)                      70             7     -0.7%    -4.90
-    +volr (k=3)                    140             0        --       --
-
-The binding constraint is not how much code can be written. It is that
-there are 583 daily bars. Cut them into 140 states and each holds about
-four days of history -- below any threshold at which a logic could be
-judged -- so nothing trades at all. At 70 states, seven days qualify in
-nineteen months.
-
-More logics do not cover more signals here; finer states cover fewer,
-because coverage is bounded by samples per state and the samples are
-fixed. The returns above shrink monotonically with granularity for that
-reason, not because the narrow logics are worse.
-
-AND THE STATES WHERE NOTHING WORKS DO NOT EXIST
-
-The other half of the idea -- where no logic is profitable, invert the
-losing ones instead of dropping the state -- was implemented and never
-fired. Across every configuration above, zero inversions.
-
-The reason is worth stating: with 2,602 logics in hand, the five best by
-in-state Sharpe have a positive in-state mean in EVERY state, always.
-There is no state without an apparent winner. That is not evidence the
-states are all tradeable; it is the overfitting warning in its clearest
-form -- a large enough logic library guarantees an in-sample winner
-inside any slice you draw, including slices that are pure noise.
+State conditioning is still a better idea than trailing P&L -- it just
+does not carry any edge here either. Both are now measured and both are
+negative, which is the same answer arrived at twice.
 
 EVERYTHING ELSE IS AS ESTABLISHED
 
@@ -178,6 +126,24 @@ def states(d: pd.DataFrame, which: list[str]) -> pd.Series:
     return out.where(~out.str.contains("nan"), np.nan)
 
 
+def lagged_states(d: pd.DataFrame, which: list[str]) -> pd.Series:
+    """The only state label a backtest may condition on.
+
+    states() labels each bar from that bar's own close. The return a
+    backtest credits to bar i is driven by that same close, so choosing
+    a logic inside the unlagged label lets the choice see part of the
+    outcome it is about to collect. That single-bar misalignment was
+    worth the entire result this module once reported: `trend` top5 read
+    +89.5% with it and -21.5% without.
+
+    Live there is no such shift to make -- the bot reads the last CLOSED
+    bar and holds through the next one, which is what this reproduces.
+    Every measurement goes through here so the mistake cannot recur in
+    one caller and not another.
+    """
+    return states(d, which).shift(1)
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -203,7 +169,7 @@ def main(argv=None) -> int:
     print(f"\n{'states':>22} {'n':>4} {'top':>5} {'traded':>7} {'total':>9} "
           f"{'Sharpe':>8} {'win days':>9}")
     for combo in combos:
-        S = states(d, combo.split(","))
+        S = lagged_states(d, combo.split(","))
         for top in tops:
             eq, rets, traded = 1.0, [], 0
             for i in range(a.warmup, len(close) - 1):

@@ -75,6 +75,24 @@ one regime, and untested against a rising or choppy market because the
 data barely contains one. Treat the size of the number as a property of
 that decline, not as an expectation.
 
+AND THEN THE RISING MARKET WAS TESTED ANYWAY -- see fp/symmetry.py
+
+The data contains no sustained rise, so one was built: every daily log
+return reflected, r -> -r, which turns the 31.6% fall into a 46.2% rise
+while preserving volatility, clustering and range structure exactly.
+Run unchanged on that series the same procedure returns +78.7% at
+Sharpe 2.47, and it gets there by being LONG 121 days rather than short
+122. The weight moves to the other side on its own, because the factors
+change sign and the state labels follow them.
+
+On the real series both sides already paid -- short 122 days +55.1%,
+long 65 days +20.1% at Sharpe 5.67, the best bucket in the table, taken
+during the year BTC fell a third. This is not a short with extra steps.
+
+It also reaches short swings: median hold is TWO days and 65% of
+positions last one to three, so a two-day drop is inside what it trades
+rather than something it waits out.
+
 HOW MANY LOGICS THE DATA CAN ACTUALLY CARRY
 
 The natural next step is to slice the state space finer -- many narrow

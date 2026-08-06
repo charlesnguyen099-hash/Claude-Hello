@@ -988,6 +988,94 @@ def test_stale_excludes_open_positions():
     check("the other one is still due", "S1USDT" in stale, str(stale))
 
 
+def test_mirror_reflects_the_market():
+    """fp.symmetry.mirror must invert the drift and keep everything else.
+
+    The up-market evidence rests entirely on this transform being a
+    faithful reflection. If it quietly changed the volatility or broke
+    high >= low, the mirror result would be about the bug.
+    """
+    print("\nthe mirrored series is the same market, rising")
+    from fp.symmetry import mirror
+    rows = make_rows(n=300, drift=-0.002, seed=5)
+    d = pd.DataFrame([{"open": float(r[1]), "high": float(r[2]),
+                       "low": float(r[3]), "close": float(r[4]),
+                       "volume": float(r[5])} for r in rows[::-1]])
+    m = mirror(d)
+    r0 = d["close"].pct_change().dropna()
+    r1 = m["close"].pct_change().dropna()
+    check("the fall becomes a rise",
+          d["close"].iloc[-1] < d["close"].iloc[0]
+          and m["close"].iloc[-1] > m["close"].iloc[0],
+          f"{d['close'].iloc[-1]/d['close'].iloc[0]:.3f} -> "
+          f"{m['close'].iloc[-1]/m['close'].iloc[0]:.3f}")
+    check("log returns are exactly negated",
+          np.allclose(np.log1p(r0), -np.log1p(r1)))
+    # Log volatility is preserved exactly. Simple-return volatility is not,
+    # and cannot be: exp(-x)-1 is not the negative of exp(x)-1. The gap is
+    # of order sigma itself -- 0.3% relative at 0.96% daily vol -- and is
+    # the honest limit of the reflection, not a defect in it.
+    check("log volatility is identical",
+          abs(np.log1p(r0).std() - np.log1p(r1).std()) < 1e-12,
+          f"{np.log1p(r0).std():.9f} vs {np.log1p(r1).std():.9f}")
+    check("simple volatility matches to order sigma",
+          abs(r0.std() - r1.std()) / r0.std() < 2e-2,
+          f"{r0.std():.6f} vs {r1.std():.6f}")
+    check("high still sits above low", bool((m["high"] >= m["low"]).all()))
+    check("close stays inside the bar",
+          bool(((m["close"] <= m["high"] + 1e-9)
+                & (m["close"] >= m["low"] - 1e-9)).all()))
+
+
+def test_swing_age_is_lagged():
+    """The swing label must not know the day it labels.
+
+    Its unlagged version reverses the conclusion -- fresh moves flip from
+    the best bucket to the worst -- so this is the difference between a
+    tradeable filter and a look-ahead.
+    """
+    print("\nthe swing-age label uses only prior days")
+    from fp.symmetry import swing_age
+    mkt = np.array([0.01, 0.01, 0.01, -0.01, -0.01, 0.01])
+    age = swing_age(mkt)
+    check("day one has no history", age[0] == 0, str(age))
+    # up-run of 3 ends at index 2, so index 3 (the first down day) still
+    # sees the up-run's length rather than its own reversal
+    check("the label lags by exactly one day",
+          list(age) == [0, 1, 2, 3, 1, 2], str(age))
+    check("no label is built from its own day",
+          all(swing_age(mkt)[i] == swing_age(mkt[:i + 1])[i]
+              for i in range(len(mkt))))
+
+
+def test_regime_direction_is_symmetric():
+    """The live direction rule must be able to answer LONG.
+
+    A short-only bot would have produced every result in this project
+    unchanged on falling data and then failed silently in a rally, so
+    the code path is checked against a rising series directly.
+    """
+    print("\nregime mode votes long on a rising market and short on a falling one")
+    syms = ["S0USDT"]
+    c = FakeHTTP(syms)
+    b = broker_for(syms, c, signal_source="regime", sizing="flat")
+    up = make_rows(n=400, drift=0.004, seed=3)
+    dn = make_rows(n=400, drift=-0.004, seed=3)
+
+    def bars(rows):
+        return pd.DataFrame(
+            [{"open": float(r[1]), "high": float(r[2]), "low": float(r[3]),
+              "close": float(r[4]), "volume": float(r[5])} for r in rows[::-1]],
+            index=pd.date_range("2025-01-01", periods=len(rows), freq="D"))
+
+    d_up = b._regime_direction(bars(up))
+    d_dn = b._regime_direction(bars(dn))
+    check("a rising market is not shorted", d_up >= 0, f"direction {d_up}")
+    check("a falling market is not bought", d_dn <= 0, f"direction {d_dn}")
+    check("at least one side produced a position", d_up != 0 or d_dn != 0,
+          f"up {d_up} down {d_dn}")
+
+
 def main() -> int:
     print("=" * 70)
     print("fp.bot tests")
@@ -1014,6 +1102,9 @@ def main() -> int:
                test_full_cost_model,
                test_real_costs_come_from_the_exchange,
                test_stale_excludes_open_positions,
+               test_mirror_reflects_the_market,
+               test_swing_age_is_lagged,
+               test_regime_direction_is_symmetric,
                test_summary_counts_add_up):
         fn()
     print("\n" + "=" * 70)

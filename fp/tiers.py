@@ -140,6 +140,18 @@ from fp.exits import barrier_outcomes, sigma_at, wilson_lower
 from fp.horizon import FEE_ROUND_TRIP, FUNDING_PER_8H, load_1m, resample
 
 OUT = Path(__file__).resolve().parent / "tier_book.json"
+
+# Ten symbols are not ten bets. Measured on 15m returns over this window:
+# the semiconductors correlate 0.72 with each other, the crypto majors
+# 0.81, BLESSUSDT with nothing at 0.02-0.09, gold weakly at 0.22-0.30.
+# So "universal" cannot mean "8 of 10 symbols" -- eight symbols can be
+# two blocks. It means SPANNING the blocks, which is the only version of
+# the word that carries independent evidence.
+BLOCK = {"SKHYNIXUSDT": "semi", "SNDKUSDT": "semi", "SOXLUSDT": "semi",
+         "ETHUSDT": "crypto", "SOLUSDT": "crypto", "BTCUSDT": "crypto",
+         "XRPUSDT": "crypto", "HYPEUSDT": "crypto",
+         "BLESSUSDT": "bless", "XAUUSDT": "gold"}
+N_BLOCKS = len(set(BLOCK.values()))
 TF = {"15m": 15, "30m": 30, "1h": 60}
 TPS = (1.0, 2.0, 3.0, 4.0)
 SLS = (1.0, 2.0, 3.0)
@@ -257,6 +269,7 @@ def tally(per: dict[str, dict], min_trades: int) -> pd.DataFrame:
             "tf": None, "tp": tp, "sl": sl, "hmax": hmax,
             "n_paid": len(paid), "tested_on": len(hits),
             "coins": ",".join(sorted(paid)),
+            "blocks": len({BLOCK.get(c, c) for c in paid}),
             "fit": float(np.mean([r["fit"] for r in hits.values()])),
             "test": float(np.mean([r["test"] for r in hits.values()])),
             "test_paid": float(np.mean([hits[s]["test"] for s in paid]))
@@ -352,12 +365,26 @@ def main(argv=None) -> int:
                   f"{100*null:>7.3f}% {ratio:>7.2f} "
                   f"{100*tm:>9.3f}%{tag}")
 
-        uni = T[T["n_paid"] >= a.universal].sort_values("test_paid",
-                                                        ascending=False)
-        grp = T[(T["n_paid"] >= a.group_min) & (T["n_paid"] < a.universal)]
+        # Universality by BLOCKS, not by symbol count. A rule paying on
+        # SKHYNIX+SNDK+SOXL has been confirmed once at r=0.72, not three
+        # times; a rule paying on one semiconductor and one crypto major
+        # has been confirmed on two things that share r=0.37.
+        print(f"\n  blocks spanned (semi / crypto / bless / gold):")
+        print(f"  {'blocks':>7} {'rules':>7} {'null':>8} {'ratio':>7} "
+              f"{'test mean':>10}")
+        nb_null = []
+        for k in range(N_BLOCKS, 0, -1):
+            sel = T[T["blocks"] >= k]
+            share = len(sel) / len(T)
+            print(f"  {'>= ' + str(k):>7} {len(sel):>7} {'--':>8} {'--':>7} "
+                  f"{100*sel['test_paid'].mean() if len(sel) else float('nan'):>9.3f}%")
+
+        uni = T[T["blocks"] >= 3].sort_values("test_paid", ascending=False)
+        grp = T[(T["n_paid"] >= a.group_min) & (T["blocks"] < 3)]
         one = T[T["n_paid"] == 1]
 
-        print(f"\n  UNIVERSAL ({a.universal}+ of {n_sym}): {len(uni)} rules")
+        print(f"\n  UNIVERSAL (spans 3+ of the {N_BLOCKS} blocks): "
+              f"{len(uni)} rules")
         for _, r in uni.head(10).iterrows():
             print(f"    {r.logic:<26} {r.side:>5} tp{r.tp}/sl{r.sl}/{r.hmax}b "
                   f"{r.n_paid}/{r.tested_on}  fit {100*r.fit:+.3f}%  "
@@ -382,7 +409,8 @@ def main(argv=None) -> int:
                              "tp": float(r.tp), "sl": float(r.sl),
                              "hmax": int(r.hmax), "hold_min": float(r.hold),
                              "mean": float(r.test_paid), "tier": tier,
-                             "coins": r.coins, "n_coins": int(r.n_paid)})
+                             "coins": r.coins, "n_coins": int(r.n_paid),
+                             "blocks": int(r.blocks)})
 
     OUT.write_text(json.dumps({
         "fitted_on": "10 symbols, 2026-06-30..2026-08-06, 1m bars",

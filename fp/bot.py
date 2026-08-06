@@ -1354,6 +1354,14 @@ class Broker:
         gl = sum(t.pnl_usd for t in losses)
         eq_open = equity + unreal
         standing = len(self.signals)
+        # A book position runs to ITS rule's time limit, which varies from
+        # one timeframe to the next; the old constant described a hold
+        # length none of them use -- and the funding half of the cost line
+        # is that hold length times the rate.
+        holds = [p.max_hold_min / 60.0 for p in self.open.values()
+                 if p.max_hold_min]
+        hold_h = (float(np.mean(holds)) if holds
+                  else L.EXPECTED_HOLD_HOURS.get(self.exit_name, 5.0))
         return {
             "elapsed": time.time() - self.started_at,
             "starting_equity": self.starting_equity,
@@ -1370,12 +1378,20 @@ class Broker:
             "margin_used_pct": (100 * committed / eq_open) if eq_open > 0 else 0.0,
             "slice_size": self.slice_size(),
             "sizing_mode": self.sizing, "exit_name": self.exit_name,
+            "signal_source": self.signal_source,
+            "book_rules": len(self.book),
+            "hold_hours": hold_h,
             # What the open book is worth if every position runs to its
             # exit at the measured win rate, rather than at today's mark.
+            # A book position settles at ITS OWN rule's measured mean --
+            # ev_per_margin already carries it -- because the 0.84/0.42
+            # payoff below belongs to the old TP3.0/SL1.5 exit and would
+            # describe a rule this position is not trading.
             "expected_settle": sum(
-                (L.MEASURED_WIN_RATE.get(self.exit_name, 0.35) * 0.84
-                 - (1 - L.MEASURED_WIN_RATE.get(self.exit_name, 0.35)) * 0.42)
-                * p.margin - p.margin * p.leverage * self.fee
+                (p.ev_per_margin * p.margin if p.rule else
+                 (L.MEASURED_WIN_RATE.get(self.exit_name, 0.35) * 0.84
+                  - (1 - L.MEASURED_WIN_RATE.get(self.exit_name, 0.35)) * 0.42)
+                 * p.margin - p.margin * p.leverage * self.fee)
                 for p in self.open.values()),
             "notional": notional, "avg_leverage": avg_lev,
             "exposure_x": (notional / eq_open) if eq_open > 0 else 0.0,
@@ -1405,7 +1421,7 @@ class Broker:
                              if self.funding else 0.0),
             "cost_long": (L.ENTRY_FEE_TAKER + L.EXIT_FEE_TAKER
                           + float(np.median(list(self.funding.values())) or 0.0)
-                          * L.EXPECTED_HOLD_HOURS.get(self.exit_name, 5.0)
+                          * hold_h
                           / L.FUNDING_INTERVAL_HOURS) if self.funding else 0.0,
             "min_atr_for_edge": L.min_atr_for_edge(self.exit_name, self.fee,
                                                    self.assumed_win_rate),
@@ -1506,7 +1522,7 @@ def print_dashboard(s: dict) -> None:
     # with three closed trades, all losses, read as +17.74%.
     if s["open"] and abs(s["unrealized"]) > abs(settled):
         print(f"  Most of what you see is UNSETTLED. Positions last "
-              f"{L.EXPECTED_HOLD_HOURS.get(s['exit_name'], 5.0):.1f}h on")
+              f"{s.get('hold_hours', 5.0):.1f}h on")
         print(f"  average and stops finish sooner than targets, so an open "
               f"book reads")
         print(f"  better than it will settle. At the measured win rate this "
@@ -1522,11 +1538,19 @@ def print_dashboard(s: dict) -> None:
           f"   {s['margin_used_pct']:.1f}% of equity deployed")
     # BUG: this line used to read potential_sizing, a different flag, and
     # so described a mode the bot was not running.
-    how = {"kelly": "Kelly on each signal's own lower-bounded win rate, "
-                    "0% to 100% of equity",
-           "potential": f"base slice x {L.MARGIN_WEIGHT_MIN:.2f}-"
-                        f"{L.MARGIN_WEIGHT_MAX:.2f} by return per $ of margin",
-           "flat": "the same slice for every trade"}[s["sizing_mode"]]
+    if s.get("signal_source") in ("slow", "regime", "book", "survivors"):
+        # slice_size() short-circuits to the flat slice for these modes, so
+        # printing the --sizing flag here described a branch never taken.
+        how = (f"flat, "
+               f"{100*s['slice_size']/max(s['equity_incl_open'], 1e-9):.1f}% of equity "
+               f"every trade (${s['slice_size']:.4f}); the rule's own "
+               f"leverage carries its potential")
+    else:
+        how = {"kelly": "Kelly on each signal's own lower-bounded win rate, "
+                        "0% to 100% of equity",
+               "potential": f"base slice x {L.MARGIN_WEIGHT_MIN:.2f}-"
+                            f"{L.MARGIN_WEIGHT_MAX:.2f} by return per $ of margin",
+               "flat": "the same slice for every trade"}[s["sizing_mode"]]
     print(f"            sizing: {how}")
     ceiling = (f"   ceiling {s['max_notional_x']:.0f}x"
                f" (${s['notional_headroom']:.2f} left)"
@@ -1559,9 +1583,17 @@ def print_dashboard(s: dict) -> None:
     print(f"  COST      taker in+out {100*(L.ENTRY_FEE_TAKER+L.EXIT_FEE_TAKER):.3f}%"
           f"   live funding median {100*s['live_funding']:+.4f}%/8h"
           f"   -> a long costs {100*s['cost_long']:.3f}% round trip")
-    print(f"  EDGE      negative-expectancy skips {s['skipped_negative_ev']:,}"
-          f"   ({s['tradeable_bands']} of {s['total_bands']} measured ATR bands"
-          f" clear the cost)")
+    if s.get("signal_source") == "book":
+        # The ATR-band table belongs to the twelve-method exit. Book mode
+        # never consults it -- each rule was measured against the full cost
+        # on its own -- so reporting it here graded this book with another
+        # book's ruler.
+        print(f"  EDGE      {s['book_rules']} book rules, each already net of "
+              f"fees + funding where it was measured")
+    else:
+        print(f"  EDGE      negative-expectancy skips {s['skipped_negative_ev']:,}"
+              f"   ({s['tradeable_bands']} of {s['total_bands']} measured ATR bands"
+              f" clear the cost)")
     print(f"  SCAN      fill pass #{s['passes']:,}"
           f"   bar refreshes {s['refreshes']:,} (last {s['last_refresh_seconds']:.1f}s)"
           f"   universe {s['universe']}"

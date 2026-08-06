@@ -1280,6 +1280,72 @@ def test_book_never_touches_the_old_logic():
               b.closed[-1].reason if b.closed else "-")
 
 
+def test_the_dashboard_describes_the_mode_it_is_running():
+    """The readout must name the mechanism actually in use.
+
+    slice_size() short-circuits to the flat slice for book mode, but the
+    dashboard printed the --sizing flag, so a book session announced
+    "Kelly on each signal's own lower-bounded win rate" while sizing every
+    trade at a fixed 5%. The EDGE line was the same kind of lie: it graded
+    the book against edge_table.json, the twelve-method exit's ATR bands,
+    which book mode never consults.
+
+    A wrong label is not cosmetic here -- it is the only thing telling the
+    operator what their capital is doing.
+    """
+    print("\nthe dashboard names the mechanism it is actually running")
+    import io, contextlib
+
+    def readout(**kw):
+        syms = ["S0USDT"]
+        b = broker_for(syms, FakeHTTP(syms), **kw)
+        b.refresh_prices()
+        s = b.snapshot()
+        s["elapsed"] = 1.0
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            B.print_dashboard(s)
+        return buf.getvalue(), b, s
+
+    txt, b, s = readout(signal_source="book", sizing="kelly")
+    check("book mode does not claim Kelly", "Kelly" not in txt,
+          [l for l in txt.splitlines() if "sizing" in l])
+    check("it names the flat slice", "flat," in txt)
+    check("and prints the dollars it commits",
+          f"${b.slice_size():.4f}" in txt)
+    check("the printed slice is the one try_open would use",
+          abs(s["slice_size"] - b.slice_size()) < 1e-12)
+    check("the ATR-band table is not used to grade the book",
+          "ATR bands" not in txt,
+          [l for l in txt.splitlines() if "EDGE" in l])
+    check("EDGE reports the book instead",
+          "book rules" in txt)
+
+    # The old path must keep its own labels.
+    txt2, _, _ = readout(signal_source="methods", sizing="kelly")
+    check("method mode still reports Kelly", "Kelly" in txt2)
+    check("and still grades against the ATR bands", "ATR bands" in txt2)
+
+    # Hold length: a book position runs to ITS rule's limit, not to the
+    # twelve-method exit's expected hold.
+    syms = ["S0USDT"]
+    b = broker_for(syms, FakeHTTP(syms), signal_source="book")
+    b.refresh_prices()
+    b.signals["S0USDT"] = B.Signal(
+        bar_ts=B.closed_bar_ts(), direction=1, atr_pct=2.0, votes=1,
+        vote_margin=1, methods="book rule", slow_leverage=2.0,
+        tp_dist=0.05, sl_dist=0.03, max_hold_min=180.0, rule="4h:x:long",
+        rule_mean=0.004)
+    b.try_open("S0USDT")
+    s = b.snapshot()
+    check("hold length comes from the rule, not the old constant",
+          abs(s["hold_hours"] - 3.0) < 1e-9, s["hold_hours"])
+    p = b.open["S0USDT"]
+    check("the settle estimate uses the rule's own measured mean",
+          abs(s["expected_settle"] - p.ev_per_margin * p.margin) < 1e-12,
+          (s["expected_settle"], p.ev_per_margin * p.margin))
+
+
 def test_book_trade_matches_the_backtest_arithmetic():
     """The bot's trade must equal what the study measured, to the cent.
 
@@ -1634,6 +1700,7 @@ def main() -> int:
                test_bot_trades_nothing_without_a_whitelist,
                test_book_rules_fire_only_where_they_were_validated,
                test_book_never_touches_the_old_logic,
+               test_the_dashboard_describes_the_mode_it_is_running,
                test_book_trade_matches_the_backtest_arithmetic,
                test_book_barriers_sit_around_the_fill_not_the_bar_close,
                test_book_refuses_a_stop_outside_liquidation,

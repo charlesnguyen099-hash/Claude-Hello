@@ -49,6 +49,31 @@ selected rules are run as a portfolio at equal weight, each taking 1/N
 of capital. The equity curve reported is the portfolio's, not the best
 member's.
 
+DOES BUILDING ON 4h AND DAILY HIDE MINUTE-SCALE TRADES?
+
+A fair question, and settled by measurement rather than argument. The
+same build was run with all five timeframes competing on equal terms --
+15m, 30m, 1h, 4h and 1d, ranked together by their weaker year, nothing
+excluded in advance:
+
+    7,493 rules qualified across all five, against 7,381 from 4h and 1d
+    alone. The three fast timeframes contributed 112 rules, 1.5% of the
+    total, and NOT ONE of them made the selected thirty.
+
+Run as a book on its own, the fast end is worse:
+
+                          rules  trades    total     DD    2025    2026
+    4h + 1d                  30   1,509   +70.1%   -2.6%  +28.9%  +31.9%
+    15m + 30m + 1h           30   4,696   +29.1%   -3.1%  +15.8%  +11.5%
+
+Three times the trades for 41% of the return, and all thirty of that
+book came from 1h -- 15m and 30m contributed nothing even there. The
+arithmetic is the same one fp/horizon.py established: each trade pays
+0.11%, and a move grows with the square root of time while the fee does
+not grow at all.
+
+So the fast timeframes are not being skipped. They compete and lose.
+
 WHAT CAME OUT
 
 7,381 entry x exit x side rules were profitable after fees in BOTH 2025

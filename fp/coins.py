@@ -66,6 +66,68 @@ position series rotated by a random offset. That keeps every coin's
 drift, volatility and each rule's own long/short balance, and destroys
 only the alignment -- so a rule that merely sat long while eight of nine
 coins rose scores the same in the null as it does for real.
+
+WHAT IT MEASURED
+
+At 5m, 198,000 rules across nine coins, against the rotation null:
+
+    coins paid   rules    share   null share   ratio
+        >= 7         0    0.00%        0.00%    0.00
+        >= 6        14    0.01%        0.01%    1.03
+        >= 5       201    0.10%        0.08%    1.22
+        >= 4      1660    0.84%        0.89%    0.94
+        >= 2     34731   17.54%       18.07%    0.97
+
+Every ratio is one. The number of rules paying on K coins is exactly
+what randomly-timed positions produce, and nothing at all pays on seven
+or more. At five minutes there is no cross-coin structure.
+
+At 15m, 141,540 rules, the picture is different:
+
+    coins paid   rules    share   null share   ratio
+        >= 9         1    0.00%        0.00%     inf
+        >= 8         7    0.00%        0.00%    19.38
+        >= 7        33    0.02%        0.01%     2.89
+        >= 6       196    0.14%        0.09%     1.62
+        >= 5      1072    0.76%        0.54%     1.41
+        >= 4      4202    2.97%        2.73%     1.09
+
+The excess is concentrated exactly where it should be if it is real: at
+the high-agreement end, rising from 1.09x at four coins to 19x at eight.
+One rule paid on all nine.
+
+AND THE CONTROL THAT MATTERS, because the week was up-biased
+
+Six of the nine symbols rose, so a long-biased rule pays on many coins
+for free. The control is a rule with no signal at all -- enter EVERY bar,
+same exit:
+
+    ALWAYS LONG   tp4.0/sl3.0/96b   pays on 4 of 9   +0.351%/trade
+    ALWAYS LONG   tp4.0/sl3.0/24b   pays on 3 of 9   +0.060%
+    ALWAYS LONG   tp3.0/sl3.0/96b   pays on 3 of 9   +0.244%
+    ALWAYS SHORT  tp4.0/sl3.0/96b   pays on 0 of 9   -0.552%
+    ALWAYS SHORT  tp4.0/sl3.0/24b   pays on 0 of 9   -0.348%
+
+Long exposure alone reaches four coins. The 15m universal rules reach
+seven, eight and nine. So they are not long exposure with extra steps --
+whatever they are picking, it is picking better than the drift.
+
+WHAT THE UNIVERSAL RULES LOOK LIKE
+
+All 33 are LONG, all use wide targets (3-4 sigma) and long holds (96
+bars = 24 hours), and they cluster on medium-lookback factors:
+mom89, ma_dist89, pos55, pos89, maxdd120, maxdd21. The coin sets are
+nearly identical -- BLESSUSDT, HYPEUSDT, SKHYNIXUSDT, SNDKUSDT,
+SOXLUSDT, XAUUSDT, XRPUSDT recurs again and again.
+
+That every one is long is the caveat to hold onto. This week rose, so
+the short side of these rules is entirely untested, and a rule family
+that only ever appears long in an up week is exactly what a longer
+sample needs to confirm or kill.
+
+SO: the first cross-symbol signal in this project that is not explained
+by one coin, by drift, or by chance -- on 5.7 days, at one timeframe out
+of two, on the long side only.
 """
 from __future__ import annotations
 
@@ -82,7 +144,7 @@ from fp.exits import HOLDS, SL_MULTS, TP_MULTS, barrier_outcomes, sigma_at
 from fp.horizon import FEE_ROUND_TRIP, FUNDING_PER_8H, resample
 
 UPLOADS = Path("/root/.claude/uploads/2499e73f-5145-5c6f-b255-816732633901")
-OUT = Path(__file__).resolve().parent / "coin_book.json"
+OUT = Path(__file__).resolve().parent / "coin_tiers.json"
 TF = {"1m": 1, "5m": 5, "15m": 15, "30m": 30}
 
 

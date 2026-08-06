@@ -17,104 +17,84 @@
 > what the data actually said, kept because the measurements outlast the
 > code that produced them.
 >
-> A third generation followed and has now been removed too -- see the
-> section immediately below. Everything after that is the older record.
+> The logic in the branch today is `fp/slow.py`, built on the volatility
+> drag measurement below. Everything after that section is the older record.
 
-## All trading logic has been removed again, on request
-
-`fp/` and `run_bot.py` are gone. Only the datasets in `data/` and this
-write-up remain. Nothing is lost -- restore any of it from git:
+## The logic that is here now: `fp/slow.py` + `--signals slow`
 
 ```bash
-git log --oneline                          # every version
-git checkout 068ad0c -- fp run_bot.py      # the last complete bot
+pip install -r requirements.txt
+python -m fp.slow                    # the measurement it is built on
+python run_bot.py --signals slow     # $10 virtual, every USDT perpetual
+python -m fp.test_bot                # 182 checks, no network
 ```
 
-`068ad0c` is the last commit holding it. What was there:
+### The finding that produced it
 
-| module | what it did |
-|---|---|
-| `bot.py` | paper broker: continuous scan of 690 symbols, per-second position management, live dashboard, Kelly sizing, solvency bound, real per-symbol costs |
-| `logic.py` | the leverage chain, cost model, expectancy gate |
-| `methods.py` `features.py` | the twelve voting methods and the 106-feature library |
-| `calibrate.py` | measured edge table by ATR band -- what the gate actually reads |
-| `walkforward.py` `search.py` `resolution.py` `research.py` | the validation harnesses |
-| `diagnose.py` `research_notes/` | why the losers lost; every proposal, measured |
-| `patterns.py` `altdata.py` `crosssearch.py` | the pattern library, and the positioning/cross-section fetch and search |
-| `test_bot.py` | 182 checks, all passing at deletion |
+BTCUSDT fell **31.6%** over 2025 and the first eight months of 2026, with
+a 53% maximum drawdown. So perfect directional knowledge was available in
+hindsight: be short the whole way. Two ways of holding that same correct
+short, over that same fall:
 
-## What the work established
-
-**The data contains profitable trades. It does not contain a rule that
-finds them.** On 2026 alone, 2,003 of 5,667 consensus trades clear every
-cost, worth +2,617% if only those were taken. The 3,664 losers are worth
--3,001%. Trading all of them returns -0.0678% per trade.
-
-The gap between those two facts is the whole project. Six independent
-searches tried to close it:
-
-| search | in-sample | out-of-sample |
+| how the position was held | gross | net |
 |---|---|---|
-| 106 features, one at a time | best AUC 0.5122 | 0 of 106 clear the bar |
-| 48 method x exit combinations | t = 6.60 | worse than no selection |
-| 55,752 pattern keys | 100% win rate | 0.0% coverage |
-| 118 adaptive forward/reverse/drop cells | +439% | **-478%, t = -7.24** |
-| 67,070 threshold rules, 621 significant | best t = 10.45 | **-0.27%/trade, t = -6.56** |
-| prior-signal context, 9 features | best AUC 0.5080 | 0 of 9 clear the bar |
+| one position, never rebalanced | +31.6% | **+14.1%** |
+| rebalanced to constant notional daily | +8.1% | **-9.2%** |
 
-Every one improved as the search grew and reversed out of sample. Two of
-them ended up **worse than making no decisions at all** -- selection
-subtracts value when there is nothing to select on.
+The 23.5-point gap is **volatility drag**. Daily returns have a 2.28%
+standard deviation, and a position reset through that path compounds
+sigma^2/2 against itself every period. Nothing about the forecast changed
+between those rows -- only how often the position was reset.
 
-### The one real effect found
+**And leverage multiplies drag by the square.** Same perfectly-correct
+short, net of funding:
 
-After a LOSS the next trade does better than after a WIN, and the sign
-holds in every period: 33.5% vs 30.3% in 2025 (p = 0.022), 35.5% vs 33.5%
-in 2026, 54.0% vs 15.4% in August. It is the only thing here that
-survived a holdout with its sign intact.
+| leverage | net |
+|---|---|
+| 1x | -9.3% |
+| 3x | -102.1% |
+| 10x | **-274.6%, account gone** |
 
-It is also about a fifth of what is needed. The gap is 2-3 points of win
-rate; the cost needs roughly 12.
+The previous bot opened and closed every ~7 hours at 17-100x. That is the
+worst available combination of both effects, and it loses on this data
+**while holding a position that was correct throughout**. This is
+arithmetic, not statistics: no amount of signal quality repairs it, which
+is why six searches for a better signal all failed against it.
 
-### Why the losses happen, and why raising TP cannot fix them
+### What the design follows from
 
-Of 3,664 losing trades, **99.9% lost by hitting the stop**. Not one
-reached its target and was turned negative by the fee, and none can be --
-a target pays ~1.425% gross against a ~0.119% cost. The fee never
-converts a winning trade into a losing one; it converts a break-even
-system into a losing one.
+| rule | why |
+|---|---|
+| daily bars | a signal that can change every 30m forces 48 turnovers a day |
+| held until the trend flips | no TP, no SL, no re-entry -- drag is paid per turnover |
+| leverage 1-3x, solved per trade | return scales with L, drag with L^2, so there is a maximum |
+| a thin move over a long hold is skipped | its solved leverage is 0 |
 
-Raising the target does shrink the fee's share of it, from 16.4% at
-TP1.5 to 2.5% at TP12, exactly as expected. But the win rate falls in
-step, 51.3% to 12.7%, tracking SL/(TP+SL) the way a random walk demands.
-Net per trade does not move.
+Leverage is still flexible by the trade's potential, as before -- the
+change is that potential now means `move x L - costs x L - drag x L^2`,
+which has a maximum instead of rewarding more:
 
-### The cost, stated properly
+```
+ expected move    hold  best lev       net
+            2%     90d     0.00x    -0.35%   not worth taking
+            5%     30d     2.55x    +5.12%
+           10%      7d     3.00x   +27.41%
+```
 
-Taker in 0.055% + taker out 0.055% + funding. The exit is always taker --
-a TP or SL is a conditional market order and cannot earn the maker rate,
-so the cheapest honest round trip is 0.075%, not 0.040%. A TP3.0 trade
-lasts 7.11 hours on average and meets 0.89 funding charges.
+### What is measured and what is not
 
-At the measured 35.1% win rate, no ATR band of any exit clears that.
-The closest cell in the whole table is TP2.0 at 0.80-1.10% ATR, still
-losing 0.047% per trade in its worst period.
+Held without rebalancing, MA50 on daily bars returns **+26.1% at 1x**
+over the period, positive in both years (+20.5% in 2025, +4.6% in 2026).
 
-### What was never searched
+It does **not** survive walk-forward parameter selection: choosing the
+best trend length on prior data every 60 days returns -8.5% over 35
+out-of-sample trades, t = -0.12. That is statistically zero, not a loss,
+but it is not an edge either. Across 45 momentum lengths only 38% are
+profitable, median -10.8%, so 50 is a lucky value rather than a robust one.
 
-Every one of the six searches used the same family of input: indicators
-computed from BTCUSDT's own OHLCV. If price is near a martingale, so is
-every rearrangement of price. Two families were built but never run,
-because this container cannot reach api.bybit.com:
-
-- **positioning** -- funding rate, open interest, long/short ratio. What
-  traders are actually holding and paying to hold, which no price series
-  can express.
-- **cross-section** -- 120 coins ranked against each other rather than
-  each against its own past.
-
-`altdata.py` and `crosssearch.py` in `068ad0c` do both, with the same
-nested walk-forward. That question is still open.
+**The structure is proven; the direction rule is not.** The drag
+arithmetic holds regardless of what signal fills it. If you have a better
+direction rule, this is the frame to put it in.
 
 ---
 

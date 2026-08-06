@@ -114,16 +114,31 @@ whatever they are picking, it is picking better than the drift.
 
 WHAT THE UNIVERSAL RULES LOOK LIKE
 
-All 33 are LONG, all use wide targets (3-4 sigma) and long holds (96
-bars = 24 hours), and they cluster on medium-lookback factors:
-mom89, ma_dist89, pos55, pos89, maxdd120, maxdd21. The coin sets are
-nearly identical -- BLESSUSDT, HYPEUSDT, SKHYNIXUSDT, SNDKUSDT,
-SOXLUSDT, XAUUSDT, XRPUSDT recurs again and again.
+22 are long and 11 are short. The twelve with the highest mean per trade
+happen to all be long, which is why an earlier note here said all 33
+were -- reading the head of a sorted table and describing the table. The
+short side exists and pays:
 
-That every one is long is the caveat to hold onto. This week rose, so
-the short side of these rules is entirely untested, and a rule family
-that only ever appears long in an up week is exactly what a longer
-sample needs to confirm or kill.
+    ma_dist55|zfollow45_0.5   short  7/9 coins  +0.514%/trade  tp4.0/sl2.0
+    ma_dist55|zfollow45_0.5   short  7/9 coins  +0.429%/trade  tp3.0/sl3.0
+    pos34|break30             short  7/9 coins  +0.343%/trade  tp3.0/sl1.5
+    pos34|zfollow45_1.5       short  7/9 coins  +0.328%/trade  tp4.0/sl1.5
+    mom160|break30            short  7/9 coins  +0.289%/trade  tp4.0/sl2.0
+
+That matters, because six of the nine symbols ROSE this week. A short
+rule paying on seven of nine in an up week is harder to explain as drift
+than a long one is -- the always-short control returned -0.552%/trade
+and paid on zero of nine.
+
+All 33 use wide targets (3-4 sigma) and long holds (96 bars = 24 hours)
+and cluster on medium-lookback factors: mom89, mom160, ma_dist55,
+ma_dist89, pos34, pos55, pos89, maxdd21, maxdd120. The coin sets repeat
+-- BLESSUSDT, HYPEUSDT, SKHYNIXUSDT, SNDKUSDT, SOXLUSDT, XAUUSDT and
+XRPUSDT again and again.
+
+The caveat that remains is length, not direction: 5.7 days, one
+timeframe of the two tested, and a single BLESSUSDT-scale event inside
+the sample.
 
 SO: the first cross-symbol signal in this project that is not explained
 by one coin, by drift, or by chance -- on 5.7 days, at one timeframe out

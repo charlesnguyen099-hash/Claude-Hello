@@ -93,6 +93,42 @@ timing, p = 1.000.
 `fp/survivors.json` is therefore empty and `--signals survivors` opens
 nothing. That is the output, not a missing setting.
 
+### Bars with no clock in them (`python -m fp.eventbars`)
+
+The deepest hard-coded constant left was the time grid itself: a 4h bar
+is 4h whether the market traded a billion dollars in it or nothing.
+Four replacements, each self-adjusting, at three rates each:
+
+| bars | built | median | p10 | p90 | longest |
+|---|---|---|---|---|---|
+| volume/4 | 2,328 | 5.1h | 94m | 11.3h | 38.3h |
+| volume/24 | 13,968 | 44m | 10m | 2.1h | 9.2h |
+| volume/96 | 55,874 | 10m | 2m | 35m | 3.1h |
+| cusum/4 | 1,766 | 6.2h | 75m | 17.2h | 32.4h |
+
+A volume/4 bar takes 94 minutes when the market is busy and 38 hours
+when it is not. Nobody chose either number.
+
+| bars | logics | no edge | tested | t bar | surv | best t | picked | null | p |
+|---|---|---|---|---|---|---|---|---|---|
+| volume/4 | 3,014 | 2,763 | 47 | 3.27 | **0** | 1.13 | -0.4408% | +0.7571% | 1.000 |
+| volume/24 | 3,036 | 3,007 | 3 | 2.39 | **0** | 0.33 | +0.0490% | +0.2227% | 0.775 |
+| dollar/4 | 3,128 | 2,825 | 57 | 3.33 | **0** | 1.23 | -0.3176% | +0.9390% | 1.000 |
+| range/4 | 2,980 | 2,707 | 57 | 3.33 | **0** | 1.42 | -0.3254% | +0.7430% | 1.000 |
+| range/24 | 3,012 | 2,989 | 1 | 1.96 | **0** | 0.50 | +0.2606% | +0.2008% | 0.350 |
+| cusum/4 | 2,952 | 2,387 | 23 | 3.07 | **0** | 1.50 | -0.2032% | +0.9935% | 1.000 |
+| cusum/24 | 2,956 | 2,934 | 4 | 2.50 | **0** | 0.74 | +0.0141% | +0.1729% | 0.875 |
+
+28,590 logic instances, twelve series, zero survivors. Best t anywhere:
+1.50 against a bar of 3.07. At the fastest sampling (median bar ten
+minutes) **no logic on any of the four bar types has a positive
+in-sample edge after fees** — the same answer the ten-minute clock bars
+gave, by a completely different route.
+
+**The clock was not the problem.** Sampling now adapts to volume, to
+turnover, to distance travelled and to volatility itself, and the result
+did not move.
+
 ### Correction: the hold floor was wrong
 
 An earlier version refused any logic held under an hour, arguing from

@@ -59,6 +59,67 @@ Funding is charged on REAL elapsed hours here, not on a bar count, since
 bars no longer have a fixed duration. That is the one accounting change
 event bars force, and it makes the cost model more correct rather than
 less.
+
+WHAT THE BARS TURNED OUT TO BE
+
+The duration really is an output, and it moves by more than an order of
+magnitude inside a single series:
+
+    bars           built    median      p10       p90    longest
+    volume/4       2,328      5.1h    94.0m     11.3h      38.3h
+    volume/24     13,968     44.0m    10.0m      2.1h       9.2h
+    volume/96     55,874     10.0m     2.0m     35.0m       3.1h
+    range/24      13,968     53.0m    22.0m    104.0m       8.1h
+    cusum/4        1,766      6.2h    75.0m     17.2h      32.4h
+    cusum/96      56,825     10.0m     3.0m     32.0m       6.3h
+
+A volume/4 bar takes 94 minutes when the market is busy and 38 hours
+when it is not. Nobody chose either number.
+
+AND WHAT THEY FOUND
+
+    bars        logics  no edge  tested  t bar  surv  best t   picked     null      p
+    volume/4      3014     2763      47   3.27     0    1.13  -0.4408%  0.7571%  1.000
+    volume/24     3036     3007       3   2.39     0    0.33  +0.0490%  0.2227%  0.775
+    volume/96     1120     1110      --                    --
+    dollar/4      3128     2825      57   3.33     0    1.23  -0.3176%  0.9390%  1.000
+    dollar/24     3054     3028      --                    --
+    dollar/96     1122     1114      --                    --
+    range/4       2980     2707      57   3.33     0    1.42  -0.3254%  0.7430%  1.000
+    range/24      3012     2989       1   1.96     0    0.50  +0.2606%  0.2008%  0.350
+    range/96      1134     1124      --                    --
+    cusum/4       2952     2387      23   3.07     0    1.50  -0.2032%  0.9935%  1.000
+    cusum/24      2956     2934       4   2.50     0    0.74  +0.0141%  0.1729%  0.875
+    cusum/96      1082     1074      --                    --
+
+28,590 logic instances across twelve event-bar series. Zero survivors in
+every one. The best out-of-sample t-stat anywhere is 1.50, against a bar
+of 3.07.
+
+At the fastest sampling -- roughly 96 bars a day, a median bar of ten
+minutes -- not one logic on any of the four bar types has a positive
+in-sample edge after fees. That is the same answer the ten-minute clock
+bars gave, reached by a completely different route, which is worth more
+than either result alone: it is not the clock that was the problem.
+
+And the pattern that has now appeared five times: wherever the picking
+procedure could be run, randomly-rotated positions beat the logics that
+were actually selected. +0.76% against -0.44%, +0.94% against -0.32%,
++0.99% against -0.20%. p = 1.000 in each. Choosing on first-half
+performance is reliably worse than not choosing.
+
+WHAT THIS RULES OUT, WHICH IS THE POINT OF HAVING RUN IT
+
+The clock was a real hard-coded constant and it is gone: sampling now
+adapts to volume, to turnover, to distance travelled, and to volatility
+itself. The result did not move. So the failure is not in how the market
+was sampled, and it is not in how many logics were tried -- it is that
+this factor library does not predict this market, on any clock or none.
+
+The honest next step is not more logics. 34,000 have now been tested
+across time bars and event bars, and a library that large is guaranteed
+to produce in-sample winners inside any slice, which is precisely why
+the bar for believing one has to stay where it is.
 """
 from __future__ import annotations
 

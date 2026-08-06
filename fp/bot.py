@@ -218,7 +218,14 @@ class Broker:
         self.fee_override = fee_override
         self.library = None
         self.bar_minutes = L.BAR_MINUTES
-        if signal_source == "slow":
+        if signal_source == "regime":
+            # Daily bars, and the direction is the consensus of the logics
+            # that have historically paid in the state the market is in
+            # right now -- see fp/regime.py.
+            from fp import slow as S
+            self.bar_minutes = S.TREND_BAR_MINUTES
+            self._regime_cache = {}
+        elif signal_source == "slow":
             # Daily bars, direction from a slow trend, position held until
             # the trend flips. See fp/slow.py: turnover is what pays
             # volatility drag, and drag is what beat the old design even
@@ -321,7 +328,7 @@ class Broker:
         """
         eq = max(0.0, self.equity_total)
         fee = self.fee if fee is None else fee
-        if self.signal_source == "slow":
+        if self.signal_source in ("slow", "regime"):
             # The potential scaling already lives in the leverage, which
             # slow.best_leverage() solved WITH drag in it. Kelly on top of
             # that would double-count, and Kelly's win-rate input belongs
@@ -473,8 +480,9 @@ class Broker:
         bar_ts = int(bars["ts"].iloc[-1])
         self.evaluated_bar[symbol] = max(bar_ts, now_bar)
 
-        if self.signal_source == "slow":
-            return self._evaluate_slow(symbol, bars, bar_ts)
+        if self.signal_source in ("slow", "regime"):
+            return self._evaluate_slow(symbol, bars, bar_ts,
+                                       regime=self.signal_source == "regime")
 
         try:
             feats = F.build(bars)
@@ -504,12 +512,17 @@ class Broker:
         self.signals[symbol] = sig
         return sig
 
-    def _evaluate_slow(self, symbol: str, bars: pd.DataFrame,
-                       bar_ts: int) -> Signal | None:
-        """Slow trend on daily bars, sized by drag-aware potential."""
+    def _evaluate_slow(self, symbol: str, bars: pd.DataFrame, bar_ts: int,
+                       regime: bool = False) -> Signal | None:
+        """Slow trend on daily bars, sized by drag-aware potential.
+
+        In regime mode the direction is not one moving average but the
+        consensus of the logics that have paid in the state this symbol
+        is in now, scored on that symbol's own past only.
+        """
         from fp import slow as S
         c = bars["close"].values
-        d = S.trend_direction(c)
+        d = self._regime_direction(bars) if regime else S.trend_direction(c)
         vol = S.daily_volatility(c)
         if d == 0 or not np.isfinite(vol) or vol <= 0:
             self.no_signal += 1
@@ -536,6 +549,47 @@ class Broker:
                      confidence=None, slow_leverage=chain["leverage"])
         self.signals[symbol] = sig
         return sig
+
+    def _regime_direction(self, bars: pd.DataFrame) -> int:
+        """Consensus of the logics that pay in today's state, past-only."""
+        try:
+            from fp import ensemble as E
+            from fp import regime as R
+        except Exception:
+            return 0
+        d = bars.rename(columns=str.lower)
+        if len(d) < 320:
+            return 0
+        key = (id(self), int(d.index[-1].value) if hasattr(d.index[-1], "value")
+               else len(d))
+        try:
+            logics = E.build_logics(d, fast=True)
+            if not logics:
+                return 0
+            close = d["close"]
+            nets = {k: E.daily_net(close, v) for k, v in logics.items()}
+            st = R.states(d, ["trend"])
+        except Exception:
+            logger.debug("regime evaluation failed", exc_info=True)
+            return 0
+        now = st.iloc[-1]
+        if not isinstance(now, str):
+            return 0
+        same = np.flatnonzero((st.iloc[:-1] == now).values)
+        if len(same) < 40:
+            return 0
+        scored = []
+        for k, s in nets.items():
+            h = s.iloc[same]
+            sd = float(h.std())
+            if sd > 0:
+                scored.append((float(h.mean()) / sd, k))
+        if not scored:
+            return 0
+        scored.sort(reverse=True)
+        picks = [k for _, k in scored[:5]]
+        vote = float(np.mean([float(logics[k].iloc[-1]) for k in picks]))
+        return 1 if vote > 0.2 else (-1 if vote < -0.2 else 0)
 
     def _evaluate_pattern(self, symbol: str, bars: pd.DataFrame,
                           bar_ts: int) -> Signal | None:
@@ -638,7 +692,7 @@ class Broker:
         # Expectancy first: it costs nothing and it is the only test that
         # can tell this trade is not worth taking at all.
         fee = self.trade_cost(symbol, sig.direction)
-        ev = (1.0 if self.signal_source == "slow"
+        ev = (1.0 if self.signal_source in ("slow", "regime")
               else L.expectancy(sig.atr_pct, self.exit_name, fee,
                                 self.assumed_win_rate))
         if self.expectancy_gate and ev <= 0:
@@ -811,7 +865,7 @@ class Broker:
             self._close(symbol, pos.sl_price, "stop_loss")
             return
 
-        if self.signal_source == "slow":
+        if self.signal_source in ("slow", "regime"):
             # No target, no stop, no re-entry. The position is held until
             # the trend that opened it turns over -- every extra turnover
             # pays drag, and drag is the thing being avoided.

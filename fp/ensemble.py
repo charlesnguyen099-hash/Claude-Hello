@@ -240,9 +240,18 @@ def daily_net(close: pd.Series, pos: pd.Series) -> pd.Series:
 
 # --------------------------------------------------------------- the run
 
-def build_logics(d: pd.DataFrame) -> dict[str, pd.Series]:
+def build_logics(d: pd.DataFrame, fast: bool = False) -> dict[str, pd.Series]:
+    """`fast` drops the rolling-rank methods, which are O(n*window) and
+    dominate the cost. Live, on 690 symbols, the full set takes 11 seconds
+    per symbol; the fast set takes a fraction of that and keeps the
+    families the study actually selected."""
     F = factors(d)
     M = methods()
+    if fast:
+        F = {k: v for k, v in F.items()
+             if k.startswith(("mom", "ma_dist", "macross", "pos", "maxdd"))}
+        M = [(n, f) for n, f in M
+             if not n.startswith(("rankfollow", "rankfade"))]
     logics = {}
     for (fname, fs), (mname, fn) in itertools.product(F.items(), M):
         try:

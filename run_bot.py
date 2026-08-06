@@ -130,8 +130,11 @@ def main() -> int:
                         "per dollar of margin, which spans a factor of ten "
                         "across the ATR range because the fee does")
     p.add_argument("--signals", default="methods",
-                   choices=["methods", "slow"],
-                   help="slow (recommended): daily trend, position held until "
+                   choices=["methods", "slow", "regime"],
+                   help="regime: direction from the logics that have paid in "
+                        "the state this coin is in now, out of 2,602 built "
+                        "from ~100 factors x 38 methods. slow: daily trend, "
+                        "position held until "
                         "the trend flips, leverage solved for including "
                         "volatility drag. methods: the twelve voting rules on "
                         "30m bars -- kept for comparison, and measured to lose")
@@ -233,7 +236,7 @@ def main() -> int:
     print(f"                     of ATR, binding only above ~2.7%), and no "
           f"trade whose")
     print(f"                     expected value after all costs is negative")
-    if args.signals == "slow":
+    if args.signals in ("slow", "regime"):
         from fp import slow as S
         print(f"  Signals          : slow trend, MA{S.TREND_LOOKBACK} on "
               f"{S.TREND_BAR_MINUTES//60}h bars")

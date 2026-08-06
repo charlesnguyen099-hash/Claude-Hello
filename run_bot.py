@@ -129,7 +129,7 @@ def main() -> int:
                         "scales 0.40-2.50x with the trade's expected return "
                         "per dollar of margin, which spans a factor of ten "
                         "across the ATR range because the fee does")
-    p.add_argument("--signals", default="methods",
+    p.add_argument("--signals", default="book",
                    choices=["methods", "slow", "regime", "survivors", "book"],
                    help="book: trade the rules in --book-file, each with its "
                         "OWN entry, side, volatility-scaled target, stop and "
@@ -148,7 +148,10 @@ def main() -> int:
                         "slow: daily trend, position held until "
                         "the trend flips, leverage solved for including "
                         "volatility drag. methods: the twelve voting rules on "
-                        "30m bars -- kept for comparison, and measured to lose")
+                        "30m bars. This was the DEFAULT until it was measured "
+                        "to lose -10.92%% and -6.53%% in two live sessions; it "
+                        "is kept only for comparison and must now be asked "
+                        "for by name")
     p.add_argument("--book-file", default="btc_book.json",
                    help="which book --signals book trades: btc_book.json "
                         "(30 rules on 4h/1d BTC), coin_book.json (15 rules "
@@ -226,7 +229,13 @@ def main() -> int:
     print(f"  Risk per trade   : ~{args.margin_pct * 0.42:.2f}% of the account "
           f"(a stop costs ~42% of the trade's margin)")
     mode = "flat" if args.flat_sizing else args.sizing
-    if mode == "kelly":
+    if args.signals in ("book", "survivors", "slow", "regime"):
+        # These modes size flat on purpose: the potential already lives in
+        # the leverage, and Kelly's win-rate input is the record of the
+        # twelve-method exit -- a statistic about a different rule.
+        print(f"  Sizing           : flat, {args.margin_pct:.1f}% every trade "
+              f"(the rule's own leverage carries its potential)")
+    elif mode == "kelly":
         print(f"  Sizing           : Kelly, up to {args.max_margin_pct:.0f}% of "
               f"equity on one trade")
         print(f"    win rate -> stake   35.1% -> 0%    45% -> 32%    "
@@ -247,11 +256,37 @@ def main() -> int:
              "market" if not args.max_notional_x
              else f"{args.max_notional_x:.0f}x equity "
                   f"(${args.equity * args.max_notional_x:.2f} at the start)"))
+    if args.signals == "book":
+        import json as _json
+        from pathlib import Path as _P
+        bf = _P(__file__).resolve().parent / "fp" / args.book_file
+        try:
+            _b = _json.loads(bf.read_text())
+            _rules = _b.get("logics", [])
+        except Exception:
+            _b, _rules = {}, []
+        tfs = sorted({r.get("tf", "?") for r in _rules})
+        longs = sum(1 for r in _rules if r.get("side") == "long")
+        print(f"  Logic            : {args.book_file} — {len(_rules)} rules "
+              f"on {', '.join(tfs) if tfs else 'nothing'} "
+              f"({longs} long, {len(_rules)-longs} short)")
+        print(f"    fitted on      : {_b.get('fitted_on', 'unknown')}")
+        print(f"    Each rule brings its OWN entry, side, target and stop in")
+        print(f"    units of the volatility at entry, and its own time limit.")
+        print(f"    Nothing from the twelve-method design touches these trades")
+        print(f"    -- fp/test_bot.py fails if it does.")
+        if _b.get("in_sample"):
+            print(f"    WARNING: this book is FITTED to the data above. It is")
+            print(f"    what worked there, not a forecast. Forward performance")
+            print(f"    is unknown until it runs on data it has never seen.")
+        if not _rules:
+            print(f"    EMPTY — no position will be opened. Build one with")
+            print(f"    python -m fp.btc_book   or   python -m fp.coin_book")
     print(f"  Still enforced   : the stop must sit inside the liquidation "
-          f"price (a function")
-    print(f"                     of ATR, binding only above ~2.7%), and no "
-          f"trade whose")
-    print(f"                     expected value after all costs is negative")
+          f"price, now")
+    print(f"                     measured on the rule's OWN stop distance "
+          f"rather than an")
+    print(f"                     ATR multiple, and refused if it does not fit")
     if args.signals in ("slow", "regime"):
         from fp import slow as S
         print(f"  Signals          : slow trend, MA{S.TREND_LOOKBACK} on "

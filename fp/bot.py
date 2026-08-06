@@ -321,6 +321,13 @@ class Broker:
         """
         eq = max(0.0, self.equity_total)
         fee = self.fee if fee is None else fee
+        if self.signal_source == "slow":
+            # The potential scaling already lives in the leverage, which
+            # slow.best_leverage() solved WITH drag in it. Kelly on top of
+            # that would double-count, and Kelly's win-rate input belongs
+            # to the old TP/SL logic which this mode does not use -- it
+            # returned zero for every slow signal and opened nothing.
+            return eq * self.margin_pct
         if self.sizing == "kelly" and atr_pct is not None:
             f = L.kelly_fraction(atr_pct, self.exit_name, fee, p_win,
                                  self.max_leverage)

@@ -56,6 +56,47 @@ misaligned. Every state label now goes through
 `fp.regime.lagged_states()`, and `fp/test_bot.py` fails if the lag is
 removed.
 
+### Every logic tested on its own (`python -m fp.survivors`)
+
+5,780 logics, four timeframes, each measured alone out of sample against
+a Bonferroni threshold for the number tested — and against a rotation
+null that rolls each logic's timing at random while keeping the market,
+the drift, and that logic's own long/short tilt.
+
+| tf | tested | t bar | survivors | best t | picking, mean/trade | null mean | p |
+|---|---|---|---|---|---|---|---|
+| 4h | 2,966 | 4.30 | **0** | 2.07 | -0.2639% | +0.6833% | 1.000 |
+| 8h | 2,460 | 4.26 | **0** | 2.98 | -0.8516% | +0.9442% | 1.000 |
+| 1d | 342 | 3.80 | **0** | 1.82 | +0.0534% | +0.2915% | 0.665 |
+| 2d | 12 | 2.87 | **0** | 0.70 | -0.3024% | -0.3880% | 0.415 |
+
+Zero survivors. And at 4h and 8h, *randomly rotated* positions earn
++0.68% and +0.94% per trade while the logics actually selected earn
+-0.26% and -0.85% — picking on past performance lands reliably **below**
+random timing, p = 1.000.
+
+`fp/survivors.json` is therefore empty and `--signals survivors` opens
+nothing. That is the output, not a missing setting.
+
+### Correction: a second look-ahead, in the exit
+
+A position runs from bar `i` to bar `j` and the signal flips at `j+1`.
+The code booked the exit at `close[j]` — but at `close[j]` the signal
+still says hold, and the bar being skipped is precisely the one that
+caused the flip, usually the bar that ran against the position. One bar:
+
+| | with the look-ahead | corrected |
+|---|---|---|
+| 4h survivors | **176** | **0** |
+| 4h best t | 7.61 | 2.07 |
+| 4h best OOS | +1471.9% | +38.3% |
+| 1d picking, mean/trade | +2.1433% | +0.0534% |
+| 1d picking, p vs null | 0.000 | 0.665 |
+
+Scope: `trade_returns` in `fp/ensemble.py` (where it originated, unused
+elsewhere) and `fp/survivors.py`. The horizon, regime and symmetry
+results use per-bar accounting with `pos.shift(1)` and are unaffected.
+
 ### Which horizon can pay for its own fees (`python -m fp.horizon`)
 
 Bybit charges 0.055% in and 0.055% out. A move's size grows with the

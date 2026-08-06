@@ -48,18 +48,77 @@ Two things are then reported, because they answer different questions:
        is the procedure a live system would run, so its result is the
        one that matters operationally.
 
-And a null is run alongside: the same test on sign-flipped trades, which
-has no edge by construction. If the real library produces no more
-survivors than the null does, the survivors are noise regardless of how
-good their numbers look.
+AND THE NULL THAT DECIDES IT
 
-WHAT COMES OUT
+Alongside runs a rotation null: each logic's position series is rolled by
+a random offset. That preserves the market path, its drift, and that
+logic's own long/short balance and hold-length distribution, and destroys
+only whether the position lines up with the move. So a logic that merely
+sat short through a 31.6% fall scores just as well rotated as it does
+real, and only genuine timing shows up as a gap. A sign-flip null cannot
+make that distinction and would certify every short-biased logic.
 
-fp/survivors.json -- the logics that cleared the bar, with the timeframe
-and the statistics that justified them. The bot reads it and trades only
-what is in it. An empty file means the honest answer was "none", and the
-bot then opens nothing, which is what "only trade profitable logics"
-means when no logic is profitable.
+A logic reaches the whitelist only if BOTH bars are cleared: its own
+out-of-sample t against Bonferroni, AND its timeframe's picking procedure
+against the rotation null. The second gate exists because of what
+happened without it -- see below.
+
+WHAT IT MEASURED
+
+    tf   built  dropped  tested  t bar  survivors  null  best t  best OOS
+    4h    3066        0    2966   4.30          0     2    2.07     38.3%
+    8h    3024        0    2460   4.26          0     1    2.98     54.0%
+    1d    2602        0     342   3.80          0     0    1.82     31.5%
+    2d     906        0      12   2.87          0     0    0.70     21.4%
+
+Zero. Out of 5,780 logics tested individually across four timeframes, not
+one clears its own significance bar, and the best t-stat anywhere (2.98)
+is what 2,460 coin flips produce.
+
+The picking procedure is worse than that:
+
+    tf   top   mean/trade   short%   null mean   null sd       p
+    4h    10     -0.2639%      43%     0.6833%   0.4030%   1.000
+    8h    10     -0.8516%      41%     0.9442%   0.4523%   1.000
+    1d    10      0.0534%      42%     0.2915%   0.4766%   0.665
+    2d    10     -0.3024%      50%    -0.3880%   0.4276%   0.415
+
+Look at 4h and 8h. Randomly-rotated positions earn +0.68% and +0.94% per
+trade; the logics actually chosen earn -0.26% and -0.85%. Selecting on
+first-half performance does not merely fail to help, it lands reliably
+BELOW random timing -- p = 1.000 in both. Whatever the top logics learned
+from the first half, applying it to the second is worse than not knowing
+anything.
+
+THE VERSION OF THIS TABLE THAT WAS WRONG, AND WHY IT IS WORTH KEEPING
+
+Before the exit was corrected -- trades were closed at the last bar of a
+run rather than the first bar on which the flip was knowable, skipping
+exactly the bar that caused the flip -- the same code produced:
+
+                            with the look-ahead    corrected
+    4h survivors                          176              0
+    4h best t                            7.61           2.07
+    4h best OOS                       1471.9%          38.3%
+    1d picking, mean/trade            2.1433%        0.0534%
+    1d picking, p vs null               0.000          0.665
+
+One bar. That is the entire difference between a hundred and seventy-six
+"significant" logics and none.
+
+The 176 were also already being caught by the second gate, before the
+exit bug was found: their timeframe scored p = 0.405 against the rotation
+null, meaning those individually-significant logics were collectively
+indistinguishable from randomly-timed positions with the same tilt. Two
+independent checks, each of which would have refused them.
+
+SO THE WHITELIST IS EMPTY
+
+fp/survivors.json holds zero logics and `run_bot.py --signals survivors`
+opens nothing. That is the honest output, not a failure to find the
+setting that works: across 5,780 logics, four timeframes, every hold from
+one hour to two days, on 838,112 real one-minute bars, nothing in this
+library has an edge that survives its own fees and an honest test.
 """
 from __future__ import annotations
 

@@ -59,6 +59,70 @@ TWO CONTROLS, BOTH NECESSARY
     always-on       a rule with NO signal -- enter every bar, same exit.
                     Whatever it reaches is what direction alone buys, and
                     a tier that does not clearly beat it has found nothing
+
+WHAT IT MEASURED AT 15m
+
+76,704 rules on ten symbols, each judged in both halves of every symbol.
+The control first, because it decides how to read everything else:
+
+    a rule with NO signal, entering every bar, pays on 1 of 10 long
+    (-0.094%/trade) and 1 of 10 short (-0.137%)
+
+Direction alone buys nothing here. That is the balanced window doing its
+job -- on the 5.7-day upload the same control reached 4 of 9 long.
+
+    symbols paid   rules    share     null   ratio  test mean
+          >= 10        0   0.000%   0.000%       -        -    universal
+           >= 8        0   0.000%   0.000%       -        -    universal
+           >= 7        3   0.004%   0.000%     inf   +0.200%   group
+           >= 6       12   0.016%   0.000%     inf   +0.254%   group
+           >= 5       57   0.074%   0.004%   20.76   +0.349%   group
+           >= 4      265   0.345%   0.095%    3.65   +0.456%   group
+           >= 3     1586   2.068%   1.008%    2.05   +0.449%   group
+           >= 2     7224   9.418%   7.630%    1.23   +0.438%
+           >= 1    25865  33.721%  35.953%    0.94   +0.412%
+
+TIER 1, PER-COIN: no evidence
+
+18,641 rules pay on exactly one symbol, and the ratio against the null
+at ">= 1" is 0.94 -- BELOW chance. Randomly-timed positions produce
+more single-symbol winners than the real rules do. A rule that works on
+one instrument and nowhere else is what a 76,704-rule search returns by
+construction, and this is the number that says so.
+
+TIER 2, GROUP: the strongest result in this project
+
+The excess is real and it concentrates where a real effect belongs:
+2.05x at three symbols, 3.65x at four, 20.76x at five, and at six and
+seven the null produces NOTHING at all while the real library produces
+twelve and three.
+
+The groups are not arbitrary. The largest is 345 rules on exactly
+SKHYNIXUSDT, SNDKUSDT and SOXLUSDT -- SK Hynix, SanDisk and a
+semiconductor ETF. The data found the semiconductor sector without being
+told it exists.
+
+And it is not "short the things that crashed". Those three fell 39%,
+44% and 51%, and blind shorting them returns -0.065%/trade; SOXL halved
+and always-short on it still loses 0.231% per trade. The 345 rules make
++0.400%. The signal is worth 0.465 points over the blind short.
+
+TIER 3, UNIVERSAL: zero rules, and the reason is now measurable
+
+Nothing pays on eight of ten. The correlation matrix explains it -- ten
+symbols are about FOUR independent bets:
+
+    semiconductors  SKHYNIX/SNDK/SOXL      mean pairwise r = 0.72
+    crypto majors   ETH/SOL/BTC/XRP        mean pairwise r = 0.81
+    BLESSUSDT       correlated with nothing        r = 0.02-0.09
+    XAUUSDT         gold, weakly attached         r = 0.22-0.30
+
+    semis vs crypto cross-correlation             r = 0.37
+
+So "pays on three symbols" can mean one bet confirmed once, and "pays on
+eight" would require spanning at least three blocks that share almost
+nothing. Counting symbols is not counting evidence, and blocks() in this
+module prints the matrix that says how much of each is which.
 """
 from __future__ import annotations
 
@@ -329,6 +393,20 @@ def main(argv=None) -> int:
         "logics": book}, indent=2))
     print(f"\n{len(book)} rules written to {OUT.name}")
     return 0
+
+
+def blocks(coins: dict[str, pd.DataFrame], minutes: int = 15) -> pd.DataFrame:
+    """Correlation of returns -- how many INDEPENDENT bets ten symbols are.
+
+    Counting symbols is not counting evidence. Three symbols correlated
+    at 0.72 are one bet with three names, and a rule paying on all three
+    has been confirmed once, not three times. This is the same lesson
+    leave-one-out taught on BLESSUSDT, in a form that can be read off
+    before any rule is scored.
+    """
+    p = pd.DataFrame({s: resample(d, minutes)["close"]
+                      for s, d in coins.items()}).dropna()
+    return p.pct_change().dropna().corr()
 
 
 if __name__ == "__main__":

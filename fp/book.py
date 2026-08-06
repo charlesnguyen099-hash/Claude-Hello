@@ -46,6 +46,10 @@ OUT = HERE / "book.json"
 
 # source file -> what that study established, for provenance
 PARTS = {
+    # Best evidence first: this is the only study with BOTH a time split
+    # and cross-symbol agreement, on a balanced window.
+    "tier_book.json": "10 symbols 2026-06-30..08-06, paid in BOTH halves on "
+                      "3+ correlated-block members, 2-21x the rotation null",
     "btc_book.json": "BTCUSDT 2025-2026, profitable in both years separately",
     "coin_tiers.json": "9 symbols 2026-07-31..08-06, paid on 7+ of 9",
     "coin_book.json": "9 symbols 2026-07-31..08-06, survived leave-one-out",

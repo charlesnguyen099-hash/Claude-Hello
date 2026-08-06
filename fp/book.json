@@ -1,5 +1,6 @@
 {
   "built_from": [
+    "tier_book.json (15 rules)",
     "btc_book.json (30 rules)",
     "coin_tiers.json (33 rules)",
     "coin_book.json (15 rules)"
@@ -373,6 +374,19 @@
     },
     {
       "tf": "15m",
+      "name": "maxdd200|break120",
+      "side": "short",
+      "tp": 3.0,
+      "sl": 3.0,
+      "hmax": 48,
+      "hold_min": 97.5,
+      "mean": 0.0023469747047069876,
+      "from": "tier_book.json",
+      "evidence": "10 symbols 2026-06-30..08-06, paid in BOTH halves on 3+ correlated-block members, 2-21x the rotation null",
+      "n_coins": 7
+    },
+    {
+      "tf": "15m",
       "name": "ma_dist55|zfollow45_0.5",
       "side": "short",
       "tp": 2.0,
@@ -395,6 +409,19 @@
       "mean": 0.0015224061184774752,
       "from": "coin_tiers.json",
       "evidence": "9 symbols 2026-07-31..08-06, paid on 7+ of 9",
+      "n_coins": 7
+    },
+    {
+      "tf": "15m",
+      "name": "maxdd160|break120",
+      "side": "short",
+      "tp": 4.0,
+      "sl": 3.0,
+      "hmax": 48,
+      "hold_min": 135.0,
+      "mean": 0.001510111318449074,
+      "from": "tier_book.json",
+      "evidence": "10 symbols 2026-06-30..08-06, paid in BOTH halves on 3+ correlated-block members, 2-21x the rotation null",
       "n_coins": 7
     },
     {
@@ -464,6 +491,32 @@
     },
     {
       "tf": "15m",
+      "name": "pos200|zfollow90_1.5",
+      "side": "short",
+      "tp": 4.0,
+      "sl": 3.0,
+      "hmax": 192,
+      "hold_min": 120.0,
+      "mean": 0.004945636512573695,
+      "from": "tier_book.json",
+      "evidence": "10 symbols 2026-06-30..08-06, paid in BOTH halves on 3+ correlated-block members, 2-21x the rotation null",
+      "n_coins": 6
+    },
+    {
+      "tf": "15m",
+      "name": "maxdd200|zfollow90_1.0",
+      "side": "short",
+      "tp": 4.0,
+      "sl": 2.0,
+      "hmax": 48,
+      "hold_min": 86.25,
+      "mean": 0.003918645860742556,
+      "from": "tier_book.json",
+      "evidence": "10 symbols 2026-06-30..08-06, paid in BOTH halves on 3+ correlated-block members, 2-21x the rotation null",
+      "n_coins": 6
+    },
+    {
+      "tf": "15m",
       "name": "macross5_21|break30",
       "side": "long",
       "tp": 4.0,
@@ -473,6 +526,32 @@
       "mean": 0.003306125483242248,
       "from": "coin_book.json",
       "evidence": "9 symbols 2026-07-31..08-06, survived leave-one-out",
+      "n_coins": 6
+    },
+    {
+      "tf": "15m",
+      "name": "ma_dist55|zfollow180_1.0",
+      "side": "short",
+      "tp": 3.0,
+      "sl": 3.0,
+      "hmax": 48,
+      "hold_min": 90.0,
+      "mean": 0.0029906176750927483,
+      "from": "tier_book.json",
+      "evidence": "10 symbols 2026-06-30..08-06, paid in BOTH halves on 3+ correlated-block members, 2-21x the rotation null",
+      "n_coins": 6
+    },
+    {
+      "tf": "15m",
+      "name": "mom160|break120",
+      "side": "short",
+      "tp": 4.0,
+      "sl": 3.0,
+      "hmax": 48,
+      "hold_min": 150.0,
+      "mean": 0.002691900064569828,
+      "from": "tier_book.json",
+      "evidence": "10 symbols 2026-06-30..08-06, paid in BOTH halves on 3+ correlated-block members, 2-21x the rotation null",
       "n_coins": 6
     },
     {
@@ -490,6 +569,32 @@
     },
     {
       "tf": "15m",
+      "name": "pos55|zfollow180_1.0",
+      "side": "short",
+      "tp": 4.0,
+      "sl": 3.0,
+      "hmax": 48,
+      "hold_min": 146.25,
+      "mean": 0.002036486031169494,
+      "from": "tier_book.json",
+      "evidence": "10 symbols 2026-06-30..08-06, paid in BOTH halves on 3+ correlated-block members, 2-21x the rotation null",
+      "n_coins": 6
+    },
+    {
+      "tf": "15m",
+      "name": "pos89|zfollow180_1.5",
+      "side": "short",
+      "tp": 4.0,
+      "sl": 3.0,
+      "hmax": 48,
+      "hold_min": 127.5,
+      "mean": 0.016821429502508034,
+      "from": "tier_book.json",
+      "evidence": "10 symbols 2026-06-30..08-06, paid in BOTH halves on 3+ correlated-block members, 2-21x the rotation null",
+      "n_coins": 5
+    },
+    {
+      "tf": "15m",
       "name": "mom8|zfollow45_1.5",
       "side": "long",
       "tp": 4.0,
@@ -503,6 +608,45 @@
     },
     {
       "tf": "15m",
+      "name": "ma_dist120|zfollow90_1.5",
+      "side": "short",
+      "tp": 4.0,
+      "sl": 3.0,
+      "hmax": 192,
+      "hold_min": 127.5,
+      "mean": 0.004760924355333198,
+      "from": "tier_book.json",
+      "evidence": "10 symbols 2026-06-30..08-06, paid in BOTH halves on 3+ correlated-block members, 2-21x the rotation null",
+      "n_coins": 5
+    },
+    {
+      "tf": "15m",
+      "name": "mom160|zfollow90_1.5",
+      "side": "long",
+      "tp": 4.0,
+      "sl": 3.0,
+      "hmax": 192,
+      "hold_min": 157.5,
+      "mean": 0.0036032201233483795,
+      "from": "tier_book.json",
+      "evidence": "10 symbols 2026-06-30..08-06, paid in BOTH halves on 3+ correlated-block members, 2-21x the rotation null",
+      "n_coins": 5
+    },
+    {
+      "tf": "15m",
+      "name": "ma_dist120|zfollow180_1.5",
+      "side": "short",
+      "tp": 4.0,
+      "sl": 3.0,
+      "hmax": 48,
+      "hold_min": 120.0,
+      "mean": 0.002844034468963907,
+      "from": "tier_book.json",
+      "evidence": "10 symbols 2026-06-30..08-06, paid in BOTH halves on 3+ correlated-block members, 2-21x the rotation null",
+      "n_coins": 5
+    },
+    {
+      "tf": "15m",
       "name": "macross21_89|breakfade30",
       "side": "long",
       "tp": 3.0,
@@ -512,6 +656,19 @@
       "mean": 0.0017419749122626917,
       "from": "coin_book.json",
       "evidence": "9 symbols 2026-07-31..08-06, survived leave-one-out",
+      "n_coins": 5
+    },
+    {
+      "tf": "15m",
+      "name": "mom21|zfollow180_1.0",
+      "side": "short",
+      "tp": 4.0,
+      "sl": 3.0,
+      "hmax": 48,
+      "hold_min": 150.0,
+      "mean": 0.0017256575405843484,
+      "from": "tier_book.json",
+      "evidence": "10 symbols 2026-06-30..08-06, paid in BOTH halves on 3+ correlated-block members, 2-21x the rotation null",
       "n_coins": 5
     },
     {
@@ -607,6 +764,19 @@
     },
     {
       "tf": "15m",
+      "name": "macross5_21|zfade45_1.5",
+      "side": "short",
+      "tp": 4.0,
+      "sl": 3.0,
+      "hmax": 48,
+      "hold_min": 120.0,
+      "mean": 0.0072444486923522716,
+      "from": "tier_book.json",
+      "evidence": "10 symbols 2026-06-30..08-06, paid in BOTH halves on 3+ correlated-block members, 2-21x the rotation null",
+      "n_coins": 4
+    },
+    {
+      "tf": "15m",
       "name": "ma_dist13|zfollow45_1.5",
       "side": "long",
       "tp": 4.0,
@@ -629,6 +799,32 @@
       "mean": 0.005971367576562926,
       "from": "coin_book.json",
       "evidence": "9 symbols 2026-07-31..08-06, survived leave-one-out",
+      "n_coins": 4
+    },
+    {
+      "tf": "15m",
+      "name": "macross8_34|zfade45_0.5",
+      "side": "short",
+      "tp": 4.0,
+      "sl": 2.0,
+      "hmax": 48,
+      "hold_min": 105.0,
+      "mean": 0.0050033970743318,
+      "from": "tier_book.json",
+      "evidence": "10 symbols 2026-06-30..08-06, paid in BOTH halves on 3+ correlated-block members, 2-21x the rotation null",
+      "n_coins": 4
+    },
+    {
+      "tf": "15m",
+      "name": "macross5_21|breakfade30",
+      "side": "short",
+      "tp": 4.0,
+      "sl": 2.0,
+      "hmax": 48,
+      "hold_min": 97.5,
+      "mean": 0.004433610115789148,
+      "from": "tier_book.json",
+      "evidence": "10 symbols 2026-06-30..08-06, paid in BOTH halves on 3+ correlated-block members, 2-21x the rotation null",
       "n_coins": 4
     },
     {

@@ -1280,6 +1280,62 @@ def test_book_never_touches_the_old_logic():
               b.closed[-1].reason if b.closed else "-")
 
 
+def test_every_closed_trade_appears_in_the_breakdown():
+    """No trade may vanish from the summary.
+
+    A book position closes as "time_limit"; the summary counted only
+    "timeout". A live session showed 15 closed as 4 TP + 6 SL + 0 liq +
+    0 timed out -- five trades, a third of the sample, simply absent, and
+    those five were the ones that would have said whether the targets are
+    reachable inside the rules' own hold limits.
+    """
+    print("\nevery closed trade is accounted for in the summary")
+    syms = ["S0USDT"]
+    b = broker_for(syms, FakeHTTP(syms), signal_source="book")
+    b.refresh_prices()
+
+    bar = [B.closed_bar_ts()]
+
+    def open_and_close(sym, reason, px_mult):
+        bar[0] += 60_000            # one entry per bar, as the bot enforces
+        b.signals[sym] = B.Signal(
+            bar_ts=bar[0], direction=1, atr_pct=2.0, votes=1,
+            vote_margin=1, methods="book rule", slow_leverage=2.0,
+            tp_dist=0.05, sl_dist=0.03, max_hold_min=90.0, rule="4h:x:long",
+            rule_mean=0.004)
+        b.try_open(sym)
+        p = b.open[sym]
+        b._close(sym, p.entry * px_mult, reason)
+
+    open_and_close("S0USDT", "take_profit", 1.05)
+    open_and_close("S0USDT", "stop_loss", 0.97)
+    open_and_close("S0USDT", "time_limit", 1.001)
+    open_and_close("S0USDT", "time_limit", 0.999)
+    s = b.summary()
+
+    check("all four trades are closed", s["closed"] == 4, s["closed"])
+    check("the reason counts add up to the total",
+          s["targets"] + s["stops"] + s["liquidations"] + s["timeouts"]
+          == s["closed"],
+          (s["targets"], s["stops"], s["liquidations"], s["timeouts"]))
+    check("a book time_limit exit is counted", s["timeouts"] == 2,
+          s["timeouts"])
+
+    rows = {r["reason"]: r for r in s["by_reason"]}
+    check("the breakdown names every reason seen",
+          set(rows) == {"take_profit", "stop_loss", "time_limit"}, set(rows))
+    check("its rows sum to the realized P&L",
+          abs(sum(r["net"] for r in s["by_reason"]) - s["realized"]) < 1e-12)
+    check("gross minus fees is net, per row",
+          all(abs(r["gross"] - r["fees"] - r["net"]) < 1e-12
+              for r in s["by_reason"]))
+    check("fees are counted for closed trades only, not open ones",
+          s["closed_fees"] <= s["fees_paid"] + 1e-12,
+          (s["closed_fees"], s["fees_paid"]))
+    check("each round trip carries BOTH its fees",
+          all(r["fees"] > 0 for r in s["by_reason"]))
+
+
 def test_the_dashboard_describes_the_mode_it_is_running():
     """The readout must name the mechanism actually in use.
 
@@ -1700,6 +1756,7 @@ def main() -> int:
                test_bot_trades_nothing_without_a_whitelist,
                test_book_rules_fire_only_where_they_were_validated,
                test_book_never_touches_the_old_logic,
+               test_every_closed_trade_appears_in_the_breakdown,
                test_the_dashboard_describes_the_mode_it_is_running,
                test_book_trade_matches_the_backtest_arithmetic,
                test_book_barriers_sit_around_the_fill_not_the_bar_close,

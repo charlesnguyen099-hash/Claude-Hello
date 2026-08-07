@@ -168,6 +168,12 @@ class Position:
     # with, not at the generic timeout.
     max_hold_min: float | None = None
     rule: str = ""
+    # What was already paid to open. Carried so a closed trade can report
+    # its own full round trip: fees are charged on NOTIONAL, so at 3x
+    # leverage they cost 3x what a glance at the margin suggests, and
+    # whether they ate the edge is the first question to ask of a losing
+    # session.
+    entry_fee: float = 0.0
 
 
 @dataclass
@@ -182,6 +188,9 @@ class Closed:
     pnl_usd: float
     return_pct_leveraged: float
     methods: str
+    fees_usd: float = 0.0
+    rule: str = ""
+    held_minutes: float = 0.0
 
 
 class Broker:
@@ -993,6 +1002,12 @@ class Broker:
         return [s for s in self.symbols
                 if s not in self.open and self.evaluated_bar.get(s, -1) < want]
 
+    def _closed_fees(self) -> float:
+        """Fees belonging to CLOSED trades only. self.fees_paid also holds
+        the entry fee of every position still open, so comparing it to the
+        realized P&L overstates what the closed book was charged."""
+        return sum(t.fees_usd for t in self.closed)
+
     def _tradeable_bands(self) -> tuple[int, int]:
         """How many measured ATR bands still clear the full cost."""
         from fp import calibrate as C
@@ -1137,7 +1152,12 @@ class Broker:
                 exit_name=self.exit_name, methods=sig.methods,
                 votes=sig.votes, vote_margin=sig.vote_margin,
                 best_price=price, trail_dist=L.TRAIL_MULTIPLE * atr,
-                potential_score=chain["potential_score"],
+                # A book rule's potential is its own MEASURED return per
+                # trade, scaled by the leverage it is taken at. The old
+                # potential_score is the ATR ladder's and is nan here --
+                # printing that told the operator nothing.
+                potential_score=(sig.rule_mean * lev if sig.rule
+                                 else chain["potential_score"]),
                 conviction=chain["conviction"],
                 lev_base=chain["lev_base"],
                 ev_per_margin=(sig.rule_mean * lev if sig.rule is not None
@@ -1149,6 +1169,7 @@ class Broker:
                 margin_weight=(margin / (self.equity_total * self.margin_pct)
                                if self.equity_total > 0 else 1.0),
                 max_hold_min=sig.max_hold_min, rule=sig.rule,
+                entry_fee=entry_fee,
             )
             self.open[symbol] = pos
             self.traded_bar[symbol] = sig.bar_ts
@@ -1302,6 +1323,7 @@ class Broker:
             if pos is None:
                 return
             move = (price - pos.entry) / pos.entry * pos.direction
+            exit_fee = 0.0
             if reason == "liquidated":
                 # The margin is gone; the exit fee comes out of it, not on top.
                 pnl = -pos.margin
@@ -1310,12 +1332,15 @@ class Broker:
                 pnl = move * pos.qty * pos.entry - exit_fee
                 self.fees_paid += exit_fee
             self.equity += pnl
+            now = pd.Timestamp.now(tz="UTC")
             self.closed.append(Closed(
                 symbol=symbol, direction=pos.direction, entry=pos.entry,
                 exit_price=price, opened_at=pos.opened_at,
-                closed_at=pd.Timestamp.now(tz="UTC"), reason=reason, pnl_usd=pnl,
+                closed_at=now, reason=reason, pnl_usd=pnl,
                 return_pct_leveraged=100 * move * pos.leverage,
-                methods=pos.methods))
+                methods=pos.methods,
+                fees_usd=pos.entry_fee + exit_fee, rule=pos.rule,
+                held_minutes=(now - pos.opened_at).total_seconds() / 60.0))
         self.mark()
         logger.info("%s CLOSE %s @%.6f (%s) pnl=$%.4f equity=$%.4f",
                     symbol, "LONG" if pos.direction > 0 else "SHORT",
@@ -1452,7 +1477,22 @@ class Broker:
             "liquidations": sum(1 for t in self.closed if t.reason == "liquidated"),
             "stops": sum(1 for t in self.closed if t.reason == "stop_loss"),
             "targets": sum(1 for t in self.closed if t.reason == "take_profit"),
-            "timeouts": sum(1 for t in self.closed if t.reason == "timeout"),
+            # A book position closes as "time_limit", not "timeout" -- it
+            # runs to ITS rule's measured limit. Counting only "timeout"
+            # left those trades out of the breakdown entirely: a session
+            # with 15 closed showed 4 TP + 6 SL + 0 liq + 0 timed out, and
+            # the missing 5 were the ones that ran out of time.
+            "timeouts": sum(1 for t in self.closed
+                            if t.reason in ("timeout", "time_limit")),
+            # Where the money actually went, split by how each trade ended.
+            # Win rate alone cannot tell you whether the target is too far
+            # or the clock too short; this can.
+            "by_reason": _by_reason(self.closed),
+            # Fees are charged on notional, so at 3x leverage a round trip
+            # costs 0.33% of margin before the price moves at all. This is
+            # what share of the gross move they consumed.
+            "gross_before_fees": gp + gl + self._closed_fees(),
+            "closed_fees": self._closed_fees(),
             "gross_profit": gp, "gross_loss": gl, "realized": gp + gl,
             "open": len(rows), "open_wins": ow, "open_losses": ol,
             "open_profit": op, "open_loss": olo, "unrealized": unreal,
@@ -1500,6 +1540,32 @@ class Broker:
         if rows:
             pd.DataFrame(rows).to_csv(path, index=False)
             logger.info("wrote %d trade rows to %s", len(rows), path)
+
+
+def _by_reason(closed: list) -> list[dict]:
+    """Split the realized P&L by how each trade ended.
+
+    A win rate on its own cannot say WHY a book is losing. A target that
+    is too far shows up as few TPs and many time-limit exits; a stop that
+    is too tight shows up as SLs that outnumber TPs at a ratio the rule
+    was never measured at; fees eating the edge show up as time-limit
+    exits whose gross is positive and whose net is not. Those three call
+    for different fixes, and only this table tells them apart.
+    """
+    out = {}
+    for t in closed:
+        r = out.setdefault(t.reason, {"reason": t.reason, "n": 0, "net": 0.0,
+                                      "fees": 0.0, "wins": 0, "minutes": 0.0})
+        r["n"] += 1
+        r["net"] += t.pnl_usd
+        r["fees"] += t.fees_usd
+        r["wins"] += 1 if t.pnl_usd > 0 else 0
+        r["minutes"] += t.held_minutes
+    for r in out.values():
+        r["avg"] = r["net"] / r["n"]
+        r["gross"] = r["net"] + r["fees"]
+        r["avg_minutes"] = r["minutes"] / r["n"]
+    return sorted(out.values(), key=lambda r: r["net"])
 
 
 def _hms(seconds: float) -> str:
@@ -1620,14 +1686,36 @@ def print_summary(s: dict) -> None:
     print(f"  Total profit          : ${s['gross_profit']:+.4f}")
     print(f"  Total loss            : ${s['gross_loss']:+.4f}")
     print(f"  Net realized P&L      : ${s['realized']:+.4f}")
+    if s.get("by_reason"):
+        # Where the money went, and how much of it the exchange took.
+        # Price move and fee are separated because they call for
+        # different fixes: a losing gross is the rule, a losing net on a
+        # winning gross is the cost.
+        print(f"    {'exit':<12}{'n':>4}{'win':>5}{'gross':>10}"
+              f"{'fees':>9}{'net':>10}{'avg':>10}{'held':>9}")
+        for r in s["by_reason"]:
+            print(f"    {r['reason']:<12}{r['n']:>4}"
+                  f"{100*r['wins']/r['n']:>4.0f}%"
+                  f"{r['gross']:>+10.4f}{-r['fees']:>9.4f}"
+                  f"{r['net']:>+10.4f}{r['avg']:>+10.4f}"
+                  f"{_hms(60*r['avg_minutes']):>9}")
+        g, f = s.get("gross_before_fees", 0.0), s.get("closed_fees", 0.0)
+        share = (100 * f / abs(g)) if g else float("inf")
+        print(f"  Price move alone      : ${g:+.4f}"
+              f"   fees ${f:.4f}"
+              + (f"   ({share:.0f}% of the gross move)"
+                 if g else "   (the whole loss is fees)"))
 
     print("\n-- STILL OPEN AT SHUTDOWN " + "-" * 41)
     print(f"  Positions open        : {s['open']}")
     print(f"    currently winning   : {s['open_wins']}")
     print(f"    currently losing    : {s['open_losses']}")
     for sym, d, entry, price, pnl, lev, meth, pot in s["open_rows"]:
+        # For a book position `pot` is the rule's own measured return per
+        # trade at this leverage, so it is shown as the percentage it is.
+        p_txt = ("  n/a" if pot != pot else f"{100*pot:+.2f}%/trade")
         print(f"      {sym:12s} {'LONG' if d > 0 else 'SHORT':5s} {lev:5.0f}x "
-              f"potential={pot:.2f} entry={entry:.6f} last={price:.6f} "
+              f"measured={p_txt} entry={entry:.6f} last={price:.6f} "
               f"unreal=${pnl:+.4f}")
         print(f"        methods: {meth}")
     print(f"  Unrealized profit     : ${s['open_profit']:+.4f}")

@@ -1611,7 +1611,7 @@ def test_a_losing_streak_shrinks_a_rule_without_killing_it():
     after3 = stake()
     check("three losses cut the stake", after3 < start, (start, after3))
     check("but the rule is STILL tradeable", after3 > 0, after3)
-    check("and the cut is real, not cosmetic", after3 < 0.6 * start,
+    check("and the cut is real, not cosmetic", after3 < 0.8 * start,
           (after3, start))
 
     for _ in range(3):
@@ -1640,9 +1640,15 @@ def test_a_losing_streak_shrinks_a_rule_without_killing_it():
         b2.book_var += var
         n += 1
     check("a rule that only loses is eventually cut", n < 200, n)
-    check("it takes real evidence, not three trades", n >= 6, n)
+    check("it takes real evidence, not three trades", n >= 5, n)
     check("and the account pays under 1% to learn it",
           lost / 10.0 < 0.01, lost / 10.0)
+    # The cut is a two-sigma test against ZERO on the rule's own record,
+    # not the slow blend that governs sizing UP. Proving a claim and
+    # noticing a loss are different questions.
+    P = b2.potential(tp_d, sl_d, rule, claim, fee)
+    check("and it is booked as a cut, not as a thin edge", P["cut"], P)
+    check("a cut rule is not called refuted", not P["refuted"])
 
 
 def test_no_rule_reaches_the_bot_without_a_scope():

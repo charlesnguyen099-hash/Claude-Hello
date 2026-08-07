@@ -493,12 +493,23 @@ class Broker:
         n, tot = self.rule_record.get(rule, (0, 0.0))
         if n <= 0:
             return prior, 0.0
-        # Per-trade dispersion implied by this rule's own barriers: it
-        # pays +b or -a, and the mix that produces `claimed` sets the odds.
-        p = min(1.0, max(0.0, (claimed + a) / (a + b))) if (a + b) > 0 else 0.5
-        var = p * b * b + (1 - p) * a * a - claimed * claimed
-        sd = math.sqrt(max(var, 1e-12))
-        n_star = (sd / claimed) ** 2 if claimed > 0 else float("inf")
+        # n* is how many live trades it takes for the record to be worth
+        # as much as the claim. It is the sample size at which a 2-sigma
+        # distinction between the claim and BREAK-EVEN becomes possible,
+        # so the dispersion is measured under break-even -- the null --
+        # not under the claim.
+        #
+        # Under the claim it collapses exactly when the claim is least
+        # believable: a rule asserting it wins 98% of the time has almost
+        # no variance under its own hypothesis, so n* fell to its floor of
+        # 1, one trade bought a weight of 0.5, and the ceiling opened to
+        # 52% of the account on a single result. Break-even dispersion
+        # does not collapse, because break-even is a coin flip between the
+        # target and the stop whatever the claim says.
+        p_be = a / (a + b)
+        var_null = p_be * b * b + (1 - p_be) * a * a
+        sd = math.sqrt(max(var_null, 1e-12))
+        n_star = (2.0 * sd / claimed) ** 2 if claimed > 0 else float("inf")
         w = n / (n + max(n_star, 1.0))
         return (1 - w) * prior + w * (tot / n), w
 
@@ -542,12 +553,25 @@ class Broker:
         b = tp_dist - fee              # what a win actually pays
         a = sl_dist + fee              # what a loss actually costs
         out = {"score": 0.0, "a": a, "b": b, "edge": 0.0, "w": 0.0,
-               "p_be": 1.0, "p_est": 0.0, "refuted": False}
+               "p_be": 1.0, "p_est": 0.0, "refuted": False, "cut": False}
         if b <= 0 or a <= 0:
             # The target does not clear the round trip. No bet here.
             return out
         edge, w = self.rule_edge(rule, claimed, a, b)
         out["w"] = w
+        # Sizing UP and cutting a loser are different questions and do not
+        # deserve the same standard of proof. The blend above is symmetric
+        # -- it asks how many trades it takes to confirm the CLAIM, which
+        # is deliberately slow. Losses are direct evidence of loss and need
+        # no such patience: if this rule's own record is more than two
+        # standard errors below zero, it stops, whatever the claim says.
+        n, tot = self.rule_record.get(rule, (0, 0.0))
+        if n >= 2:
+            p_be0 = a / (a + b)
+            sd0 = math.sqrt(max(p_be0 * b * b + (1 - p_be0) * a * a, 1e-12))
+            if tot / n < -2.0 * sd0 / math.sqrt(n):
+                out["cut"] = True
+                return out
         p_be = a / (a + b)
         p_est = (edge + a) / (a + b)
         out.update(p_be=p_be, p_est=p_est, edge=edge)

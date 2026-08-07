@@ -55,15 +55,56 @@ TFS = [("5m", 5), ("15m", 15), ("30m", 30), ("1h", 60)]
 BARRIERS = [(2.0, 1.0), (3.0, 1.5), (4.0, 3.0), (2.0, 2.0)]
 HMAX = [24, 96]
 
-MIN_TRADES = 20          # per cell, over the whole month
-MIN_HALF = 8             # per half
+# Counted in INDEPENDENT trades -- non-overlapping barrier windows --
+# so these are lower than they look against a raw firing count.
+MIN_TRADES = 12          # per cell, over the whole month
+MIN_HALF = 4             # per half
 
 
 def outcomes(d: pd.DataFrame, minutes: int) -> dict:
-    """Net outcome per bar for every (side, tp, sl, hmax). Computed once
-    per symbol: the barrier does not care which signal opened the trade."""
-    return {(side, tp, sl, hm): J.net(d, minutes, side, tp, sl, hm)
-            for side in (1, -1) for tp, sl in BARRIERS for hm in HMAX}
+    """Net outcome AND bars held per bar, for every (side, tp, sl, hmax).
+
+    Held is needed as well as the outcome: two entries whose barrier
+    windows overlap are not two observations, and only the exit bar says
+    where one window ends. See scan().
+    """
+    from fp.exits import barrier_outcomes, sigma_at
+    c = d["close"].values.astype(float)
+    h = d["high"].values.astype(float)
+    lo = d["low"].values.astype(float)
+    sg = sigma_at(c)
+    out = {}
+    for side in (1, -1):
+        for tp, sl in BARRIERS:
+            for hm in HMAX:
+                o, held = barrier_outcomes(h, lo, c, sg, side, tp, sl, hm)
+                net = o - J.FEE - held * minutes / 60.0 / 8.0 * J.FUNDING_PER_8H
+                out[(side, tp, sl, hm)] = (net, held)
+    return out
+
+
+def independent(idx: np.ndarray, net: np.ndarray,
+                held: np.ndarray) -> np.ndarray:
+    """Keep only entries whose barrier windows do not overlap.
+
+    A rule firing on consecutive bars with a 96-bar limit opens trades
+    that watch almost the same four days. Their outcomes are nearly the
+    same number, so the standard error is far too small and t is far too
+    large. Measured on the June block, SNDK 1h volr55|rankfade90_0.85
+    read t = 7.81 across 34 overlapping trades and t = 2.26 across the 10
+    independent ones -- the difference between clearing a Bonferroni bar
+    of 5.51 and not coming close.
+
+    The next entry is taken only once the previous one has exited.
+    """
+    keep = []
+    free = -1
+    for i in idx:
+        if i <= free or not np.isfinite(net[i]):
+            continue
+        keep.append(i)
+        free = i + int(held[i])
+    return np.array(keep, dtype=int)
 
 
 def scan(logics: dict, outs: dict, n: int) -> dict:
@@ -78,14 +119,13 @@ def scan(logics: dict, outs: dict, n: int) -> dict:
             idx = np.flatnonzero(on)
             if len(idx) < MIN_TRADES:
                 continue
-            for (s2, tp, sl, hm), net in outs.items():
+            for (s2, tp, sl, hm), (net, held) in outs.items():
                 if s2 != side:
                     continue
-                x = net[idx]
-                ok = np.isfinite(x)
-                x2, i2 = x[ok], idx[ok]
-                if len(x2) < MIN_TRADES:
+                i2 = independent(idx, net, held)
+                if len(i2) < MIN_TRADES:
                     continue
+                x2 = net[i2]
                 h1, h2 = x2[i2 < mid], x2[i2 >= mid]
                 if len(h1) < MIN_HALF or len(h2) < MIN_HALF:
                     continue

@@ -343,7 +343,9 @@ class Broker:
         # claimed and realized, over every closed book trade.
         self.book_claimed = 0.0
         self.book_realized = 0.0
-        self.book_sumsq = 0.0
+        # Sum of each closed book trade's own barrier-implied variance.
+        # See book_calibration() for why the realized variance will not do.
+        self.book_var = 0.0
         self.book_trades = 0
         # Bar each symbol was last scored on, whether or not it produced a
         # signal. Staleness keys off this rather than off self.signals --
@@ -453,10 +455,17 @@ class Broker:
         # does shut itself down.
         n = self.book_trades
         mean_claim = self.book_claimed / n
-        if n < 2 or mean_claim <= 0:
+        if n < 1 or mean_claim <= 0 or self.book_var <= 0:
             return 1.0
-        var = max(self.book_sumsq / n - (self.book_realized / n) ** 2, 0.0)
-        n0 = (math.sqrt(var) / mean_claim) ** 2 if var > 0 else 1.0
+        # n0 comes from the BARRIER-IMPLIED dispersion of the trades taken,
+        # not from their realized sample variance. Two losing trades at the
+        # same designed stop have a sample variance of ZERO, which sent n0
+        # to its floor, the weight to 2/3, and the calibration to 0.33 --
+        # a bad afternoon condemning the book, which is the exact failure
+        # this shrinkage exists to prevent. The barrier dispersion is known
+        # before any trade happens and cannot collapse.
+        var = self.book_var / n
+        n0 = var / (mean_claim * mean_claim)
         w = n / (n + max(n0, 1.0))
         return (1 - w) * 1.0 + w * ratio
 
@@ -1672,9 +1681,18 @@ class Broker:
                 rec[0] += 1
                 rec[1] += net
                 self.book_trades += 1
-                self.book_claimed += pos.ev_per_margin / max(pos.leverage, 1e-9)
+                claim = pos.ev_per_margin / max(pos.leverage, 1e-9)
+                self.book_claimed += claim
                 self.book_realized += net
-                self.book_sumsq += net * net
+                # The dispersion this trade was DESIGNED to have, recovered
+                # from its own barriers: it paid +b or -a, and the mix that
+                # produces the claim sets the odds.
+                bb = abs(pos.tp_price - pos.entry) / pos.entry - self.fee
+                aa = abs(pos.sl_price - pos.entry) / pos.entry + self.fee
+                if np.isfinite(bb) and np.isfinite(aa) and (aa + bb) > 0:
+                    pw = min(1.0, max(0.0, (claim + aa) / (aa + bb)))
+                    self.book_var += max(
+                        pw * bb * bb + (1 - pw) * aa * aa - claim * claim, 0.0)
         self.mark()
         logger.info("%s CLOSE %s @%.6f (%s) pnl=$%.4f equity=$%.4f",
                     symbol, "LONG" if pos.direction > 0 else "SHORT",

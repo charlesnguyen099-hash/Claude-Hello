@@ -1422,7 +1422,7 @@ def test_stake_follows_the_potential_and_can_take_the_account():
         b.book_trades += 1
         b.book_claimed += 0.02
         b.book_realized += 0.02
-        b.book_sumsq += 0.02 ** 2
+        b.book_var += 0.02 ** 2
     grown = b.book_margin_fraction(s_big.tp_dist, s_big.sl_dist,
                                    s_big.slow_leverage, rule, 0.02, b.fee)[0]
     P = b.potential(s_big.tp_dist, s_big.sl_dist, rule, 0.02, b.fee)
@@ -1488,7 +1488,7 @@ def test_a_rule_that_stops_paying_stops_being_backed():
         b.book_trades += 1
         b.book_claimed += 0.02
         b.book_realized += -(sl + fee)
-        b.book_sumsq += (sl + fee) ** 2
+        b.book_var += (sl + fee) ** 2
     after = b.book_margin_fraction(tp, sl, lev, "15m:r:long", 0.02, fee)[0]
     ten = b.book_calibration()
     check("ten losses cut the calibration hard", ten < 0.25, ten)
@@ -1504,7 +1504,7 @@ def test_a_rule_that_stops_paying_stops_being_backed():
         b.book_trades += 1
         b.book_claimed += 0.02
         b.book_realized += -(sl + fee)
-        b.book_sumsq += (sl + fee) ** 2
+        b.book_var += (sl + fee) ** 2
     check("with enough evidence it does reach a dead stop",
           b.book_calibration() < 0.02, b.book_calibration())
     check("and that is strictly lower than the ten-trade reading",
@@ -1519,7 +1519,7 @@ def test_a_rule_that_stops_paying_stops_being_backed():
         b2.book_trades += 1
         b2.book_claimed += 0.02
         b2.book_realized += 0.03
-        b2.book_sumsq += 0.03 ** 2
+        b2.book_var += 0.03 ** 2
     good = b2.book_margin_fraction(tp, sl, lev, "15m:r:long", 0.02, fee)[0]
     check("a rule that beats its claim keeps its stake", good >= start, good)
     check("the calibration is capped at the claim, never above",
@@ -1561,6 +1561,88 @@ def test_the_live_record_is_in_the_same_unit_as_the_book():
           abs(tot - (gross - b.fee) * lev) > 1e-3, tot)
     check("the book's claim is banked in the same unit",
           abs(b.book_claimed - r["mean"]) < 1e-9, b.book_claimed)
+
+
+def test_a_losing_streak_shrinks_a_rule_without_killing_it():
+    """Cut losers, but not on a bad afternoon.
+
+    Two requirements pull against each other: stop trading what loses,
+    and do not throttle a rule that has not been given a chance. The
+    balance is the evidence weight -- a rule's stake follows its own
+    record, scaled by how much that record is worth knowing.
+
+    The calibration used the REALIZED sample variance of closed book
+    trades to decide that weight. Two losses at the same designed stop
+    have a sample variance of exactly zero, which drove n0 to its floor,
+    the weight to two thirds, and the calibration from 1.00 to 0.33 --
+    so three ordinary losses silenced a rule permanently, and with no
+    stake there are no more trades to lift it again. The dispersion now
+    comes from the barriers, which are known before any trade happens
+    and cannot collapse.
+    """
+    print("\na losing streak shrinks a rule without killing it")
+    b = broker_for(["S0USDT"], FakeHTTP(["S0USDT"]), signal_source="book",
+                   book_file="book.json", expectancy_gate=False,
+                   max_notional_x=0.0, margin_pct=0.05, max_margin_pct=1.0)
+    fee, lev = 0.0011, 3.0
+    sigma, tp, sl, claim = 0.0164, 4.0, 3.0, 0.007
+    tp_d, sl_d, rule = tp * sigma, sl * sigma, "r"
+    a, bb = sl_d + fee, tp_d - fee
+    pw = min(1.0, max(0.0, (claim + a) / (a + bb)))
+    var = pw * bb * bb + (1 - pw) * a * a - claim * claim
+
+    def book(result):
+        v = bb if result == "W" else -a
+        rec = b.rule_record.setdefault(rule, [0, 0.0])
+        rec[0] += 1
+        rec[1] += v
+        b.book_trades += 1
+        b.book_claimed += claim
+        b.book_realized += v
+        b.book_var += var
+
+    def stake():
+        return b.book_margin_fraction(tp_d, sl_d, lev, rule, claim, fee)[0]
+
+    start = stake()
+    check("the rule starts tradeable", start > 0, start)
+    for _ in range(3):
+        book("L")
+    after3 = stake()
+    check("three losses cut the stake", after3 < start, (start, after3))
+    check("but the rule is STILL tradeable", after3 > 0, after3)
+    check("and the cut is real, not cosmetic", after3 < 0.6 * start,
+          (after3, start))
+
+    for _ in range(3):
+        book("W")
+    back = stake()
+    check("wins bring the stake back", back > after3, (after3, back))
+    check("all the way to where it started", back >= start * 0.99,
+          (back, start))
+
+    # A rule that really does not pay must still shut down.
+    b2 = broker_for(["S0USDT"], FakeHTTP(["S0USDT"]), signal_source="book",
+                    book_file="book.json", expectancy_gate=False,
+                    max_notional_x=0.0, margin_pct=0.05, max_margin_pct=1.0)
+    n, lost = 0, 0.0
+    while n < 200:
+        f = b2.book_margin_fraction(tp_d, sl_d, lev, rule, claim, fee)[0]
+        if f <= 0:
+            break
+        lost += f * 10.0 * lev * a
+        rec = b2.rule_record.setdefault(rule, [0, 0.0])
+        rec[0] += 1
+        rec[1] += -a
+        b2.book_trades += 1
+        b2.book_claimed += claim
+        b2.book_realized += -a
+        b2.book_var += var
+        n += 1
+    check("a rule that only loses is eventually cut", n < 200, n)
+    check("it takes real evidence, not three trades", n >= 6, n)
+    check("and the account pays under 1% to learn it",
+          lost / 10.0 < 0.01, lost / 10.0)
 
 
 def test_no_rule_reaches_the_bot_without_a_scope():
@@ -2134,6 +2216,7 @@ def main() -> int:
                test_stake_follows_the_potential_and_can_take_the_account,
                test_a_rule_that_stops_paying_stops_being_backed,
                test_the_live_record_is_in_the_same_unit_as_the_book,
+               test_a_losing_streak_shrinks_a_rule_without_killing_it,
                test_no_rule_reaches_the_bot_without_a_scope,
                test_an_impossible_claim_scores_zero_rather_than_maximum,
                test_every_closed_trade_appears_in_the_breakdown,

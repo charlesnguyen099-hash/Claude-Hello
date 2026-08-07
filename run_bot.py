@@ -170,6 +170,12 @@ def main() -> int:
                         "`python run_bot.py` runs. The parts are still there "
                         "if you want one alone: btc_book.json, "
                         "coin_tiers.json, coin_book.json")
+    p.add_argument("--trust-book", action="store_true",
+                   help="let the potential score run the full "
+                        "--max-margin-pct from the first trade, instead of "
+                        "earning up from --margin-pct as each rule builds a "
+                        "live record. book.json is FITTED to its own data, so "
+                        "this is the operator's call, not the default")
     p.add_argument("--book-anywhere", action="store_true",
                    help="let every book rule fire on every symbol scanned, "
                         "ignoring the symbols it was validated on. Off by "
@@ -269,6 +275,16 @@ def main() -> int:
               f"as it accumulates.")
         print(f"    One position PER RULE, so a 6-day daily rule no longer "
               f"locks its symbol.")
+        print(f"  Potential scale  : 100 x (p_est - p_be)/(1 - p_be) -- how "
+              f"far above break-even")
+        print(f"                     the credible edge puts the win rate. "
+              f"Stake = ceiling x (score/100)^2")
+        print(f"      score  20 ->  4%      40 -> 16%      60 -> 36%      "
+              f"80 -> 64%     100 -> 100%")
+        if args.trust_book:
+            print(f"    --trust-book: the score runs the full "
+                  f"{args.max_margin_pct:.0f}% from trade one. The book is "
+                  f"fitted; this is your call.")
     elif args.signals in ("survivors", "slow", "regime"):
         # These modes size flat on purpose: the potential already lives in
         # the leverage, and Kelly's win-rate input is the record of the
@@ -453,7 +469,7 @@ def main() -> int:
               args.assumed_win_rate, args.signals, not args.flat_sizing,
               "flat" if args.flat_sizing else args.sizing,
               args.max_margin_pct / 100.0, args.limit_entry, args.slippage,
-              None, args.book_file, args.book_anywhere)
+              None, args.book_file, args.book_anywhere, args.trust_book)
     except KeyboardInterrupt:
         pass
     except Exception as exc:

@@ -23,10 +23,14 @@ WHAT MERGING MEANS
                  from two studies is ONE rule, and it keeps the wider
                  evidence -- a rule confirmed on nine symbols outranks
                  the same rule confirmed on one
-    scope        rules are applied to every symbol. A BTC-fitted rule
-                 running on ETHUSDT is not a bug, it is the cross-symbol
-                 test the project has been waiting to run, and its
-                 provenance says plainly that BTC is where it came from
+    scope        every rule carries the symbols it was VALIDATED on and
+                 the bot refuses to fire it anywhere else. A study that
+                 recorded no symbol list gets its own study's universe --
+                 btc_book measured BTCUSDT and nothing else, so its rules
+                 are BTCUSDT rules. Letting them run everywhere is not a
+                 free cross-symbol test: it is an untested claim wearing
+                 tested numbers, and live it put a BTC-fitted daily rule
+                 short on a Korean semiconductor ETF.
 
 WHAT IS NOT MERGED AWAY
 
@@ -45,6 +49,12 @@ HERE = Path(__file__).resolve().parent
 OUT = HERE / "book.json"
 
 # source file -> what that study established, for provenance
+# A study that records no per-rule symbol list was run on exactly one
+# universe; that universe IS the scope of every rule it produced.
+PART_SCOPE = {
+    "btc_book.json": "BTCUSDT",
+}
+
 PARTS = {
     # Best evidence first: this is the only study with BOTH a time split
     # and cross-symbol agreement, on a balanced window.
@@ -94,7 +104,7 @@ def merge() -> dict:
                 # four; firing it on a symbol nobody tested is a different
                 # claim wearing the same numbers. The bot honours this
                 # unless explicitly told not to.
-                "coins": r.get("coins", ""),
+                "coins": r.get("coins") or PART_SCOPE.get(fname, ""),
             }
             old = rules.get(k)
             if old is None or merged["n_coins"] > old["n_coins"]:

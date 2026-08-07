@@ -1385,8 +1385,10 @@ def test_stake_follows_the_potential_and_can_take_the_account():
     equity, and --max-margin-pct is the operator's own ceiling.
     """
     print("\nstake follows the trade's own potential")
+    # A claim a rule's own barriers CAN pay -- see the refutation test
+    # for what happens when it cannot.
     strong = {"tf": "15m", "name": "strong", "side": "long", "tp": 4.0,
-              "sl": 3.0, "hmax": 8, "hold_min": 120.0, "mean": 0.05,
+              "sl": 3.0, "hmax": 8, "hold_min": 120.0, "mean": 0.02,
               "coins": ""}
     weak = {**strong, "name": "weak", "mean": 0.0005}
     b, c = _book_broker(["S0USDT"], [strong, weak], max_margin_pct=1.0)
@@ -1416,16 +1418,30 @@ def test_stake_follows_the_potential_and_can_take_the_account():
     for _ in range(400):
         rec = b.rule_record.setdefault(rule, [0, 0.0])
         rec[0] += 1
-        rec[1] += 0.05
+        rec[1] += 0.02
         b.book_trades += 1
-        b.book_claimed += 0.05
-        b.book_realized += 0.05
+        b.book_claimed += 0.02
+        b.book_realized += 0.02
+        b.book_sumsq += 0.02 ** 2
     grown = b.book_margin_fraction(s_big.tp_dist, s_big.sl_dist,
-                                   s_big.slow_leverage, rule, 0.05, b.fee)[0]
-    check("a rule that has proved a 5%/trade edge can take the account",
-          grown >= 0.99, grown)
-    check("which is far more than it was allowed on day one",
-          grown > 5 * s_big.margin_frac, (grown, s_big.margin_frac))
+                                   s_big.slow_leverage, rule, 0.02, b.fee)[0]
+    P = b.potential(s_big.tp_dist, s_big.sl_dist, rule, 0.02, b.fee)
+    check("its potential scores around the middle of the scale",
+          40 <= P["score"] <= 65, P["score"])
+    check("and the stake is that score, squared, of the ceiling",
+          abs(grown - b.max_margin_pct * (P["score"] / 100) ** 2) < 0.05,
+          (grown, b.max_margin_pct * (P["score"] / 100) ** 2))
+    check("which is several times what it was allowed on day one",
+          grown > 2 * s_big.margin_frac, (grown, s_big.margin_frac))
+
+    # The scale has to actually spread, or it is not a scale.
+    seen = []
+    for m in (0.001, 0.005, 0.010, 0.020, 0.030):
+        seen.append(b.potential(s_big.tp_dist, s_big.sl_dist,
+                                "unproven:x:long", m, b.fee)["score"])
+    check("the score rises with the edge", seen == sorted(seen), seen)
+    check("and spans a real range, not three points near zero",
+          max(seen) - min(seen) > 40, seen)
 
     # The ruin cap is arithmetic: one stop may not clear the account.
     for s in sigs.values():
@@ -1545,6 +1561,93 @@ def test_the_live_record_is_in_the_same_unit_as_the_book():
           abs(tot - (gross - b.fee) * lev) > 1e-3, tot)
     check("the book's claim is banked in the same unit",
           abs(b.book_claimed - r["mean"]) < 1e-9, b.book_claimed)
+
+
+def test_no_rule_reaches_the_bot_without_a_scope():
+    """A study that named no symbols still has a universe.
+
+    btc_book measured BTCUSDT and recorded no per-rule symbol list, so
+    every one of its 30 rules merged with coins="" -- and the bot's scope
+    gate reads an empty scope as "no restriction". Thirty BTC-fitted
+    rules therefore ran on all ten symbols. Live that put a BTC daily
+    rule short on a Korean semiconductor ETF and a BTC 4h rule long on
+    HYPE: untested claims wearing tested numbers, which is the exact
+    thing the scope gate exists to stop.
+    """
+    print("\nno rule reaches the bot without a scope")
+    import json as _json
+    from pathlib import Path as _P
+    f = _P(B.__file__).resolve().parent / "book.json"
+    if not f.exists():
+        check("book.json present to check", False, "missing")
+        return
+    d = _json.loads(f.read_text())
+    rules = d["logics"]
+    unscoped = [r for r in rules if not (r.get("coins") or "")]
+    check("every rule names the symbols it was validated on",
+          not unscoped, f"{len(unscoped)} unscoped")
+
+    btc = [r for r in rules if "BTCUSDT 2025-2026" in r.get("evidence", "")]
+    check("the BTC-only study produced rules", len(btc) > 0, len(btc))
+    check("and every one of them is scoped to BTCUSDT alone",
+          all((r.get("coins") or "") == "BTCUSDT" for r in btc),
+          sorted({r.get("coins") or "<none>" for r in btc})[:3])
+
+    # And the gate the bot applies must actually reject the others.
+    b = broker_for(["ETHUSDT"], FakeHTTP(["ETHUSDT"]), signal_source="book",
+                   book_file="book.json")
+    b.book_anywhere = False
+    blocked = sum(1 for r in btc
+                  if "ETHUSDT" not in (r.get("coins") or "").split(","))
+    check("so none of them can fire on ETHUSDT", blocked == len(btc),
+          (blocked, len(btc)))
+    check("lifting the scope stays a deliberate choice",
+          b.book_anywhere is False)
+
+
+def test_an_impossible_claim_scores_zero_rather_than_maximum():
+    """A claim implying a win rate above 100% is refuted, not excellent.
+
+    The book is fitted, and at a realistic sigma its median rule's
+    claimed mean implies a 109% win rate: no rule wins more often than
+    always. Clipping such a claim to the top of the scale would give the
+    LEAST credible setups the LARGEST stake, which is exactly backwards.
+    They score 0 and are not traded.
+    """
+    print("\nan impossible claim scores zero, not maximum")
+    r = {"tf": "15m", "name": "r", "side": "long", "tp": 4.0, "sl": 3.0,
+         "hmax": 8, "hold_min": 120.0, "mean": 0.006, "coins": ""}
+    b, _ = _book_broker(["S0USDT"], [r], max_margin_pct=1.0)
+    fee = 0.0011
+
+    # Same claimed mean, three different volatilities. At a small sigma
+    # the barriers are tight and the claim cannot be paid.
+    rows = []
+    for sigma in (0.001, 0.004, 0.010):
+        P = b.potential(4.0 * sigma, 3.0 * sigma, "x:y:long", 0.006, fee)
+        rows.append((sigma, P))
+    tight, mid, wide = rows
+
+    check("at a 0.1% sigma the claim is refuted", tight[1]["refuted"],
+          tight[1]["p_est"])
+    check("and it scores zero, not one hundred", tight[1]["score"] == 0.0,
+          tight[1]["score"])
+    check("its implied win rate really was above 1", tight[1]["p_est"] > 1.0,
+          tight[1]["p_est"])
+    check("at a 1.0% sigma the same claim is credible",
+          not wide[1]["refuted"] and wide[1]["score"] > 0,
+          (wide[1]["refuted"], wide[1]["score"]))
+    check("a credible claim implies a win rate below 1",
+          wide[1]["p_est"] < 1.0, wide[1]["p_est"])
+    check("break-even is set by the barriers, not by the claim",
+          abs(wide[1]["p_be"] - (3.0 * 0.010 + fee)
+              / (3.0 * 0.010 + fee + 4.0 * 0.010 - fee)) < 1e-9)
+
+    # A target inside the round trip is not a bet at any sigma.
+    P = b.potential(0.0005, 0.0100, "x:y:long", 0.006, fee)
+    check("a target the fee eats scores zero", P["score"] == 0.0, P["score"])
+    check("and is not called refuted -- it is uneconomic, not disproved",
+          not P["refuted"])
 
 
 def test_every_closed_trade_appears_in_the_breakdown():
@@ -2031,6 +2134,8 @@ def main() -> int:
                test_stake_follows_the_potential_and_can_take_the_account,
                test_a_rule_that_stops_paying_stops_being_backed,
                test_the_live_record_is_in_the_same_unit_as_the_book,
+               test_no_rule_reaches_the_bot_without_a_scope,
+               test_an_impossible_claim_scores_zero_rather_than_maximum,
                test_every_closed_trade_appears_in_the_breakdown,
                test_the_dashboard_describes_the_mode_it_is_running,
                test_book_trade_matches_the_backtest_arithmetic,

@@ -150,6 +150,7 @@ class Signal:
     margin_frac: float | None = None
     kelly_full: float = 0.0        # before any cap, for reporting
     edge_used: float = 0.0         # the shrunk per-trade edge behind it
+    score: float = 0.0             # potential out of 100 -- see Broker.potential
 
     @property
     def slot(self) -> str:
@@ -192,6 +193,7 @@ class Position:
     # session.
     entry_fee: float = 0.0
     slot: str = ""
+    score: float = 0.0
     kelly_full: float = 0.0
     edge_used: float = 0.0
 
@@ -224,6 +226,7 @@ class Broker:
                  signal_source: str = "methods",
                  book_file: str = "book.json",
                  book_anywhere: bool = False,
+                 trust_book: bool = False,
                  potential_sizing: bool = True,
                  sizing: str = "kelly",
                  max_margin_pct: float = L.MAX_MARGIN_FRACTION,
@@ -276,6 +279,10 @@ class Broker:
         self.survivors: list[dict] = []
         self.book: list[dict] = []
         self.book_anywhere = book_anywhere
+        # Let the potential score run the whole account from the first
+        # trade, instead of earning its way up from the base slice. The
+        # book is fitted; this is the operator's call, not the default.
+        self.trust_book = trust_book
         self._book_cache: dict[tuple, tuple] = {}
         self._fired_cache: dict[tuple, tuple] = {}
         self.bar_minutes = L.BAR_MINUTES
@@ -353,6 +360,10 @@ class Broker:
         self.skipped_max_notional = 0
         self.skipped_unsolvent = 0
         self.skipped_negative_ev = 0
+        # Setups whose claimed mean implied a win rate above 100% at the
+        # live sigma. Counted separately: that is a refuted claim, not a
+        # thin edge, and the two mean different things.
+        self.refuted = 0
         self.no_survivors = 0
         self.blocked_signals = 0
         self.blocked_by: dict[str, int] = {"margin": 0, "exposure": 0,
@@ -461,15 +472,14 @@ class Broker:
         edge -- derived from the rule's own barrier geometry, so nothing
         here is a chosen constant.
 
-        The claim is first clipped to what the barriers can physically
-        pay. A rule pays at most +b, so an edge above b would require a
-        win rate above 100%: at a 0.2% sigma the book's median rule
-        implies 109%, which is not a strong claim but an impossible one.
-        Clipping is arithmetic, not taste.
+        The claim is NOT clipped here. A claim above what the barriers
+        can pay implies a win rate over 100%, and clipping it to the
+        maximum would hand the least credible setups the largest stake --
+        exactly backwards. potential() sees the raw number, calls it
+        refuted and scores it zero.
 
         Returns (edge, evidence weight in [0, 1]).
         """
-        claimed = min(claimed, b)          # p <= 1, by construction
         prior = claimed * self.book_calibration()
         n, tot = self.rule_record.get(rule, (0, 0.0))
         if n <= 0:
@@ -482,6 +492,63 @@ class Broker:
         n_star = (sd / claimed) ** 2 if claimed > 0 else float("inf")
         w = n / (n + max(n_star, 1.0))
         return (1 - w) * prior + w * (tot / n), w
+
+    def potential(self, tp_dist: float, sl_dist: float, rule: str,
+                  claimed: float, fee: float) -> dict:
+        """Score this setup out of 100, on one scale for every rule.
+
+        Everything a trade can be judged on reduces to one question: how
+        far above break-even is its win rate? The barriers fix what
+        break-even IS -- a bet paying +b against -a needs
+
+            p_be = a / (a + b)
+
+        just to stand still, so a wide target is not free, it is a higher
+        bar. The credible edge implies
+
+            p_est = (edge + a) / (a + b)
+
+        and the score is where that sits between break-even and certainty:
+
+            POTENTIAL = 100 x (p_est - p_be) / (1 - p_be)
+
+        0 means break-even, 100 means it never loses. The scale is
+        bounded, dimensionless and directly comparable across
+        timeframes, so a 15m setup and a daily one can be ranked against
+        each other and sized off the same number.
+
+        Both a and b are NET of the round trip, so a target the fee eats
+        scores low without any separate cost rule -- which is the thing
+        that actually sank the live session, where fees were 59% of the
+        loss.
+
+        A claim implying p_est > 1 is not a strong claim, it is a refuted
+        one: no rule wins more often than always. That happens when a
+        fitted mean meets a real sigma -- at 0.2% the book's median rule
+        implies 109% -- and the honest reading is that the claim carries
+        no information, so the setup scores 0 and is not traded. It is
+        the low-volatility, tight-barrier setups this removes, which are
+        exactly the ones whose fees do not clear.
+        """
+        b = tp_dist - fee              # what a win actually pays
+        a = sl_dist + fee              # what a loss actually costs
+        out = {"score": 0.0, "a": a, "b": b, "edge": 0.0, "w": 0.0,
+               "p_be": 1.0, "p_est": 0.0, "refuted": False}
+        if b <= 0 or a <= 0:
+            # The target does not clear the round trip. No bet here.
+            return out
+        edge, w = self.rule_edge(rule, claimed, a, b)
+        out["w"] = w
+        p_be = a / (a + b)
+        p_est = (edge + a) / (a + b)
+        out.update(p_be=p_be, p_est=p_est, edge=edge)
+        if p_est > 1.0:
+            out["refuted"] = True
+            return out
+        if p_est <= p_be:
+            return out
+        out["score"] = 100.0 * (p_est - p_be) / (1.0 - p_be)
+        return out
 
     def book_margin_fraction(self, tp_dist: float, sl_dist: float,
                              lev: float, rule: str, claimed: float,
@@ -507,16 +574,20 @@ class Broker:
 
         Returns (margin fraction, uncapped Kelly, edge used).
         """
-        b = tp_dist - fee          # what a win actually pays
-        a = sl_dist + fee          # what a loss actually costs
-        if b <= 0 or a <= 0:
-            # The stop is inside the fee: there is no bet here to size.
-            return 0.0, 0.0, 0.0
-        edge, w = self.rule_edge(rule, claimed, a, b)
-        if edge <= 0:
+        P = self.potential(tp_dist, sl_dist, rule, claimed, fee)
+        a, b, edge, w = P["a"], P["b"], P["edge"], P["w"]
+        if P["score"] <= 0:
             return 0.0, 0.0, edge
         kelly = edge / (a * b)                  # fraction of equity, notional
-        frac = 0.5 * kelly / max(lev, 1e-9)     # margin behind it, half stake
+        # THE STAKE IS THE SCORE. A setup scoring 20 out of 100 commits
+        # a fifth of what the ceiling allows, one scoring 80 commits four
+        # fifths -- so capital moves with potential instead of sitting at
+        # one flat slice. Squared, because the score is an estimate of a
+        # probability margin and its error grows with it: at half stake
+        # you keep most of the growth for a quarter of the variance, and
+        # being wrong about the top of the scale is what ruins accounts.
+        by_score = self.max_margin_pct * (P["score"] / 100.0) ** 2
+        frac = 0.5 * kelly / max(lev, 1e-9)     # margin behind it, half Kelly
         ruin_cap = 1.0 / (lev * a)              # one stop may not clear the account
         # A stake above the base slice has to be EARNED. The book is
         # fitted, so on its own numbers Kelly asks for 45x the account --
@@ -526,9 +597,13 @@ class Broker:
         # record accumulates, on the same weight w that decides how much
         # of the edge estimate comes from that record. A rule that proves
         # itself can end up taking the whole account; one that has never
-        # traded cannot.
-        earned = self.margin_pct + (self.max_margin_pct - self.margin_pct) * w
-        return min(frac, ruin_cap, earned, self.max_margin_pct), kelly, edge
+        # traded cannot. --trust-book lifts this for an operator who
+        # wants the score to run the account from the first trade.
+        earned = (self.max_margin_pct if self.trust_book else
+                  self.margin_pct
+                  + (self.max_margin_pct - self.margin_pct) * w)
+        return (min(by_score, frac, ruin_cap, earned, self.max_margin_pct),
+                kelly, edge)
 
     def stake_scale(self) -> float:
         """How far every standing stake must be scaled to fit the account.
@@ -982,12 +1057,16 @@ class Broker:
             rule = f"{tf}:{r['name']}:{r['side']}"
             claimed = float(r.get("mean") or 0.0)
             fee = self.trade_cost(symbol, side)
+            P = self.potential(tp_dist, sl_dist, rule, claimed, fee)
             frac, kelly, edge = self.book_margin_fraction(
                 tp_dist, sl_dist, chain["leverage"], rule, claimed, fee)
             if frac <= 0:
-                # Nothing left of this rule's edge once the cost and its
-                # own live record are priced in. Not a trade.
+                # Either the target does not clear the round trip, or the
+                # claim implied a win rate above 100% and is refuted, or
+                # the rule's own live record has taken the edge away.
                 self.skipped_negative_ev += 1
+                if P["refuted"]:
+                    self.refuted += 1
                 continue
             sig = Signal(
                 bar_ts=bar_ts, direction=side, atr_pct=100.0 * sigma,
@@ -995,11 +1074,13 @@ class Broker:
                 methods=(f"book {tf} {r['name']} {r['side']} "
                          f"tp{r['tp']}/sl{r['sl']} hold<={hold_min:.0f}m "
                          f"lev={chain['leverage']:.2f}x "
+                         f"potential={P['score']:.0f}/100 "
                          f"stake={100*frac:.1f}%"),
                 confidence=None, slow_leverage=chain["leverage"],
                 tp_dist=tp_dist, sl_dist=sl_dist, max_hold_min=hold_min,
                 rule=rule, rule_mean=claimed, symbol=symbol,
-                margin_frac=frac, kelly_full=kelly, edge_used=edge)
+                margin_frac=frac, kelly_full=kelly, edge_used=edge,
+                score=P["score"])
             self.signals[sig.slot] = sig
             keep.add(sig.slot)
             out.append(sig)
@@ -1382,7 +1463,7 @@ class Broker:
                 margin_weight=(margin / (self.equity_total * self.margin_pct)
                                if self.equity_total > 0 else 1.0),
                 max_hold_min=sig.max_hold_min, rule=sig.rule,
-                entry_fee=entry_fee, slot=slot,
+                entry_fee=entry_fee, slot=slot, score=sig.score,
                 kelly_full=sig.kelly_full, edge_used=sig.edge_used,
             )
             self.open[slot] = pos
@@ -1439,13 +1520,11 @@ class Broker:
         def rank(k):
             sg = self.signals[k]
             if sg.margin_frac is not None:
-                # A book signal ranks on the growth it expects to add:
-                # its own edge times the stake its own Kelly asked for.
+                # Book signals rank on the one scale they all share.
                 # L.kelly_fraction and L.ev_per_margin below both rebuild
                 # the twelve-method ATR ladder, so using them here would
                 # order the book by another book's model.
-                return -(sg.edge_used * sg.margin_frac
-                         * (sg.slow_leverage or 1.0))
+                return -sg.score
             if self.sizing == "kelly":
                 return -L.kelly_fraction(sg.atr_pct, self.exit_name, self.fee,
                                          sg.p_win, self.max_leverage)
@@ -1614,7 +1693,7 @@ class Broker:
             price = self.prices.get(pos.symbol) or pos.entry
             pnl = (price - pos.entry) / pos.entry * pos.direction * pos.qty * pos.entry
             rows.append((pos.symbol, pos.direction, pos.entry, price, pnl,
-                         pos.leverage, pos.methods, pos.potential_score, slot))
+                         pos.leverage, pos.methods, pos.score, slot))
         return rows
 
     def snapshot(self) -> dict:
@@ -1665,6 +1744,9 @@ class Broker:
             "book_rules": len(self.book),
             "max_margin_pct": self.max_margin_pct,
             "book_calibration": self.book_calibration(),
+            "refuted": self.refuted,
+            "scores": [g.score for g in self.signals.values()
+                       if g.margin_frac is not None],
             "book_trades": self.book_trades,
             "rules_live": len(self.rule_record),
             "hold_hours": hold_h,
@@ -1929,6 +2011,15 @@ def print_dashboard(s: dict) -> None:
         print(f"  EDGE      {s['book_rules']} book rules, each already net of "
               f"fees + funding where it was measured"
               f"   {s['rules_live']} with a live record")
+        sc = s.get("scores") or []
+        if sc:
+            print(f"  POTENTIAL standing scores /100: "
+                  f"best {max(sc):.0f}   median {sorted(sc)[len(sc)//2]:.0f}"
+                  f"   worst {min(sc):.0f}"
+                  f"   (stake = ceiling x (score/100)^2)")
+        print(f"            refused this session: {s['refuted']:,} refuted "
+              f"(claimed win rate > 100%)   "
+              f"{s['skipped_negative_ev'] - s['refuted']:,} no edge after cost")
     else:
         print(f"  EDGE      negative-expectancy skips {s['skipped_negative_ev']:,}"
               f"   ({s['tradeable_bands']} of {s['total_bands']} measured ATR bands"
@@ -1986,9 +2077,9 @@ def print_summary(s: dict) -> None:
     for sym, d, entry, price, pnl, lev, meth, pot, _slot in s["open_rows"]:
         # For a book position `pot` is the rule's own measured return per
         # trade at this leverage, so it is shown as the percentage it is.
-        p_txt = ("  n/a" if pot != pot else f"{100*pot:+.2f}%/trade")
+        p_txt = ("  n/a" if pot != pot else f"{pot:.0f}/100")
         print(f"      {sym:12s} {'LONG' if d > 0 else 'SHORT':5s} {lev:5.0f}x "
-              f"measured={p_txt} entry={entry:.6f} last={price:.6f} "
+              f"potential={p_txt} entry={entry:.6f} last={price:.6f} "
               f"unreal=${pnl:+.4f}")
         print(f"        methods: {meth}")
     print(f"  Unrealized profit     : ${s['open_profit']:+.4f}")
@@ -2093,13 +2184,13 @@ def run(client, symbols: list[str], equity: float, max_positions: int,
         limit_entry: bool = False, slippage: float = 0.0,
         fee_override: float | None = None,
         book_file: str = "book.json",
-        book_anywhere: bool = False) -> None:
+        book_anywhere: bool = False, trust_book: bool = False) -> None:
     broker = Broker(client, symbols, equity, max_positions, exit_name,
                     min_votes, fee, max_leverage, margin_pct, max_notional_x,
                     conviction_floor, expectancy_gate, assumed_win_rate,
-                    signal_source, book_file, book_anywhere, potential_sizing,
-                    sizing, max_margin_pct, limit_entry, slippage,
-                    fee_override)
+                    signal_source, book_file, book_anywhere, trust_book,
+                    potential_sizing, sizing, max_margin_pct, limit_entry,
+                    slippage, fee_override)
     stop_event = threading.Event()
 
     def stop(signum, frame):

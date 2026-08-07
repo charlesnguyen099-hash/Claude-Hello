@@ -68,6 +68,95 @@ def trailing_score(net: np.ndarray, b: float, a: float) -> np.ndarray:
     return 100.0 * edge / b
 
 
+# Score bands. Wide at the bottom because most trades score near zero,
+# and open-ended at the top because the point is to find out whether the
+# top band is worth anything.
+EDGES = np.array([0.0, 2.0, 5.0, 10.0, 20.0, 35.0, 50.0, np.inf])
+
+
+def accumulate(tfs=None, symbols=None, halves: bool = True) -> pd.DataFrame:
+    """Bucket every independent trade by its past-only score, on the fly.
+
+    Storing one row per trade means fifteen million tuples and an OOM
+    before the DataFrame is even built. Nothing here needs the rows --
+    only per-band counts, sums and sums of squares, which is all a mean,
+    a t and a win rate require.
+    """
+    from fp import ensemble as E
+    from fp.exits import sigma_at
+
+    D = J.load()
+    if symbols:
+        D = {s: v for s, v in D.items() if s in symbols}
+    tfs = tfs or T.TFS
+    nb = len(EDGES) - 1
+    acc = {}                       # (tf, half) -> [n, sum, sumsq, wins] per band
+
+    def add(key, band, x):
+        a = acc.setdefault(key, np.zeros((nb, 4)))
+        np.add.at(a, (band, 0), 1.0)
+        np.add.at(a, (band, 1), x)
+        np.add.at(a, (band, 2), x * x)
+        np.add.at(a, (band, 3), (x > 0).astype(float))
+
+    for label, m in tfs:
+        for sym, d1 in D.items():
+            d = J.resample(d1, m)
+            if len(d) < 320:
+                continue
+            L = E.build_logics(d)
+            outs = T.outcomes(d, m)
+            n = len(d)
+            mid = n // 2
+            sg = float(np.nanmedian(sigma_at(d["close"].values.astype(float))))
+            for name, ser in L.items():
+                v = np.asarray(ser.values, dtype=float)
+                for side in (1, -1):
+                    on = np.zeros(n, dtype=bool)
+                    on[1:] = (v[1:] == side) & (v[:-1] != side)
+                    idx = np.flatnonzero(on)
+                    if len(idx) < 8:
+                        continue
+                    for (s2, tp, sl, hm), (net, held) in outs.items():
+                        if s2 != side:
+                            continue
+                        i2 = T.independent(idx, net, held)
+                        if len(i2) < 8:
+                            continue
+                        x = net[i2]
+                        bb, aa = tp * sg - J.FEE, sl * sg + J.FEE
+                        if bb <= 0:
+                            continue
+                        band = np.clip(
+                            np.searchsorted(EDGES, trailing_score(x, bb, aa),
+                                            side="right") - 1, 0, nb - 1)
+                        add((label, "all"), band, x)
+                        if halves:
+                            late = i2 >= mid
+                            if late.any():
+                                add((label, "late"), band[late], x[late])
+                            if (~late).any():
+                                add((label, "early"), band[~late], x[~late])
+            del L, outs
+        print(f"  {label} done", flush=True)
+
+    rows = []
+    for (tf, half), a in acc.items():
+        for i in range(nb):
+            nn, s1, s2, w = a[i]
+            if nn < 1:
+                continue
+            mean = s1 / nn
+            var = max(s2 / nn - mean * mean, 0.0)
+            se = np.sqrt(var / nn) if nn > 1 else np.inf
+            rows.append({"tf": tf, "half": half,
+                         "band": f"{EDGES[i]:g}-{EDGES[i+1]:g}",
+                         "trades": int(nn), "mean_pct": 100 * mean,
+                         "win_pct": 100 * w / nn,
+                         "t": mean / se if se > 0 else 0.0})
+    return pd.DataFrame(rows)
+
+
 def collect(tfs=None, symbols=None) -> pd.DataFrame:
     """Every independent trade in the library, with its past-only score.
 

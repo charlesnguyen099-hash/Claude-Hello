@@ -262,6 +262,13 @@ def main() -> int:
           f"(a stop costs ~42% of the trade's margin)")
     mode = "flat" if args.flat_sizing else args.sizing
     if args.signals == "book":
+        # Measured, not guessed. See fp/aug_tiers.py.
+        print("  MEASURED         : replayed on 2026-08-05..08-07 (34h, the")
+        print("                     live session's own bars), the book's entry")
+        print("                     timing scored WORSE than entering at a")
+        print("                     random bar: -0.029%/trade, t = -4.60.")
+        print("                     21% of its claims are refuted at that")
+        print("                     window's real sigma and are not traded.")
         # Every book rule brings its own edge, its own target and its own
         # stop, so every rule solves its own stake. Half-Kelly, because the
         # edge is an estimate: full Kelly is optimal only when it is known.

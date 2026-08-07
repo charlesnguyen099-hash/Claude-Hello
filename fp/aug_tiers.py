@@ -22,6 +22,30 @@ not optional here:
   Bonferroni      against EVERY combination attempted, not the handful
                   that survived the gates
   leave-one-out   for any cross-symbol claim, the worst symbol removed
+
+RESULT: NOTHING SURVIVES.
+
+818,080 cells were tested across 1m, 3m and 5m. The gates passed 210
+per-coin rules, 604 group rules and 147 all-coin rules at 5m. Then the
+WHOLE selection was re-run eight times on rolled data -- every logic
+series shifted by a random offset, which keeps drift, volatility and
+long/short balance and destroys only the alignment:
+
+    tier      real     null    ratio   real %/trade   null %/trade
+    tier1      210      348     0.60        +0.9653        +1.1288
+    tier2      604      756     0.80        +0.3338        +0.2776
+    tier3      147      151     0.98        +0.3910        +0.3601
+
+The real data produces FEWER survivors than random alignment, at the
+same mean. A search this size over 34 hours manufactures every one of
+them. There is no per-coin, group or all-coin logic to write from this
+window, and reporting the 210/604/147 as findings would be reporting
+the search.
+
+This is a statement about the WINDOW, not about the market. 2,040
+minutes cannot support 818,080 tests. The same machinery on months of
+data is a different question; it is the length that is missing, not
+the method.
 """
 from __future__ import annotations
 

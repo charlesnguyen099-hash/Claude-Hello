@@ -170,6 +170,21 @@ def main() -> int:
                         "`python run_bot.py` runs. The parts are still there "
                         "if you want one alone: btc_book.json, "
                         "coin_tiers.json, coin_book.json")
+    p.add_argument("--earn-stake", action="store_true",
+                   help="make each rule EARN its way up from --margin-pct to "
+                        "--max-margin-pct as it builds a live record. Off by "
+                        "default: the stake follows the setup in front of it, "
+                        "not the record of the ones behind it")
+    p.add_argument("--stake-curve", choices=("linear", "square"),
+                   default="linear",
+                   help="linear (default): stake%% = score, so a 60/100 setup "
+                        "commits 60%% of equity. square: stake%% = score^2/100, "
+                        "the conservative Kelly answer for an ESTIMATED edge")
+    p.add_argument("--share-stakes", action="store_true",
+                   help="when several setups fire at once, scale them all "
+                        "down so the whole standing set fits. Off by default: "
+                        "fill in score order, each taking the full stake its "
+                        "score asked for, until free margin runs out")
     p.add_argument("--trust-book", action="store_true",
                    help="let the potential score run the full "
                         "--max-margin-pct from the first trade, instead of "
@@ -282,16 +297,30 @@ def main() -> int:
               f"as it accumulates.")
         print(f"    One position PER RULE, so a 6-day daily rule no longer "
               f"locks its symbol.")
-        print(f"  Potential scale  : 100 x (p_est - p_be)/(1 - p_be) -- how "
-              f"far above break-even")
-        print(f"                     the credible edge puts the win rate. "
-              f"Stake = ceiling x (score/100)^2")
-        print(f"      score  20 ->  4%      40 -> 16%      60 -> 36%      "
-              f"80 -> 64%     100 -> 100%")
-        if args.trust_book:
-            print(f"    --trust-book: the score runs the full "
-                  f"{args.max_margin_pct:.0f}% from trade one. The book is "
-                  f"fitted; this is your call.")
+        print(f"  Potential scale  : 100 x edge/b -- the credible edge as a "
+              f"share of what a win pays.")
+        print(f"                     0 = break-even, 100 = cannot lose by its "
+              f"own barriers.")
+        if args.stake_curve == "linear":
+            print(f"  Stake            : score, read as a percent of equity. "
+                  f"Capped at {args.max_margin_pct:.0f}%.")
+            print(f"      score  20 -> 20%     40 -> 40%     60 -> 60%     "
+                  f"80 -> 80%    100 -> ALL IN")
+        else:
+            print(f"  Stake            : score^2/100 percent of equity, "
+                  f"capped at {args.max_margin_pct:.0f}%.")
+            print(f"      score  20 ->  4%     40 -> 16%     60 -> 36%     "
+                  f"80 -> 64%    100 -> ALL IN")
+        if args.earn_stake:
+            print(f"    --earn-stake: a rule cannot exceed "
+                  f"{args.margin_pct:.0f}% until it has a live record.")
+        else:
+            print(f"    Sizing reads ONLY the setup in front of it. A rule's "
+                  f"own past does not")
+            print(f"    shrink or grow its stake -- but a rule losing more "
+                  f"than 2 standard errors")
+            print(f"    below zero on its own record still stops trading "
+                  f"entirely.")
     elif args.signals in ("survivors", "slow", "regime"):
         # These modes size flat on purpose: the potential already lives in
         # the leverage, and Kelly's win-rate input is the record of the
@@ -476,7 +505,8 @@ def main() -> int:
               args.assumed_win_rate, args.signals, not args.flat_sizing,
               "flat" if args.flat_sizing else args.sizing,
               args.max_margin_pct / 100.0, args.limit_entry, args.slippage,
-              None, args.book_file, args.book_anywhere, args.trust_book)
+              None, args.book_file, args.book_anywhere, args.trust_book,
+              args.earn_stake, args.stake_curve, args.share_stakes)
     except KeyboardInterrupt:
         pass
     except Exception as exc:

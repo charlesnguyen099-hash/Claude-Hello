@@ -1375,18 +1375,15 @@ def test_one_symbol_carries_one_position_per_rule():
 
 
 def test_stake_follows_the_potential_and_can_take_the_account():
-    """Capital must follow the trade's own potential, up to all of it.
+    """Capital follows the setup in front of it, and nothing else.
 
-    A flat slice gives a rule with a huge measured edge and tight
-    barriers the same $0.50 as a marginal one. Each book signal now
-    solves its own Kelly stake from its own edge and its own barrier
-    geometry, and a strong enough one is allowed the whole account --
-    bounded only by arithmetic: a single stop may not cost more than the
-    equity, and --max-margin-pct is the operator's own ceiling.
+    The stake is the score, read as a percent: a setup scoring 60 out of
+    100 commits 60% of equity, one scoring 100 -- a setup that by its own
+    barriers cannot lose -- commits all of it. Nothing about the rule's
+    past enters that number, so the same setup is worth the same on its
+    first trade as on its hundredth.
     """
-    print("\nstake follows the trade's own potential")
-    # A claim a rule's own barriers CAN pay -- see the refutation test
-    # for what happens when it cannot.
+    print("\nstake follows the trade's own potential, linearly")
     strong = {"tf": "15m", "name": "strong", "side": "long", "tp": 4.0,
               "sl": 3.0, "hmax": 8, "hold_min": 120.0, "mean": 0.02,
               "coins": ""}
@@ -1405,17 +1402,20 @@ def test_stake_follows_the_potential_and_can_take_the_account():
     check("the strong rule asks for more than the weak one",
           s_big.margin_frac > s_small.margin_frac,
           (s_big.margin_frac, s_small.margin_frac))
-    check("the weak rule asks for a small slice",
-          s_small.margin_frac < 0.10, s_small.margin_frac)
-    check("but a rule with NO live record cannot exceed the base slice",
-          s_big.margin_frac <= b.margin_pct + 1e-12,
-          (s_big.margin_frac, b.margin_pct))
-    check("no stake ever exceeds max_margin_pct",
-          all(s.margin_frac <= b.max_margin_pct + 1e-12 for s in sigs.values()))
+    check("the stake IS the score, as a percent",
+          abs(s_big.margin_frac - s_big.score / 100.0) < 1e-9,
+          (s_big.margin_frac, s_big.score))
+    check("and that holds for the weak one too",
+          abs(s_small.margin_frac - s_small.score / 100.0) < 1e-9,
+          (s_small.margin_frac, s_small.score))
+    check("no stake exceeds max_margin_pct",
+          all(g.margin_frac <= b.max_margin_pct + 1e-12 for g in sigs.values()))
 
-    # ...and the whole account IS reachable, once the rule has earned it.
+    # HISTORY MUST NOT MOVE IT. Same setup, a hundred trades of record.
     rule = s_big.rule
-    for _ in range(400):
+    before = b.book_margin_fraction(s_big.tp_dist, s_big.sl_dist,
+                                    s_big.slow_leverage, rule, 0.02, b.fee)[0]
+    for _ in range(100):
         rec = b.rule_record.setdefault(rule, [0, 0.0])
         rec[0] += 1
         rec[1] += 0.02
@@ -1423,40 +1423,36 @@ def test_stake_follows_the_potential_and_can_take_the_account():
         b.book_claimed += 0.02
         b.book_realized += 0.02
         b.book_var += 0.02 ** 2
-    grown = b.book_margin_fraction(s_big.tp_dist, s_big.sl_dist,
+    after = b.book_margin_fraction(s_big.tp_dist, s_big.sl_dist,
                                    s_big.slow_leverage, rule, 0.02, b.fee)[0]
-    P = b.potential(s_big.tp_dist, s_big.sl_dist, rule, 0.02, b.fee)
-    check("its potential scores around the middle of the scale",
-          40 <= P["score"] <= 65, P["score"])
-    check("and the stake is that score, squared, of the ceiling",
-          abs(grown - b.max_margin_pct * (P["score"] / 100) ** 2) < 0.05,
-          (grown, b.max_margin_pct * (P["score"] / 100) ** 2))
-    check("which is several times what it was allowed on day one",
-          grown > 2 * s_big.margin_frac, (grown, s_big.margin_frac))
+    check("a hundred winning trades do NOT change the stake",
+          abs(after - before) < 1e-12, (before, after))
 
-    # The scale has to actually spread, or it is not a scale.
-    seen = []
-    for m in (0.001, 0.005, 0.010, 0.020, 0.030):
-        seen.append(b.potential(s_big.tp_dist, s_big.sl_dist,
-                                "unproven:x:long", m, b.fee)["score"])
-    check("the score rises with the edge", seen == sorted(seen), seen)
-    check("and spans a real range, not three points near zero",
-          max(seen) - min(seen) > 40, seen)
-
-    # The ruin cap is arithmetic: one stop may not clear the account.
-    for s in sigs.values():
-        loss = s.margin_frac * (s.slow_leverage or 1.0) * (s.sl_dist + b.fee)
-        check(f"a stop on {s.rule.split(':')[1]} cannot clear the account",
+    # The ruin cap is arithmetic and still applies.
+    for g in sigs.values():
+        loss = g.margin_frac * (g.slow_leverage or 1.0) * (g.sl_dist + b.fee)
+        check(f"a stop on {g.rule.split(':')[1]} cannot clear the account",
               loss <= 1.0 + 1e-9, loss)
 
-    # And the money actually committed is the fraction that was solved.
-    eq = b.equity_total
-    b.try_open(s_big.slot)
-    p = b.open[s_big.slot]
-    check("the position commits the fraction its own Kelly asked for",
-          abs(p.margin - eq * s_big.margin_frac) < 0.02
-          or p.margin < eq * s_big.margin_frac,   # or all the free margin
-          (p.margin, eq * s_big.margin_frac))
+    # --earn-stake restores the ramp for an operator who wants it.
+    b2, _ = _book_broker(["S0USDT"], [strong], max_margin_pct=1.0,
+                         earn_stake=True)
+    ramped = b2.book_margin_fraction(s_big.tp_dist, s_big.sl_dist,
+                                     s_big.slow_leverage, rule, 0.02, b2.fee)[0]
+    check("--earn-stake holds an unproven rule to the base slice",
+          ramped <= b2.margin_pct + 1e-12, (ramped, b2.margin_pct))
+    check("which is far less than the default allows",
+          ramped < before, (ramped, before))
+
+    # --stake-curve square is the conservative alternative.
+    b3, _ = _book_broker(["S0USDT"], [strong], max_margin_pct=1.0,
+                         stake_curve="square")
+    sq = b3.book_margin_fraction(s_big.tp_dist, s_big.sl_dist,
+                                 s_big.slow_leverage, rule, 0.02, b3.fee)[0]
+    target = (s_big.score / 100.0) ** 2
+    check("square spends no more than the score squared",
+          sq <= target + 1e-9, (sq, target))
+    check("and far less than linear", sq < 0.6 * before, (sq, before))
 
 
 def test_a_rule_that_stops_paying_stops_being_backed():
@@ -1563,24 +1559,17 @@ def test_the_live_record_is_in_the_same_unit_as_the_book():
           abs(b.book_claimed - r["mean"]) < 1e-9, b.book_claimed)
 
 
-def test_a_losing_streak_shrinks_a_rule_without_killing_it():
-    """Cut losers, but not on a bad afternoon.
+def test_a_losing_streak_stops_a_rule_but_does_not_shrink_it():
+    """Losses stop a rule. They do not nibble at its stake.
 
-    Two requirements pull against each other: stop trading what loses,
-    and do not throttle a rule that has not been given a chance. The
-    balance is the evidence weight -- a rule's stake follows its own
-    record, scaled by how much that record is worth knowing.
-
-    The calibration used the REALIZED sample variance of closed book
-    trades to decide that weight. Two losses at the same designed stop
-    have a sample variance of exactly zero, which drove n0 to its floor,
-    the weight to two thirds, and the calibration from 1.00 to 0.33 --
-    so three ordinary losses silenced a rule permanently, and with no
-    stake there are no more trades to lift it again. The dispersion now
-    comes from the barriers, which are known before any trade happens
-    and cannot collapse.
+    Sizing reads only the setup in front of it, so a rule's past cannot
+    make the next trade smaller -- that is the whole point of the default.
+    What the past still does is STOP it: a rule whose own record sits more
+    than two standard errors below zero trades no more, whatever its claim
+    says. Proving a claim and noticing a loss are different questions and
+    the second one needs no patience.
     """
-    print("\na losing streak shrinks a rule without killing it")
+    print("\na losing streak stops a rule rather than nibbling at it")
     b = broker_for(["S0USDT"], FakeHTTP(["S0USDT"]), signal_source="book",
                    book_file="book.json", expectancy_gate=False,
                    max_notional_x=0.0, margin_pct=0.05, max_margin_pct=1.0)
@@ -1606,31 +1595,37 @@ def test_a_losing_streak_shrinks_a_rule_without_killing_it():
 
     start = stake()
     check("the rule starts tradeable", start > 0, start)
-    for _ in range(3):
-        book("L")
-    after3 = stake()
-    check("three losses cut the stake", after3 < start, (start, after3))
-    check("but the rule is STILL tradeable", after3 > 0, after3)
-    check("and the cut is real, not cosmetic", after3 < 0.8 * start,
-          (after3, start))
-
-    for _ in range(3):
-        book("W")
-    back = stake()
-    check("wins bring the stake back", back > after3, (after3, back))
-    check("all the way to where it started", back >= start * 0.99,
-          (back, start))
-
-    # A rule that really does not pay must still shut down.
-    b2 = broker_for(["S0USDT"], FakeHTTP(["S0USDT"]), signal_source="book",
-                    book_file="book.json", expectancy_gate=False,
-                    max_notional_x=0.0, margin_pct=0.05, max_margin_pct=1.0)
-    n, lost = 0, 0.0
+    book("L")
+    check("one loss does not change the stake", abs(stake() - start) < 1e-12,
+          (start, stake()))
+    n, lost = 1, start * 10.0 * lev * a
     while n < 200:
-        f = b2.book_margin_fraction(tp_d, sl_d, lev, rule, claim, fee)[0]
+        f = stake()
         if f <= 0:
             break
         lost += f * 10.0 * lev * a
+        book("L")
+        n += 1
+    check("a rule that only loses is stopped", n < 200, n)
+    check("it takes more than two trades", n >= 4, n)
+    # THE COST OF PURE-POTENTIAL SIZING, stated rather than hidden. With
+    # no ramp, a rule scoring in the fifties opens at half the account, so
+    # discovering it is dead costs real money -- roughly ten percent here,
+    # against under one percent when the stake had to be earned. That is
+    # the trade this default makes, and it is the operator's to make.
+    check("the account pays what pure-potential sizing costs to learn",
+          0.03 < lost / 10.0 < 0.20, lost / 10.0)
+    P = b.potential(tp_d, sl_d, rule, claim, fee)
+    check("it is booked as a cut, not as a thin edge", P["cut"], P)
+    check("a cut rule is not called refuted", not P["refuted"])
+
+    # --earn-stake is the opposite trade-off, and still available.
+    b2 = broker_for(["S0USDT"], FakeHTTP(["S0USDT"]), signal_source="book",
+                    book_file="book.json", expectancy_gate=False,
+                    max_notional_x=0.0, margin_pct=0.05, max_margin_pct=1.0,
+                    earn_stake=True)
+    s0 = b2.book_margin_fraction(tp_d, sl_d, lev, rule, claim, fee)[0]
+    for _ in range(3):
         rec = b2.rule_record.setdefault(rule, [0, 0.0])
         rec[0] += 1
         rec[1] += -a
@@ -1638,17 +1633,12 @@ def test_a_losing_streak_shrinks_a_rule_without_killing_it():
         b2.book_claimed += claim
         b2.book_realized += -a
         b2.book_var += var
-        n += 1
-    check("a rule that only loses is eventually cut", n < 200, n)
-    check("it takes real evidence, not three trades", n >= 5, n)
-    check("and the account pays under 1% to learn it",
-          lost / 10.0 < 0.01, lost / 10.0)
-    # The cut is a two-sigma test against ZERO on the rule's own record,
-    # not the slow blend that governs sizing UP. Proving a claim and
-    # noticing a loss are different questions.
-    P = b2.potential(tp_d, sl_d, rule, claim, fee)
-    check("and it is booked as a cut, not as a thin edge", P["cut"], P)
-    check("a cut rule is not called refuted", not P["refuted"])
+    s3 = b2.book_margin_fraction(tp_d, sl_d, lev, rule, claim, fee)[0]
+    check("--earn-stake holds an unproven rule at the base slice",
+          s0 <= b2.margin_pct + 1e-12, (s0, b2.margin_pct))
+    check("losses do NOT open the ramp", s3 <= s0 + 1e-12, (s0, s3))
+    check("and it costs far less than the default to find out",
+          s3 * 10.0 * lev * a < 0.02 * 10.0, s3)
 
 
 def test_no_rule_reaches_the_bot_without_a_scope():
@@ -2222,7 +2212,7 @@ def main() -> int:
                test_stake_follows_the_potential_and_can_take_the_account,
                test_a_rule_that_stops_paying_stops_being_backed,
                test_the_live_record_is_in_the_same_unit_as_the_book,
-               test_a_losing_streak_shrinks_a_rule_without_killing_it,
+               test_a_losing_streak_stops_a_rule_but_does_not_shrink_it,
                test_no_rule_reaches_the_bot_without_a_scope,
                test_an_impossible_claim_scores_zero_rather_than_maximum,
                test_every_closed_trade_appears_in_the_breakdown,

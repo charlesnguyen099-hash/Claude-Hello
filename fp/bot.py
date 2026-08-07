@@ -227,6 +227,9 @@ class Broker:
                  book_file: str = "book.json",
                  book_anywhere: bool = False,
                  trust_book: bool = False,
+                 earn_stake: bool = False,
+                 stake_curve: str = "linear",
+                 share_stakes: bool = False,
                  potential_sizing: bool = True,
                  sizing: str = "kelly",
                  max_margin_pct: float = L.MAX_MARGIN_FRACTION,
@@ -283,6 +286,19 @@ class Broker:
         # trade, instead of earning its way up from the base slice. The
         # book is fitted; this is the operator's call, not the default.
         self.trust_book = trust_book
+        # Off by default: the stake follows the setup in front of it, not
+        # the record of the ones behind it. On, the ceiling starts at
+        # --margin-pct and opens toward --max-margin-pct as each rule
+        # builds a live record.
+        self.earn_stake = earn_stake
+        # "linear" -> stake% = score. "square" -> stake% = score^2/100.
+        self.stake_curve = stake_curve
+        # Sizing reads only this trade's own potential when True.
+        self.pure_potential = not earn_stake
+        # False: fill by score rank until margin runs out, each setup
+        # getting the full stake its own score asked for. True: scale the
+        # whole standing set down so all of them fit.
+        self.share_stakes = share_stakes
         self._book_cache: dict[tuple, tuple] = {}
         self._fired_cache: dict[tuple, tuple] = {}
         self.bar_minutes = L.BAR_MINUTES
@@ -489,6 +505,14 @@ class Broker:
 
         Returns (edge, evidence weight in [0, 1]).
         """
+        if self.pure_potential:
+            # The stake is a function of THIS trade's potential and
+            # nothing else. No calibration from other rules, no blend with
+            # this rule's own past: a setup scoring 60 gets the same stake
+            # on its first trade as on its hundredth. History still stops
+            # a rule that is losing -- see the cut in potential() -- but it
+            # no longer decides how much a live setup is worth.
+            return claimed, 0.0
         prior = claimed * self.book_calibration()
         n, tot = self.rule_record.get(rule, (0, 0.0))
         if n <= 0:
@@ -612,14 +636,19 @@ class Broker:
         if P["score"] <= 0:
             return 0.0, 0.0, edge
         kelly = edge / (a * b)                  # fraction of equity, notional
-        # THE STAKE IS THE SCORE. A setup scoring 20 out of 100 commits
-        # a fifth of what the ceiling allows, one scoring 80 commits four
-        # fifths -- so capital moves with potential instead of sitting at
-        # one flat slice. Squared, because the score is an estimate of a
-        # probability margin and its error grows with it: at half stake
-        # you keep most of the growth for a quarter of the variance, and
-        # being wrong about the top of the scale is what ruins accounts.
-        by_score = self.max_margin_pct * (P["score"] / 100.0) ** 2
+        # THE STAKE IS THE SCORE, read as a percentage. A setup scoring
+        # 60 out of 100 commits 60% of the account; one scoring 100 --
+        # a setup that by its own barriers cannot lose -- commits all of
+        # it. Linear, so the number on the dashboard IS the number spent.
+        #
+        # --stake-curve square instead spends score^2, which keeps most of
+        # the growth for a quarter of the variance and is what a Kelly
+        # bettor does with an ESTIMATED edge. Linear is the operator's
+        # choice and is the default because it does what it says.
+        frac_of_max = (P["score"] / 100.0)
+        if self.stake_curve == "square":
+            frac_of_max *= frac_of_max
+        by_score = self.max_margin_pct * frac_of_max
         frac = 0.5 * kelly / max(lev, 1e-9)     # margin behind it, half Kelly
         ruin_cap = 1.0 / (lev * a)              # one stop may not clear the account
         # A stake above the base slice has to be EARNED. The book is
@@ -632,9 +661,21 @@ class Broker:
         # itself can end up taking the whole account; one that has never
         # traded cannot. --trust-book lifts this for an operator who
         # wants the score to run the account from the first trade.
-        earned = (self.max_margin_pct if self.trust_book else
-                  self.margin_pct
-                  + (self.max_margin_pct - self.margin_pct) * w)
+        # The ramp opens on evidence the rule is PAYING, not on evidence
+        # of any kind. w measures how much the live record is worth
+        # knowing, and losing trades are worth knowing too -- so a rule
+        # that lost three in a row used to see its ceiling RISE from the
+        # base slice, which is the opposite of the ramp's purpose. The
+        # opening is now w scaled by how much of the claim the record has
+        # actually delivered, floored at nothing.
+        if self.earn_stake:
+            n_, tot_ = self.rule_record.get(rule, (0, 0.0))
+            paid = (max(0.0, min(1.0, (tot_ / n_) / claimed))
+                    if n_ > 0 and claimed > 0 else 0.0)
+            earned = (self.margin_pct
+                      + (self.max_margin_pct - self.margin_pct) * w * paid)
+        else:
+            earned = self.max_margin_pct
         return (min(by_score, frac, ruin_cap, earned, self.max_margin_pct),
                 kelly, edge)
 
@@ -653,6 +694,15 @@ class Broker:
         every stake is scaled by the same factor, which leaves the SPLIT
         proportional to potential while the SUM fits.
         """
+        if not self.share_stakes:
+            # Fill in score order and let free margin do the truncating.
+            # Scaling everyone down proportionally means a 97/100 setup
+            # and a 12/100 setup both get a quarter of what they asked
+            # for, which is not what a score is FOR. Ranked filling gives
+            # the best setup its full stake and the next one whatever is
+            # left -- so a setup that cannot lose takes the account, and
+            # a marginal one waits for a pass where there is room.
+            return 1.0
         want = sum(g.margin_frac for g in self.signals.values()
                    if g.margin_frac is not None and g.slot not in self.open)
         return 1.0 / want if want > 1.0 else 1.0
@@ -2226,11 +2276,14 @@ def run(client, symbols: list[str], equity: float, max_positions: int,
         limit_entry: bool = False, slippage: float = 0.0,
         fee_override: float | None = None,
         book_file: str = "book.json",
-        book_anywhere: bool = False, trust_book: bool = False) -> None:
+        book_anywhere: bool = False, trust_book: bool = False,
+        earn_stake: bool = False, stake_curve: str = "linear",
+        share_stakes: bool = False) -> None:
     broker = Broker(client, symbols, equity, max_positions, exit_name,
                     min_votes, fee, max_leverage, margin_pct, max_notional_x,
                     conviction_floor, expectancy_gate, assumed_win_rate,
                     signal_source, book_file, book_anywhere, trust_book,
+                    earn_stake, stake_curve, share_stakes,
                     potential_sizing, sizing, max_margin_pct, limit_entry,
                     slippage, fee_override)
     stop_event = threading.Event()

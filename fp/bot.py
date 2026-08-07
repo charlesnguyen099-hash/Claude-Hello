@@ -41,6 +41,7 @@ from __future__ import annotations
 import concurrent.futures
 import json
 import logging
+import math
 import signal
 import threading
 import time
@@ -138,6 +139,22 @@ class Signal:
     # leverage ladder internally and would report one rule's prospects
     # using another rule's model.
     rule_mean: float = 0.0
+    # Book mode runs one position PER RULE, not one per symbol, so a
+    # symbol carrying a six-day daily rule can still take a 15m one. The
+    # slot is what the open book, the standing signals and the per-bar
+    # entry lock are all keyed on.
+    symbol: str = ""
+    # Fraction of equity this signal's own edge justifies as margin,
+    # solved at signal time from the rule's measured edge and its own
+    # barrier geometry. None means "not a book signal, use the old path".
+    margin_frac: float | None = None
+    kelly_full: float = 0.0        # before any cap, for reporting
+    edge_used: float = 0.0         # the shrunk per-trade edge behind it
+
+    @property
+    def slot(self) -> str:
+        """Where this signal lives in the open book."""
+        return f"{self.symbol}|{self.rule}" if self.rule else self.symbol
 
 
 @dataclass
@@ -174,6 +191,9 @@ class Position:
     # whether they ate the edge is the first question to ask of a losing
     # session.
     entry_fee: float = 0.0
+    slot: str = ""
+    kelly_full: float = 0.0
+    edge_used: float = 0.0
 
 
 @dataclass
@@ -298,10 +318,26 @@ class Broker:
         self.survivors = [w for w in self.survivors
                           if float(w.get("oos_mean", 0.0)) > 0.0]
 
+        # Keyed by SLOT, not by symbol. In book mode a slot is
+        # "SYMBOL|tf:name:side", so one symbol can carry several rules at
+        # once: a daily rule holding SOL for six days used to lock that
+        # symbol out of every 15m rule for the same six days, which is
+        # most of why twelve hours produced fifteen trades.
         self.open: dict[str, Position] = {}
         self.closed: list[Closed] = []
-        # Standing signals, one per symbol, replaced when its bar rolls.
+        # Standing signals, one per slot, replaced when its bar rolls.
         self.signals: dict[str, Signal] = {}
+        # Live per-rule record: slot-rule -> [n, sum of net returns as a
+        # fraction of notional]. This is what lets a rule's stake follow
+        # what it is ACTUALLY earning rather than what it was fitted to.
+        self.rule_record: dict[str, list] = {}
+        # Global calibration of the book against reality: how much of the
+        # edge the book claimed has actually turned up. Two running sums,
+        # claimed and realized, over every closed book trade.
+        self.book_claimed = 0.0
+        self.book_realized = 0.0
+        self.book_sumsq = 0.0
+        self.book_trades = 0
         # Bar each symbol was last scored on, whether or not it produced a
         # signal. Staleness keys off this rather than off self.signals --
         # otherwise every symbol the methods pass over looks unevaluated and
@@ -377,9 +413,147 @@ class Broker:
         with self.lock:
             return self.equity_total - sum(p.margin for p in self.open.values())
 
+    # ------------------------------------------------------- potential
+    def book_calibration(self) -> float:
+        """How much of the book's claimed edge has actually shown up.
+
+        The book is fitted to its own data, so its per-trade means are
+        the best case, not the expected case. Rather than pick a haircut
+        by hand, this measures one: the ratio of realized to claimed edge
+        over every book trade closed so far, clipped to [0, 1].
+
+        With no trades it is 1.0 -- the book is taken at its word until
+        it has had a chance to be wrong. As trades accumulate it moves on
+        its own, and a book that is not paying shrinks its own stake to
+        nothing without anybody editing a constant.
+        """
+        if self.book_trades <= 0 or self.book_claimed <= 0:
+            return 1.0
+        ratio = max(0.0, min(1.0, self.book_realized / self.book_claimed))
+        # Shrink toward 1, not straight to the raw ratio. Six unlucky
+        # stop-outs drive the raw ratio to zero, and a zero calibration
+        # takes no further trades -- so it can never gather the evidence
+        # that would lift it again. That is an absorbing state, not a
+        # measurement. The weight on the observed ratio is n/(n+n0),
+        # where n0 is the number of trades at which the realized mean's
+        # standard error equals the edge being tested: below that the
+        # sample cannot tell a dead book from a quiet one, above it the
+        # ratio takes over completely and a book that truly does not pay
+        # does shut itself down.
+        n = self.book_trades
+        mean_claim = self.book_claimed / n
+        if n < 2 or mean_claim <= 0:
+            return 1.0
+        var = max(self.book_sumsq / n - (self.book_realized / n) ** 2, 0.0)
+        n0 = (math.sqrt(var) / mean_claim) ** 2 if var > 0 else 1.0
+        w = n / (n + max(n0, 1.0))
+        return (1 - w) * 1.0 + w * ratio
+
+    def rule_edge(self, rule: str, claimed: float,
+                  a: float, b: float) -> tuple[float, float]:
+        """The per-trade edge a rule is really earning, and how well known.
+
+        Two sources, blended by how much each is worth. The claim comes
+        from the book, discounted by what the book as a whole has
+        delivered. The record comes from this rule's own closed trades.
+        The weight on the record is n/(n+n*), where n* is the number of
+        trades at which the record's standard error equals the claimed
+        edge -- derived from the rule's own barrier geometry, so nothing
+        here is a chosen constant.
+
+        The claim is first clipped to what the barriers can physically
+        pay. A rule pays at most +b, so an edge above b would require a
+        win rate above 100%: at a 0.2% sigma the book's median rule
+        implies 109%, which is not a strong claim but an impossible one.
+        Clipping is arithmetic, not taste.
+
+        Returns (edge, evidence weight in [0, 1]).
+        """
+        claimed = min(claimed, b)          # p <= 1, by construction
+        prior = claimed * self.book_calibration()
+        n, tot = self.rule_record.get(rule, (0, 0.0))
+        if n <= 0:
+            return prior, 0.0
+        # Per-trade dispersion implied by this rule's own barriers: it
+        # pays +b or -a, and the mix that produces `claimed` sets the odds.
+        p = min(1.0, max(0.0, (claimed + a) / (a + b))) if (a + b) > 0 else 0.5
+        var = p * b * b + (1 - p) * a * a - claimed * claimed
+        sd = math.sqrt(max(var, 1e-12))
+        n_star = (sd / claimed) ** 2 if claimed > 0 else float("inf")
+        w = n / (n + max(n_star, 1.0))
+        return (1 - w) * prior + w * (tot / n), w
+
+    def book_margin_fraction(self, tp_dist: float, sl_dist: float,
+                             lev: float, rule: str, claimed: float,
+                             fee: float) -> tuple[float, float, float]:
+        """What fraction of equity this trade's own potential justifies.
+
+        A book rule is a two-outcome bet: it pays +tp_dist or -sl_dist on
+        notional, both net of the round trip. Kelly for such a bet stakes
+        f* = edge / (loss x gain) of NOTIONAL, so the margin behind it is
+        f*/leverage. A rule with a large measured edge against tight
+        barriers asks for the whole account, and is allowed to have it --
+        subject to two hard limits that are arithmetic, not taste:
+
+          * a stop must not be able to cost more than the account:
+            margin x leverage x loss <= equity
+          * --max-margin-pct, the operator's own ceiling
+
+        Half-Kelly is used because the edge is an ESTIMATE. Full Kelly is
+        optimal only when the edge is known exactly; at half stake you
+        keep three quarters of the growth for a quarter of the variance,
+        and you survive being wrong about the mean -- which, on a fitted
+        book, is the way to bet.
+
+        Returns (margin fraction, uncapped Kelly, edge used).
+        """
+        b = tp_dist - fee          # what a win actually pays
+        a = sl_dist + fee          # what a loss actually costs
+        if b <= 0 or a <= 0:
+            # The stop is inside the fee: there is no bet here to size.
+            return 0.0, 0.0, 0.0
+        edge, w = self.rule_edge(rule, claimed, a, b)
+        if edge <= 0:
+            return 0.0, 0.0, edge
+        kelly = edge / (a * b)                  # fraction of equity, notional
+        frac = 0.5 * kelly / max(lev, 1e-9)     # margin behind it, half stake
+        ruin_cap = 1.0 / (lev * a)              # one stop may not clear the account
+        # A stake above the base slice has to be EARNED. The book is
+        # fitted, so on its own numbers Kelly asks for 45x the account --
+        # sizing off that on day one is betting the account on a
+        # backtest. The ceiling therefore starts at the base slice and
+        # opens toward --max-margin-pct only as the rule's OWN live
+        # record accumulates, on the same weight w that decides how much
+        # of the edge estimate comes from that record. A rule that proves
+        # itself can end up taking the whole account; one that has never
+        # traded cannot.
+        earned = self.margin_pct + (self.max_margin_pct - self.margin_pct) * w
+        return min(frac, ruin_cap, earned, self.max_margin_pct), kelly, edge
+
+    def stake_scale(self) -> float:
+        """How far every standing stake must be scaled to fit the account.
+
+        Kelly solves ONE bet at a time. Twenty-four rules firing on the
+        same bar are twenty-four simultaneous bets, and each one asking
+        for its solitary optimum means the first alphabetically takes the
+        whole account and the other twenty-three never trade -- which is
+        both worse diversified and fewer trades.
+
+        So the standing set shares. If the asks total less than the
+        account, everyone gets what they asked for, and a lone
+        high-potential signal still takes all of it. If they total more,
+        every stake is scaled by the same factor, which leaves the SPLIT
+        proportional to potential while the SUM fits.
+        """
+        want = sum(g.margin_frac for g in self.signals.values()
+                   if g.margin_frac is not None and g.slot not in self.open)
+        return 1.0 / want if want > 1.0 else 1.0
+
     def slice_size(self, atr_pct: float | None = None,
                    p_win: float | None = None,
-                   fee: float | None = None) -> float:
+                   fee: float | None = None,
+                   sig: "Signal | None" = None,
+                   scale: float = 1.0) -> float:
         """Margin this trade commits.
 
         Under Kelly the answer does not start from a fixed slice at all:
@@ -390,15 +564,16 @@ class Broker:
         """
         eq = max(0.0, self.equity_total)
         fee = self.fee if fee is None else fee
+        if sig is not None and sig.margin_frac is not None:
+            # A book signal solved its own stake against its own barriers
+            # and its own live record. See book_margin_fraction(). `scale`
+            # is how the standing set shares one account -- see
+            # stake_scale().
+            return eq * sig.margin_frac * scale
         if self.signal_source in ("slow", "regime", "book", "survivors"):
-            # The potential scaling already lives in the leverage, which
-            # slow.best_leverage() solved WITH drag in it. Kelly on top of
-            # that would double-count, and Kelly's win-rate input is the
-            # measured record of the OLD TP3.0/SL1.5 exit -- a statistic
-            # about a different rule. A book rule carries its own target,
-            # its own stop and its own measured win rate; sizing it from
-            # another rule's table is exactly the mixing this mode exists
-            # to avoid.
+            # No per-signal solution available (a bare slice_size() call,
+            # e.g. the has_room() probe or the dashboard). The flat slice
+            # is the floor these modes fall back to.
             return eq * self.margin_pct
         if self.sizing == "kelly" and atr_pct is not None:
             f = L.kelly_fraction(atr_pct, self.exit_name, fee, p_win,
@@ -432,9 +607,10 @@ class Broker:
                 return False
             if self.notional_headroom() <= 0:
                 return False
-            if self.sizing == "kelly":
-                # Under Kelly the slice is per-trade, so "is there room"
-                # can only mean "is there anything left at all".
+            if self.sizing == "kelly" or self.signal_source == "book":
+                # When each signal solves its own stake the slice is
+                # per-trade, so "is there room" can only mean "is there
+                # anything left at all".
                 return self.free_margin > 0
             return self.free_margin >= self.slice_size() > 0
 
@@ -526,11 +702,12 @@ class Broker:
 
     # ------------------------------------------------------------ evaluation
 
-    def evaluate(self, symbol: str, bars: pd.DataFrame | None) -> Signal | None:
+    def evaluate(self, symbol: str, bars: pd.DataFrame | None):
         """Score one symbol on its last closed bar and store the verdict.
 
         Returns the standing signal, or None if the methods did not fire,
-        did not agree, or the data was unusable.
+        did not agree, or the data was unusable. Book mode returns a LIST
+        -- a symbol can carry one position per rule, not one in total.
         """
         self.evaluations += 1
         now_bar = closed_bar_ts(bar_minutes=self.bar_minutes)
@@ -695,8 +872,8 @@ class Broker:
         self._book_cache[key] = (now_bar, d)
         return d
 
-    def _evaluate_book(self, symbol: str, bar_ts: int) -> Signal | None:
-        """Fire the book's rules on this symbol and take the best one.
+    def _evaluate_book(self, symbol: str, bar_ts: int) -> list[Signal]:
+        """Fire the book's rules on this symbol and take EVERY one.
 
         Each rule brings its own entry logic, side, target, stop and time
         limit. A rule fires when its entry logic TURNS ON in its own
@@ -704,22 +881,26 @@ class Broker:
         definition the book was measured with, so what is traded here is
         what was tested there.
 
-        When several fire at once the one with the best measured mean per
-        trade wins, and the rest are left standing rather than averaged:
-        averaging two rules produces a third rule nobody tested.
+        Every rule that fires gets its own signal and its own slot. The
+        old code kept only the single best mean per symbol and dropped
+        the rest, which threw away most of the book: 104 rules across ten
+        symbols could never produce more than ten positions, and a daily
+        rule holding a symbol for six days blocked every faster rule on
+        that symbol for the same six days. Rules are not averaged and not
+        merged -- each is traded exactly as it was measured, separately.
         """
         if not self.book:
             self.no_survivors += 1
-            self.signals.pop(symbol, None)
-            return None
+            self._drop_signals(symbol)
+            return []
         try:
             from fp import ensemble as E
             from fp import exits as X
             from fp import slow as S
         except Exception:
-            return None
+            return []
 
-        best = None
+        fired: list[tuple] = []
         for tf in sorted({r["tf"] for r in self.book}):
             # A 4h rule cannot change its mind between 15m scans, so its
             # verdict is cached against the bar it was taken on. Without
@@ -729,15 +910,11 @@ class Broker:
             tf_bar = closed_bar_ts(self.BOOK_MINUTES[tf])
             hit = self._fired_cache.get(fkey)
             if hit is not None and hit[0] == tf_bar:
-                cand = hit[1]
-                if cand is not None and (
-                        best is None
-                        or cand[0].get("mean", 0) > best[0].get("mean", 0)):
-                    best = cand
+                fired.extend(hit[1])
                 continue
             d = self._book_bars(symbol, tf)
             if d is None:
-                self._fired_cache[fkey] = (tf_bar, None)
+                self._fired_cache[fkey] = (tf_bar, [])
                 continue
             want = {r["name"] for r in self.book if r["tf"] == tf}
             try:
@@ -754,15 +931,15 @@ class Broker:
             except Exception:
                 logger.debug("book logics failed %s %s", symbol, tf,
                              exc_info=True)
-                self._fired_cache[fkey] = (tf_bar, None)
+                self._fired_cache[fkey] = (tf_bar, [])
                 continue
             close = d["close"].values.astype(float)
             sigma = X.sigma_at(close)[-1]
             if not np.isfinite(sigma) or sigma <= 0:
-                self._fired_cache[fkey] = (tf_bar, None)
+                self._fired_cache[fkey] = (tf_bar, [])
                 continue
             price = float(close[-1])
-            tf_best = None
+            tf_fired = []
             for r in self.book:
                 if r["tf"] != tf or r["name"] not in logics:
                     continue
@@ -781,42 +958,64 @@ class Broker:
                 # fires only on the bar the entry TURNS ON, as measured
                 if not (p[-1] == side and p[-2] != side):
                     continue
-                if tf_best is None or r.get("mean", 0) > tf_best[0].get("mean", 0):
-                    tf_best = (r, side, price, sigma, tf)
-            self._fired_cache[fkey] = (tf_bar, tf_best)
-            if tf_best is not None and (
-                    best is None
-                    or tf_best[0].get("mean", 0) > best[0].get("mean", 0)):
-                best = tf_best
+                tf_fired.append((r, side, price, sigma, tf))
+            self._fired_cache[fkey] = (tf_bar, tf_fired)
+            fired.extend(tf_fired)
 
-        if best is None:
+        if not fired:
             self.no_signal += 1
-            self.signals.pop(symbol, None)
-            return None
+            self._drop_signals(symbol)
+            return []
 
-        r, side, price, sigma, tf = best
-        tp_dist = float(r["tp"]) * sigma
-        sl_dist = float(r["sl"]) * sigma
-        hold_min = float(r.get("hold_min") or
-                         r["hmax"] * self.BOOK_MINUTES[tf])
-        chain = S.best_leverage(float(r["tp"]) * sigma, hold_min / 1440.0,
-                                sigma, self.max_leverage or S.LEVERAGE_MAX)
-        if not chain["tradeable"]:
-            self.skipped_negative_ev += 1
-            self.signals.pop(symbol, None)
-            return None
-        sig = Signal(
-            bar_ts=bar_ts, direction=side, atr_pct=100.0 * sigma,
-            votes=1, vote_margin=1,
-            methods=(f"book {tf} {r['name']} {r['side']} "
-                     f"tp{r['tp']}/sl{r['sl']} hold<={hold_min:.0f}m "
-                     f"lev={chain['leverage']:.2f}x"),
-            confidence=None, slow_leverage=chain["leverage"],
-            tp_dist=tp_dist, sl_dist=sl_dist, max_hold_min=hold_min,
-            rule=f"{tf}:{r['name']}:{r['side']}",
-            rule_mean=float(r.get("mean") or 0.0))
-        self.signals[symbol] = sig
-        return sig
+        out: list[Signal] = []
+        keep: set[str] = set()
+        for r, side, price, sigma, tf in fired:
+            tp_dist = float(r["tp"]) * sigma
+            sl_dist = float(r["sl"]) * sigma
+            hold_min = float(r.get("hold_min") or
+                             r["hmax"] * self.BOOK_MINUTES[tf])
+            chain = S.best_leverage(float(r["tp"]) * sigma, hold_min / 1440.0,
+                                    sigma, self.max_leverage or S.LEVERAGE_MAX)
+            if not chain["tradeable"]:
+                self.skipped_negative_ev += 1
+                continue
+            rule = f"{tf}:{r['name']}:{r['side']}"
+            claimed = float(r.get("mean") or 0.0)
+            fee = self.trade_cost(symbol, side)
+            frac, kelly, edge = self.book_margin_fraction(
+                tp_dist, sl_dist, chain["leverage"], rule, claimed, fee)
+            if frac <= 0:
+                # Nothing left of this rule's edge once the cost and its
+                # own live record are priced in. Not a trade.
+                self.skipped_negative_ev += 1
+                continue
+            sig = Signal(
+                bar_ts=bar_ts, direction=side, atr_pct=100.0 * sigma,
+                votes=1, vote_margin=1,
+                methods=(f"book {tf} {r['name']} {r['side']} "
+                         f"tp{r['tp']}/sl{r['sl']} hold<={hold_min:.0f}m "
+                         f"lev={chain['leverage']:.2f}x "
+                         f"stake={100*frac:.1f}%"),
+                confidence=None, slow_leverage=chain["leverage"],
+                tp_dist=tp_dist, sl_dist=sl_dist, max_hold_min=hold_min,
+                rule=rule, rule_mean=claimed, symbol=symbol,
+                margin_frac=frac, kelly_full=kelly, edge_used=edge)
+            self.signals[sig.slot] = sig
+            keep.add(sig.slot)
+            out.append(sig)
+        # Rules that stopped firing must stop standing.
+        self._drop_signals(symbol, keep)
+        if not out:
+            self.no_signal += 1
+        return out
+
+    def _drop_signals(self, symbol: str, keep: set[str] | None = None) -> None:
+        """Forget this symbol's standing signals, except the ones named."""
+        pre = f"{symbol}|"
+        for k in [k for k in self.signals
+                  if (k == symbol or k.startswith(pre))
+                  and (keep is None or k not in keep)]:
+            self.signals.pop(k, None)
 
     @staticmethod
     def _load_survivors() -> list[dict]:
@@ -988,8 +1187,8 @@ class Broker:
         fetched = self.prefetch(symbols)
         n = 0
         for sym in symbols:
-            if self.evaluate(sym, fetched.get(sym)) is not None:
-                n += 1
+            got = self.evaluate(sym, fetched.get(sym))
+            n += len(got) if isinstance(got, list) else (1 if got else 0)
         return n
 
     def stale_symbols(self) -> list[str]:
@@ -999,6 +1198,12 @@ class Broker:
         decided, and re-scoring them would only spend kline calls.
         """
         want = closed_bar_ts(bar_minutes=self.bar_minutes)
+        if self.signal_source == "book":
+            # A book symbol is never "done": it holds one position PER
+            # RULE, so a symbol already carrying a six-day daily trade
+            # must keep being scored or its 15m rules never get a turn.
+            return [s for s in self.symbols
+                    if self.evaluated_bar.get(s, -1) < want]
         return [s for s in self.symbols
                 if s not in self.open and self.evaluated_bar.get(s, -1) < want]
 
@@ -1040,14 +1245,22 @@ class Broker:
 
     # ----------------------------------------------------------------- entry
 
-    def try_open(self, symbol: str) -> bool:
-        """Open the symbol's standing signal if there is margin for it."""
-        sig = self.signals.get(symbol)
-        if sig is None or symbol in self.open:
+    def try_open(self, slot: str, scale: float = 1.0) -> bool:
+        """Open the slot's standing signal if there is margin for it.
+
+        A slot is a symbol outside book mode and a (symbol, rule) pair
+        inside it, so two rules on the same symbol are two independent
+        trades rather than one blocking the other.
+        """
+        sig = self.signals.get(slot)
+        if sig is None or slot in self.open:
             return False
-        # One entry per symbol per bar: without this a stop-out would be
-        # reopened immediately by the same standing verdict.
-        if self.traded_bar.get(symbol) == sig.bar_ts:
+        symbol = sig.symbol or slot
+        # One entry per SLOT per bar: without this a stop-out would be
+        # reopened immediately by the same standing verdict. Keyed on the
+        # slot, not the symbol, or the first rule to trade a symbol would
+        # silence every other rule on it for that bar.
+        if self.traded_bar.get(slot) == sig.bar_ts:
             return False
 
         price = self.last_price(symbol)
@@ -1105,7 +1318,7 @@ class Broker:
         # debit and the book entry happen under one lock so two passes
         # cannot spend the same margin twice.
         with self.lock:
-            if symbol in self.open:
+            if slot in self.open:
                 return False
             if self.max_positions and len(self.open) >= self.max_positions:
                 self.skipped_no_margin += 1
@@ -1114,7 +1327,7 @@ class Broker:
             # to be reserved out of the same free margin: committing
             # everything and paying the fee afterwards leaves the book
             # oversubscribed. margin*(1 + lev*fee_rate) <= free.
-            want = self.slice_size(sig.atr_pct, sig.p_win, fee)
+            want = self.slice_size(sig.atr_pct, sig.p_win, fee, sig, scale)
             entry_rate = ((L.ENTRY_FEE_MAKER if self.limit_entry
                            else L.ENTRY_FEE_TAKER) + self.slippage) * lev
             affordable = self.free_margin / (1.0 + entry_rate)
@@ -1169,10 +1382,11 @@ class Broker:
                 margin_weight=(margin / (self.equity_total * self.margin_pct)
                                if self.equity_total > 0 else 1.0),
                 max_hold_min=sig.max_hold_min, rule=sig.rule,
-                entry_fee=entry_fee,
+                entry_fee=entry_fee, slot=slot,
+                kelly_full=sig.kelly_full, edge_used=sig.edge_used,
             )
-            self.open[symbol] = pos
-            self.traded_bar[symbol] = sig.bar_ts
+            self.open[slot] = pos
+            self.traded_bar[slot] = sig.bar_ts
 
         logger.info("%s OPEN %s @%.6f atr_rank=%.2f conviction=%.2f "
                     "base=%.0fx x%.2f -> lev=%.0fx votes=%d(margin %d) [%s] "
@@ -1182,7 +1396,15 @@ class Broker:
                     chain["lev_base"], chain["conviction_haircut"], lev,
                     sig.votes, sig.vote_margin, sig.methods, self.exit_name,
                     pos.tp_price, pos.sl_price, margin)
-        if self.sizing == "kelly":
+        if sig.margin_frac is not None:
+            logger.info("    %s stake %.1f%% of equity -- Kelly %.1f%% on a "
+                        "%+.3f%%/trade edge (book claims %+.3f%%, "
+                        "calibration %.2f), capped by %s",
+                        slot, 100 * margin / max(self.equity_total, 1e-9),
+                        100 * sig.kelly_full, 100 * sig.edge_used,
+                        100 * sig.rule_mean, self.book_calibration(),
+                        "free margin" if margin < want else "its own Kelly")
+        elif self.sizing == "kelly":
             p = (sig.p_win if sig.p_win is not None
                  else L.MEASURED_WIN_RATE.get(self.exit_name, 0.35))
             logger.info("    %s Kelly %.1f%% of equity on p=%.1f%% "
@@ -1214,30 +1436,39 @@ class Broker:
         # dict order that is arrival order, which has nothing to do with
         # quality. Ranked by expected return per dollar of margin, the
         # budget goes to the setups that keep the most of it.
-        def rank(sy):
-            sg = self.signals[sy]
+        def rank(k):
+            sg = self.signals[k]
+            if sg.margin_frac is not None:
+                # A book signal ranks on the growth it expects to add:
+                # its own edge times the stake its own Kelly asked for.
+                # L.kelly_fraction and L.ev_per_margin below both rebuild
+                # the twelve-method ATR ladder, so using them here would
+                # order the book by another book's model.
+                return -(sg.edge_used * sg.margin_frac
+                         * (sg.slow_leverage or 1.0))
             if self.sizing == "kelly":
                 return -L.kelly_fraction(sg.atr_pct, self.exit_name, self.fee,
                                          sg.p_win, self.max_leverage)
             return -L.ev_per_margin(sg.atr_pct, self.exit_name, self.fee,
                                     self.assumed_win_rate, self.max_leverage)
         order = sorted(self.signals, key=rank)
-        for sym in order:
-            if sym in self.open:
+        scale = self.stake_scale()
+        for slot in order:
+            if slot in self.open:
                 continue
-            sig = self.signals.get(sym)
-            if sig is None or self.traded_bar.get(sym) == sig.bar_ts:
+            sig = self.signals.get(slot)
+            if sig is None or self.traded_bar.get(slot) == sig.bar_ts:
                 continue
             if not self.has_room():
                 waiting += 1
                 continue
             try:
-                if self.try_open(sym):
+                if self.try_open(slot, scale):
                     opened += 1
                 else:
                     waiting += 1
             except Exception:
-                logger.debug("entry failed for %s", sym, exc_info=True)
+                logger.debug("entry failed for %s", slot, exc_info=True)
         self.blocked_signals = waiting
         self.blocked_by = {
             "margin": self.skipped_no_margin - before[0],
@@ -1248,10 +1479,11 @@ class Broker:
 
     # ------------------------------------------------------------------ exit
 
-    def manage(self, symbol: str, price: float | None = None) -> None:
-        pos = self.open.get(symbol)
+    def manage(self, slot: str, price: float | None = None) -> None:
+        pos = self.open.get(slot)
         if pos is None:
             return
+        symbol = pos.symbol
         if price is None:
             price = self.last_price(symbol)
         if price is None or price <= 0:
@@ -1259,19 +1491,19 @@ class Broker:
         d = pos.direction
 
         if (price <= pos.liq_price) if d > 0 else (price >= pos.liq_price):
-            self._close(symbol, pos.liq_price, "liquidated")
+            self._close(slot, pos.liq_price, "liquidated")
             return
         if (price <= pos.sl_price) if d > 0 else (price >= pos.sl_price):
-            self._close(symbol, pos.sl_price, "stop_loss")
+            self._close(slot, pos.sl_price, "stop_loss")
             return
 
         if self.signal_source in ("slow", "regime"):
             # No target, no stop, no re-entry. The position is held until
             # the trend that opened it turns over -- every extra turnover
             # pays drag, and drag is the thing being avoided.
-            sig = self.signals.get(symbol)
+            sig = self.signals.get(slot)
             if sig is not None and sig.direction != d:
-                self._close(symbol, price, "trend_flip")
+                self._close(slot, price, "trend_flip")
             return
 
         if pos.rule:
@@ -1282,17 +1514,17 @@ class Broker:
             # tested.
             if np.isfinite(pos.tp_price):
                 if (price >= pos.tp_price) if d > 0 else (price <= pos.tp_price):
-                    self._close(symbol, pos.tp_price, "take_profit")
+                    self._close(slot, pos.tp_price, "take_profit")
                     return
         elif pos.exit_name == "net_TRAILING":
             pos.best_price = max(pos.best_price, price) if d > 0 else min(pos.best_price, price)
             trail = pos.best_price - d * pos.trail_dist
             if (price <= trail) if d > 0 else (price >= trail):
-                self._close(symbol, trail, "trailing")
+                self._close(slot, trail, "trailing")
                 return
         elif np.isfinite(pos.tp_price):
             if (price >= pos.tp_price) if d > 0 else (price <= pos.tp_price):
-                self._close(symbol, pos.tp_price, "take_profit")
+                self._close(slot, pos.tp_price, "take_profit")
                 return
 
         # A barrier trade that touches neither side is closed at the time
@@ -1302,26 +1534,27 @@ class Broker:
         limit = ((pos.max_hold_min * 60) if pos.max_hold_min
                  else L.MAX_HOLD_BARS * L.BAR_MINUTES * 60)
         if held >= limit:
-            self._close(symbol, price, "time_limit" if pos.max_hold_min
+            self._close(slot, price, "time_limit" if pos.max_hold_min
                         else "timeout")
 
     def manage_all(self) -> None:
         """Re-price the whole open book off one ticker snapshot."""
         self.refresh_prices()
         with self.lock:
-            book = list(self.open)
-        for sym in book:
+            book = [(k, p.symbol) for k, p in self.open.items()]
+        for slot, sym in book:
             try:
-                self.manage(sym, self.prices.get(sym))
+                self.manage(slot, self.prices.get(sym))
             except Exception:
-                logger.debug("manage failed for %s", sym, exc_info=True)
+                logger.debug("manage failed for %s", slot, exc_info=True)
         self.mark()
 
-    def _close(self, symbol: str, price: float, reason: str) -> None:
+    def _close(self, slot: str, price: float, reason: str) -> None:
         with self.lock:
-            pos = self.open.pop(symbol, None)
+            pos = self.open.pop(slot, None)
             if pos is None:
                 return
+            symbol = pos.symbol or slot
             move = (price - pos.entry) / pos.entry * pos.direction
             exit_fee = 0.0
             if reason == "liquidated":
@@ -1341,6 +1574,28 @@ class Broker:
                 methods=pos.methods,
                 fees_usd=pos.entry_fee + exit_fee, rule=pos.rule,
                 held_minutes=(now - pos.opened_at).total_seconds() / 60.0))
+            if pos.rule:
+                # Feed the result back into the sizing. `net` is the
+                # per-trade return as a FRACTION OF NOTIONAL -- the same
+                # unit the book's `mean` is in, which is what makes the
+                # two comparable. The rule's next stake is solved partly
+                # from this, so a rule that stops paying stops being
+                # backed, without anybody editing a file.
+                notional = pos.margin * pos.leverage
+                # pnl carries only the EXIT fee -- the entry fee was
+                # debited from equity when the position opened. The book's
+                # mean is net of the WHOLE round trip, so the entry fee has
+                # to come off here or every live result is flattered by
+                # half the cost and the sizing keeps backing a rule that is
+                # really breaking even.
+                net = ((pnl - pos.entry_fee) / notional) if notional > 0 else 0.0
+                rec = self.rule_record.setdefault(pos.rule, [0, 0.0])
+                rec[0] += 1
+                rec[1] += net
+                self.book_trades += 1
+                self.book_claimed += pos.ev_per_margin / max(pos.leverage, 1e-9)
+                self.book_realized += net
+                self.book_sumsq += net * net
         self.mark()
         logger.info("%s CLOSE %s @%.6f (%s) pnl=$%.4f equity=$%.4f",
                     symbol, "LONG" if pos.direction > 0 else "SHORT",
@@ -1352,11 +1607,14 @@ class Broker:
         with self.lock:
             book = list(self.open.items())
         rows = []
-        for sym, pos in book:
-            price = self.prices.get(sym) or pos.entry
+        for slot, pos in book:
+            # Keyed by slot now, so the SYMBOL to price against comes off
+            # the position -- self.prices.get(slot) would miss every time
+            # and silently mark the whole book at its entry price.
+            price = self.prices.get(pos.symbol) or pos.entry
             pnl = (price - pos.entry) / pos.entry * pos.direction * pos.qty * pos.entry
-            rows.append((sym, pos.direction, pos.entry, price, pnl,
-                         pos.leverage, pos.methods, pos.potential_score))
+            rows.append((pos.symbol, pos.direction, pos.entry, price, pnl,
+                         pos.leverage, pos.methods, pos.potential_score, slot))
         return rows
 
     def snapshot(self) -> dict:
@@ -1405,6 +1663,10 @@ class Broker:
             "sizing_mode": self.sizing, "exit_name": self.exit_name,
             "signal_source": self.signal_source,
             "book_rules": len(self.book),
+            "max_margin_pct": self.max_margin_pct,
+            "book_calibration": self.book_calibration(),
+            "book_trades": self.book_trades,
+            "rules_live": len(self.rule_record),
             "hold_hours": hold_h,
             # What the open book is worth if every position runs to its
             # exit at the measured win rate, rather than at today's mark.
@@ -1527,8 +1789,8 @@ class Broker:
                  "reason": t.reason, "pnl_usd": t.pnl_usd,
                  "return_pct_leveraged": t.return_pct_leveraged,
                  "methods": t.methods} for t in self.closed]
-        for sym, d, entry, price, pnl, lev, meth, pot in self.open_rows():
-            pos = self.open.get(sym)
+        for sym, d, entry, price, pnl, lev, meth, pot, slot in self.open_rows():
+            pos = self.open.get(slot)
             if pos is None:
                 continue
             rows.append({"symbol": sym, "side": "LONG" if d > 0 else "SHORT",
@@ -1604,7 +1866,17 @@ def print_dashboard(s: dict) -> None:
           f"   {s['margin_used_pct']:.1f}% of equity deployed")
     # BUG: this line used to read potential_sizing, a different flag, and
     # so described a mode the bot was not running.
-    if s.get("signal_source") in ("slow", "regime", "book", "survivors"):
+    if s.get("signal_source") == "book":
+        how = (f"each rule's own half-Kelly on its own edge and barriers, "
+               f"0% to {100*s['max_margin_pct']:.0f}% of equity")
+        cal = s.get("book_calibration", 1.0)
+        how += (f"\n            book calibration {cal:.2f} "
+                + ("(no closed trades yet -- the book is taken at its word)"
+                   if s.get("book_trades", 0) <= 0 else
+                   f"({s['book_trades']} closed: it has delivered "
+                   f"{100*cal:.0f}% of the edge it claimed, and every stake "
+                   f"is scaled by that)"))
+    elif s.get("signal_source") in ("slow", "regime", "survivors"):
         # slice_size() short-circuits to the flat slice for these modes, so
         # printing the --sizing flag here described a branch never taken.
         how = (f"flat, "
@@ -1655,7 +1927,8 @@ def print_dashboard(s: dict) -> None:
         # on its own -- so reporting it here graded this book with another
         # book's ruler.
         print(f"  EDGE      {s['book_rules']} book rules, each already net of "
-              f"fees + funding where it was measured")
+              f"fees + funding where it was measured"
+              f"   {s['rules_live']} with a live record")
     else:
         print(f"  EDGE      negative-expectancy skips {s['skipped_negative_ev']:,}"
               f"   ({s['tradeable_bands']} of {s['total_bands']} measured ATR bands"
@@ -1710,7 +1983,7 @@ def print_summary(s: dict) -> None:
     print(f"  Positions open        : {s['open']}")
     print(f"    currently winning   : {s['open_wins']}")
     print(f"    currently losing    : {s['open_losses']}")
-    for sym, d, entry, price, pnl, lev, meth, pot in s["open_rows"]:
+    for sym, d, entry, price, pnl, lev, meth, pot, _slot in s["open_rows"]:
         # For a book position `pot` is the rule's own measured return per
         # trade at this leverage, so it is shown as the percentage it is.
         p_txt = ("  n/a" if pot != pot else f"{100*pot:+.2f}%/trade")

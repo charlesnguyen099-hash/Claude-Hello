@@ -255,7 +255,21 @@ def main() -> int:
     print(f"  Risk per trade   : ~{args.margin_pct * 0.42:.2f}% of the account "
           f"(a stop costs ~42% of the trade's margin)")
     mode = "flat" if args.flat_sizing else args.sizing
-    if args.signals in ("book", "survivors", "slow", "regime"):
+    if args.signals == "book":
+        # Every book rule brings its own edge, its own target and its own
+        # stop, so every rule solves its own stake. Half-Kelly, because the
+        # edge is an estimate: full Kelly is optimal only when it is known.
+        print(f"  Sizing           : each rule's own half-Kelly, from its own "
+              f"measured edge")
+        print(f"                     and its own barriers -- 0% up to "
+              f"{args.max_margin_pct:.0f}% of equity on one trade")
+        print(f"    A rule's claim is discounted by how much of the book's "
+              f"edge has actually")
+        print(f"    turned up live, and blended with that rule's own record "
+              f"as it accumulates.")
+        print(f"    One position PER RULE, so a 6-day daily rule no longer "
+              f"locks its symbol.")
+    elif args.signals in ("survivors", "slow", "regime"):
         # These modes size flat on purpose: the potential already lives in
         # the leverage, and Kelly's win-rate input is the record of the
         # twelve-method exit -- a statistic about a different rule.

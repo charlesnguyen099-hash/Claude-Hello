@@ -1280,6 +1280,273 @@ def test_book_never_touches_the_old_logic():
               b.closed[-1].reason if b.closed else "-")
 
 
+def _book_broker(syms, rules, **kw):
+    """A broker whose book is `rules`, with the logic builder stubbed so
+    every named rule fires on the last bar."""
+    c = FakeHTTP(syms)
+    opts = dict(signal_source="book", sizing="flat", expectancy_gate=False,
+                max_notional_x=0.0)
+    opts.update(kw)
+    b = broker_for(syms, c, **opts)
+    b.book = rules
+    return b, c
+
+
+def _fire(names_sides):
+    """Stub build_logics: each named logic sits at its side on the last bar
+    and at 0 on the one before, which is what "turns on" means."""
+    from fp import ensemble as E
+    import pandas as pd
+
+    def fake(d, fast=False, only=None):
+        out = {}
+        for n in (only or []):
+            side = names_sides.get(n)
+            if side is None:
+                continue
+            v = np.zeros(len(d))
+            v[-1] = side
+            out[n] = pd.Series(v, index=d.index)
+        return out
+    return E, fake
+
+
+def test_one_symbol_carries_one_position_per_rule():
+    """A slow rule must not lock a symbol out of every fast one.
+
+    The open book was keyed by SYMBOL, so the first rule to fire on SOL
+    held that symbol until it exited -- and a daily rule's own measured
+    limit is up to six days. With ten symbols that capped the whole book
+    at ten concurrent trades and, in a live session, produced fifteen
+    trades in twelve hours. Positions are keyed by (symbol, rule) now.
+    """
+    print("\none symbol carries one position per rule, not one in total")
+    rules = [
+        {"tf": "15m", "name": "fast", "side": "long", "tp": 3.0, "sl": 1.5,
+         "hmax": 8, "hold_min": 120.0, "mean": 0.006, "coins": ""},
+        {"tf": "15m", "name": "slow", "side": "long", "tp": 2.0, "sl": 1.0,
+         "hmax": 576, "hold_min": 8640.0, "mean": 0.012, "coins": ""},
+        {"tf": "15m", "name": "bear", "side": "short", "tp": 4.0, "sl": 3.0,
+         "hmax": 32, "hold_min": 480.0, "mean": 0.008, "coins": ""},
+    ]
+    # A cap that lets all three fit, so this test measures the SLOT
+    # mechanics rather than who ran out of margin first.
+    b, c = _book_broker(["S0USDT"], rules, max_margin_pct=0.2)
+    E, fake = _fire({"fast": 1, "slow": 1, "bear": -1})
+    real = E.build_logics
+    try:
+        E.build_logics = fake
+        b.refresh_prices()
+        sigs = b.evaluate("S0USDT", None)
+    finally:
+        E.build_logics = real
+
+    check("all three rules produced a signal", len(sigs) == 3, len(sigs))
+    check("each got its own slot",
+          len({s.slot for s in sigs}) == 3, {s.slot for s in sigs})
+    check("the slot names the symbol and the rule",
+          all(s.slot == f"S0USDT|{s.rule}" for s in sigs))
+    check("both directions are represented",
+          {s.direction for s in sigs} == {1, -1})
+
+    for s in sigs:
+        b.try_open(s.slot)
+    check("three positions on ONE symbol", len(b.open) == 3, len(b.open))
+    check("every one of them is that symbol",
+          {p.symbol for p in b.open.values()} == {"S0USDT"})
+    check("each carries its own target",
+          len({p.tp_price for p in b.open.values()}) == 3)
+    check("each carries its own time limit",
+          {p.max_hold_min for p in b.open.values()} == {120.0, 8640.0, 480.0})
+
+    # The symbol must keep being scored while it holds positions, or the
+    # rules that have not fired yet never get their turn.
+    b.evaluated_bar["S0USDT"] = -1
+    check("a symbol holding positions is still re-scored",
+          "S0USDT" in b.stale_symbols(), b.stale_symbols())
+
+    # Closing one must not disturb the others.
+    slot = sigs[0].slot
+    b._close(slot, b.prices["S0USDT"], "take_profit")
+    check("closing one leaves the rest open", len(b.open) == 2, len(b.open))
+    check("the right one closed", slot not in b.open)
+    check("and it is booked against its own rule",
+          b.closed[-1].rule == sigs[0].rule, b.closed[-1].rule)
+
+
+def test_stake_follows_the_potential_and_can_take_the_account():
+    """Capital must follow the trade's own potential, up to all of it.
+
+    A flat slice gives a rule with a huge measured edge and tight
+    barriers the same $0.50 as a marginal one. Each book signal now
+    solves its own Kelly stake from its own edge and its own barrier
+    geometry, and a strong enough one is allowed the whole account --
+    bounded only by arithmetic: a single stop may not cost more than the
+    equity, and --max-margin-pct is the operator's own ceiling.
+    """
+    print("\nstake follows the trade's own potential")
+    strong = {"tf": "15m", "name": "strong", "side": "long", "tp": 4.0,
+              "sl": 3.0, "hmax": 8, "hold_min": 120.0, "mean": 0.05,
+              "coins": ""}
+    weak = {**strong, "name": "weak", "mean": 0.0005}
+    b, c = _book_broker(["S0USDT"], [strong, weak], max_margin_pct=1.0)
+    E, fake = _fire({"strong": 1, "weak": 1})
+    real = E.build_logics
+    try:
+        E.build_logics = fake
+        b.refresh_prices()
+        sigs = {s.rule.split(":")[1]: s for s in b.evaluate("S0USDT", None)}
+    finally:
+        E.build_logics = real
+
+    s_big, s_small = sigs["strong"], sigs["weak"]
+    check("the strong rule asks for more than the weak one",
+          s_big.margin_frac > s_small.margin_frac,
+          (s_big.margin_frac, s_small.margin_frac))
+    check("the weak rule asks for a small slice",
+          s_small.margin_frac < 0.10, s_small.margin_frac)
+    check("but a rule with NO live record cannot exceed the base slice",
+          s_big.margin_frac <= b.margin_pct + 1e-12,
+          (s_big.margin_frac, b.margin_pct))
+    check("no stake ever exceeds max_margin_pct",
+          all(s.margin_frac <= b.max_margin_pct + 1e-12 for s in sigs.values()))
+
+    # ...and the whole account IS reachable, once the rule has earned it.
+    rule = s_big.rule
+    for _ in range(400):
+        rec = b.rule_record.setdefault(rule, [0, 0.0])
+        rec[0] += 1
+        rec[1] += 0.05
+        b.book_trades += 1
+        b.book_claimed += 0.05
+        b.book_realized += 0.05
+    grown = b.book_margin_fraction(s_big.tp_dist, s_big.sl_dist,
+                                   s_big.slow_leverage, rule, 0.05, b.fee)[0]
+    check("a rule that has proved a 5%/trade edge can take the account",
+          grown >= 0.99, grown)
+    check("which is far more than it was allowed on day one",
+          grown > 5 * s_big.margin_frac, (grown, s_big.margin_frac))
+
+    # The ruin cap is arithmetic: one stop may not clear the account.
+    for s in sigs.values():
+        loss = s.margin_frac * (s.slow_leverage or 1.0) * (s.sl_dist + b.fee)
+        check(f"a stop on {s.rule.split(':')[1]} cannot clear the account",
+              loss <= 1.0 + 1e-9, loss)
+
+    # And the money actually committed is the fraction that was solved.
+    eq = b.equity_total
+    b.try_open(s_big.slot)
+    p = b.open[s_big.slot]
+    check("the position commits the fraction its own Kelly asked for",
+          abs(p.margin - eq * s_big.margin_frac) < 0.02
+          or p.margin < eq * s_big.margin_frac,   # or all the free margin
+          (p.margin, eq * s_big.margin_frac))
+
+
+def test_a_rule_that_stops_paying_stops_being_backed():
+    """Sizing must answer to live results, not to the fitted number.
+
+    book.json is fitted to its own data; its per-trade means are the best
+    case. The stake is therefore solved from a blend of the claim and the
+    rule's own live record, and the claim itself is discounted by how
+    much of the book's edge has actually turned up. A book that is not
+    paying shrinks its own stake to nothing with no constant to edit.
+    """
+    print("\na rule that stops paying stops being backed")
+    r = {"tf": "15m", "name": "r", "side": "long", "tp": 4.0, "sl": 3.0,
+         "hmax": 8, "hold_min": 120.0, "mean": 0.02, "coins": ""}
+    b, c = _book_broker(["S0USDT"], [r], max_margin_pct=1.0)
+    check("with no trades the book is taken at its word",
+          b.book_calibration() == 1.0, b.book_calibration())
+
+    fee, lev = 0.0011, 3.0
+    tp, sl = 0.04, 0.03
+    start = b.book_margin_fraction(tp, sl, lev, "15m:r:long", 0.02, fee)[0]
+    check("it starts backed", start > 0, start)
+
+    # Ten losing trades at the designed stop.
+    for _ in range(10):
+        b.rule_record.setdefault("15m:r:long", [0, 0.0])
+        b.rule_record["15m:r:long"][0] += 1
+        b.rule_record["15m:r:long"][1] += -(sl + fee)
+        b.book_trades += 1
+        b.book_claimed += 0.02
+        b.book_realized += -(sl + fee)
+        b.book_sumsq += (sl + fee) ** 2
+    after = b.book_margin_fraction(tp, sl, lev, "15m:r:long", 0.02, fee)[0]
+    ten = b.book_calibration()
+    check("ten losses cut the calibration hard", ten < 0.25, ten)
+    check("but NOT to a dead stop -- ten trades cannot condemn a book",
+          ten > 0.0, ten)
+    check("and the stake went to zero (this rule's own record is negative)",
+          after == 0.0, after)
+    check("which is a real cut, not a rounding one", after < start)
+
+    # A book that keeps not paying does eventually shut itself down --
+    # the difference is that it takes evidence, not a bad afternoon.
+    for _ in range(400):
+        b.book_trades += 1
+        b.book_claimed += 0.02
+        b.book_realized += -(sl + fee)
+        b.book_sumsq += (sl + fee) ** 2
+    check("with enough evidence it does reach a dead stop",
+          b.book_calibration() < 0.02, b.book_calibration())
+    check("and that is strictly lower than the ten-trade reading",
+          b.book_calibration() < ten)
+
+    # A rule beating its claim keeps a full stake.
+    b2, _ = _book_broker(["S0USDT"], [r], max_margin_pct=1.0)
+    for _ in range(10):
+        b2.rule_record.setdefault("15m:r:long", [0, 0.0])
+        b2.rule_record["15m:r:long"][0] += 1
+        b2.rule_record["15m:r:long"][1] += 0.03
+        b2.book_trades += 1
+        b2.book_claimed += 0.02
+        b2.book_realized += 0.03
+        b2.book_sumsq += 0.03 ** 2
+    good = b2.book_margin_fraction(tp, sl, lev, "15m:r:long", 0.02, fee)[0]
+    check("a rule that beats its claim keeps its stake", good >= start, good)
+    check("the calibration is capped at the claim, never above",
+          b2.book_calibration() == 1.0, b2.book_calibration())
+
+
+def test_the_live_record_is_in_the_same_unit_as_the_book():
+    """A closed trade must be fed back in the unit the book speaks.
+
+    book.json's `mean` is the per-trade return as a fraction of NOTIONAL,
+    net of the round trip -- that is what fp/exits.barrier_outcomes
+    produced. Recording P&L as a fraction of MARGIN instead would report
+    every result inflated by the leverage and hand the sizing a number
+    three times too large.
+    """
+    print("\nthe live record speaks the book's own unit")
+    r = {"tf": "15m", "name": "r", "side": "long", "tp": 4.0, "sl": 3.0,
+         "hmax": 8, "hold_min": 120.0, "mean": 0.02, "coins": ""}
+    b, c = _book_broker(["S0USDT"], [r])
+    E, fake = _fire({"r": 1})
+    real = E.build_logics
+    try:
+        E.build_logics = fake
+        b.refresh_prices()
+        sig = b.evaluate("S0USDT", None)[0]
+    finally:
+        E.build_logics = real
+    b.try_open(sig.slot)
+    p = b.open[sig.slot]
+    entry, lev = p.entry, p.leverage
+    b._close(sig.slot, p.tp_price, "take_profit")
+
+    n, tot = b.rule_record[sig.rule]
+    gross = (p.tp_price - entry) / entry
+    check("one trade recorded", n == 1, n)
+    check("recorded as a fraction of notional, net of the round trip",
+          abs(tot - (gross - b.fee)) < 5e-4, (tot, gross - b.fee))
+    check("NOT inflated by the leverage",
+          abs(tot - (gross - b.fee) * lev) > 1e-3, tot)
+    check("the book's claim is banked in the same unit",
+          abs(b.book_claimed - r["mean"]) < 1e-9, b.book_claimed)
+
+
 def test_every_closed_trade_appears_in_the_breakdown():
     """No trade may vanish from the summary.
 
@@ -1364,13 +1631,17 @@ def test_the_dashboard_describes_the_mode_it_is_running():
         return buf.getvalue(), b, s
 
     txt, b, s = readout(signal_source="book", sizing="kelly")
-    check("book mode does not claim Kelly", "Kelly" not in txt,
+    check("book mode does not claim the OLD win-rate Kelly",
+          "lower-bounded win rate" not in txt,
           [l for l in txt.splitlines() if "sizing" in l])
-    check("it names the flat slice", "flat," in txt)
-    check("and prints the dollars it commits",
-          f"${b.slice_size():.4f}" in txt)
-    check("the printed slice is the one try_open would use",
-          abs(s["slice_size"] - b.slice_size()) < 1e-12)
+    check("it names the per-rule Kelly it actually solves",
+          "own edge and barriers" in txt)
+    check("and prints the ceiling that bounds it",
+          f"{100*b.max_margin_pct:.0f}% of equity" in txt)
+    check("it reports how much of the book's claim has shown up",
+          "book calibration" in txt)
+    check("with no closed trades it says so rather than implying evidence",
+          "taken at its word" in txt)
     check("the ATR-band table is not used to grade the book",
           "ATR bands" not in txt,
           [l for l in txt.splitlines() if "EDGE" in l])
@@ -1756,6 +2027,10 @@ def main() -> int:
                test_bot_trades_nothing_without_a_whitelist,
                test_book_rules_fire_only_where_they_were_validated,
                test_book_never_touches_the_old_logic,
+               test_one_symbol_carries_one_position_per_rule,
+               test_stake_follows_the_potential_and_can_take_the_account,
+               test_a_rule_that_stops_paying_stops_being_backed,
+               test_the_live_record_is_in_the_same_unit_as_the_book,
                test_every_closed_trade_appears_in_the_breakdown,
                test_the_dashboard_describes_the_mode_it_is_running,
                test_book_trade_matches_the_backtest_arithmetic,

@@ -31,6 +31,34 @@ actually held. Four controls, all of them mandatory:
 The August run failed the last control outright: rolled data produced
 MORE survivors than the real thing. This one is longer by a factor of
 twenty, which is the only thing that changed.
+
+RESULT: NOTHING SURVIVES HERE EITHER.
+
+1,458,624 cells across 5m, 15m, 30m and 1h, counting only independent
+trades. Bonferroni bar |t| > 5.52. Then the whole selection re-run five
+times per timeframe on rolled data:
+
+       tf         tier1            tier2            tier3
+                real/null        real/null        real/null
+       5m          0 / 0.2        134 / 176          29 / 58
+      15m          2 / 0.6       2503 / 2304        586 / 683
+      30m          4 / 2.2       3623 / 4086       1112 / 1162
+       1h          4 / 8.6       1407 / 1737        541 / 415
+      ALL        10 / 11.6       7667 / 8303       2268 / 2317
+
+      ratio    tier1 0.86x      tier2 0.92x      tier3 0.98x
+
+Every ratio sits at or below one. Destroying the alignment entirely --
+keeping drift, volatility and the long/short balance, breaking only the
+timing -- produces as many survivors as the real data, and at 1h it
+produces more than twice as many tier-1 rules. The ten that passed are
+what a search of this size hands out for free; nine of them rest on
+twelve to twenty independent trades.
+
+So the month answers the question the 34-hour window could not: it is
+not the length that was missing. A month of ten symbols at four
+timeframes, with overlapping trades removed and every control applied,
+contains no per-coin, group or all-coin logic that beats its own null.
 """
 from __future__ import annotations
 

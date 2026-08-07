@@ -1,0 +1,40 @@
+5m: 482,769 cells (independent trades only), 260s
+15m: 466,429 cells (independent trades only), 141s
+30m: 370,332 cells (independent trades only), 104s
+1h: 139,094 cells (independent trades only), 76s
+
+attempted 1,458,624   Bonferroni |t| > 5.52
+
+5m REAL   tier1    0  tier2   134  tier3    29
+5m null1  tier1    0  tier2   161  tier3    58
+5m null2  tier1    0  tier2   236  tier3    68
+5m null3  tier1    1  tier2   187  tier3    57
+5m null4  tier1    0  tier2   186  tier3    51
+5m null5  tier1    0  tier2   112  tier3    56
+5m RATIO  tier1  0.00x  tier2  0.76x  tier3  0.50x
+
+15m REAL   tier1    2  tier2  2503  tier3   586
+15m null1  tier1    0  tier2  2212  tier3   705
+15m null2  tier1    0  tier2  2097  tier3   592
+15m null3  tier1    1  tier2  2647  tier3   632
+15m null4  tier1    0  tier2  2029  tier3   841
+15m null5  tier1    2  tier2  2534  tier3   643
+15m RATIO  tier1  3.33x  tier2  1.09x  tier3  0.86x
+
+30m REAL   tier1    4  tier2  3623  tier3  1112
+30m null1  tier1    4  tier2  3877  tier3  1369
+30m null2  tier1    3  tier2  4143  tier3   990
+30m null3  tier1    0  tier2  4197  tier3  1157
+30m null4  tier1    1  tier2  4326  tier3  1202
+30m null5  tier1    3  tier2  3888  tier3  1093
+30m RATIO  tier1  1.82x  tier2  0.89x  tier3  0.96x
+
+1h REAL   tier1    4  tier2  1407  tier3   541
+1h null1  tier1    4  tier2  1342  tier3   492
+1h null2  tier1   10  tier2  1765  tier3   496
+1h null3  tier1   13  tier2  2278  tier3   451
+1h null4  tier1   11  tier2  1530  tier3   304
+1h null5  tier1    5  tier2  1768  tier3   330
+1h RATIO  tier1  0.47x  tier2  0.81x  tier3  1.30x
+
+DONE

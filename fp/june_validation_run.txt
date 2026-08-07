@@ -1,0 +1,21 @@
+symbols 10  rules 104  tfs ['15m', '1d', '1h', '30m', '4h']
+  15m: 308 rule/symbol pairs measured
+  30m: 61 rule/symbol pairs measured
+  1h: 54 rule/symbol pairs measured
+  4h: 0 rule/symbol pairs measured
+  1d: skipped, a month gives too few bars
+
+=== 104 SHIPPED RULES, OUT-OF-SAMPLE ON JUNE ===
+pairs measured 423   trades 32,687   logics that would not build 5
+
+  tf  pairs   trades  net %/trade   claimed  delivered   win%
+ 15m    308   29,012      -0.0285     0.641     -0.04x   43.1
+  1h     54    1,724       0.0080     0.730      0.01x   45.8
+ 30m     61    1,951      -0.0341     0.563     -0.06x   42.1
+
+ALL 423 pairs: -0.0269%/trade vs claimed +0.641%
+   t vs zero        = -0.85
+   t vs the claim   = -25.15
+   pairs profitable = 31.9%
+
+DONE

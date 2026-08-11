@@ -54,6 +54,7 @@ import pandas as pd
 from fp import features as F
 from fp import logic as L
 from fp import methods as M
+from fp.june import resample as J_resample
 
 
 logger = logging.getLogger("potential_leverage.bot")
@@ -302,6 +303,13 @@ class Broker:
         self._book_cache: dict[tuple, tuple] = {}
         self._fired_cache: dict[tuple, tuple] = {}
         self.bar_minutes = L.BAR_MINUTES
+        if signal_source == "mtf":
+            from fp.mtf_live import MTFModel
+            self.mtf = MTFModel()
+            self.bar_minutes = (self.mtf.entry_min if self.mtf.ok
+                                else L.BAR_MINUTES)
+            self._mtf_cache: dict[str, tuple] = {}
+
         if signal_source == "book":
             # Every rule brings its own timeframe, so the scan runs at the
             # FINEST one in the book -- anything slower would miss the bar
@@ -728,7 +736,7 @@ class Broker:
             # is how the standing set shares one account -- see
             # stake_scale().
             return eq * sig.margin_frac * scale
-        if self.signal_source in ("slow", "regime", "book", "survivors"):
+        if self.signal_source in ("slow", "regime", "book", "survivors", "mtf"):
             # No per-signal solution available (a bare slice_size() call,
             # e.g. the has_room() probe or the dashboard). The flat slice
             # is the floor these modes fall back to.
@@ -765,7 +773,7 @@ class Broker:
                 return False
             if self.notional_headroom() <= 0:
                 return False
-            if self.sizing == "kelly" or self.signal_source == "book":
+            if self.sizing == "kelly" or self.signal_source in ("book", "mtf"):
                 # When each signal solves its own stake the slice is
                 # per-trade, so "is there room" can only mean "is there
                 # anything left at all".
@@ -875,6 +883,10 @@ class Broker:
         # Answering here rather than below saves one kline call per symbol
         # per bar, which across 690 symbols is the difference between a
         # polite scan and a rate-limit ban.
+        if self.signal_source == "mtf":
+            self.evaluated_bar[symbol] = now_bar
+            return self._evaluate_mtf(symbol, now_bar)
+
         if self.signal_source == "book":
             self.evaluated_bar[symbol] = now_bar
             return self._evaluate_book(symbol, now_bar)
@@ -992,6 +1004,110 @@ class Broker:
             logger.warning("%s is FITTED to its own data. Forward "
                            "performance is unknown.", path)
         return got
+
+    def _evaluate_mtf(self, symbol: str, bar_ts: int) -> list:
+        """Score this symbol with the multi-timeframe model.
+
+        One signal per symbol per bar: the model already chose the side
+        and the barrier shape by comparing every combination's predicted
+        net, so there is nothing left to pick between.
+
+        The gate is not a threshold anybody chose. The walk-forward
+        measured what each band of predicted net actually returned, and a
+        setup trades only if its band was measured positive -- which is
+        the same evidence that then sets its stake.
+        """
+        if not getattr(self, "mtf", None) or not self.mtf.ok:
+            self.no_survivors += 1
+            self._drop_signals(symbol)
+            return []
+
+        cached = self._mtf_cache.get(symbol)
+        if cached is not None and cached[0] == bar_ts:
+            d1 = cached[1]
+        else:
+            from fp.mtf_live import fetch_1m
+
+            def bump():
+                with self.counter_lock:
+                    self.kline_calls += 1
+
+            d1 = fetch_1m(self.client, symbol, counter=bump)
+            self._mtf_cache[symbol] = (bar_ts, d1)
+        if d1 is None:
+            self._drop_signals(symbol)
+            return []
+
+        try:
+            best = self.mtf.predict(d1)
+        except Exception:
+            logger.debug("mtf predict failed %s", symbol, exc_info=True)
+            self._drop_signals(symbol)
+            return []
+        if best is None:
+            self.no_signal += 1
+            self._drop_signals(symbol)
+            return []
+
+        realized = self.mtf.realized_for(best["pred"]) / 100.0
+        if realized <= 0 or best["pred"] <= 0:
+            # The band this prediction falls in was not measured
+            # profitable. Not a trade, whatever the raw number says.
+            self.skipped_negative_ev += 1
+            self._drop_signals(symbol)
+            return []
+
+        from fp import exits as X
+        from fp import slow as S
+        de = J_resample(d1, self.mtf.entry_min)
+        close = de["close"].values.astype(float)
+        sigma = float(X.sigma_at(close)[-1])
+        if not np.isfinite(sigma) or sigma <= 0:
+            self._drop_signals(symbol)
+            return []
+
+        tp_dist = best["tp"] * sigma
+        sl_dist = best["sl"] * sigma
+        hold_min = float(best["hold_min"])
+        chain = S.best_leverage(tp_dist, hold_min / 1440.0, sigma,
+                                self.max_leverage or S.LEVERAGE_MAX)
+        if not chain["tradeable"]:
+            self.skipped_unsolvent += 1
+            self._drop_signals(symbol)
+            return []
+
+        rule = (f"mtf:{best['tp']}/{best['sl']}/{best['hmax']}:"
+                f"{'long' if best['side'] > 0 else 'short'}")
+        fee = self.trade_cost(symbol, best["side"])
+        # The stake reads the MEASURED band, not the raw prediction: the
+        # prediction orders setups, the walk-forward says what an order
+        # of that size was worth.
+        P = self.potential(tp_dist, sl_dist, rule, realized, fee)
+        frac, kelly, edge = self.book_margin_fraction(
+            tp_dist, sl_dist, chain["leverage"], rule, realized, fee)
+        if frac <= 0:
+            self.skipped_negative_ev += 1
+            if P["refuted"]:
+                self.refuted += 1
+            self._drop_signals(symbol)
+            return []
+
+        sig = Signal(
+            bar_ts=bar_ts, direction=best["side"], atr_pct=100.0 * sigma,
+            votes=1, vote_margin=1,
+            methods=(f"mtf pred={100*best['pred']:+.3f}% "
+                     f"band={100*realized:+.3f}% "
+                     f"tp{best['tp']}/sl{best['sl']} hold<={hold_min:.0f}m "
+                     f"lev={chain['leverage']:.2f}x "
+                     f"potential={P['score']:.0f}/100 stake={100*frac:.1f}%"),
+            confidence=None, slow_leverage=chain["leverage"],
+            tp_dist=tp_dist, sl_dist=sl_dist, max_hold_min=hold_min,
+            rule=rule, rule_mean=realized, symbol=symbol,
+            margin_frac=frac, kelly_full=kelly, edge_used=edge,
+            score=P["score"])
+        self.signals[sig.slot] = sig
+        self._drop_signals(symbol, {sig.slot})
+        return [sig]
 
     def _book_bars(self, symbol: str, tf: str) -> pd.DataFrame | None:
         """Bars for one timeframe, fetched once per symbol per bar.
@@ -1362,7 +1478,7 @@ class Broker:
         decided, and re-scoring them would only spend kline calls.
         """
         want = closed_bar_ts(bar_minutes=self.bar_minutes)
-        if self.signal_source == "book":
+        if self.signal_source in ("book", "mtf"):
             # A book symbol is never "done": it holds one position PER
             # RULE, so a symbol already carrying a six-day daily trade
             # must keep being scored or its 15m rules never get a turn.
@@ -1441,7 +1557,7 @@ class Broker:
         # would silently veto the whole book. Every source that brings its
         # own tested edge is exempt.
         ev = (1.0 if self.signal_source in ("slow", "regime", "book",
-                                            "survivors")
+                                            "survivors", "mtf")
               else L.expectancy(sig.atr_pct, self.exit_name, fee,
                                 self.assumed_win_rate))
         if self.expectancy_gate and ev <= 0:

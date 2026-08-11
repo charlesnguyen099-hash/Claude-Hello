@@ -1559,6 +1559,163 @@ def test_the_live_record_is_in_the_same_unit_as_the_book():
           abs(b.book_claimed - r["mean"]) < 1e-9, b.book_claimed)
 
 
+def test_mtf_live_features_match_the_trained_model_exactly():
+    """The live feature matrix must BE the training one, not resemble it.
+
+    One column out of place and the model reads volume where it expects
+    momentum -- silently, with money behind it. So the live path calls
+    the same view_features() the training path called, and the column
+    order is asserted against what the trained model recorded rather
+    than assumed.
+    """
+    print("\nmtf live features match the trained model exactly")
+    from fp.mtf_live import MTFModel
+    from fp import mtf as MT
+    m = MTFModel()
+    if not m.ok:
+        check("model artefacts present", False, "run python -m fp.mtf_train")
+        return
+    check("views match fp.mtf", list(m.meta["views"]) == list(MT.VIEWS),
+          (m.meta["views"], MT.VIEWS))
+    check("135 feature columns recorded", len(m.columns) == 135, len(m.columns))
+    check("six models: three shapes x two sides", len(m.models) == 6,
+          sorted(m.models))
+    check("both sides present",
+          all(f"{t}_{s}_{h}_{sd}" in m.models
+              for t, s, h in m.shapes for sd in ("long", "short")),
+          sorted(m.models))
+
+    # Build a live-shaped frame and check the columns line up. The bar
+    # count matters: slope55 at the 60-minute view is
+    # rolling(55).mean().diff(55), so it needs 110 hours of one-minute
+    # history, not the 55 the name suggests. Under that the newest row
+    # is non-finite and features() correctly returns None -- which live
+    # looks exactly like "the model never fires".
+    import numpy as np, pandas as pd
+    from fp.mtf_live import NEED_1M_BARS
+    check("the history requirement covers the deepest lookback",
+          NEED_1M_BARS >= 110 * 60, NEED_1M_BARS)
+
+    def frame(n, seed=3):
+        rng = np.random.default_rng(seed)
+        px = 100 * np.exp(np.cumsum(rng.normal(0, 0.0004, n)))
+        ts = pd.date_range("2026-07-01", periods=n, freq="1min", tz="UTC")
+        sp = np.abs(rng.normal(0, 0.0006, n)) + 1e-5
+        return pd.DataFrame({"open": np.r_[px[0], px[:-1]],
+                             "high": px * (1 + sp), "low": px * (1 - sp),
+                             "close": px,
+                             "volume": np.abs(rng.normal(1e5, 2e4, n))},
+                            index=ts)
+
+    check("too little history returns None instead of a bad row",
+          m.features(frame(3000)) is None)
+
+    n = NEED_1M_BARS + 800
+    rng = np.random.default_rng(3)
+    d1 = frame(n)
+    X = m.features(d1)
+    check("a live row is produced", X is not None)
+    if X is None:
+        return
+    check("exactly one row", len(X) == 1, len(X))
+    check("columns identical to training, in order",
+          list(X.columns) == m.columns)
+    check("every value finite", bool(np.isfinite(X.values).all()))
+
+    best = m.predict(d1)
+    check("predict returns a decision", best is not None)
+    if best:
+        check("it names a side", best["side"] in (1, -1), best["side"])
+        check("and a barrier shape the model was trained on",
+              (best["tp"], best["sl"], best["hmax"]) in
+              [tuple(x) for x in m.shapes],
+              (best["tp"], best["sl"], best["hmax"]))
+        check("hold is the limit in entry bars, in minutes",
+              best["hold_min"] == best["hmax"] * m.entry_min,
+              (best["hold_min"], best["hmax"], m.entry_min))
+
+
+def test_mtf_gate_reads_the_measured_band_not_the_raw_prediction():
+    """The stake comes from what the walk-forward MEASURED, not the model's
+    own optimism.
+
+    A regressor trained to predict net will happily predict +3%. The
+    walk-forward says what predictions of that size were actually worth,
+    and that number -- not the prediction -- is what sizes the trade.
+    """
+    print("\nmtf sizes from the measured band, not the raw prediction")
+    from fp.mtf_live import MTFModel
+    m = MTFModel()
+    if not m.ok:
+        check("model artefacts present", False, "run python -m fp.mtf_train")
+        return
+    gates = m.meta["gates"]
+    check("the gate table is measured, with trade counts",
+          all("trades" in g and "realized_pct" in g for g in gates), gates)
+    check("realized rises with the gate",
+          [g["realized_pct"] for g in gates] ==
+          sorted(g["realized_pct"] for g in gates),
+          [g["realized_pct"] for g in gates])
+    check("a huge prediction is capped at the top measured band",
+          m.realized_for(99.0) == max(g["realized_pct"] for g in gates),
+          m.realized_for(99.0))
+    check("a small prediction gets the bottom band",
+          m.realized_for(0.0) == gates[0]["realized_pct"],
+          m.realized_for(0.0))
+    check("the top band is far above the bottom",
+          m.realized_for(0.01) > 5 * abs(m.realized_for(0.0)),
+          (m.realized_for(0.01), m.realized_for(0.0)))
+
+
+def test_mtf_never_touches_the_book_or_the_old_logic():
+    """mtf is its own path. It must not read book.json or the ATR ladder."""
+    print("\nmtf decides with the model and nothing else")
+    fired = []
+
+    def boom(name):
+        def f(*a, **k):
+            fired.append(name)
+            raise AssertionError(f"mtf path called {name}")
+        return f
+
+    syms = ["S0USDT"]
+    b = broker_for(syms, FakeHTTP(syms), signal_source="mtf",
+                   sizing="kelly", expectancy_gate=True,
+                   exit_name="net_TRAILING")
+    b.refresh_prices()
+    check("mtf mode loads no book", not b.book, len(b.book))
+    check("its bar cadence is the model's entry timeframe",
+          b.bar_minutes == b.mtf.entry_min if b.mtf.ok else True,
+          (b.bar_minutes, b.mtf.entry_min if b.mtf.ok else None))
+
+    b.signals["S0USDT|mtf:3.0/2.0/48:long"] = B.Signal(
+        bar_ts=B.closed_bar_ts(bar_minutes=b.bar_minutes), direction=1,
+        atr_pct=2.0, votes=1, vote_margin=1, methods="mtf",
+        slow_leverage=2.0, tp_dist=0.05, sl_dist=0.03, max_hold_min=240.0,
+        rule="mtf:3.0/2.0/48:long", rule_mean=0.009, symbol="S0USDT",
+        margin_frac=0.2, score=20.0)
+    saved = {n: getattr(L, n) for n in
+             ("expectancy", "kelly_fraction", "leverage_potential",
+              "margin_weight")}
+    try:
+        for n in saved:
+            setattr(L, n, boom(n))
+        opened = b.try_open("S0USDT|mtf:3.0/2.0/48:long")
+    finally:
+        for n, f in saved.items():
+            setattr(L, n, f)
+    check("the trade opened", opened, "; ".join(fired) or "refused")
+    check("no old-logic function was consulted", not fired, ", ".join(fired))
+    p = b.open.get("S0USDT|mtf:3.0/2.0/48:long")
+    if p is not None:
+        check("the stake is the fraction the model asked for",
+              abs(p.margin - b.equity_total_at_open * 0.2) < 0.05
+              if hasattr(b, "equity_total_at_open") else True)
+        check("barriers sit around the fill",
+              p.tp_price > p.entry > p.sl_price,
+              (p.sl_price, p.entry, p.tp_price))
+
+
 def test_a_losing_streak_stops_a_rule_but_does_not_shrink_it():
     """Losses stop a rule. They do not nibble at its stake.
 
@@ -2212,6 +2369,9 @@ def main() -> int:
                test_stake_follows_the_potential_and_can_take_the_account,
                test_a_rule_that_stops_paying_stops_being_backed,
                test_the_live_record_is_in_the_same_unit_as_the_book,
+               test_mtf_live_features_match_the_trained_model_exactly,
+               test_mtf_gate_reads_the_measured_band_not_the_raw_prediction,
+               test_mtf_never_touches_the_book_or_the_old_logic,
                test_a_losing_streak_stops_a_rule_but_does_not_shrink_it,
                test_no_rule_reaches_the_bot_without_a_scope,
                test_an_impossible_claim_scores_zero_rather_than_maximum,

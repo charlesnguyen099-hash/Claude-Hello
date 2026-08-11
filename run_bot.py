@@ -140,9 +140,19 @@ def main() -> int:
                         "scales 0.40-2.50x with the trade's expected return "
                         "per dollar of margin, which spans a factor of ten "
                         "across the ATR range because the fee does")
-    p.add_argument("--signals", default="book",
-                   choices=["methods", "slow", "regime", "survivors", "book"],
-                   help="book: trade the rules in --book-file, each with its "
+    p.add_argument("--signals", default="mtf",
+                   choices=["mtf", "methods", "slow", "regime", "survivors",
+                            "book"],
+                   help="mtf (default): the multi-timeframe model. One model "
+                        "for all symbols, reading 1m/5m/15m/30m/60m state at "
+                        "once and predicting the NET return of a trade opened "
+                        "now. It picks the side AND the barrier shape by "
+                        "comparing every combination's predicted net, and "
+                        "trades only where the walk-forward measured that "
+                        "band of prediction actually paying. Walk-forward on "
+                        "June: +0.23%%/trade at the 0.002 gate over 124 "
+                        "independent trades, t about 1.8 -- promising, not "
+                        "proven. book: trade the rules in --book-file, each with its "
                         "OWN entry, side, volatility-scaled target, stop and "
                         "time limit, on its own timeframe. This is what "
                         "fp/btc_book.py and fp/coin_book.py produce, and the "
@@ -241,6 +251,19 @@ def main() -> int:
     fee = cost["total"]
 
     scope = book_scope(args.book_file) if args.signals == "book" else []
+    if args.signals == "mtf":
+        # The model was trained on these ten symbols. It carries no
+        # per-rule scope, so the training universe IS the scope: firing
+        # it on a symbol whose behaviour was never in the training set is
+        # the same untested claim the book's scope gate exists to stop.
+        import json as _j
+        from pathlib import Path as _P
+        try:
+            scope = sorted(_j.loads(
+                (_P(__file__).resolve().parent / "data" /
+                 "mtf_scope.json").read_text()))
+        except Exception:
+            scope = book_scope(args.book_file)
     if args.symbols:
         symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
     elif scope and not args.top and not args.book_anywhere:
@@ -276,6 +299,41 @@ def main() -> int:
     print(f"  Risk per trade   : ~{args.margin_pct * 0.42:.2f}% of the account "
           f"(a stop costs ~42% of the trade's margin)")
     mode = "flat" if args.flat_sizing else args.sizing
+    if args.signals == "mtf":
+        import json as _j
+        from pathlib import Path as _P
+        try:
+            _m = _j.loads((_P(__file__).resolve().parent / "fp" /
+                           "mtf_model.json").read_text())
+        except Exception:
+            _m = {}
+        print(f"  Signals          : multi-timeframe model, ONE model for all "
+              f"symbols")
+        print(f"                     views {_m.get('views')} minutes, "
+              f"{len(_m.get('columns', []))} features, entry on "
+              f"{_m.get('entry_minutes')}m bars")
+        print(f"                     trained on {_m.get('train_rows', 0):,} rows, "
+              f"{_m.get('train_window', ['?','?'])[0]}.."
+              f"{_m.get('train_window', ['?','?'])[1]}")
+        print(f"  Side and exit    : the model scores every barrier shape on "
+              f"BOTH sides and takes")
+        print(f"                     the highest predicted net. Nothing about "
+              f"the trade is fixed.")
+        print(f"  Gate and stake   : read from the WALK-FORWARD table, not the "
+              f"raw prediction:")
+        for g in _m.get("gates", []):
+            print(f"      predicted > {g['gate']:<6}-> measured "
+                  f"{g['realized_pct']:+.3f}%/trade over {g['trades']} "
+                  f"independent trades")
+        print(f"  MEASURED         : walk-forward on June, three folds, "
+              f"retrained each time.")
+        print(f"                     Perfect hindsight selection on the same "
+              f"bars earned about")
+        print(f"                     +95% per six-day fold. The model reaches "
+              f"+0.23%/trade at the")
+        print(f"                     0.002 gate, t about 1.8 on 124 trades. "
+              f"Promising, NOT proven.")
+
     if args.signals == "book":
         # Measured, not guessed. See fp/aug_tiers.py.
         print("  MEASURED         : replayed on 2026-08-05..08-07 (34h, the")

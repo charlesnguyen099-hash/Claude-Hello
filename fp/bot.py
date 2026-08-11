@@ -2138,7 +2138,8 @@ def print_dashboard(s: dict) -> None:
     # The old single "net" line added these two together, and an open book
     # marked to market dwarfed the settled figure -- which is how a session
     # with three closed trades, all losses, read as +17.74%.
-    if s["open"] and abs(s["unrealized"]) > abs(settled):
+    if (s["open"] and abs(s["unrealized"]) > abs(settled)
+            and s.get("signal_source") not in ("book", "mtf")):
         print(f"  Most of what you see is UNSETTLED. Positions last "
               f"{s.get('hold_hours', 5.0):.1f}h on")
         print(f"  average and stops finish sooner than targets, so an open "
@@ -2156,7 +2157,12 @@ def print_dashboard(s: dict) -> None:
           f"   {s['margin_used_pct']:.1f}% of equity deployed")
     # BUG: this line used to read potential_sizing, a different flag, and
     # so described a mode the bot was not running.
-    if s.get("signal_source") == "book":
+    if s.get("signal_source") == "mtf":
+        how = (f"the model's predicted net, mapped through the WALK-FORWARD "
+               f"table to a\n            measured %/trade, then that as a "
+               f"percent of equity. 0% to "
+               f"{100*s['max_margin_pct']:.0f}%.")
+    elif s.get("signal_source") == "book":
         how = (f"each rule's own half-Kelly on its own edge and barriers, "
                f"0% to {100*s['max_margin_pct']:.0f}% of equity")
         cal = s.get("book_calibration", 1.0)
@@ -2211,7 +2217,18 @@ def print_dashboard(s: dict) -> None:
     print(f"  COST      taker in+out {100*(L.ENTRY_FEE_TAKER+L.EXIT_FEE_TAKER):.3f}%"
           f"   live funding median {100*s['live_funding']:+.4f}%/8h"
           f"   -> a long costs {100*s['cost_long']:.3f}% round trip")
-    if s.get("signal_source") == "book":
+    if s.get("signal_source") == "mtf":
+        print(f"  EDGE      multi-timeframe model; every setup is gated on the "
+              f"band the")
+        print(f"            walk-forward measured, not on the raw prediction. "
+              f"Skipped this")
+        print(f"            session: {s['skipped_negative_ev']:,} below the "
+              f"lowest paying band.")
+        sc = s.get("scores") or []
+        if sc:
+            print(f"  POTENTIAL standing scores /100: best {max(sc):.0f}   "
+                  f"median {sorted(sc)[len(sc)//2]:.0f}   worst {min(sc):.0f}")
+    elif s.get("signal_source") == "book":
         # The ATR-band table belongs to the twelve-method exit. Book mode
         # never consults it -- each rule was measured against the full cost
         # on its own -- so reporting it here graded this book with another

@@ -319,19 +319,29 @@ def main() -> int:
               f"BOTH sides and takes")
         print(f"                     the highest predicted net. Nothing about "
               f"the trade is fixed.")
-        print(f"  Gate and stake   : read from the WALK-FORWARD table, not the "
-              f"raw prediction:")
-        for g in _m.get("gates", []):
-            print(f"      predicted > {g['gate']:<6}-> measured "
-                  f"{g['realized_pct']:+.3f}%/trade over {g['trades']} "
-                  f"independent trades")
+        try:
+            _b = _j.loads((_P(__file__).resolve().parent / "fp" /
+                           "mtf_bands.json").read_text())
+        except Exception:
+            _b = []
+        print(f"  Gate and stake   : MARGINAL bands from the walk-forward. A "
+              f"setup trades only if")
+        print(f"                     the band its prediction lands in was "
+              f"measured profitable.")
+        for g in _b:
+            lo = "-inf" if g["lo"] < -1 else f"{g['lo']:.3f}"
+            hi = "+inf" if g["hi"] > 1 else f"{g['hi']:.3f}"
+            mark = ("TRADED " if g["edge_over_b"] > 0 and g["t"] >= 2.0
+                    else "skipped")
+            print(f"      {mark} {lo:>6}..{hi:<6} {g['edge_over_b']:+.3f} of a "
+                  f"win, {g['trades']:>3} trades, t={g['t']:+.2f}")
         print(f"  MEASURED         : walk-forward on June, three folds, "
               f"retrained each time.")
         print(f"                     Perfect hindsight selection on the same "
-              f"bars earned about")
-        print(f"                     +95% per six-day fold. The model reaches "
-              f"+0.23%/trade at the")
-        print(f"                     0.002 gate, t about 1.8 on 124 trades. "
+              f"bars earned about +95%")
+        print(f"                     per six-day fold. ONE band of six pays, "
+              f"with negative")
+        print(f"                     neighbours either side, on 34 trades. "
               f"Promising, NOT proven.")
 
     if args.signals == "book":

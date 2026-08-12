@@ -173,27 +173,6 @@
   "l2_regularization": 50.0,
   "learning_rate": 0.05
  },
- "gates": [
-  {
-   "gate": 0.0,
-   "trades": 356,
-   "realized_pct": 0.033
-  },
-  {
-   "gate": 0.001,
-   "trades": 193,
-   "realized_pct": 0.148
-  },
-  {
-   "gate": 0.002,
-   "trades": 124,
-   "realized_pct": 0.228
-  },
-  {
-   "gate": 0.005,
-   "trades": 49,
-   "realized_pct": 0.893
-  }
- ],
- "note": "Trained on 2026-05-31..08-08. Walk-forward on June read +0.23%/trade at the 0.002 gate over 124 independent trades, t about 1.8 -- promising, not proven."
+ "bands_file": "mtf_bands.json",
+ "note": "Trained on 2026-05-31..08-08. The tradeable band is read from mtf_bands.json: one band of six was measured profitable, 0.006-0.009, earning 0.406 of a win over 34 independent trades at t=2.76. One band out of six with negative neighbours on both sides -- promising, not proven."
 }

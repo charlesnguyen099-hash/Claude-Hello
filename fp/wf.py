@@ -76,7 +76,7 @@ def fold(train_win, test_win, shuffle=False, seed=0):
     rng = np.random.default_rng(seed)
     models = {}
     ntr = 0
-    for sh, (X, yl, ys, _, _, _, _) in tr.items():
+    for sh, (X, yl, ys, _, _, _, _, _) in tr.items():
         ntr += len(X)
         a, b = yl, ys
         if shuffle:
@@ -87,18 +87,27 @@ def fold(train_win, test_win, shuffle=False, seed=0):
         models[(sh, 1)] = fit(X, a, seed)
         models[(sh, -1)] = fit(X, b, seed)
 
-    bp = br = bh = bs = bx = None
-    for sh, (X, nl, ns, kl, ks, sy, po) in te.items():
+    bp = br = bh = bs = bx = bb = None
+    for sh, (X, nl, ns, kl, ks, sy, po, sg) in te.items():
+        tp, sl, hm = sh
+        # What a win pays on THIS trade, after the round trip. The band
+        # table records net/b rather than net, because a mean net mixed
+        # across barrier widths cannot be applied to one setup: +1.5% is
+        # impossible for a target only 0.16% wide, and the potential
+        # score correctly refuses it.
+        bwin = tp * sg - J.FEE
         for side, real, hh in ((1, nl, kl), (-1, ns, ks)):
             p = models[(sh, side)].predict(X)
             if bp is None:
-                bp, br, bh, bs, bx = (p.copy(), real.copy(), hh.copy(),
-                                      sy.copy(), po.copy())
+                bp, br, bh, bs, bx, bb = (p.copy(), real.copy(), hh.copy(),
+                                          sy.copy(), po.copy(), bwin.copy())
             else:
                 n = min(len(p), len(bp))
-                bp, br, bh, bs, bx = bp[:n], br[:n], bh[:n], bs[:n], bx[:n]
+                bp, br, bh, bs, bx, bb = (bp[:n], br[:n], bh[:n], bs[:n],
+                                          bx[:n], bb[:n])
                 sw = p[:n] > bp
                 bp[sw] = p[:n][sw]
                 br[sw] = real[:n][sw]
                 bh[sw] = hh[:n][sw]
-    return bp, br, bs, bx, bh, ntr
+                bb[sw] = bwin[:n][sw]
+    return bp, br, bs, bx, bh, ntr, bb

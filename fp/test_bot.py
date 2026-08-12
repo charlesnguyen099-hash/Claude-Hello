@@ -1622,17 +1622,27 @@ def test_mtf_live_features_match_the_trained_model_exactly():
           list(X.columns) == m.columns)
     check("every value finite", bool(np.isfinite(X.values).all()))
 
-    best = m.predict(d1)
-    check("predict returns a decision", best is not None)
-    if best:
-        check("it names a side", best["side"] in (1, -1), best["side"])
-        check("and a barrier shape the model was trained on",
-              (best["tp"], best["sl"], best["hmax"]) in
-              [tuple(x) for x in m.shapes],
-              (best["tp"], best["sl"], best["hmax"]))
+    # predict_all returns only setups whose MARGINAL band was measured
+    # profitable. On synthetic noise that is usually nothing, and nothing
+    # is the correct answer -- a setup outside a paying band is not a
+    # trade however confident the raw number looks.
+    cands = m.predict_all(d1)
+    check("predict_all returns a list", isinstance(cands, list), type(cands))
+    check("every candidate carries the band that justifies it",
+          all({"band", "band_t", "band_n", "edge_over_b"} <= set(c)
+              for c in cands), cands[:1])
+    check("every candidate's band was measured profitable",
+          all(c["edge_over_b"] > 0 for c in cands),
+          [c.get("edge_over_b") for c in cands])
+    for c in cands:
+        check("its shape is one the model was trained on",
+              (c["tp"], c["sl"], c["hmax"]) in [tuple(x) for x in m.shapes],
+              (c["tp"], c["sl"], c["hmax"]))
         check("hold is the limit in entry bars, in minutes",
-              best["hold_min"] == best["hmax"] * m.entry_min,
-              (best["hold_min"], best["hmax"], m.entry_min))
+              c["hold_min"] == c["hmax"] * m.entry_min,
+              (c["hold_min"], c["hmax"], m.entry_min))
+    check("predict() agrees with the best of predict_all",
+          (m.predict(d1) is None) == (not cands))
 
 
 def test_mtf_gate_reads_the_measured_band_not_the_raw_prediction():
@@ -1649,22 +1659,40 @@ def test_mtf_gate_reads_the_measured_band_not_the_raw_prediction():
     if not m.ok:
         check("model artefacts present", False, "run python -m fp.mtf_train")
         return
-    gates = m.meta["gates"]
-    check("the gate table is measured, with trade counts",
-          all("trades" in g and "realized_pct" in g for g in gates), gates)
-    check("realized rises with the gate",
-          [g["realized_pct"] for g in gates] ==
-          sorted(g["realized_pct"] for g in gates),
-          [g["realized_pct"] for g in gates])
-    check("a huge prediction is capped at the top measured band",
-          m.realized_for(99.0) == max(g["realized_pct"] for g in gates),
-          m.realized_for(99.0))
-    check("a small prediction gets the bottom band",
-          m.realized_for(0.0) == gates[0]["realized_pct"],
-          m.realized_for(0.0))
-    check("the top band is far above the bottom",
-          m.realized_for(0.01) > 5 * abs(m.realized_for(0.0)),
-          (m.realized_for(0.01), m.realized_for(0.0)))
+    from fp.mtf_live import MIN_BAND_T
+    check("marginal bands are loaded", len(m.bands) >= 4, len(m.bands))
+    check("bands are MARGINAL -- lo and hi, not a cumulative floor",
+          all({"lo", "hi"} <= set(b) for b in m.bands), m.bands[:1])
+    check("only bands measured positive AND above the t bar are traded",
+          all(b["edge_over_b"] > 0 and b["t"] >= MIN_BAND_T
+              for b in m.paying), m.paying)
+    check("the losing bands really are excluded",
+          any(b["edge_over_b"] <= 0 for b in m.bands)
+          and all(b["edge_over_b"] > 0 for b in m.paying),
+          [round(b["edge_over_b"], 3) for b in m.bands])
+    check("the band is a SHARE of a win, not an absolute return",
+          all(-1.5 < b["edge_over_b"] < 1.0 for b in m.bands),
+          [round(b["edge_over_b"], 3) for b in m.bands])
+
+    # A prediction outside every paying band is worth nothing, whatever
+    # its size. This is the fix: the old cumulative table gave a huge
+    # prediction the top band's number even when the band it actually
+    # landed in had been measured LOSING.
+    check("a prediction below every paying band is worth zero",
+          m.edge_over_b(0.0) == 0.0, m.edge_over_b(0.0))
+    check("a prediction ABOVE every paying band is also worth zero",
+          m.edge_over_b(99.0) == 0.0, m.edge_over_b(99.0))
+    lo = m.paying[0]["lo"]
+    hi = m.paying[0]["hi"]
+    mid = (lo + hi) / 2
+    check("a prediction inside a paying band gets that band's share",
+          abs(m.edge_over_b(mid) - m.paying[0]["edge_over_b"]) < 1e-12,
+          m.edge_over_b(mid))
+    check("that share never implies a win rate above 100%",
+          m.edge_over_b(mid) < 1.0, m.edge_over_b(mid))
+    check("the band edges are half-open: lo in, hi out",
+          m.edge_over_b(lo) > 0 and m.band_for(hi) is None,
+          (m.edge_over_b(lo), m.band_for(hi)))
 
 
 def test_mtf_never_touches_the_book_or_the_old_logic():

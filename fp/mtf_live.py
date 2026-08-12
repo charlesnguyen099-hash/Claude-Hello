@@ -38,6 +38,12 @@ logger = logging.getLogger("fp.mtf_live")
 HERE = Path(__file__).resolve().parent
 PKL = HERE / "mtf_model.pkl"
 META = HERE / "mtf_model.json"
+BANDS = HERE / "mtf_bands.json"
+
+# A band is tradeable only if the walk-forward measured it POSITIVE and
+# did so with more than two standard errors behind it. Both conditions
+# are read from the file, not chosen here.
+MIN_BAND_T = 2.0
 
 # The deepest feature is NOT the 55-bar lookback it looks like. slope55 is
 # rolling(55).mean().diff(55), so it needs 110 bars, and at the 60-minute
@@ -65,7 +71,21 @@ class MTFModel:
         self.columns = list(self.meta["columns"])
         self.entry_min = int(self.meta["entry_minutes"])
         self.shapes = [tuple(s) for s in self.meta["shapes"]]
-        self.gates = self.meta["gates"]
+        self.gates = self.meta.get("gates", [])
+        # MARGINAL bands: what a trade landing IN a band is worth. The
+        # first shipped table was CUMULATIVE and used as if it were
+        # per-band, so the bot traded two bands the study had measured as
+        # losing -- which is exactly what the first live session did, at
+        # -0.101%/trade in the bottom band.
+        try:
+            self.bands = json.loads(BANDS.read_text())
+        except Exception:
+            self.bands = []
+        self.paying = [b for b in self.bands
+                       if b.get("edge_over_b", 0) > 0 and b["t"] >= MIN_BAND_T]
+        if not self.paying:
+            logger.warning("no band in %s measured positive at t >= %.1f -- "
+                           "nothing will be traded", BANDS.name, MIN_BAND_T)
         # Views live in fp.mtf; assert rather than duplicate, so the two
         # cannot drift apart without something failing loudly.
         if list(self.meta["views"]) != list(M.VIEWS):
@@ -73,19 +93,35 @@ class MTFModel:
                 f"model was trained on views {self.meta['views']} but "
                 f"fp.mtf.VIEWS is {M.VIEWS} -- retrain or revert")
 
-    def realized_for(self, pred: float) -> float:
-        """What the walk-forward measured for a prediction this size.
+    def band_for(self, pred: float):
+        """The MARGINAL band this prediction falls in, or None.
 
-        The gate table is a step function measured on real trades, not a
-        formula. A prediction below the lowest gate returns the lowest
-        band's realized number, which is near zero -- that is the honest
-        answer for a setup the study never saw pay.
+        None means the band was not measured profitable, and a setup
+        whose band was not measured profitable is not a trade -- however
+        confident the raw prediction looks. Six bands were measured and
+        one pays; the other five include the two the first live session
+        spent its money in.
         """
-        best = self.gates[0]["realized_pct"]
-        for g in self.gates:
-            if pred >= g["gate"]:
-                best = g["realized_pct"]
-        return best
+        for b in self.paying:
+            if b["lo"] <= pred < b["hi"]:
+                return b
+        return None
+
+    def edge_over_b(self, pred: float) -> float:
+        """What a trade in this band earned as a SHARE of what its own win
+        pays. Dimensionless, so it applies to any barrier width.
+
+        A mean net cannot: +1.5%/trade averaged across barrier widths is
+        impossible for a target only 0.16% wide, and the potential score
+        correctly refuses it -- which is how the first version of this
+        gate blocked every setup it was supposed to size.
+        """
+        b = self.band_for(pred)
+        return b["edge_over_b"] if b else 0.0
+
+    def realized_for(self, pred: float) -> float:
+        """Kept for the dashboard: the band's share, as a percent."""
+        return 100.0 * self.edge_over_b(pred)
 
     def features(self, d1: pd.DataFrame) -> pd.DataFrame | None:
         """The model's feature row for the most recently closed entry bar.
@@ -106,31 +142,44 @@ class MTFModel:
             return None
         return tail
 
-    def predict(self, d1: pd.DataFrame):
-        """Best (side, shape, predicted net) for this symbol right now.
+    def predict_all(self, d1: pd.DataFrame) -> list[dict]:
+        """EVERY (shape, side) whose band was measured profitable.
 
-        Every shape and both sides are scored; the highest predicted net
-        wins. Potential picks the direction AND the exit, which is what
-        makes the barriers dynamic rather than chosen.
+        Returning only the single best collapsed a symbol to one position
+        at a time. With holds up to eight hours on five-minute bars, ten
+        symbols then produced about fourteen trades in thirteen hours --
+        not because the market was quiet but because each symbol was
+        occupied. Each qualifying combination now gets its own slot, so a
+        symbol can carry up to six, and none of them is admitted on a
+        lower standard than the others.
         """
         if not self.ok:
-            return None
+            return []
         X = self.features(d1)
         if X is None:
-            return None
-        best = None
+            return []
+        out = []
         for tp, sl, hm in self.shapes:
             for side, tag in ((1, "long"), (-1, "short")):
-                key = f"{tp}_{sl}_{hm}_{tag}"
-                m = self.models.get(key)
+                m = self.models.get(f"{tp}_{sl}_{hm}_{tag}")
                 if m is None:
                     continue
                 p = float(m.predict(X)[0])
-                if best is None or p > best["pred"]:
-                    best = {"pred": p, "side": side, "tp": tp, "sl": sl,
+                band = self.band_for(p)
+                if band is None:
+                    continue
+                out.append({"pred": p, "side": side, "tp": tp, "sl": sl,
                             "hmax": int(hm),
-                            "hold_min": int(hm) * self.entry_min}
-        return best
+                            "hold_min": int(hm) * self.entry_min,
+                            "edge_over_b": band["edge_over_b"],
+                            "band": f"{band['lo']:.3f}-{band['hi']:.3f}",
+                            "band_t": band["t"], "band_n": band["trades"]})
+        return sorted(out, key=lambda r: -r["pred"])
+
+    def predict(self, d1: pd.DataFrame):
+        """The single best qualifying setup, or None."""
+        got = self.predict_all(d1)
+        return got[0] if got else None
 
 
 def fetch_1m(client, symbol: str, need: int = NEED_1M_BARS,

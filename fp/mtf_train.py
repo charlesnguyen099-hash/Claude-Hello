@@ -38,15 +38,15 @@ META = HERE / "mtf_model.json"
 
 FULL = ("2026-05-31", "2026-08-08")
 
-# Measured on the walk-forward, pooled over three folds. Realized net per
-# INDEPENDENT trade at each predicted-net gate. The bot sizes from this
-# and from nothing else.
-GATES = [
-    {"gate": 0.000, "trades": 356, "realized_pct": 0.033},
-    {"gate": 0.001, "trades": 193, "realized_pct": 0.148},
-    {"gate": 0.002, "trades": 124, "realized_pct": 0.228},
-    {"gate": 0.005, "trades": 49, "realized_pct": 0.893},
-]
+# The gate lives in fp/mtf_bands.json, produced by run_bands.py. It is a
+# MARGINAL table -- what a trade landing IN a band earned -- in units of
+# net/b, the share of its own winning payout.
+#
+# The first version of this was CUMULATIVE and used as if it were
+# per-band, which had the bot trading two bands the study had measured as
+# losing. The live session that followed spent its money in exactly those
+# bands: -0.101%/trade in the bottom one.
+BANDS_FILE = "mtf_bands.json"
 
 
 def main() -> None:
@@ -76,10 +76,13 @@ def main() -> None:
         "train_window": list(FULL),
         "train_rows": rows,
         "model": wf.MODEL,
-        "gates": GATES,
-        "note": "Trained on 2026-05-31..08-08. Walk-forward on June read "
-                "+0.23%/trade at the 0.002 gate over 124 independent "
-                "trades, t about 1.8 -- promising, not proven.",
+        "bands_file": BANDS_FILE,
+        "note": "Trained on 2026-05-31..08-08. The tradeable band is read "
+                "from mtf_bands.json: one band of six was measured "
+                "profitable, 0.006-0.009, earning 0.406 of a win over 34 "
+                "independent trades at t=2.76. One band out of six with "
+                "negative neighbours on both sides -- promising, not "
+                "proven.",
     }, indent=1))
     print(f"\nwrote {PKL.name} ({PKL.stat().st_size:,} bytes) and {META.name}")
     print(f"{len(models)} models, {len(cols)} features, {rows:,} training rows")

@@ -1039,21 +1039,14 @@ class Broker:
             return []
 
         try:
-            best = self.mtf.predict(d1)
+            cands = self.mtf.predict_all(d1)
         except Exception:
             logger.debug("mtf predict failed %s", symbol, exc_info=True)
             self._drop_signals(symbol)
             return []
-        if best is None:
+        if not cands:
+            # Nothing whose band the walk-forward measured profitable.
             self.no_signal += 1
-            self._drop_signals(symbol)
-            return []
-
-        realized = self.mtf.realized_for(best["pred"]) / 100.0
-        if realized <= 0 or best["pred"] <= 0:
-            # The band this prediction falls in was not measured
-            # profitable. Not a trade, whatever the raw number says.
-            self.skipped_negative_ev += 1
             self._drop_signals(symbol)
             return []
 
@@ -1066,48 +1059,57 @@ class Broker:
             self._drop_signals(symbol)
             return []
 
-        tp_dist = best["tp"] * sigma
-        sl_dist = best["sl"] * sigma
-        hold_min = float(best["hold_min"])
-        chain = S.best_leverage(tp_dist, hold_min / 1440.0, sigma,
-                                self.max_leverage or S.LEVERAGE_MAX)
-        if not chain["tradeable"]:
-            self.skipped_unsolvent += 1
-            self._drop_signals(symbol)
-            return []
+        out, keep = [], set()
+        for c in cands:
+            tp_dist = c["tp"] * sigma
+            sl_dist = c["sl"] * sigma
+            hold_min = float(c["hold_min"])
+            chain = S.best_leverage(tp_dist, hold_min / 1440.0, sigma,
+                                    self.max_leverage or S.LEVERAGE_MAX)
+            if not chain["tradeable"]:
+                self.skipped_unsolvent += 1
+                continue
+            rule = (f"mtf:{c['tp']}/{c['sl']}/{c['hmax']}:"
+                    f"{'long' if c['side'] > 0 else 'short'}")
+            fee = self.trade_cost(symbol, c["side"])
+            # The stake reads the MEASURED band, never the raw prediction:
+            # the prediction says which band, the band says what a trade
+            # there was worth.
+            # The band is a SHARE of what a win pays, so the edge for
+            # this setup is that share times this setup's own payout.
+            # score then comes out as 100 x edge/b = 100 x the share,
+            # which is what the walk-forward actually measured.
+            realized = c["edge_over_b"] * max(tp_dist - fee, 0.0)
+            P = self.potential(tp_dist, sl_dist, rule, realized, fee)
+            frac, kelly, edge = self.book_margin_fraction(
+                tp_dist, sl_dist, chain["leverage"], rule, realized, fee)
+            if frac <= 0:
+                self.skipped_negative_ev += 1
+                if P["refuted"]:
+                    self.refuted += 1
+                continue
+            sig = Signal(
+                bar_ts=bar_ts, direction=c["side"], atr_pct=100.0 * sigma,
+                votes=1, vote_margin=1,
+                methods=(f"mtf pred={100*c['pred']:+.3f}% "
+                         f"band {c['band']} paid {c['edge_over_b']:+.3f} of a "
+                         f"win on {c['band_n']} trades t={c['band_t']:.1f} | "
+                         f"tp{c['tp']}/sl{c['sl']} hold<={hold_min:.0f}m "
+                         f"lev={chain['leverage']:.2f}x "
+                         f"potential={P['score']:.0f}/100 stake={100*frac:.1f}%"),
+                confidence=None, slow_leverage=chain["leverage"],
+                tp_dist=tp_dist, sl_dist=sl_dist, max_hold_min=hold_min,
+                rule=rule, rule_mean=realized, symbol=symbol,
+                margin_frac=frac, kelly_full=kelly, edge_used=edge,
+                score=P["score"])
+            self.signals[sig.slot] = sig
+            keep.add(sig.slot)
+            out.append(sig)
 
-        rule = (f"mtf:{best['tp']}/{best['sl']}/{best['hmax']}:"
-                f"{'long' if best['side'] > 0 else 'short'}")
-        fee = self.trade_cost(symbol, best["side"])
-        # The stake reads the MEASURED band, not the raw prediction: the
-        # prediction orders setups, the walk-forward says what an order
-        # of that size was worth.
-        P = self.potential(tp_dist, sl_dist, rule, realized, fee)
-        frac, kelly, edge = self.book_margin_fraction(
-            tp_dist, sl_dist, chain["leverage"], rule, realized, fee)
-        if frac <= 0:
-            self.skipped_negative_ev += 1
-            if P["refuted"]:
-                self.refuted += 1
-            self._drop_signals(symbol)
-            return []
-
-        sig = Signal(
-            bar_ts=bar_ts, direction=best["side"], atr_pct=100.0 * sigma,
-            votes=1, vote_margin=1,
-            methods=(f"mtf pred={100*best['pred']:+.3f}% "
-                     f"band={100*realized:+.3f}% "
-                     f"tp{best['tp']}/sl{best['sl']} hold<={hold_min:.0f}m "
-                     f"lev={chain['leverage']:.2f}x "
-                     f"potential={P['score']:.0f}/100 stake={100*frac:.1f}%"),
-            confidence=None, slow_leverage=chain["leverage"],
-            tp_dist=tp_dist, sl_dist=sl_dist, max_hold_min=hold_min,
-            rule=rule, rule_mean=realized, symbol=symbol,
-            margin_frac=frac, kelly_full=kelly, edge_used=edge,
-            score=P["score"])
-        self.signals[sig.slot] = sig
-        self._drop_signals(symbol, {sig.slot})
-        return [sig]
+        self._drop_signals(symbol, keep)
+        if not out:
+            self.no_signal += 1
+        return out
 
     def _book_bars(self, symbol: str, tf: str) -> pd.DataFrame | None:
         """Bars for one timeframe, fetched once per symbol per bar.

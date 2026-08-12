@@ -24,7 +24,7 @@ for k, (trw, tew) in enumerate(FOLDS, 1):
     got = wf.fold(trw, tew)
     if got is None:
         print(f"fold {k}: no data"); continue
-    bp, br, bs, bx, bh, ntr = got
+    bp, br, bs, bx, bh, ntr, bb = got
     cn, cm, ct = wf.ceiling(br, bs, bx, bh)
     print(f"\n=== FOLD {k}  train {trw[0]}..{trw[1]}  test {tew[0]}..{tew[1]} "
           f"({ntr:,} train rows) ===")
@@ -38,7 +38,7 @@ for k, (trw, tew) in enumerate(FOLDS, 1):
               f"total {t_:+.1f}%  t={tt:+.2f}")
     ng = wf.fold(trw, tew, shuffle=True, seed=100+k)
     if ng is not None:
-        p2, r2, s2, x2, h2, _ = ng
+        p2, r2, s2, x2, h2, _, _ = ng
         for g in GATES:
             n, m, t_, tt = score(p2, r2, s2, x2, h2, g)
             nulls.append({"fold": k, "gate": g, "trades": n, "mean_pct": m})

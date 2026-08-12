@@ -44,10 +44,13 @@ TEST = ("2026-08-05", "2026-08-08")
 def panel(window, shape):
     tp, sl, hm = shape
     D = J.load(*window)
-    Xs, yl, ys, hl, hs, syms, pos = [], [], [], [], [], [], []
+    Xs, yl, ys, hl, hs, syms, pos, sgs = [], [], [], [], [], [], [], []
     for sym, d1 in sorted(D.items()):
         if len(d1) < 1500:
             continue
+        from fp.exits import sigma_at as _sig
+        _de = J.resample(d1, ENTRY_MIN) if ENTRY_MIN > 1 else d1
+        _sg = _sig(_de["close"].values.astype(float))
         X, nl, ns, kl, ks = M.build_panel(d1, ENTRY_MIN, tp, sl, hm)
         ok = np.isfinite(nl) & np.isfinite(ns) & X.notna().all(axis=1).values
         if ok.sum() < 100:
@@ -57,11 +60,13 @@ def panel(window, shape):
         hl.append(kl[ok]); hs.append(ks[ok])
         syms.append(np.full(int(ok.sum()), sym))
         pos.append(np.flatnonzero(ok))
+        sgs.append(_sg[ok])
     if not Xs:
         return None
     return (pd.concat(Xs), np.concatenate(yl), np.concatenate(ys),
             np.concatenate(hl), np.concatenate(hs),
-            np.concatenate(syms), np.concatenate(pos))
+            np.concatenate(syms), np.concatenate(pos),
+            np.concatenate(sgs))
 
 
 def fit_one(Xtr, ytr):
@@ -157,7 +162,7 @@ def main():
         for shape in SHAPES:
             if (tag, shape) not in data:
                 continue
-            X, nl, ns, kl, ks, sy, po = data[(tag, shape)]
+            X, nl, ns, kl, ks, sy, po = data[(tag, shape)][:7]
             for side, real, hh in ((1, nl, kl), (-1, ns, ks)):
                 p = models[(shape, side)].predict(X)
                 if bp is None:

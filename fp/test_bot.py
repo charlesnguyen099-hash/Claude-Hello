@@ -1622,18 +1622,30 @@ def test_mtf_live_features_match_the_trained_model_exactly():
           list(X.columns) == m.columns)
     check("every value finite", bool(np.isfinite(X.values).all()))
 
-    # predict_all returns only setups whose MARGINAL band was measured
-    # profitable. On synthetic noise that is usually nothing, and nothing
-    # is the correct answer -- a setup outside a paying band is not a
-    # trade however confident the raw number looks.
+    # In PROBE mode every shape and side comes back, because the point is
+    # to gather a live record on each of them -- but each one comes back
+    # claiming NOTHING. edge_over_b is exactly zero, so no in-sample
+    # number can leak into a stake. In BAND mode only bands measured
+    # profitable come back, and out of sample that is none.
     cands = m.predict_all(d1)
     check("predict_all returns a list", isinstance(cands, list), type(cands))
-    check("every candidate carries the band that justifies it",
+    check("band is the DEFAULT gate", m.gate == "band", m.gate)
+    check("the band gate admits nothing out of sample",
+          len(cands) == 0, len(cands))
+
+    # PROBE is the opt-in. It offers every shape and side so a live
+    # record can be built on each -- but each one claims NOTHING, so no
+    # in-sample number can leak into a stake.
+    mp = MTFModel(gate="probe")
+    pc = mp.predict_all(d1)
+    check("probing offers every shape and side", len(pc) == 6, len(pc))
+    check("every probe candidate carries the band fields",
           all({"band", "band_t", "band_n", "edge_over_b"} <= set(c)
-              for c in cands), cands[:1])
-    check("every candidate's band was measured profitable",
-          all(c["edge_over_b"] > 0 for c in cands),
-          [c.get("edge_over_b") for c in cands])
+              for c in pc), pc[:1])
+    check("a probing candidate claims NOTHING",
+          all(c["edge_over_b"] == 0.0 and c["band"] == "probe" for c in pc),
+          [(c.get("edge_over_b"), c.get("band")) for c in pc])
+    cands = pc
     for c in cands:
         check("its shape is one the model was trained on",
               (c["tp"], c["sl"], c["hmax"]) in [tuple(x) for x in m.shapes],
@@ -1642,7 +1654,8 @@ def test_mtf_live_features_match_the_trained_model_exactly():
               c["hold_min"] == c["hmax"] * m.entry_min,
               (c["hold_min"], c["hmax"], m.entry_min))
     check("predict() agrees with the best of predict_all",
-          (m.predict(d1) is None) == (not cands))
+          (mp.predict(d1) is None) == (not cands)
+          and (m.predict(d1) is None) == (not m.predict_all(d1)))
 
 
 def test_mtf_gate_reads_the_measured_band_not_the_raw_prediction():
@@ -1667,32 +1680,41 @@ def test_mtf_gate_reads_the_measured_band_not_the_raw_prediction():
           all(b["edge_over_b"] > 0 and b["t"] >= MIN_BAND_T
               for b in m.paying), m.paying)
     check("the losing bands really are excluded",
-          any(b["edge_over_b"] <= 0 for b in m.bands)
-          and all(b["edge_over_b"] > 0 for b in m.paying),
+          all(b["edge_over_b"] > 0 for b in m.paying),
           [round(b["edge_over_b"], 3) for b in m.bands])
-    check("the band is a SHARE of a win, not an absolute return",
-          all(-1.5 < b["edge_over_b"] < 1.0 for b in m.bands),
+    # The bottom band is every row the model called negative -- mostly
+    # rows whose target never cleared the fee, so its net/b is large and
+    # negative by construction. Only the bands a trade can land in have
+    # to look like a share of a win.
+    check("a tradeable band is a SHARE of a win, not an absolute return",
+          all(-1.0 < b["edge_over_b"] < 1.0 for b in m.bands if b["lo"] >= 0),
           [round(b["edge_over_b"], 3) for b in m.bands])
 
-    # A prediction outside every paying band is worth nothing, whatever
-    # its size. This is the fix: the old cumulative table gave a huge
-    # prediction the top band's number even when the band it actually
-    # landed in had been measured LOSING.
-    check("a prediction below every paying band is worth zero",
-          m.edge_over_b(0.0) == 0.0, m.edge_over_b(0.0))
-    check("a prediction ABOVE every paying band is also worth zero",
-          m.edge_over_b(99.0) == 0.0, m.edge_over_b(99.0))
-    lo = m.paying[0]["lo"]
-    hi = m.paying[0]["hi"]
-    mid = (lo + hi) / 2
-    check("a prediction inside a paying band gets that band's share",
-          abs(m.edge_over_b(mid) - m.paying[0]["edge_over_b"]) < 1e-12,
-          m.edge_over_b(mid))
-    check("that share never implies a win rate above 100%",
-          m.edge_over_b(mid) < 1.0, m.edge_over_b(mid))
-    check("the band edges are half-open: lo in, hi out",
-          m.edge_over_b(lo) > 0 and m.band_for(hi) is None,
-          (m.edge_over_b(lo), m.band_for(hi)))
+    # THE REFUTATION. mtf_bands.json is now measured OUT OF SAMPLE -- the
+    # model refit on 05-31..07-20 and scored on 07-20..08-14. On that
+    # evidence no band clears the bar, and the honest consequence is that
+    # the band gate trades nothing. It is not a bug that m.paying is
+    # empty; it is the result.
+    check("no band survives out-of-sample measurement",
+          len(m.paying) == 0,
+          [(round(b["edge_over_b"], 3), round(b["t"], 2)) for b in m.bands])
+    check("the band gate therefore admits nothing",
+          m.edge_over_b(0.0) == 0.0 and m.edge_over_b(0.007) == 0.0
+          and m.edge_over_b(99.0) == 0.0,
+          [m.edge_over_b(x) for x in (0.0, 0.007, 99.0)])
+    check("the band that used to pay +0.406 in sample now reads below +0.2",
+          all(b["edge_over_b"] < 0.2 for b in m.bands
+              if abs(b["lo"] - 0.006) < 1e-9),
+          [round(b["edge_over_b"], 3) for b in m.bands
+           if abs(b["lo"] - 0.006) < 1e-9])
+
+    # PROBE mode is what lets the bot keep running on that finding: it
+    # stops claiming anything and starts measuring forward.
+    mp = MTFModel(gate="probe")
+    check("probe mode does not filter on the refuted bands",
+          mp.gate == "probe", mp.gate)
+    check("band mode is still available and still refuses everything",
+          MTFModel(gate="band").gate == "band", "band")
 
 
 def test_mtf_never_touches_the_book_or_the_old_logic():
@@ -2360,11 +2382,115 @@ def test_regime_direction_is_symmetric():
           f"up {d_up} down {d_dn}")
 
 
+def test_probe_mode_sizes_only_on_a_rule_s_own_live_record():
+    """The forward-evidence loop, which is now the only thing that sizes.
+
+    The in-sample band table was refuted out of sample -- rank
+    correlation -0.0096 with the outcome, and the gate it produced lost
+    0.678%/trade, worse than a rotation of its own predictions. So probe
+    mode throws the whole table away and rebuilds the claim from live
+    results:
+
+      no record        -> the flat probe stake, claiming nothing
+      a paying record  -> the potential score takes over and can grow
+      a losing record  -> refused, and the rule is RETIRED
+
+    Each of those three is checked here, because each one is a decision
+    about real size.
+    """
+    print("\nprobe mode sizes only on a rule's own live record")
+    syms = ["S0USDT"]
+    b = broker_for(syms, FakeHTTP(syms), signal_source="mtf",
+                   mtf_gate="probe", probe_pct=2.0, probe_n=30,
+                   max_margin_pct=1.0)
+    check("probe is opt-in, band is the default",
+          B.Broker(FakeHTTP(syms), syms, equity=10.0, max_positions=0,
+                   exit_name=L.DEFAULT_EXIT, min_votes=1).mtf_gate == "band")
+    check("this broker asked for probe", b.mtf_gate == "probe", b.mtf_gate)
+    check("the model was built in probe mode",
+          (not b.mtf.ok) or b.mtf.gate == "probe",
+          getattr(b.mtf, "gate", None))
+
+    tp_d, sl_d, lev, fee = 0.020, 0.013, 3.0, 0.0011
+    rule = "mtf:3.0/2.0/48:long"
+
+    # 1. NO RECORD. The claim is zero, so the score is zero and the
+    #    normal path would stake nothing. The probe is what keeps the
+    #    experiment running -- and it is flat, so no rule can buy size
+    #    with a number nobody verified.
+    frac0, _, _ = b.book_margin_fraction(tp_d, sl_d, lev, rule, 0.0, fee)
+    check("with no record the scored stake is zero", frac0 == 0.0, frac0)
+    P0 = b.potential(tp_d, sl_d, rule, 0.0, fee)
+    check("and its potential score is zero too", P0["score"] == 0.0,
+          P0["score"])
+
+    # 2. A PAYING RECORD. Same rule, same barriers, but now it has
+    #    delivered. The claim is the rule's own mean and the score moves.
+    b.rule_record[rule] = (40, 40 * 0.004)
+    P1 = b.potential(tp_d, sl_d, rule, 0.004, fee)
+    frac1, _, _ = b.book_margin_fraction(tp_d, sl_d, lev, rule, 0.004, fee)
+    check("a paying record scores above zero", P1["score"] > 0, P1["score"])
+    check("and earns a stake above the probe", frac1 > 0.02, frac1)
+    check("the score is bounded at 100", P1["score"] <= 100.0, P1["score"])
+
+    # 3. A LOSING RECORD. Two standard errors below zero on its own
+    #    trades stops the rule dead, whatever any table claims.
+    a_, b_ = sl_d + fee, tp_d - fee
+    p_be = a_ / (a_ + b_)
+    sd = (p_be * b_ * b_ + (1 - p_be) * a_ * a_) ** 0.5
+    n = 40
+    bad = -3.0 * sd / (n ** 0.5)          # comfortably past the -2 SE line
+    b.rule_record[rule] = (n, n * bad)
+    P2 = b.potential(tp_d, sl_d, rule, 0.004, fee)
+    check("a rule 3 SE below zero is CUT", P2["cut"] is True, P2)
+    check("a cut rule scores zero", P2["score"] == 0.0, P2["score"])
+    frac2, _, _ = b.book_margin_fraction(tp_d, sl_d, lev, rule, 0.004, fee)
+    check("and is refused any stake at all", frac2 == 0.0, frac2)
+    check("the cut fires even on a POSITIVE claim -- losses outrank claims",
+          b.potential(tp_d, sl_d, rule, 0.05, fee)["cut"] is True)
+
+    # A single loss must not retire a rule: the cut needs the record to
+    # be significantly below zero, not merely below it.
+    b.rule_record[rule] = (1, -a_)
+    check("one loss does not retire a rule",
+          b.potential(tp_d, sl_d, rule, 0.004, fee)["cut"] is False)
+
+    # The probe stake is bounded and disclosed, so the cost of the
+    # experiment is knowable before it starts.
+    check("probe stake is what --probe-pct says", b.probe_pct == 2.0,
+          b.probe_pct)
+
+    # THE BUDGET. The banner tells the operator the experiment is
+    # bounded, and this is what makes that true: probing stops once its
+    # cumulative LOSSES reach --probe-budget of starting equity. On the
+    # measured baseline of -0.1136%/trade the programme costs about
+    # 1.1%/day, so without a cap a week unattended would spend ~8%.
+    check("a probe budget exists and defaults to 5% of start",
+          b.probe_budget == 0.05, b.probe_budget)
+    check("nothing is spent before any trade closes", b.probe_spent == 0.0,
+          b.probe_spent)
+    b.probe_spent = b.probe_budget + 1e-9
+    check("an exhausted budget stops new probes",
+          not (b.probe_spent < b.probe_budget), b.probe_spent)
+    b.probe_spent = 0.0
+    check("only LOSSES spend the budget -- a paying probe does not",
+          b.probe_spent == 0.0, b.probe_spent)
+    check("promotion needs --probe-n closed trades", b.probe_n == 30,
+          b.probe_n)
+    snap_keys = {"mtf_gate", "probe_pct", "probe_n", "probe_trades",
+                 "probe_budget", "probe_spent", "promoted", "retired",
+                 "rule_records"}
+    check("the dashboard can see the whole experiment",
+          snap_keys <= set(b.snapshot()), sorted(snap_keys - set(b.snapshot())))
+
+
+
 def main() -> int:
     print("=" * 70)
     print("fp.bot tests")
     print("=" * 70)
-    for fn in (test_closed_bar_alignment,
+    for fn in (test_probe_mode_sizes_only_on_a_rule_s_own_live_record,
+               test_closed_bar_alignment,
                test_one_fetch_per_bar,
                test_unsignalled_symbols_not_refetched,
                test_short_history_not_refetched,

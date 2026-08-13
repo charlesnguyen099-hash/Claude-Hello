@@ -152,6 +152,9 @@ class Signal:
     kelly_full: float = 0.0        # before any cap, for reporting
     edge_used: float = 0.0         # the shrunk per-trade edge behind it
     score: float = 0.0             # potential out of 100 -- see Broker.potential
+    # Opened purely to gather evidence, on no claim at all. Carried to the
+    # position so the close can bill it to the experiment's budget.
+    probing: bool = False
 
     @property
     def slot(self) -> str:
@@ -197,6 +200,7 @@ class Position:
     score: float = 0.0
     kelly_full: float = 0.0
     edge_used: float = 0.0
+    probing: bool = False
 
 
 @dataclass
@@ -235,7 +239,9 @@ class Broker:
                  sizing: str = "kelly",
                  max_margin_pct: float = L.MAX_MARGIN_FRACTION,
                  limit_entry: bool = False, slippage: float = 0.0,
-                 fee_override: float | None = None):
+                 fee_override: float | None = None,
+                 mtf_gate: str = "band", probe_pct: float = 2.0,
+                 probe_n: int = 30, probe_budget: float = 0.05):
         self.client = client
         self.symbols = symbols
         self.equity = equity
@@ -303,9 +309,33 @@ class Broker:
         self._book_cache: dict[tuple, tuple] = {}
         self._fired_cache: dict[tuple, tuple] = {}
         self.bar_minutes = L.BAR_MINUTES
+        # FORWARD EVIDENCE. The in-sample band table said one band of six
+        # paid +0.406 of a win at t = 2.76. Refit on a clean split and
+        # scored on 24 days it had never seen, the same band paid +0.102
+        # at t = 0.42, the model's rank correlation with the outcome was
+        # -0.0096, and the shipped gate lost 0.678%/trade -- worse than a
+        # rotation of its own predictions. See fp/verdict.py.
+        #
+        # So no in-sample number sizes anything any more. In probe mode
+        # every shape and side trades a fixed small stake, and the ONLY
+        # thing that lets a rule grow past it is its own live record.
+        # probe_n is where the record's standard error is small enough to
+        # separate the fee from an edge; before that, nothing is claimed.
+        self.mtf_gate = mtf_gate
+        self.probe_pct = probe_pct
+        self.probe_n = probe_n
+        self.probe_budget = probe_budget
+        self.probe_trades = 0
+        # What probing has actually cost, as a fraction of STARTING equity.
+        # The banner promises the experiment is bounded; this is what makes
+        # that true rather than a figure of speech. Losses only -- a probe
+        # that pays is not spending the budget.
+        self.probe_spent = 0.0
+        self.promoted: set[str] = set()
+        self.retired: set[str] = set()
         if signal_source == "mtf":
             from fp.mtf_live import MTFModel
-            self.mtf = MTFModel()
+            self.mtf = MTFModel(gate=mtf_gate)
             self.bar_minutes = (self.mtf.entry_min if self.mtf.ok
                                 else L.BAR_MINUTES)
             self._mtf_cache: dict[str, tuple] = {}
@@ -1079,29 +1109,61 @@ class Broker:
             # this setup is that share times this setup's own payout.
             # score then comes out as 100 x edge/b = 100 x the share,
             # which is what the walk-forward actually measured.
-            realized = c["edge_over_b"] * max(tp_dist - fee, 0.0)
+            n_live, tot_live = self.rule_record.get(rule, (0, 0.0))
+            if self.mtf_gate == "probe":
+                # The claim is this rule's OWN closed trades and nothing
+                # else. With no trades the claim is zero, the score is
+                # zero, and the stake is the probe -- which is the point:
+                # the bot pays a known, bounded price to find out.
+                realized = (tot_live / n_live) if n_live > 0 else 0.0
+            else:
+                realized = c["edge_over_b"] * max(tp_dist - fee, 0.0)
             P = self.potential(tp_dist, sl_dist, rule, realized, fee)
             frac, kelly, edge = self.book_margin_fraction(
                 tp_dist, sl_dist, chain["leverage"], rule, realized, fee)
+            probing = False
+            budget_left = self.probe_spent < self.probe_budget
+            if self.mtf_gate == "probe" and not P["cut"]:
+                if (n_live < self.probe_n and budget_left
+                        and frac < self.probe_pct / 100.0):
+                    # Still gathering. A fixed slice, the same for every
+                    # rule, so no rule buys size with a number nobody has
+                    # verified.
+                    frac, probing = self.probe_pct / 100.0, True
+                elif n_live >= self.probe_n and frac > 0:
+                    self.promoted.add(rule)
             if frac <= 0:
                 self.skipped_negative_ev += 1
                 if P["refuted"]:
                     self.refuted += 1
+                if P["cut"] or n_live >= self.probe_n:
+                    self.retired.add(rule)
+                    self.promoted.discard(rule)
                 continue
+            if probing:
+                self.probe_trades += 1
             sig = Signal(
                 bar_ts=bar_ts, direction=c["side"], atr_pct=100.0 * sigma,
                 votes=1, vote_margin=1,
-                methods=(f"mtf pred={100*c['pred']:+.3f}% "
-                         f"band {c['band']} paid {c['edge_over_b']:+.3f} of a "
-                         f"win on {c['band_n']} trades t={c['band_t']:.1f} | "
-                         f"tp{c['tp']}/sl{c['sl']} hold<={hold_min:.0f}m "
-                         f"lev={chain['leverage']:.2f}x "
-                         f"potential={P['score']:.0f}/100 stake={100*frac:.1f}%"),
+                methods=((f"mtf pred={100*c['pred']:+.3f}% "
+                          + (f"PROBE {n_live}/{self.probe_n} trades, "
+                             f"live {100*realized:+.3f}%/trade"
+                             if probing else
+                             f"LIVE {n_live} trades, "
+                             f"{100*realized:+.3f}%/trade")
+                          if self.mtf_gate == "probe" else
+                          f"mtf pred={100*c['pred']:+.3f}% "
+                          f"band {c['band']} paid {c['edge_over_b']:+.3f} of a "
+                          f"win on {c['band_n']} trades t={c['band_t']:.1f}")
+                         + f" | tp{c['tp']}/sl{c['sl']} hold<={hold_min:.0f}m "
+                           f"lev={chain['leverage']:.2f}x "
+                           f"potential={P['score']:.0f}/100 "
+                           f"stake={100*frac:.1f}%"),
                 confidence=None, slow_leverage=chain["leverage"],
                 tp_dist=tp_dist, sl_dist=sl_dist, max_hold_min=hold_min,
                 rule=rule, rule_mean=realized, symbol=symbol,
                 margin_frac=frac, kelly_full=kelly, edge_used=edge,
-                score=P["score"])
+                score=P["score"], probing=probing)
             self.signals[sig.slot] = sig
             keep.add(sig.slot)
             out.append(sig)
@@ -1872,6 +1934,11 @@ class Broker:
                 rec = self.rule_record.setdefault(pos.rule, [0, 0.0])
                 rec[0] += 1
                 rec[1] += net
+                if pos.probing:
+                    loss = (pos.entry_fee - pnl) / max(self.starting_equity,
+                                                       1e-9)
+                    if loss > 0:
+                        self.probe_spent += loss
                 self.book_trades += 1
                 claim = pos.ev_per_margin / max(pos.leverage, 1e-9)
                 self.book_claimed += claim
@@ -1951,6 +2018,13 @@ class Broker:
             "slice_size": self.slice_size(),
             "sizing_mode": self.sizing, "exit_name": self.exit_name,
             "signal_source": self.signal_source,
+            "mtf_gate": self.mtf_gate,
+            "probe_pct": self.probe_pct, "probe_n": self.probe_n,
+            "probe_trades": self.probe_trades,
+            "probe_budget": self.probe_budget,
+            "probe_spent": self.probe_spent,
+            "promoted": set(self.promoted), "retired": set(self.retired),
+            "rule_records": dict(self.rule_record),
             "book_rules": len(self.book),
             "max_margin_pct": self.max_margin_pct,
             "book_calibration": self.book_calibration(),
@@ -2159,11 +2233,16 @@ def print_dashboard(s: dict) -> None:
           f"   {s['margin_used_pct']:.1f}% of equity deployed")
     # BUG: this line used to read potential_sizing, a different flag, and
     # so described a mode the bot was not running.
-    if s.get("signal_source") == "mtf":
-        how = (f"the model's predicted net, mapped through the WALK-FORWARD "
-               f"table to a\n            measured %/trade, then that as a "
-               f"percent of equity. 0% to "
-               f"{100*s['max_margin_pct']:.0f}%.")
+    if s.get("signal_source") == "mtf" and s.get("mtf_gate") == "probe":
+        how = (f"{s['probe_pct']:.1f}% of equity while a rule is still "
+               f"gathering its first\n            {s['probe_n']} trades, then "
+               f"that rule's OWN live record and nothing else,\n            "
+               f"0% to {100*s['max_margin_pct']:.0f}%. The in-sample table is "
+               f"not consulted.")
+    elif s.get("signal_source") == "mtf":
+        how = (f"the model's predicted net, mapped through the band table to "
+               f"a\n            measured %/trade, then that as a percent of "
+               f"equity. 0% to {100*s['max_margin_pct']:.0f}%.")
     elif s.get("signal_source") == "book":
         how = (f"each rule's own half-Kelly on its own edge and barriers, "
                f"0% to {100*s['max_margin_pct']:.0f}% of equity")
@@ -2219,13 +2298,35 @@ def print_dashboard(s: dict) -> None:
     print(f"  COST      taker in+out {100*(L.ENTRY_FEE_TAKER+L.EXIT_FEE_TAKER):.3f}%"
           f"   live funding median {100*s['live_funding']:+.4f}%/8h"
           f"   -> a long costs {100*s['cost_long']:.3f}% round trip")
-    if s.get("signal_source") == "mtf":
-        print(f"  EDGE      multi-timeframe model; every setup is gated on the "
-              f"band the")
-        print(f"            walk-forward measured, not on the raw prediction. "
+    if s.get("signal_source") == "mtf" and s.get("mtf_gate") == "probe":
+        print(f"  EDGE      FORWARD EVIDENCE. The in-sample band table was "
+              f"refuted out of")
+        print(f"            sample (rank correlation -0.0096 over 24 unseen "
+              f"days), so no")
+        print(f"            claim from it is used. Each rule probes at "
+              f"{s['probe_pct']:.1f}% and grows")
+        print(f"            only on its own results.")
+        print(f"            probe entries {s.get('probe_trades', 0):,}"
+              f"   promoted {len(s.get('promoted') or [])}"
+              f"   retired {len(s.get('retired') or [])}"
+              f"   refused {s['skipped_negative_ev']:,}")
+        rr = s.get("rule_records") or {}
+        if rr:
+            print(f"  RULES     each rule's own live record "
+                  f"(what decides its stake):")
+            for r, (n_, tot_) in sorted(rr.items(),
+                                        key=lambda kv: -kv[1][0])[:8]:
+                state = ("RETIRED " if r in (s.get("retired") or ()) else
+                         "promoted" if r in (s.get("promoted") or ()) else
+                         f"probe {n_}/{s['probe_n']}")
+                print(f"            {r:<34} {n_:>3} trades "
+                      f"{100*tot_/max(n_,1):+.3f}%/trade  {state}")
+    elif s.get("signal_source") == "mtf":
+        print(f"  EDGE      multi-timeframe model, BAND gate. Out of sample no "
+              f"band was")
+        print(f"            measured profitable, so nothing qualifies. "
               f"Skipped this")
-        print(f"            session: {s['skipped_negative_ev']:,} below the "
-              f"lowest paying band.")
+        print(f"            session: {s['skipped_negative_ev']:,}.")
         sc = s.get("scores") or []
         if sc:
             print(f"  POTENTIAL standing scores /100: best {max(sc):.0f}   "
@@ -2413,14 +2514,17 @@ def run(client, symbols: list[str], equity: float, max_positions: int,
         book_file: str = "book.json",
         book_anywhere: bool = False, trust_book: bool = False,
         earn_stake: bool = False, stake_curve: str = "linear",
-        share_stakes: bool = False) -> None:
+        share_stakes: bool = False, mtf_gate: str = "band",
+        probe_pct: float = 2.0, probe_n: int = 30,
+        probe_budget: float = 0.05) -> None:
     broker = Broker(client, symbols, equity, max_positions, exit_name,
                     min_votes, fee, max_leverage, margin_pct, max_notional_x,
                     conviction_floor, expectancy_gate, assumed_win_rate,
                     signal_source, book_file, book_anywhere, trust_book,
                     earn_stake, stake_curve, share_stakes,
                     potential_sizing, sizing, max_margin_pct, limit_entry,
-                    slippage, fee_override)
+                    slippage, fee_override, mtf_gate, probe_pct, probe_n,
+                    probe_budget)
     stop_event = threading.Event()
 
     def stop(signum, frame):

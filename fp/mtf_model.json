@@ -163,9 +163,9 @@
  ],
  "train_window": [
   "2026-05-31",
-  "2026-08-08"
+  "2026-08-14"
  ],
- "train_rows": 201807,
+ "train_rows": 255023,
  "model": {
   "max_depth": 2,
   "min_samples_leaf": 3000,
@@ -174,5 +174,5 @@
   "learning_rate": 0.05
  },
  "bands_file": "mtf_bands.json",
- "note": "Trained on 2026-05-31..08-08. The tradeable band is read from mtf_bands.json: one band of six was measured profitable, 0.006-0.009, earning 0.406 of a win over 34 independent trades at t=2.76. One band out of six with negative neighbours on both sides -- promising, not proven."
+ "note": "Trained on 2026-05-31..08-14. REFUTED as a gate: refit on 05-31..07-20 and scored on 07-20..08-14, the model's rank correlation with the outcome was -0.0096, the band that read +0.406 of a win in sample read +0.102 at t=0.42, and trading the shipped gate lost 0.678%/trade -- worse than a rotation of its own predictions (p=0.995). mtf_bands.json is now measured OUT OF SAMPLE and no band qualifies. The prediction is kept only to ORDER candidates while the bot probes each shape and side forward on its own live record. Run python -m fp.verdict."
 }

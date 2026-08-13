@@ -199,6 +199,23 @@ def main() -> int:
                         "`python run_bot.py` runs. The parts are still there "
                         "if you want one alone: btc_book.json, "
                         "coin_tiers.json, coin_book.json")
+    p.add_argument("--mtf-gate", choices=("band", "probe"), default="band",
+                   help="band (default): trade only bands MEASURED profitable "
+                        "out of sample. None are, so the bot stands still -- "
+                        "which is the honest reading, not a fault. probe: "
+                        "trade every shape and side at --probe-pct to gather "
+                        "a live record. Costs about 1.1%%/day of equity on "
+                        "the measured baseline, capped by --probe-budget")
+    p.add_argument("--probe-pct", type=float, default=2.0,
+                   help="percent of equity a rule stakes while it is still "
+                        "gathering its first --probe-n trades (default 2)")
+    p.add_argument("--probe-n", type=int, default=30,
+                   help="closed trades a rule needs before its own record "
+                        "replaces the probe stake (default 30)")
+    p.add_argument("--probe-budget", type=float, default=5.0,
+                   help="percent of STARTING equity the probe programme may "
+                        "lose in total before it stops opening new probes "
+                        "(default 5). This is what bounds the experiment")
     p.add_argument("--earn-stake", action="store_true",
                    help="make each rule EARN its way up from --margin-pct to "
                         "--max-margin-pct as it builds a live record. Off by "
@@ -341,34 +358,92 @@ def main() -> int:
         print(f"                     trained on {_m.get('train_rows', 0):,} rows, "
               f"{_m.get('train_window', ['?','?'])[0]}.."
               f"{_m.get('train_window', ['?','?'])[1]}")
-        print(f"  Side and exit    : the model scores every barrier shape on "
-              f"BOTH sides and takes")
-        print(f"                     the highest predicted net. Nothing about "
-              f"the trade is fixed.")
+        if args.mtf_gate == "probe":
+            print(f"  Side and exit    : every barrier shape on BOTH sides "
+                  f"gets its own slot, so a")
+            print(f"                     symbol can carry six at once. The "
+                  f"prediction only ORDERS")
+            print(f"                     them -- out of sample it does not "
+                  f"predict the outcome.")
+        else:
+            print(f"  Side and exit    : the model scores every barrier shape "
+                  f"on BOTH sides and takes")
+            print(f"                     the highest predicted net. Nothing "
+                  f"about the trade is fixed.")
         try:
             _b = _j.loads((_P(__file__).resolve().parent / "fp" /
                            "mtf_bands.json").read_text())
         except Exception:
             _b = []
-        print(f"  Gate and stake   : MARGINAL bands from the walk-forward. A "
-              f"setup trades only if")
-        print(f"                     the band its prediction lands in was "
-              f"measured profitable.")
+        print(f"  Bands OUT OF SAMPLE: refit on 05-31..07-20, scored on "
+              f"07-20..08-14 -- bars")
+        print(f"                     the model never saw. This replaces the "
+              f"in-sample table.")
         for g in _b:
             lo = "-inf" if g["lo"] < -1 else f"{g['lo']:.3f}"
             hi = "+inf" if g["hi"] > 1 else f"{g['hi']:.3f}"
-            mark = ("TRADED " if g["edge_over_b"] > 0 and g["t"] >= 2.0
-                    else "skipped")
+            mark = ("PAYS   " if g["edge_over_b"] > 0 and g["t"] >= 2.0
+                    else "no    ")
             print(f"      {mark} {lo:>6}..{hi:<6} {g['edge_over_b']:+.3f} of a "
-                  f"win, {g['trades']:>3} trades, t={g['t']:+.2f}")
-        print(f"  MEASURED         : walk-forward on June, three folds, "
-              f"retrained each time.")
-        print(f"                     Perfect hindsight selection on the same "
-              f"bars earned about +95%")
-        print(f"                     per six-day fold. ONE band of six pays, "
-              f"with negative")
-        print(f"                     neighbours either side, on 34 trades. "
-              f"Promising, NOT proven.")
+                  f"win, {g['trades']:>4} trades, t={g['t']:+.2f}")
+        _pay = [g for g in _b if g["edge_over_b"] > 0 and g["t"] >= 2.0]
+        print(f"  REFUTED          : the shipped gate claimed +0.406 of a win "
+              f"at t=+2.76 on 34")
+        print(f"                     in-sample trades. Out of sample the same "
+              f"band paid +0.102")
+        print(f"                     at t=+0.42, and trading it lost "
+              f"0.678%/trade -- worse than")
+        print(f"                     a random rotation of its own "
+              f"predictions (p=0.995).")
+        print(f"                     Rank correlation prediction vs outcome "
+              f"over 24 OOS days:")
+        print(f"                     -0.0096. There is no relationship. "
+              f"Run python -m fp.verdict.")
+        print(f"                     {len(_pay)} of {len(_b)} bands are "
+              f"tradeable on that evidence.")
+        if args.mtf_gate == "probe":
+            print(f"  Gate             : PROBE. No in-sample number sizes "
+                  f"anything. Every shape")
+            print(f"                     and side trades {args.probe_pct:.1f}% "
+                  f"of equity until it has")
+            print(f"                     {args.probe_n} closed trades of its "
+                  f"OWN, then its own record")
+            print(f"                     -- and only that -- decides its "
+                  f"stake.")
+            print(f"                     A rule more than 2 standard errors "
+                  f"below zero is RETIRED")
+            print(f"                     and stops trading.")
+            print(f"    COST: on the measured baseline every untimed barrier "
+                  f"trade loses")
+            print(f"    0.1136% of notional (6,140 independent trades, "
+                  f"t = -13.9). Probing at")
+            print(f"    {args.probe_pct:.1f}% and a few x leverage that is "
+                  f"roughly -1.1%/day of equity.")
+            print(f"    Probing STOPS once it has lost "
+                  f"{args.probe_budget:.1f}% of the starting balance.")
+            print(f"    You are paying that to find out whether the market "
+                  f"has changed. It is")
+            print(f"    a real cost and the data says it will probably not "
+                  f"be repaid.")
+        else:
+            print(f"  Gate             : BAND (default). Only bands measured "
+                  f"profitable trade.")
+            print(f"                     Out of sample {len(_pay)} of "
+                  f"{len(_b)} qualify, so THE BOT WILL NOT")
+            print(f"                     OPEN ANYTHING. That is the honest "
+                  f"reading of the evidence,")
+            print(f"                     not a malfunction. Every entry rule "
+                  f"tested on this data")
+            print(f"                     loses about the fee: the model "
+                  f"(rho -0.0096), six classic")
+            print(f"                     effects (best t = +0.85 against a "
+                  f"3.40 bar, python -m")
+            print(f"                     fp.simple), and untimed entry "
+                  f"(-0.1136%/trade).")
+            print(f"                     --mtf-gate probe trades anyway, to "
+                  f"gather live evidence,")
+            print(f"                     at a measured cost of about "
+                  f"-1.1%/day.")
 
     if args.signals == "book":
         # Measured, not guessed. See fp/aug_tiers.py.
@@ -419,12 +494,21 @@ def main() -> int:
         # mtf shares the book's potential score and stake curve; it does
         # NOT use the ATR ladder's Kelly-on-live-record, which is what
         # this chain used to fall through to and print.
-        print(f"  Sizing           : the setup's own potential score, "
-              f"0% up to {args.max_margin_pct:.0f}% of equity")
-        print(f"  Potential scale  : 100 x edge/b -- the band's measured edge "
-              f"as a share of what")
-        print(f"                     a win pays. 0 = break-even, 100 = cannot "
-              f"lose by its barriers.")
+        if args.mtf_gate == "probe":
+            print(f"  Sizing           : {args.probe_pct:.1f}% while probing, "
+                  f"then the rule's own live")
+            print(f"                     record, 0% up to "
+                  f"{args.max_margin_pct:.0f}% of equity")
+        else:
+            print(f"  Sizing           : the setup's own potential score, "
+                  f"0% up to {args.max_margin_pct:.0f}% of equity")
+        print(f"  Potential scale  : 100 x edge/b -- the credible edge as a "
+              f"share of what a win")
+        print(f"                     pays. 0 = break-even, 100 = cannot lose "
+              f"by its own barriers.")
+        if args.mtf_gate == "probe":
+            print(f"                     The edge is the rule's OWN live mean. "
+                  f"No other source.")
         if args.stake_curve == "linear":
             print(f"  Stake            : score, read as a percent of equity. "
                   f"Capped at {args.max_margin_pct:.0f}%.")
@@ -437,8 +521,14 @@ def main() -> int:
                   f"80 -> 64%    100 -> ALL IN")
         print(f"    Half-Kelly and a ruin cap apply on top, so a big score "
               f"on a wide stop")
-        print(f"    still cannot bet the account. Nothing reads the previous "
-              f"trade's result.")
+        print(f"    still cannot bet the account.")
+        if args.mtf_gate == "probe":
+            print(f"    A rule DOES read its own past -- that is the only "
+                  f"evidence there is. It")
+            print(f"    does not read any other rule's, and no rule reads the "
+                  f"in-sample table.")
+        else:
+            print(f"    Nothing reads the previous trade's result.")
         print(f"  Slots            : one position per SYMBOL x RULE, so a "
               f"symbol can carry")
         print(f"                     several shapes at once instead of being "
@@ -651,7 +741,9 @@ def _run(args, client, symbols, fee) -> int:
               "flat" if args.flat_sizing else args.sizing,
               args.max_margin_pct / 100.0, args.limit_entry, args.slippage,
               None, args.book_file, args.book_anywhere, args.trust_book,
-              args.earn_stake, args.stake_curve, args.share_stakes)
+              args.earn_stake, args.stake_curve, args.share_stakes,
+              args.mtf_gate, args.probe_pct, args.probe_n,
+              args.probe_budget / 100.0)
     except KeyboardInterrupt:
         pass
     except Exception as exc:

@@ -59,7 +59,16 @@ NEED_1M_BARS = 7200
 class MTFModel:
     """The trained model plus everything needed to feed it correctly."""
 
-    def __init__(self, pkl: Path = PKL, meta: Path = META):
+    def __init__(self, pkl: Path = PKL, meta: Path = META,
+                 gate: str = "band"):
+        # "band"  -- trade only bands the study measured profitable.
+        #            With the out-of-sample table that is NOTHING, which
+        #            is the honest reading and also a bot that does not
+        #            move.
+        # "probe" -- trade every shape and side at a fixed small stake and
+        #            let each one earn or lose its way out of probing on
+        #            its OWN live record. No in-sample number is used.
+        self.gate = gate
         self.ok = pkl.exists() and meta.exists()
         if not self.ok:
             logger.warning("%s / %s missing -- run python -m fp.mtf_train",
@@ -83,7 +92,7 @@ class MTFModel:
             self.bands = []
         self.paying = [b for b in self.bands
                        if b.get("edge_over_b", 0) > 0 and b["t"] >= MIN_BAND_T]
-        if not self.paying:
+        if not self.paying and self.gate == "band":
             logger.warning("no band in %s measured positive at t >= %.1f -- "
                            "nothing will be traded", BANDS.name, MIN_BAND_T)
         # Views live in fp.mtf; assert rather than duplicate, so the two
@@ -166,14 +175,28 @@ class MTFModel:
                     continue
                 p = float(m.predict(X)[0])
                 band = self.band_for(p)
-                if band is None:
-                    continue
+                if self.gate == "band":
+                    if band is None:
+                        continue
+                    eob, lab = band["edge_over_b"], \
+                        f"{band['lo']:.3f}-{band['hi']:.3f}"
+                    bt, bn = band["t"], band["trades"]
+                elif band is None:
+                    # Probing. The prediction still ORDERS the candidates,
+                    # because something has to, but it makes no claim
+                    # about what the trade is worth -- out of sample its
+                    # rank correlation with the outcome was -0.0096, and a
+                    # stake sized off that would be sized off noise.
+                    eob, lab, bt, bn = 0.0, "probe", 0.0, 0
+                else:
+                    eob, lab = band["edge_over_b"], \
+                        f"{band['lo']:.3f}-{band['hi']:.3f}"
+                    bt, bn = band["t"], band["trades"]
                 out.append({"pred": p, "side": side, "tp": tp, "sl": sl,
                             "hmax": int(hm),
                             "hold_min": int(hm) * self.entry_min,
-                            "edge_over_b": band["edge_over_b"],
-                            "band": f"{band['lo']:.3f}-{band['hi']:.3f}",
-                            "band_t": band["t"], "band_n": band["trades"]})
+                            "edge_over_b": eob, "band": lab,
+                            "band_t": bt, "band_n": bn})
         return sorted(out, key=lambda r: -r["pred"])
 
     def predict(self, d1: pd.DataFrame):

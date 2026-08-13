@@ -284,20 +284,11 @@ def expectancy(atr14_pct: float, exit_name: str = DEFAULT_EXIT,
     # 30.6% win and -0.1837% gross, and a 9h live session confirmed it at
     # 30.1% over 113 closed trades. So when the band has been measured,
     # its own number is used and nothing is assumed.
-    if win_rate is None:
-        from fp import calibrate as C
-        tbl = C.load_table()
-        if tbl:
-            edge = C.measured_edge(atr14_pct, exit_name, tbl)
-            if edge is not None:
-                return edge - fee
-            # Band exists but was never measured with enough samples. An
-            # unmeasured band is NOT a profitable one, and falling back to
-            # the formula here would reintroduce exactly the failure this
-            # table exists to prevent -- the formula's answer is always
-            # "the bigger the ATR the better", and the thinnest bands are
-            # the biggest ones.
-            return float("-inf")
+    # The measured-table fallback is gone with fp/calibrate.py. That
+    # table was built for the twelve-method exit on its own TP/SL ladder,
+    # and applying another logic's record to this one is the mistake the
+    # rebuild removes. Nothing in the live path calls this any more; it
+    # survives only for the cost arithmetic in the tests.
     p = MEASURED_WIN_RATE.get(exit_name, 0.35) if win_rate is None else win_rate
     tp = TP_MULTIPLES.get(exit_name, TRAIL_MULTIPLE)
     a = atr14_pct / 100.0

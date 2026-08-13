@@ -1,0 +1,15 @@
+{
+ "symbols": [
+  "BLESSUSDT",
+  "BTCUSDT",
+  "ETHUSDT",
+  "HYPEUSDT",
+  "SKHYNIXUSDT",
+  "SNDKUSDT",
+  "SOLUSDT",
+  "SOXLUSDT",
+  "XAUUSDT",
+  "XRPUSDT"
+ ],
+ "note": "The coins the logic was fitted and validated on. Every cross-sectional factor -- rank, market move, dispersion, residual, breadth -- is defined against THIS set, so scanning a different board changes what those numbers mean."
+}

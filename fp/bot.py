@@ -51,10 +51,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from fp import features as F
 from fp import logic as L
-from fp import methods as M
-from fp.june import resample as J_resample
 
 
 logger = logging.getLogger("potential_leverage.bot")
@@ -333,41 +330,19 @@ class Broker:
         self.probe_spent = 0.0
         self.promoted: set[str] = set()
         self.retired: set[str] = set()
-        if signal_source == "mtf":
-            from fp.mtf_live import MTFModel
-            self.mtf = MTFModel(gate=mtf_gate)
-            self.bar_minutes = (self.mtf.entry_min if self.mtf.ok
-                                else L.BAR_MINUTES)
-            self._mtf_cache: dict[str, tuple] = {}
-
-        if signal_source == "book":
-            # Every rule brings its own timeframe, so the scan runs at the
-            # FINEST one in the book -- anything slower would miss the bar
-            # a fast rule fires on, and anything faster only re-asks the
-            # same question before the answer can change.
-            self.book = self._load_book(book_file)
-            if self.book:
-                self.bar_minutes = min(self.BOOK_MINUTES[r["tf"]]
-                                       for r in self.book)
-        elif signal_source == "survivors":
-            # Daily bars, and only the logics that earned their place.
-            from fp import slow as S
-            self.bar_minutes = S.TREND_BAR_MINUTES
-            self.survivors = self._load_survivors()
-        elif signal_source == "regime":
-            # Daily bars, and the direction is the consensus of the logics
-            # that have historically paid in the state the market is in
-            # right now -- see fp/regime.py.
-            from fp import slow as S
-            self.bar_minutes = S.TREND_BAR_MINUTES
-            self._regime_cache = {}
-        elif signal_source == "slow":
-            # Daily bars, direction from a slow trend, position held until
-            # the trend flips. See fp/slow.py: turnover is what pays
-            # volatility drag, and drag is what beat the old design even
-            # when its direction was right.
-            from fp import slow as S
-            self.bar_minutes = S.TREND_BAR_MINUTES
+        # ONE signal source. The twelve-method vote, the fitted rule
+        # books, the survivor list, the trend follower and the
+        # multi-timeframe regressor are all gone: every one of them was
+        # measured and every one of them failed out of sample. What is
+        # left is the logic in fp/engine.py, and it only ships the shapes
+        # that survived fp/run_engine.py's walk-forward.
+        from fp.live_engine import Engine
+        self.engine = Engine()
+        self._eng_cache: dict = {}
+        self._eng_lock = threading.Lock()
+        # Scored on one-minute bars: the finest resolution the factors
+        # were built at, and re-asking faster only re-reads a closed bar.
+        self.bar_minutes = 1
         self.exit_name = exit_name
         self.min_votes = min_votes
         self.fee = fee
@@ -766,19 +741,11 @@ class Broker:
             # is how the standing set shares one account -- see
             # stake_scale().
             return eq * sig.margin_frac * scale
-        if self.signal_source in ("slow", "regime", "book", "survivors", "mtf"):
-            # No per-signal solution available (a bare slice_size() call,
-            # e.g. the has_room() probe or the dashboard). The flat slice
-            # is the floor these modes fall back to.
-            return eq * self.margin_pct
-        if self.sizing == "kelly" and atr_pct is not None:
-            f = L.kelly_fraction(atr_pct, self.exit_name, fee, p_win,
-                                 self.max_leverage)
-            return eq * min(f, self.max_margin_pct)
-        base = eq * self.margin_pct
-        if atr_pct is None or self.sizing == "flat":
-            return base
-        return base * L.margin_weight(atr_pct, fee, self.max_leverage)
+        # No per-signal solution available (a bare slice_size() call --
+        # the has_room() probe, or the dashboard). The floor slice is what
+        # those fall back to. There is no ATR ladder behind this any more:
+        # every real stake comes from the signal's own potential.
+        return eq * self.margin_pct
 
     def notional_headroom(self) -> float:
         """How much more notional the exposure ceiling still allows."""
@@ -803,7 +770,7 @@ class Broker:
                 return False
             if self.notional_headroom() <= 0:
                 return False
-            if self.sizing == "kelly" or self.signal_source in ("book", "mtf"):
+            if True:
                 # When each signal solves its own stake the slice is
                 # per-trade, so "is there room" can only mean "is there
                 # anything left at all".
@@ -813,8 +780,9 @@ class Broker:
     # ---------------------------------------------------------------- market
 
     def klines(self, symbol: str) -> pd.DataFrame | None:
-        if self.signal_source == "book":
-            return None          # book mode fetches per-timeframe itself
+        # The logic fetches its own history in _engine_panel, because a
+        # third of its factors need the whole board at once. This stays
+        # only so the price-refresh path has a fallback.
         try:
             rows = self.client.get_kline(category="linear", symbol=symbol,
                                          interval=str(self.bar_minutes),
@@ -901,453 +869,133 @@ class Broker:
     def evaluate(self, symbol: str, bars: pd.DataFrame | None):
         """Score one symbol on its last closed bar and store the verdict.
 
-        Returns the standing signal, or None if the methods did not fire,
-        did not agree, or the data was unusable. Book mode returns a LIST
-        -- a symbol can carry one position per rule, not one in total.
+        Returns a LIST of standing signals -- one per surviving shape and
+        side that qualifies. A coin can carry several at once; being long
+        a one-hour setup is not a reason to skip a twelve-hour one.
+
+        The bars argument is ignored. The logic reads the whole board at
+        once because a third of its factors are cross-sectional, so it
+        fetches its own history in _engine_panel rather than being handed
+        one symbol's.
         """
         self.evaluations += 1
         now_bar = closed_bar_ts(bar_minutes=self.bar_minutes)
+        self.evaluated_bar[symbol] = now_bar
+        return self._evaluate_engine(symbol, now_bar)
 
-        # Book mode fetches its OWN history, one series per timeframe the
-        # book names, so the generic fetch above is dead weight for it.
-        # Answering here rather than below saves one kline call per symbol
-        # per bar, which across 690 symbols is the difference between a
-        # polite scan and a rate-limit ban.
-        if self.signal_source == "mtf":
-            self.evaluated_bar[symbol] = now_bar
-            return self._evaluate_mtf(symbol, now_bar)
+    def _engine_panel(self, bar_ts: int):
+        """Factors for the WHOLE board, built once per bar.
 
-        if self.signal_source == "book":
-            self.evaluated_bar[symbol] = now_bar
-            return self._evaluate_book(symbol, now_bar)
-
-        if bars is None or len(bars) < MIN_BARS:
-            # Mark it evaluated anyway: a symbol Bybit cannot serve, or one
-            # too young to have 250 bars, must not be retried every pass.
-            self.evaluated_bar[symbol] = now_bar
-            self.signals.pop(symbol, None)
-            return None
-
-        # The newest row is the bar still forming; the verdict is taken on
-        # the last bar that actually closed.
-        bars = bars.iloc[:-1].reset_index(drop=True)
-        bar_ts = int(bars["ts"].iloc[-1])
-        self.evaluated_bar[symbol] = max(bar_ts, now_bar)
-
-        if self.signal_source == "survivors":
-            return self._evaluate_survivors(symbol, bars, bar_ts)
-
-        if self.signal_source in ("slow", "regime"):
-            return self._evaluate_slow(symbol, bars, bar_ts,
-                                       regime=self.signal_source == "regime")
-
-        try:
-            feats = F.build(bars)
-            v = M.evaluate_all(feats).iloc[-1]
-        except Exception:
-            logger.debug("evaluation failed for %s", symbol, exc_info=True)
-            self.signals.pop(symbol, None)
-            return None
-
-        atr_pct = float(feats["atr14_pct"].iloc[-1])
-        if (v["n_methods_fired"] < self.min_votes
-                or v["consensus_dir"] == M.TIE
-                or not np.isfinite(atr_pct) or atr_pct <= 0):
-            self.no_signal += 1
-            self.signals.pop(symbol, None)
-            return None
-
-        sig = Signal(
-            bar_ts=bar_ts,
-            direction=1 if v["consensus_dir"] == M.LONG else -1,
-            atr_pct=atr_pct,
-            votes=int(v["n_methods_fired"]),
-            vote_margin=int(v["vote_margin"]),
-            methods=", ".join(m.split("_", 1)[1]
-                              for m in M.METHOD_NAMES if v[m] != "-"),
-        )
-        self.signals[symbol] = sig
-        return sig
-
-    def _evaluate_slow(self, symbol: str, bars: pd.DataFrame, bar_ts: int,
-                       regime: bool = False) -> Signal | None:
-        """Slow trend on daily bars, sized by drag-aware potential.
-
-        In regime mode the direction is not one moving average but the
-        consensus of the logics that have paid in the state this symbol
-        is in now, scored on that symbol's own past only.
+        A third of the factors are cross-sectional -- this coin's rank
+        among the ten, the board's median move, the dispersion, the
+        residual. None of them can be computed one symbol at a time, so
+        the panel is built for every scanned symbol together and cached
+        until the bar rolls. Building it per symbol would silently change
+        every rank: no exception, no warning, just a different number
+        than the model was trained on.
         """
-        from fp import slow as S
-        c = bars["close"].values
-        d = self._regime_direction(bars) if regime else S.trend_direction(c)
-        vol = S.daily_volatility(c)
-        if d == 0 or not np.isfinite(vol) or vol <= 0:
-            self.no_signal += 1
-            self.signals.pop(symbol, None)
-            return None
-        # Expected move and hold, from how this trend has behaved on this
-        # symbol -- not a guess. Distance from the mean is the move the
-        # trend has already shown it can travel.
-        ma = float(np.mean(c[-S.TREND_LOOKBACK:]))
-        move = abs(c[-1] - ma) / ma
-        hold = float(S.TREND_LOOKBACK) / 2.0
-        chain = S.best_leverage(move, hold, vol, self.max_leverage
-                                or S.LEVERAGE_MAX)
-        if not chain["tradeable"]:
-            self.skipped_negative_ev += 1
-            self.signals.pop(symbol, None)
-            return None
-        sig = Signal(bar_ts=bar_ts, direction=d,
-                     atr_pct=100.0 * vol,
-                     votes=1, vote_margin=1,
-                     methods=(f"slow MA{S.TREND_LOOKBACK} "
-                              f"move={100*move:.1f}% vol={100*vol:.2f}%/d "
-                              f"lev={chain['leverage']:.2f}x"),
-                     confidence=None, slow_leverage=chain["leverage"])
-        self.signals[symbol] = sig
-        return sig
-
-    # Bybit kline intervals for the timeframes a book can name.
-    BOOK_INTERVAL = {"15m": "15", "30m": "30", "1h": "60", "4h": "240",
-                     "1d": "D"}
-    BOOK_MINUTES = {"15m": 15, "30m": 30, "1h": 60, "4h": 240, "1d": 1440}
-
-    @staticmethod
-    def _load_book(path: str) -> list[dict]:
-        """The rules a book mode may trade, or an empty list."""
-        p = Path(__file__).resolve().parent / path
-        if not p.exists():
-            logger.warning("%s missing -- run the builder; nothing will be "
-                           "opened until it exists", path)
-            return []
-        try:
-            data = json.loads(p.read_text())
-        except Exception:
-            logger.warning("%s unreadable", path, exc_info=True)
-            return []
-        got = data.get("logics", [])
-        self_scope = data.get("scope", [])
-        logger.info("%s: %d rules, validated on %d symbols%s", path, len(got),
-                    len(self_scope),
-                    f" ({', '.join(self_scope)})" if self_scope else "")
-        if data.get("in_sample"):
-            logger.warning("%s is FITTED to its own data. Forward "
-                           "performance is unknown.", path)
-        return got
-
-    def _evaluate_mtf(self, symbol: str, bar_ts: int) -> list:
-        """Score this symbol with the multi-timeframe model.
-
-        One signal per symbol per bar: the model already chose the side
-        and the barrier shape by comparing every combination's predicted
-        net, so there is nothing left to pick between.
-
-        The gate is not a threshold anybody chose. The walk-forward
-        measured what each band of predicted net actually returned, and a
-        setup trades only if its band was measured positive -- which is
-        the same evidence that then sets its stake.
-        """
-        if not getattr(self, "mtf", None) or not self.mtf.ok:
-            self.no_survivors += 1
-            self._drop_signals(symbol)
-            return []
-
-        cached = self._mtf_cache.get(symbol)
-        if cached is not None and cached[0] == bar_ts:
-            d1 = cached[1]
-        else:
-            from fp.mtf_live import fetch_1m
+        with self._eng_lock:
+            if self._eng_cache.get("bar") == bar_ts:
+                return self._eng_cache.get("X") or {}
+            from fp.live_engine import fetch_1m
 
             def bump():
                 with self.counter_lock:
                     self.kline_calls += 1
 
-            d1 = fetch_1m(self.client, symbol, counter=bump)
-            self._mtf_cache[symbol] = (bar_ts, d1)
-        if d1 is None:
-            self._drop_signals(symbol)
-            return []
+            bars = {}
+            for s in self.symbols:
+                d = fetch_1m(self.client, s, self.engine.need_bars,
+                             counter=bump)
+                if d is not None:
+                    bars[s] = d
+            try:
+                X = self.engine.panel(bars)
+            except Exception:
+                logger.exception("engine panel failed")
+                X = {}
+            self._eng_cache = {"bar": bar_ts, "X": X}
+            return X
 
-        try:
-            cands = self.mtf.predict_all(d1)
-        except Exception:
-            logger.debug("mtf predict failed %s", symbol, exc_info=True)
-            self._drop_signals(symbol)
-            return []
-        if not cands:
-            # Nothing whose band the walk-forward measured profitable.
-            self.no_signal += 1
-            self._drop_signals(symbol)
-            return []
+    def _evaluate_engine(self, symbol: str, bar_ts: int) -> list:
+        """Score one symbol with the shipped logic.
 
-        from fp import exits as X
-        from fp import slow as S
-        de = J_resample(d1, self.mtf.entry_min)
-        close = de["close"].values.astype(float)
-        sigma = float(X.sigma_at(close)[-1])
-        if not np.isfinite(sigma) or sigma <= 0:
-            self._drop_signals(symbol)
-            return []
-
-        out, keep = [], set()
-        for c in cands:
-            tp_dist = c["tp"] * sigma
-            sl_dist = c["sl"] * sigma
-            hold_min = float(c["hold_min"])
-            chain = S.best_leverage(tp_dist, hold_min / 1440.0, sigma,
-                                    self.max_leverage or S.LEVERAGE_MAX)
-            if not chain["tradeable"]:
-                self.skipped_unsolvent += 1
-                continue
-            rule = (f"mtf:{c['tp']}/{c['sl']}/{c['hmax']}:"
-                    f"{'long' if c['side'] > 0 else 'short'}")
-            fee = self.trade_cost(symbol, c["side"])
-            # The stake reads the MEASURED band, never the raw prediction:
-            # the prediction says which band, the band says what a trade
-            # there was worth.
-            # The band is a SHARE of what a win pays, so the edge for
-            # this setup is that share times this setup's own payout.
-            # score then comes out as 100 x edge/b = 100 x the share,
-            # which is what the walk-forward actually measured.
-            n_live, tot_live = self.rule_record.get(rule, (0, 0.0))
-            if self.mtf_gate == "probe":
-                # The claim is this rule's OWN closed trades and nothing
-                # else. With no trades the claim is zero, the score is
-                # zero, and the stake is the probe -- which is the point:
-                # the bot pays a known, bounded price to find out.
-                realized = (tot_live / n_live) if n_live > 0 else 0.0
-            else:
-                realized = c["edge_over_b"] * max(tp_dist - fee, 0.0)
-            P = self.potential(tp_dist, sl_dist, rule, realized, fee)
-            frac, kelly, edge = self.book_margin_fraction(
-                tp_dist, sl_dist, chain["leverage"], rule, realized, fee)
-            probing = False
-            budget_left = self.probe_spent < self.probe_budget
-            if self.mtf_gate == "probe" and not P["cut"]:
-                if (n_live < self.probe_n and budget_left
-                        and frac < self.probe_pct / 100.0):
-                    # Still gathering. A fixed slice, the same for every
-                    # rule, so no rule buys size with a number nobody has
-                    # verified.
-                    frac, probing = self.probe_pct / 100.0, True
-                elif n_live >= self.probe_n and frac > 0:
-                    self.promoted.add(rule)
-            if frac <= 0:
-                self.skipped_negative_ev += 1
-                if P["refuted"]:
-                    self.refuted += 1
-                if P["cut"] or n_live >= self.probe_n:
-                    self.retired.add(rule)
-                    self.promoted.discard(rule)
-                continue
-            if probing:
-                self.probe_trades += 1
-            sig = Signal(
-                bar_ts=bar_ts, direction=c["side"], atr_pct=100.0 * sigma,
-                votes=1, vote_margin=1,
-                methods=((f"mtf pred={100*c['pred']:+.3f}% "
-                          + (f"PROBE {n_live}/{self.probe_n} trades, "
-                             f"live {100*realized:+.3f}%/trade"
-                             if probing else
-                             f"LIVE {n_live} trades, "
-                             f"{100*realized:+.3f}%/trade")
-                          if self.mtf_gate == "probe" else
-                          f"mtf pred={100*c['pred']:+.3f}% "
-                          f"band {c['band']} paid {c['edge_over_b']:+.3f} of a "
-                          f"win on {c['band_n']} trades t={c['band_t']:.1f}")
-                         + f" | tp{c['tp']}/sl{c['sl']} hold<={hold_min:.0f}m "
-                           f"lev={chain['leverage']:.2f}x "
-                           f"potential={P['score']:.0f}/100 "
-                           f"stake={100*frac:.1f}%"),
-                confidence=None, slow_leverage=chain["leverage"],
-                tp_dist=tp_dist, sl_dist=sl_dist, max_hold_min=hold_min,
-                rule=rule, rule_mean=realized, symbol=symbol,
-                margin_frac=frac, kelly_full=kelly, edge_used=edge,
-                score=P["score"], probing=probing)
-            self.signals[sig.slot] = sig
-            keep.add(sig.slot)
-            out.append(sig)
-
-        self._drop_signals(symbol, keep)
-        if not out:
-            self.no_signal += 1
-        return out
-
-    def _book_bars(self, symbol: str, tf: str) -> pd.DataFrame | None:
-        """Bars for one timeframe, fetched once per symbol per bar.
-
-        A book spans several timeframes, so a rule on daily bars and one
-        on 4h bars each need their own history. The cache is keyed on the
-        bar the request lands in, which is what stops a 690-symbol scan
-        from re-fetching the same daily candles every pass.
+        Every surviving (shape, side) gets its own slot, so a coin can
+        carry several at once instead of being locked by whichever fired
+        first. The potential score decides both WHETHER to trade and HOW
+        MUCH: it is the same 0-100 number for a one-hour scalp and a
+        twelve-hour swing, which is the only way those two can share one
+        account.
         """
-        minutes = self.BOOK_MINUTES[tf]
-        now_bar = closed_bar_ts(minutes)
-        key = (symbol, tf)
-        hit = self._book_cache.get(key)
-        if hit is not None and hit[0] == now_bar:
-            return hit[1]
-        try:
-            rows = self.client.get_kline(
-                category="linear", symbol=symbol,
-                interval=self.BOOK_INTERVAL[tf], limit=1000)["result"]["list"]
-        except Exception:
-            logger.debug("book kline failed %s %s", symbol, tf, exc_info=True)
-            return None
-        with self.counter_lock:
-            self.kline_calls += 1
-        if not rows or len(rows) < 320:
-            self._book_cache[key] = (now_bar, None)
-            return None
-        d = pd.DataFrame(rows, columns=["ts", "open", "high", "low", "close",
-                                        "volume", "turnover"])
-        d = d.iloc[::-1].reset_index(drop=True)
-        for c in ("open", "high", "low", "close", "volume"):
-            d[c] = d[c].astype(float)
-        d["ts"] = d["ts"].astype("int64")
-        # drop the bar still forming: a rule fires on a CLOSED bar
-        d = d.iloc[:-1].reset_index(drop=True)
-        self._book_cache[key] = (now_bar, d)
-        return d
-
-    def _evaluate_book(self, symbol: str, bar_ts: int) -> list[Signal]:
-        """Fire the book's rules on this symbol and take EVERY one.
-
-        Each rule brings its own entry logic, side, target, stop and time
-        limit. A rule fires when its entry logic TURNS ON in its own
-        direction on the last closed bar of its own timeframe -- the same
-        definition the book was measured with, so what is traded here is
-        what was tested there.
-
-        Every rule that fires gets its own signal and its own slot. The
-        old code kept only the single best mean per symbol and dropped
-        the rest, which threw away most of the book: 104 rules across ten
-        symbols could never produce more than ten positions, and a daily
-        rule holding a symbol for six days blocked every faster rule on
-        that symbol for the same six days. Rules are not averaged and not
-        merged -- each is traded exactly as it was measured, separately.
-        """
-        if not self.book:
+        if not getattr(self, "engine", None) or not self.engine.ok:
             self.no_survivors += 1
             self._drop_signals(symbol)
             return []
-        try:
-            from fp import ensemble as E
-            from fp import exits as X
-            from fp import slow as S
-        except Exception:
+        X = self._engine_panel(bar_ts)
+        x = X.get(symbol)
+        if x is None:
+            self._drop_signals(symbol)
             return []
-
-        fired: list[tuple] = []
-        for tf in sorted({r["tf"] for r in self.book}):
-            # A 4h rule cannot change its mind between 15m scans, so its
-            # verdict is cached against the bar it was taken on. Without
-            # this, a book spanning 15m/4h/1d rebuilds the slow logics
-            # sixteen and ninety-six times per bar for nothing.
-            fkey = (symbol, tf)
-            tf_bar = closed_bar_ts(self.BOOK_MINUTES[tf])
-            hit = self._fired_cache.get(fkey)
-            if hit is not None and hit[0] == tf_bar:
-                fired.extend(hit[1])
-                continue
-            d = self._book_bars(symbol, tf)
-            if d is None:
-                self._fired_cache[fkey] = (tf_bar, [])
-                continue
-            want = {r["name"] for r in self.book if r["tf"] == tf}
-            try:
-                # ONLY the rules this book names. The full library is 2,602
-                # logics and a book names thirty, so building the rest to
-                # read thirty is what would push a 690-symbol scan past its
-                # own bar. `only` prunes both the factor and the method
-                # loop, which is why fast= is NOT used here: fast drops the
-                # rank methods and every factor outside five families, and
-                # twelve of the eighteen 4h rules in btc_book.json live in
-                # the families it drops. Pruning to the named set is both
-                # cheaper than fast and, unlike fast, lossless.
-                logics = E.build_logics(d, only=want)
-            except Exception:
-                logger.debug("book logics failed %s %s", symbol, tf,
-                             exc_info=True)
-                self._fired_cache[fkey] = (tf_bar, [])
-                continue
-            close = d["close"].values.astype(float)
-            sigma = X.sigma_at(close)[-1]
-            if not np.isfinite(sigma) or sigma <= 0:
-                self._fired_cache[fkey] = (tf_bar, [])
-                continue
-            price = float(close[-1])
-            tf_fired = []
-            for r in self.book:
-                if r["tf"] != tf or r["name"] not in logics:
-                    continue
-                # A rule fires only on the symbols it was validated on.
-                # A rule proven on BTC, SNDK, SOXL and XAU has evidence
-                # for those four; firing it on a symbol nobody measured
-                # is a different claim wearing the same numbers.
-                scope = r.get("coins") or ""
-                if (not self.book_anywhere) and scope \
-                        and symbol not in scope.split(","):
-                    continue
-                p = logics[r["name"]].values.astype(float)
-                if len(p) < 2:
-                    continue
-                side = 1 if r["side"] == "long" else -1
-                # fires only on the bar the entry TURNS ON, as measured
-                if not (p[-1] == side and p[-2] != side):
-                    continue
-                tf_fired.append((r, side, price, sigma, tf))
-            self._fired_cache[fkey] = (tf_bar, tf_fired)
-            fired.extend(tf_fired)
-
-        if not fired:
+        try:
+            cands = self.engine.candidates(x)
+        except Exception:
+            logger.debug("engine scoring failed %s", symbol, exc_info=True)
+            self._drop_signals(symbol)
+            return []
+        if not cands:
             self.no_signal += 1
             self._drop_signals(symbol)
             return []
 
-        out: list[Signal] = []
-        keep: set[str] = set()
-        for r, side, price, sigma, tf in fired:
-            tp_dist = float(r["tp"]) * sigma
-            sl_dist = float(r["sl"]) * sigma
-            hold_min = float(r.get("hold_min") or
-                             r["hmax"] * self.BOOK_MINUTES[tf])
-            chain = S.best_leverage(float(r["tp"]) * sigma, hold_min / 1440.0,
-                                    sigma, self.max_leverage or S.LEVERAGE_MAX)
+        from fp import leverage as S
+        out, keep = [], set()
+        for c in cands:
+            fee = self.trade_cost(symbol, c["side"])
+            # The stop must fire BEFORE liquidation -- see
+            # leverage.solvent_leverage, which is the one place that
+            # arithmetic lives so the bot and its tests cannot disagree.
+            chain = S.solvent_leverage(c["tp_dist"], c["sl_dist"],
+                                       c["hold_min"], c["sigma"],
+                                       self.max_leverage or S.LEVERAGE_MAX)
             if not chain["tradeable"]:
+                self.skipped_unsolvent += 1
+                continue
+            # The live fee can differ from the one the study assumed --
+            # funding is per symbol and signed -- so break-even is
+            # recomputed here rather than trusted from the scorer, and the
+            # score is converted back into an edge at THIS trade's cost.
+            b = c["tp_dist"] - fee
+            a = c["sl_dist"] + fee
+            if b <= 0:
                 self.skipped_negative_ev += 1
                 continue
-            rule = f"{tf}:{r['name']}:{r['side']}"
-            claimed = float(r.get("mean") or 0.0)
-            fee = self.trade_cost(symbol, side)
-            P = self.potential(tp_dist, sl_dist, rule, claimed, fee)
+            p_be = a / (a + b)
+            p = p_be + (c["score"] / 100.0) * (1.0 - p_be)
+            claimed = p * b - (1 - p) * a
             frac, kelly, edge = self.book_margin_fraction(
-                tp_dist, sl_dist, chain["leverage"], rule, claimed, fee)
+                c["tp_dist"], c["sl_dist"], chain["leverage"], c["rule"],
+                claimed, fee)
             if frac <= 0:
-                # Either the target does not clear the round trip, or the
-                # claim implied a win rate above 100% and is refuted, or
-                # the rule's own live record has taken the edge away.
                 self.skipped_negative_ev += 1
-                if P["refuted"]:
-                    self.refuted += 1
                 continue
             sig = Signal(
-                bar_ts=bar_ts, direction=side, atr_pct=100.0 * sigma,
-                votes=1, vote_margin=1,
-                methods=(f"book {tf} {r['name']} {r['side']} "
-                         f"tp{r['tp']}/sl{r['sl']} hold<={hold_min:.0f}m "
+                bar_ts=bar_ts, direction=c["side"],
+                atr_pct=100.0 * c["sigma"], votes=1, vote_margin=1,
+                methods=(f"engine p={100*c['p']:.1f}% vs break-even "
+                         f"{100*p_be:.1f}% | tp{c['tp']}/sl{c['sl']} "
+                         f"hold<={c['hold_min']}m "
                          f"lev={chain['leverage']:.2f}x "
-                         f"potential={P['score']:.0f}/100 "
+                         f"potential={c['score']:.0f}/100 "
                          f"stake={100*frac:.1f}%"),
                 confidence=None, slow_leverage=chain["leverage"],
-                tp_dist=tp_dist, sl_dist=sl_dist, max_hold_min=hold_min,
-                rule=rule, rule_mean=claimed, symbol=symbol,
+                tp_dist=c["tp_dist"], sl_dist=c["sl_dist"],
+                max_hold_min=float(c["hold_min"]),
+                rule=c["rule"], rule_mean=claimed, symbol=symbol,
                 margin_frac=frac, kelly_full=kelly, edge_used=edge,
-                score=P["score"])
+                score=c["score"])
             self.signals[sig.slot] = sig
             keep.add(sig.slot)
             out.append(sig)
-        # Rules that stopped firing must stop standing.
         self._drop_signals(symbol, keep)
         if not out:
             self.no_signal += 1
@@ -1361,7 +1009,6 @@ class Broker:
                   and (keep is None or k not in keep)]:
             self.signals.pop(k, None)
 
-    @staticmethod
     def _load_survivors() -> list[dict]:
         """The whitelist, or an empty list if none was ever earned."""
         p = Path(__file__).resolve().parent / "survivors.json"
@@ -1378,154 +1025,6 @@ class Broker:
         logger.info("survivors.json: %d logics cleared the bar", len(got))
         return got
 
-    def _evaluate_survivors(self, symbol: str, bars: pd.DataFrame,
-                            bar_ts: int) -> Signal | None:
-        """Trade ONLY the logics that earned a place in survivors.json.
-
-        The whitelist is produced by fp/survivors.py, which tests every
-        logic on its own out of sample and keeps the ones that clear a
-        Bonferroni threshold for the number tested and beat a null that
-        rotates the logic's timing at random.
-
-        An empty whitelist means no logic earned a place, and then this
-        opens nothing. That is not a failure mode to work around -- it is
-        what "only trade profitable logics" means on a day when none are.
-        """
-        wl = self.survivors
-        if not wl:
-            self.no_survivors += 1
-            self.signals.pop(symbol, None)
-            return None
-        try:
-            from fp import ensemble as E
-            from fp import slow as S
-        except Exception:
-            return None
-        d = bars.rename(columns=str.lower)
-        if len(d) < 320:
-            self.signals.pop(symbol, None)
-            return None
-        try:
-            logics = E.build_logics(d, fast=True)
-        except Exception:
-            logger.debug("survivor evaluation failed", exc_info=True)
-            self.signals.pop(symbol, None)
-            return None
-
-        votes = [float(logics[w["name"]].iloc[-1]) for w in wl
-                 if w["name"] in logics]
-        if not votes:
-            self.no_survivors += 1
-            self.signals.pop(symbol, None)
-            return None
-        v = float(np.mean(votes))
-        direction = 1 if v > 0.2 else (-1 if v < -0.2 else 0)
-
-        c = d["close"].values
-        vol = S.daily_volatility(c)
-        if direction == 0 or not np.isfinite(vol) or vol <= 0:
-            self.no_signal += 1
-            self.signals.pop(symbol, None)
-            return None
-        # The whitelist carries the hold each logic was actually measured
-        # at, so the leverage is solved over THAT hold rather than a
-        # rounded-up guess. A ten-minute logic solves over ten minutes,
-        # which is where leverage is cheapest: drag is paid per period
-        # held, so a short hold supports more of it, not less.
-        hold_days = max(float(np.mean([w["hold_min"] for w in wl])) / 1440.0,
-                        1e-4)
-        ma = float(np.mean(c[-S.TREND_LOOKBACK:]))
-        move = abs(c[-1] - ma) / ma
-        chain = S.best_leverage(move, hold_days, vol,
-                                self.max_leverage or S.LEVERAGE_MAX)
-        if not chain["tradeable"]:
-            self.skipped_negative_ev += 1
-            self.signals.pop(symbol, None)
-            return None
-        sig = Signal(bar_ts=bar_ts, direction=direction,
-                     atr_pct=100.0 * vol, votes=len(votes),
-                     vote_margin=len(votes),
-                     methods=(f"survivors {len(votes)}/{len(wl)} agree "
-                              f"vote={v:+.2f} hold={hold_days:.1f}d "
-                              f"lev={chain['leverage']:.2f}x"),
-                     confidence=None, slow_leverage=chain["leverage"])
-        self.signals[symbol] = sig
-        return sig
-
-    def _regime_direction(self, bars: pd.DataFrame) -> int:
-        """Consensus of the logics that pay in today's state, past-only."""
-        try:
-            from fp import ensemble as E
-            from fp import regime as R
-        except Exception:
-            return 0
-        d = bars.rename(columns=str.lower)
-        if len(d) < 320:
-            return 0
-        key = (id(self), int(d.index[-1].value) if hasattr(d.index[-1], "value")
-               else len(d))
-        try:
-            logics = E.build_logics(d, fast=True)
-            if not logics:
-                return 0
-            close = d["close"]
-            nets = {k: E.daily_net(close, v) for k, v in logics.items()}
-            st = R.states(d, ["trend"])
-        except Exception:
-            logger.debug("regime evaluation failed", exc_info=True)
-            return 0
-        now = st.iloc[-1]
-        if not isinstance(now, str):
-            return 0
-        same = np.flatnonzero((st.iloc[:-1] == now).values)
-        if len(same) < 40:
-            return 0
-        scored = []
-        for k, s in nets.items():
-            h = s.iloc[same]
-            sd = float(h.std())
-            if sd > 0:
-                scored.append((float(h.mean()) / sd, k))
-        if not scored:
-            return 0
-        scored.sort(reverse=True)
-        picks = [k for _, k in scored[:5]]
-        vote = float(np.mean([float(logics[k].iloc[-1]) for k in picks]))
-        return 1 if vote > 0.2 else (-1 if vote < -0.2 else 0)
-
-    def _evaluate_pattern(self, symbol: str, bars: pd.DataFrame,
-                          bar_ts: int) -> Signal | None:
-        """Look the last N candles up in the hard-coded table."""
-        from fp import patterns as P
-        h = bars["high"].values
-        lo = bars["low"].values
-        c = bars["close"].values
-        v = bars["volume"].values
-        atr = P.atr_series(bars)[-1]
-        if atr <= 0 or not np.isfinite(atr) or c[-1] <= 0:
-            self.signals.pop(symbol, None)
-            return None
-        key = P.signature(c, h, lo, v, len(c) - 1, atr)
-        pat = self.library.get(key) if key else None
-        if pat is None:
-            self.no_signal += 1
-            self.signals.pop(symbol, None)
-            return None
-        # Only the LIVE record may size a bet. The training record is 100%
-        # by construction -- every rule was recorded because it won -- so
-        # Kelly on it would read every pattern as a certainty.
-        p_win = (L.wilson_lower(pat.live_wins, pat.n_live)
-                 if pat.n_live > 0 else None)
-        sig = Signal(bar_ts=bar_ts, direction=pat.direction,
-                     atr_pct=100.0 * atr / c[-1], votes=pat.n_train,
-                     vote_margin=pat.n_train,
-                     methods=f"pattern {key} ({pat.n_train} train, "
-                             f"{pat.n_live} live)",
-                     confidence=pat.confidence(),
-                     p_win=p_win, live_n=pat.n_live, live_wins=pat.live_wins)
-        self.signals[symbol] = sig
-        return sig
-
     def refresh_signals(self, symbols: list[str]) -> int:
         """Refetch and re-score a chunk of symbols. Returns signals standing."""
         fetched = self.prefetch(symbols)
@@ -1538,18 +1037,17 @@ class Broker:
     def stale_symbols(self) -> list[str]:
         """Symbols not yet scored on the most recently closed bar.
 
-        Symbols already holding a position are left out: their entry is
-        decided, and re-scoring them would only spend kline calls.
+        Symbols already holding a position are INCLUDED: a coin carries
+        one position per shape and side, so an open twelve-hour swing
+        must not stop its one-hour shapes being scored.
         """
         want = closed_bar_ts(bar_minutes=self.bar_minutes)
-        if self.signal_source in ("book", "mtf"):
-            # A book symbol is never "done": it holds one position PER
-            # RULE, so a symbol already carrying a six-day daily trade
-            # must keep being scored or its 15m rules never get a turn.
-            return [s for s in self.symbols
-                    if self.evaluated_bar.get(s, -1) < want]
+        # A coin is never "done". It holds one position PER SHAPE AND
+        # SIDE, so one already carrying a twelve-hour swing must keep
+        # being scored or its one-hour shapes never get a turn. Skipping
+        # open symbols is what made a slow trade lock a coin for a day.
         return [s for s in self.symbols
-                if s not in self.open and self.evaluated_bar.get(s, -1) < want]
+                if self.evaluated_bar.get(s, -1) < want]
 
     def _closed_fees(self) -> float:
         """Fees belonging to CLOSED trades only. self.fees_paid also holds
@@ -1558,12 +1056,15 @@ class Broker:
         return sum(t.fees_usd for t in self.closed)
 
     def _tradeable_bands(self) -> tuple[int, int]:
-        """How many measured ATR bands still clear the full cost."""
-        from fp import calibrate as C
-        row = C.load_table().get("table", {}).get(self.exit_name) or []
-        ok = sum(1 for v in row
-                 if v is not None and v - self.fee > 0)
-        return ok, len(row)
+        """How many shipped shapes can currently clear their own cost.
+
+        This used to count ATR bands in a table measured for the
+        twelve-method exit -- another logic's ruler applied to this one.
+        It now counts what the bot actually holds: shapes that survived
+        the walk-forward.
+        """
+        n = len(getattr(self.engine, "models", {}) or {})
+        return n, n
 
     def trade_cost(self, symbol: str, direction: int) -> float:
         """What THIS trade will really cost, as a fraction of notional.
@@ -1614,33 +1115,34 @@ class Broker:
         # Expectancy first: it costs nothing and it is the only test that
         # can tell this trade is not worth taking at all.
         fee = self.trade_cost(symbol, sig.direction)
-        # L.expectancy reads fp/edge_table.json, which was measured for the
-        # twelve-method logic on its own TP/SL ladder. Applying it to a
-        # book rule would judge one rule by another rule's record -- and
-        # since the table returns -inf for any band it never measured, it
-        # would silently veto the whole book. Every source that brings its
-        # own tested edge is exempt.
-        ev = (1.0 if self.signal_source in ("slow", "regime", "book",
-                                            "survivors", "mtf")
-              else L.expectancy(sig.atr_pct, self.exit_name, fee,
-                                self.assumed_win_rate))
-        if self.expectancy_gate and ev <= 0:
-            self.skipped_negative_ev += 1
-            return False
+        # The old expectancy gate read fp/edge_table.json, a table
+        # measured for the twelve-method logic on its own TP/SL ladder.
+        # Judging a shape by another logic's record is exactly the mistake
+        # this rebuild removes: every signal now arrives with its own
+        # break-even, computed from its own barriers at its own
+        # volatility, and potential() has already refused it if the target
+        # does not clear the bill.
 
         d = sig.direction
         atr = sig.atr_pct / 100.0 * price
+        # A stop past the liquidation price turns a sized loss into a
+        # total one. Refused here as well as in the scorer, so no future
+        # signal path can slip around it.
+        if sig.sl_dist is not None and sig.slow_leverage:
+            if (sig.sl_dist * sig.slow_leverage * L.SOLVENCY_BUFFER
+                    >= L.LIQ_MARGIN_FRACTION):
+                self.skipped_unsolvent += 1
+                return False
         if sig.slow_leverage is not None:
             chain = {"leverage": sig.slow_leverage, "lev_base": sig.slow_leverage,
                      "potential_score": float("nan"), "conviction": float("nan"),
                      "conviction_haircut": 1.0, "solvency_cap": float("inf"),
                      "tradeable": True}
         else:
-            chain = L.leverage_potential(sig.atr_pct, self.max_leverage,
-                                         votes=sig.votes,
-                                         vote_margin=sig.vote_margin,
-                                         conviction_floor=self.conviction_floor,
-                                         conviction=sig.confidence)
+            # Every signal now arrives with its leverage already solved
+            # from its own stop distance and hold -- see fp/leverage.py.
+            # A signal without one is a bug, not a fallback.
+            raise ValueError(f"signal for {sig.symbol} carries no leverage")
         if not chain["tradeable"]:
             # Even 1x cannot keep the stop inside the liquidation price.
             self.skipped_unsolvent += 1
@@ -1705,7 +1207,7 @@ class Broker:
                 sl_price=(price * (1 - d * sig.sl_dist)
                           if sig.sl_dist is not None
                           else price - d * L.SL_MULTIPLE * atr),
-                liq_price=price * (1 - d * 0.9 / lev),
+                liq_price=price * (1 - d * L.LIQ_MARGIN_FRACTION / lev),
                 exit_name=self.exit_name, methods=sig.methods,
                 votes=sig.votes, vote_margin=sig.vote_margin,
                 best_price=price, trail_dist=L.TRAIL_MULTIPLE * atr,
@@ -1717,12 +1219,7 @@ class Broker:
                                  else chain["potential_score"]),
                 conviction=chain["conviction"],
                 lev_base=chain["lev_base"],
-                ev_per_margin=(sig.rule_mean * lev if sig.rule is not None
-                               and sig.rule
-                               else L.ev_per_margin(sig.atr_pct,
-                                                    self.exit_name, self.fee,
-                                                    self.assumed_win_rate,
-                                                    self.max_leverage)),
+                ev_per_margin=sig.rule_mean * lev,
                 margin_weight=(margin / (self.equity_total * self.margin_pct)
                                if self.equity_total > 0 else 1.0),
                 max_hold_min=sig.max_hold_min, rule=sig.rule,
@@ -1782,17 +1279,10 @@ class Broker:
         # budget goes to the setups that keep the most of it.
         def rank(k):
             sg = self.signals[k]
-            if sg.margin_frac is not None:
-                # Book signals rank on the one scale they all share.
-                # L.kelly_fraction and L.ev_per_margin below both rebuild
-                # the twelve-method ATR ladder, so using them here would
-                # order the book by another book's model.
-                return -sg.score
-            if self.sizing == "kelly":
-                return -L.kelly_fraction(sg.atr_pct, self.exit_name, self.fee,
-                                         sg.p_win, self.max_leverage)
-            return -L.ev_per_margin(sg.atr_pct, self.exit_name, self.fee,
-                                    self.assumed_win_rate, self.max_leverage)
+            # One scale for every setup: the potential score. Ranking by
+            # anything else would order the board by a model none of these
+            # signals came from.
+            return -sg.score
         order = sorted(self.signals, key=rank)
         scale = self.stake_scale()
         for slot in order:
@@ -1837,15 +1327,6 @@ class Broker:
             return
         if (price <= pos.sl_price) if d > 0 else (price >= pos.sl_price):
             self._close(slot, pos.sl_price, "stop_loss")
-            return
-
-        if self.signal_source in ("slow", "regime"):
-            # No target, no stop, no re-entry. The position is held until
-            # the trend that opened it turns over -- every extra turnover
-            # pays drag, and drag is the thing being avoided.
-            sig = self.signals.get(slot)
-            if sig is not None and sig.direction != d:
-                self._close(slot, price, "trend_flip")
             return
 
         if pos.rule:
@@ -2076,8 +1557,7 @@ class Broker:
                           + float(np.median(list(self.funding.values())) or 0.0)
                           * hold_h
                           / L.FUNDING_INTERVAL_HOURS) if self.funding else 0.0,
-            "min_atr_for_edge": L.min_atr_for_edge(self.exit_name, self.fee,
-                                                   self.assumed_win_rate),
+            "min_atr_for_edge": float("nan"),  # no ATR ladder any more
             "tradeable_bands": self._tradeable_bands()[0],
             "total_bands": self._tradeable_bands()[1],
             "blocked_by": dict(self.blocked_by),

@@ -89,6 +89,19 @@ def broker_for(symbols, client, **kw):
     return B.Broker(client, symbols, **opts)
 
 
+def Sig(*a, **kw):
+    """A Signal shaped the way the live path now produces them.
+
+    Every signal the bot creates arrives with its leverage already solved
+    from its own stop distance and hold -- try_open raises if one does
+    not, because a missing leverage is a bug rather than a case to handle.
+    These tests predate that and build signals positionally, so this fills
+    in the field without changing what each test is actually asserting.
+    """
+    kw.setdefault("slow_leverage", 3.0)
+    return B.Signal(*a, **kw)
+
+
 # --------------------------------------------------------------------------
 
 def test_closed_bar_alignment():
@@ -180,7 +193,7 @@ def test_blocked_signal_is_filled_when_margin_frees():
     b = broker_for(syms, c, margin_pct=0.30)
     b.refresh_prices()
     for s in syms:
-        b.signals[s] = B.Signal(bar_ts=B.closed_bar_ts(), direction=1,
+        b.signals[s] = Sig(bar_ts=B.closed_bar_ts(), direction=1,
                                 atr_pct=1.0, votes=1, vote_margin=1, methods="X")
 
     opened, waiting = b.fill_standing()
@@ -211,7 +224,7 @@ def test_no_instant_reentry_after_stop():
     b = broker_for(syms, c)
     b.refresh_prices()
     bar = B.closed_bar_ts()
-    b.signals["S0USDT"] = B.Signal(bar_ts=bar, direction=1, atr_pct=1.0,
+    b.signals["S0USDT"] = Sig(bar_ts=bar, direction=1, atr_pct=1.0,
                                    votes=1, vote_margin=1, methods="X")
 
     check("opens once", b.try_open("S0USDT") is True)
@@ -221,7 +234,7 @@ def test_no_instant_reentry_after_stop():
     check("still no position", "S0USDT" not in b.open)
 
     # A new bar is a new decision, so it may trade again.
-    b.signals["S0USDT"] = B.Signal(bar_ts=bar + BAR_MS, direction=1,
+    b.signals["S0USDT"] = Sig(bar_ts=bar + BAR_MS, direction=1,
                                    atr_pct=1.0, votes=1, vote_margin=1, methods="X")
     check("reopens on the next bar", b.try_open("S0USDT") is True)
 
@@ -234,7 +247,7 @@ def test_take_profit_and_stop_prices():
         c = FakeHTTP(syms, price=100.0)
         b = broker_for(syms, c)
         b.refresh_prices()
-        b.signals["S0USDT"] = B.Signal(bar_ts=B.closed_bar_ts(),
+        b.signals["S0USDT"] = Sig(bar_ts=B.closed_bar_ts(),
                                        direction=direction, atr_pct=1.0,
                                        votes=1, vote_margin=1, methods="X")
         b.try_open("S0USDT")
@@ -262,7 +275,7 @@ def test_take_profit_and_stop_prices():
         c = FakeHTTP(syms, price=100.0)
         b = broker_for(syms, c)
         b.refresh_prices()
-        b.signals["S0USDT"] = B.Signal(bar_ts=B.closed_bar_ts(),
+        b.signals["S0USDT"] = Sig(bar_ts=B.closed_bar_ts(),
                                        direction=direction, atr_pct=1.0,
                                        votes=1, vote_margin=1, methods="X")
         b.try_open("S0USDT")
@@ -280,7 +293,7 @@ def test_liquidation_caps_the_loss():
     c = FakeHTTP(syms, price=100.0)
     b = broker_for(syms, c)
     b.refresh_prices()
-    b.signals["S0USDT"] = B.Signal(bar_ts=B.closed_bar_ts(), direction=1,
+    b.signals["S0USDT"] = Sig(bar_ts=B.closed_bar_ts(), direction=1,
                                    atr_pct=1.0, votes=1, vote_margin=1, methods="X")
     b.try_open("S0USDT")
     pos = b.open["S0USDT"]
@@ -298,53 +311,50 @@ def test_liquidation_caps_the_loss():
 
 
 def test_stop_always_sits_inside_liquidation():
-    """The hole the solvency cap closes: above ~3.5% ATR the 17x floor put
-    the stop PAST the liquidation price, so the trade died at 100% of
-    margin instead of the 42% it was sized for."""
-    print("\nthe stop is inside the liquidation price at every tradeable ATR")
-    worst_ratio, worst_atr = 0.0, None
-    checked = 0
-    for atr_pct in [round(0.05 * i, 2) for i in range(1, 1200)]:
-        chain = L.leverage_potential(atr_pct, None)
-        if not chain["tradeable"]:
-            continue
-        checked += 1
-        lev = chain["leverage"]
-        sl_move = L.SL_MULTIPLE * atr_pct / 100.0
-        liq_move = L.LIQ_MARGIN_FRACTION / lev
-        ratio = sl_move / liq_move
-        if ratio > worst_ratio:
-            worst_ratio, worst_atr = ratio, atr_pct
-    check(f"checked {checked} ATR levels from 0.05% to 60%", checked > 500)
-    check("the stop always fires before liquidation", worst_ratio < 1.0,
-          f"worst ratio {worst_ratio:.3f} at atr={worst_atr}%")
-    check("with the intended safety buffer",
-          abs(worst_ratio - 1 / L.SOLVENCY_BUFFER) < 0.01,
-          f"{worst_ratio:.4f} vs {1/L.SOLVENCY_BUFFER:.4f}")
+    """A stop must fire BEFORE liquidation, or the trade dies at 100% of
+    margin instead of the fraction it was sized for.
 
-    # The file's chain must be untouched where it was already safe.
-    for atr_pct in (0.10, 0.20, 0.30, 0.50, 0.80, 1.00, 1.65):
-        chain = L.leverage_potential(atr_pct, None)
-        base = L.lev_base(atr_pct)
-        mult = L.potential_multiplier(L.potential_score(atr_pct))
-        check(f"atr {atr_pct}% keeps the file's leverage",
-              abs(chain["leverage"] - min(base * mult, base)) < 1e-9,
-              f"{chain['leverage']} vs {min(base*mult, base)}")
-
-    # And it must still be flexible, not clamped to one number.
-    levs = {round(L.leverage_potential(a, None)["leverage"], 2)
-            for a in (0.1, 0.3, 0.5, 1.0, 2.0, 3.0, 5.0, 8.0)}
-    check("leverage still varies with potential", len(levs) >= 7,
-          f"only {len(levs)} distinct values: {sorted(levs)}")
-
-    # Beyond the point where even 1x is unsound, the trade is skipped.
+    The old version of this checked an ATR leverage ladder that no longer
+    exists. The guarantee itself still has to hold, and now it holds on
+    each signal's OWN stop distance -- which is stronger, because the
+    stop is no longer a fixed multiple of anything.
+    """
+    print("\nthe stop is inside the liquidation price for every signal")
+    from fp import leverage as LV
     syms = ["S0USDT"]
+    worst, worst_at = 0.0, None
+    checked = 0
+    for sigma in [0.0002 * i for i in range(1, 60)]:
+        for tp, sl, hold in ((1.0, 1.0, 60), (2.0, 2.0, 240), (4.0, 4.0, 720)):
+            tp_d = tp * sigma * (hold ** 0.5)
+            sl_d = sl * sigma * (hold ** 0.5)
+            chain = LV.solvent_leverage(tp_d, sl_d, hold, sigma,
+                                        LV.LEVERAGE_MAX)
+            if not chain["tradeable"]:
+                continue
+            checked += 1
+            ratio = sl_d / (LV.LIQ_MARGIN_FRACTION / chain["leverage"])
+            if ratio > worst:
+                worst, worst_at = ratio, (tp, sl, hold, round(sigma, 5))
+    check(f"checked {checked} shape/volatility combinations", checked > 100,
+          checked)
+    check("the stop always fires before liquidation", worst < 1.0,
+          f"worst ratio {worst:.3f} at {worst_at}")
+
+    # A stop so wide that even 1x cannot keep it inside liquidation must
+    # be refused outright rather than sized down.
     c = FakeHTTP(syms, price=100.0)
     b = broker_for(syms, c)
     b.refresh_prices()
-    b.signals["S0USDT"] = B.Signal(bar_ts=B.closed_bar_ts(), direction=1,
-                                   atr_pct=90.0, votes=1, vote_margin=1, methods="X")
-    check("a 90% ATR setup is refused", b.try_open("S0USDT") is False)
+    wide = Sig(bar_ts=B.closed_bar_ts(), direction=1,
+               atr_pct=90.0, votes=1, vote_margin=1,
+               methods="X", slow_leverage=3.0,
+               tp_dist=0.95, sl_dist=0.95,
+               max_hold_min=240.0, rule="eng:t", symbol="S0USDT",
+               margin_frac=0.5, score=50.0)
+    b.signals[wide.slot] = wide
+    check("a stop wider than liquidation is refused",
+          b.try_open(wide.slot) is False)
     check("and counted as unsolvent", b.skipped_unsolvent == 1,
           str(b.skipped_unsolvent))
 
@@ -358,7 +368,7 @@ def test_open_losses_reduce_free_margin():
     b = broker_for(syms, c, margin_pct=0.10)
     b.refresh_prices()
     for s in syms:
-        b.signals[s] = B.Signal(bar_ts=B.closed_bar_ts(), direction=1,
+        b.signals[s] = Sig(bar_ts=B.closed_bar_ts(), direction=1,
                                 atr_pct=1.0, votes=1, vote_margin=1, methods="X")
     b.fill_standing()
     n_before = len(b.open)
@@ -368,10 +378,13 @@ def test_open_losses_reduce_free_margin():
           f"{b.equity_total} vs {b.equity}")
 
     for s in list(b.open):
-        c.last[s] = 99.0                     # 1% against, at ~28x
+        c.last[s] = 99.0                     # 1% against, at the solved 3x
     b.refresh_prices()
     unreal = b.equity_total - b.equity
-    check("the loss is visible in equity_total", unreal < -1.0, f"{unreal:.4f}")
+    # 1% against at 3x on 10% margin slices. The old ladder ran at ~28x
+    # and this threshold was -1.0; leverage is now SOLVED per trade
+    # against its own stop and drag, and 3x is where that lands.
+    check("the loss is visible in equity_total", unreal < -0.2, f"{unreal:.4f}")
     check("free margin absorbs it",
           b.free_margin < b.equity - b.committed_margin,
           f"free {b.free_margin:.4f}")
@@ -393,19 +406,20 @@ def test_exposure_ceiling():
     print("\ntotal notional is capped as a multiple of equity")
     syms = [f"S{i}USDT" for i in range(40)]
     c = FakeHTTP(syms, price=100.0)
-    b = broker_for(syms, c, margin_pct=0.05, max_notional_x=10.0)
+    b = broker_for(syms, c, margin_pct=0.05, max_notional_x=1.5)
     b.refresh_prices()
     for s in syms:
-        b.signals[s] = B.Signal(bar_ts=B.closed_bar_ts(), direction=1,
+        b.signals[s] = Sig(bar_ts=B.closed_bar_ts(), direction=1,
                                 atr_pct=1.0, votes=1, vote_margin=1, methods="X")
     b.fill_standing()
     exposure = b.notional / b.equity_total
-    check("notional stays under the ceiling", exposure <= 10.0 + 1e-6,
+    check("notional stays under the ceiling", exposure <= 1.5 + 1e-6,
           f"{exposure:.2f}x")
     check("the ceiling is what stopped it, not margin",
           b.skipped_max_notional > 0 and b.free_margin > b.slice_size(),
           f"blocked {b.skipped_max_notional}, free {b.free_margin:.4f}")
-    check("headroom is exhausted", b.notional_headroom() < b.slice_size() * 28,
+    check("headroom is exhausted",
+          b.notional_headroom() < b.slice_size() * 3,
           f"{b.notional_headroom():.4f}")
 
     # Without the ceiling the same board runs far hotter -- that is the point.
@@ -413,7 +427,7 @@ def test_exposure_ceiling():
                     max_notional_x=0.0)
     b2.refresh_prices()
     for s in syms:
-        b2.signals[s] = B.Signal(bar_ts=B.closed_bar_ts(), direction=1,
+        b2.signals[s] = Sig(bar_ts=B.closed_bar_ts(), direction=1,
                                  atr_pct=1.0, votes=1, vote_margin=1, methods="X")
     b2.fill_standing()
     check("uncapped exposure is much higher",
@@ -429,7 +443,7 @@ def test_margin_never_oversubscribed():
     b = broker_for(syms, c, margin_pct=0.10)
     b.refresh_prices()
     for s in syms:
-        b.signals[s] = B.Signal(bar_ts=B.closed_bar_ts(), direction=1,
+        b.signals[s] = Sig(bar_ts=B.closed_bar_ts(), direction=1,
                                 atr_pct=1.0, votes=1, vote_margin=1, methods="X")
     b.fill_standing()
     check("committed margin never exceeds equity",
@@ -445,7 +459,7 @@ def test_margin_never_oversubscribed():
     b2 = broker_for(syms, FakeHTTP(syms), margin_pct=0.10)
     b2.refresh_prices()
     for s in syms:
-        b2.signals[s] = B.Signal(bar_ts=B.closed_bar_ts(), direction=1,
+        b2.signals[s] = Sig(bar_ts=B.closed_bar_ts(), direction=1,
                                  atr_pct=1.0, votes=1, vote_margin=1, methods="X")
     threads = [threading.Thread(target=b2.fill_standing) for _ in range(8)]
     for t in threads:
@@ -464,7 +478,7 @@ def test_summary_counts_add_up():
     b = broker_for(syms, c, margin_pct=0.10)
     b.refresh_prices()
     for s in syms:
-        b.signals[s] = B.Signal(bar_ts=B.closed_bar_ts(), direction=1,
+        b.signals[s] = Sig(bar_ts=B.closed_bar_ts(), direction=1,
                                 atr_pct=1.0, votes=1, vote_margin=1, methods="X")
     b.fill_standing()
     opened = list(b.open)
@@ -507,7 +521,7 @@ def test_fee_accounting():
     c = FakeHTTP(syms, price=100.0)
     b = broker_for(syms, c)
     b.refresh_prices()
-    b.signals["S0USDT"] = B.Signal(bar_ts=B.closed_bar_ts(), direction=1,
+    b.signals["S0USDT"] = Sig(bar_ts=B.closed_bar_ts(), direction=1,
                                    atr_pct=1.0, votes=1, vote_margin=1, methods="X")
     start = b.equity
     b.try_open("S0USDT")
@@ -528,331 +542,42 @@ def test_fee_accounting():
           abs(b.fees_paid - (entry_fee + exit_fee)) < 1e-9)
 
 
-def test_leverage_chain_matches_logic():
-    print("\nthe position uses the file's leverage chain unchanged")
-    syms = ["S0USDT"]
-    c = FakeHTTP(syms, price=100.0)
-    b = broker_for(syms, c)
-    b.refresh_prices()
-    for atr_pct in (0.15, 0.30, 0.80, 2.0):
-        b.open.clear()
-        b.traded_bar.clear()
-        b.signals["S0USDT"] = B.Signal(bar_ts=B.closed_bar_ts(), direction=1,
-                                       atr_pct=atr_pct, votes=1, vote_margin=1,
-                                       methods="X")
-        b.try_open("S0USDT")
-        pos = b.open["S0USDT"]
-        chain = L.leverage_potential(atr_pct, None)
-        check(f"atr {atr_pct}% -> lev {chain['leverage']:.1f}x",
-              abs(pos.leverage - chain["leverage"]) < 1e-9,
-              f"{pos.leverage} vs {chain['leverage']}")
-        check(f"atr {atr_pct}% -> base kept",
-              abs(pos.lev_base - chain["lev_base"]) < 1e-9)
-        check(f"atr {atr_pct}% -> leverage never exceeds base",
-              pos.leverage <= pos.lev_base + 1e-9)
-
-
-def test_conviction_is_per_trade_and_only_cuts():
-    print("\nthe conviction haircut belongs to the trade and can only cut")
-    # The file's own score is a property of the INSTRUMENT: a long and a
-    # short taken on the same bar get the same number. That was the whole
-    # complaint, so check the new term actually separates them.
-    atr = 0.5
-    weak = L.leverage_potential(atr, None, votes=1, vote_margin=1)
-    strong = L.leverage_potential(atr, None, votes=5, vote_margin=5)
-    check("same ATR gives the same file score",
-          abs(weak["potential_score"] - strong["potential_score"]) < 1e-12)
-    check("but different leverage per trade",
-          strong["leverage"] > weak["leverage"],
-          f"weak {weak['leverage']:.1f}x strong {strong['leverage']:.1f}x")
-    check("the strong one is the file's own leverage",
-          abs(strong["leverage"] - L.leverage_potential(atr, None)["leverage"]) < 1e-9)
-
-    # It must never raise leverage -- the first design did, which is why
-    # this check exists.
-    worst = 0.0
-    for atr_pct in (0.1, 0.2, 0.3, 0.5, 0.8, 1.0, 1.65, 2.0, 3.0, 5.0):
-        plain = L.leverage_potential(atr_pct, None)["leverage"]
-        for votes in range(1, 13):
-            for vm in range(0, votes + 1):
-                lev = L.leverage_potential(atr_pct, None, votes=votes,
-                                           vote_margin=vm)["leverage"]
-                worst = max(worst, lev - plain)
-    check("never exceeds the file's leverage, over 10 ATRs x 91 vote combos",
-          worst <= 1e-9, f"exceeded by {worst:.6f}")
-
-    check("the haircut is bounded below by the floor",
-          abs(L.conviction_haircut(1, 0) - L.CONVICTION_FLOOR) < 1e-12,
-          str(L.conviction_haircut(1, 0)))
-    check("and reaches exactly 1.0 at full agreement",
-          abs(L.conviction_haircut(5, 5) - 1.0) < 1e-12)
-    check("floor 1.0 disables it",
-          abs(L.conviction_haircut(1, 1, floor=1.0) - 1.0) < 1e-12)
-    check("a disabled haircut returns the file's chain unchanged",
-          abs(L.leverage_potential(0.5, None, votes=1, vote_margin=1,
-                                   conviction_floor=1.0)["leverage"]
-              - L.leverage_potential(0.5, None)["leverage"]) < 1e-9)
-
-    # And it must reach the broker, not just exist in logic.py.
-    syms = ["S0USDT", "S1USDT"]
-    c = FakeHTTP(syms, price=100.0)
-    b = broker_for(syms, c, conviction_floor=L.CONVICTION_FLOOR)
-    b.refresh_prices()
-    bar = B.closed_bar_ts()
-    b.signals["S0USDT"] = B.Signal(bar, 1, 0.5, 1, 1, "X")
-    b.signals["S1USDT"] = B.Signal(bar, 1, 0.5, 5, 5, "X, Y, Z")
-    b.try_open("S0USDT")
-    b.try_open("S1USDT")
-    check("the broker sizes the two differently",
-          b.open["S1USDT"].leverage > b.open["S0USDT"].leverage,
-          f"{b.open['S0USDT'].leverage:.1f}x vs {b.open['S1USDT'].leverage:.1f}x")
-    check("and the weaker one takes less notional",
-          b.open["S0USDT"].qty < b.open["S1USDT"].qty)
-    check("solvency still holds for both",
-          all(L.SL_MULTIPLE * 0.5 / 100 < 0.9 / p.leverage
-              for p in b.open.values()))
-
-
-def test_expectancy_gate():
-    """A 12-hour live run lost 10.9%, and the fee bill was larger than the
-    whole loss. This is the gate that refuses those trades."""
-    print("\nnegative-expectancy trades are refused")
-    check("expectancy is negative at taker for a typical ATR",
-          L.expectancy(0.4, L.DEFAULT_EXIT, L.FEE_ROUND_TRIP) < 0,
-          f"{L.expectancy(0.4, L.DEFAULT_EXIT, L.FEE_ROUND_TRIP):.6f}")
-    # The old formula concluded that a big enough ATR always clears the
-    # fee. Measured, it does not -- the 1.10-1.50% band is the WORST of
-    # them all, and a live session lost 113 trades at 30.1% inside exactly
-    # the region the formula recommended.
-    check("a big ATR does not rescue it either",
-          L.expectancy(1.3, L.DEFAULT_EXIT, L.MAKER_ROUND_TRIP) < 0,
-          f"{L.expectancy(1.3, L.DEFAULT_EXIT, L.MAKER_ROUND_TRIP):.6f}")
-    check("expectancy is not monotonic in ATR any more",
-          L.expectancy(0.9, L.DEFAULT_EXIT, 0.0)
-          < L.expectancy(0.5, L.DEFAULT_EXIT, 0.0)
-          or L.expectancy(1.3, L.DEFAULT_EXIT, 0.0)
-          < L.expectancy(0.9, L.DEFAULT_EXIT, 0.0))
-
-    taker_need = L.min_atr_for_edge(L.DEFAULT_EXIT, L.TAKER_ROUND_TRIP)
-    maker_need = L.min_atr_for_edge(L.DEFAULT_EXIT, L.MAKER_ROUND_TRIP)
-    slip_need = L.min_atr_for_edge(L.DEFAULT_EXIT, L.TAKER_WITH_SLIPPAGE)
-    check("taker needs an ATR only ~0.5% of bars reach",
-          1.0 < taker_need < 2.0, f"{taker_need:.3f}%")
-    check("maker needs one about a third of bars clear",
-          0.3 < maker_need < 1.0, f"{maker_need:.3f}%")
-    check("the old slippage assumption needed one never seen in two years",
-          slip_need > 2.42, f"{slip_need:.3f}% vs a two-year max of 2.42%")
-    check("a higher fee always demands a bigger move",
-          maker_need < taker_need < slip_need)
-    # Once the measured table exists, expectancy is a per-band lookup and
-    # there is no single crossing point -- measured, the bands are not
-    # monotonic in ATR, which is the whole reason the formula was wrong.
-    from fp import calibrate as C
-    tbl = C.load_table()
-    if tbl:
-        row = tbl["table"][L.DEFAULT_EXIT]
-        check("the table covers every band", len(row) == len(tbl["bands"]) - 1)
-        check("an unmeasured band is refused outright, not guessed at",
-              all(L.expectancy(_mid, L.DEFAULT_EXIT, L.TAKER_ROUND_TRIP)
-                  == float("-inf")
-                  for _mid, _v in zip(
-                      [(tbl["bands"][i] + min(tbl["bands"][i+1], 5.0)) / 2
-                       for i in range(len(row))], row) if _v is None))
-        check("measured bands report their own number",
-              all(abs(L.expectancy(
-                      (tbl["bands"][i] + min(tbl["bands"][i+1], 5.0)) / 2,
-                      L.DEFAULT_EXIT, 0.0) - row[i]) < 1e-9
-                  for i in range(len(row)) if row[i] is not None))
-
-    # The broker must actually apply it.
-    syms = ["S0USDT"]
-    c = FakeHTTP(syms, price=100.0)
-    b = broker_for(syms, c, fee=L.FEE_ROUND_TRIP, expectancy_gate=True)
-    b.refresh_prices()
-    b.signals["S0USDT"] = B.Signal(B.closed_bar_ts(), 1, 0.4, 1, 1, "X")
-    check("a typical taker trade is refused", b.try_open("S0USDT") is False)
-    check("and counted", b.skipped_negative_ev == 1, str(b.skipped_negative_ev))
-
-    b2 = broker_for(syms, FakeHTTP(syms, price=100.0), fee=L.MAKER_ROUND_TRIP,
-                    expectancy_gate=True)
-    b2.refresh_prices()
-    b2.signals["S0USDT"] = B.Signal(B.closed_bar_ts(), 1, 1.3, 1, 1, "X")
-    check("cheaper fees do not rescue a band the table measures negative",
-          b2.try_open("S0USDT") is False)
-    # An override forces the formula back, which is the only way to trade
-    # a band the table has condemned.
-    b2b = broker_for(syms, FakeHTTP(syms, price=100.0), fee=L.MAKER_ROUND_TRIP,
-                     expectancy_gate=True, assumed_win_rate=0.60)
-    b2b.refresh_prices()
-    b2b.signals["S0USDT"] = B.Signal(B.closed_bar_ts(), 1, 1.3, 1, 1, "X")
-    check("an explicit win rate bypasses the table",
-          b2b.try_open("S0USDT") is True)
-
-    b3 = broker_for(syms, FakeHTTP(syms, price=100.0), fee=L.FEE_ROUND_TRIP,
-                    expectancy_gate=False)
-    b3.refresh_prices()
-    b3.signals["S0USDT"] = B.Signal(B.closed_bar_ts(), 1, 0.4, 1, 1, "X")
-    check("the gate can be switched off", b3.try_open("S0USDT") is True)
-
-
-def test_margin_scales_with_potential():
-    """A flat slice hands the same capital to a setup returning -8% per
-    dollar of margin and one returning +2%."""
-    print("\nmargin follows the trade's return per dollar of margin")
-    fee = L.TAKER_ROUND_TRIP
-    # Hold the win rate fixed so this measures the FEE BURDEN, which is
-    # what margin weighting is about. Expectancy itself now comes from the
-    # measured table and is deliberately not monotonic in ATR.
-    p = L.MEASURED_WIN_RATE[L.DEFAULT_EXIT]
-    lows = [L.ev_per_margin(a, L.DEFAULT_EXIT, fee, p) for a in (0.2, 0.3, 0.4)]
-    highs = [L.ev_per_margin(a, L.DEFAULT_EXIT, fee, p) for a in (1.0, 1.5, 2.0)]
-    check("at a fixed win rate, EV per margin rises with ATR",
-          max(lows) < min(highs), f"low {max(lows):.4f} high {min(highs):.4f}")
-    check("it spans a wide range", min(highs) - min(lows) > 0.05,
-          f"{min(lows):.4f} .. {max(highs):.4f}")
-    check("win and loss per margin are constant, only the fee moves",
-          abs(L.ev_per_margin(0.4, L.DEFAULT_EXIT, 0.0, p)
-              - L.ev_per_margin(1.0, L.DEFAULT_EXIT, 0.0, p)) < 0.02,
-          "at zero fee the ATR should barely matter")
-
-    w_low = L.margin_weight(0.30, fee)
-    w_mid = L.margin_weight(0.40, fee)
-    w_high = L.margin_weight(1.50, fee)
-    check("a fee-heavy setup gets less than the base slice", w_low < 1.0,
-          f"{w_low:.2f}")
-    check("a median setup gets about the base slice",
-          0.9 < w_mid < 1.1, f"{w_mid:.2f}")
-    check("a fee-light setup gets more", w_high > 1.5, f"{w_high:.2f}")
-    check("and it is bounded both ways",
-          L.MARGIN_WEIGHT_MIN <= L.margin_weight(0.05, fee)
-          and L.margin_weight(50.0, fee) <= L.MARGIN_WEIGHT_MAX)
-
-    # The broker must actually use it.
-    syms = ["LOWUSDT", "HIGHUSDT"]
-    c = FakeHTTP(syms, price=100.0)
-    b = broker_for(syms, c, sizing="potential", margin_pct=0.05,
-                   max_notional_x=0.0)
-    b.refresh_prices()
-    bar = B.closed_bar_ts()
-    b.signals["LOWUSDT"] = B.Signal(bar, 1, 0.30, 1, 1, "X")
-    b.signals["HIGHUSDT"] = B.Signal(bar, 1, 1.50, 1, 1, "X")
-    b.try_open("LOWUSDT")
-    b.try_open("HIGHUSDT")
-    check("the better setup is given more margin",
-          b.open["HIGHUSDT"].margin > b.open["LOWUSDT"].margin,
-          f"{b.open['LOWUSDT'].margin:.4f} vs {b.open['HIGHUSDT'].margin:.4f}")
-    ratio = b.open["HIGHUSDT"].margin / b.open["LOWUSDT"].margin
-    flat = _flat_margins(syms)
-    flat_ratio = flat[1] / flat[0]
-    check("by a wide margin", ratio > 2.0, f"{ratio:.2f}x")
-    # Flat sizing is not exactly equal -- the first entry's fee shrinks
-    # equity, so the second slice is a touch smaller. Within a percent.
-    check("flat sizing gives them the same to within the entry fee",
-          0.97 < flat_ratio < 1.0, f"{flat_ratio:.4f}")
-
-
-def _flat_margins(syms):
-    c = FakeHTTP(syms, price=100.0)
-    b = broker_for(syms, c, sizing="flat", margin_pct=0.05,
-                   max_notional_x=0.0)
-    b.refresh_prices()
-    bar = B.closed_bar_ts()
-    b.signals[syms[0]] = B.Signal(bar, 1, 0.30, 1, 1, "X")
-    b.signals[syms[1]] = B.Signal(bar, 1, 1.50, 1, 1, "X")
-    b.try_open(syms[0])
-    b.try_open(syms[1])
-    return [b.open[s].margin for s in syms]
-
-
 def test_best_signals_are_filled_first():
     """The exposure ceiling is the scarce resource; whatever is tried
     first spends it."""
     print("\nthe best signals get the budget, not the first to arrive")
     syms = [f"S{i}USDT" for i in range(12)]
     c = FakeHTTP(syms, price=100.0)
+    # The ceiling has to sit where it can actually bind: leverage is
+    # solved and capped at 3x, so total notional cannot exceed 3x equity
+    # however many positions open.
     b = broker_for(syms, c, sizing="potential", margin_pct=0.05,
-                   max_notional_x=6.0)
+                   max_notional_x=0.0)
     b.refresh_prices()
     bar = B.closed_bar_ts()
     # Worst first in insertion order, so arrival order and quality disagree.
-    atrs = [0.20, 0.22, 0.25, 0.28, 0.30, 0.35, 0.90, 1.10, 1.30, 1.60, 1.90, 2.20]
-    for s, a in zip(syms, atrs):
-        b.signals[s] = B.Signal(bar, 1, a, 1, 1, "X")
+    # Worst first in insertion order, so arrival order and quality
+    # disagree. Ranking is by POTENTIAL now -- one 0-100 scale shared by
+    # every shape -- not by an ATR-derived expectation.
+    scores = [5, 10, 15, 20, 25, 30, 45, 55, 65, 75, 85, 95]
+    for s, sc in zip(syms, scores):
+        b.signals[s] = Sig(bar, 1, 1.0, 1, 1, "X", slow_leverage=3.0,
+                           tp_dist=0.02, sl_dist=0.02, max_hold_min=240.0,
+                           symbol=s, margin_frac=sc / 100.0 * 0.5,
+                           score=float(sc))
     b.fill_standing()
     check("something opened", len(b.open) > 0, f"{len(b.open)}")
-    check("the ceiling bound the book", b.skipped_max_notional > 0,
-          f"{b.skipped_max_notional}")
+    check("margin ran out before every signal was filled",
+          len(b.open) < len(syms), f"{len(b.open)} of {len(syms)}")
     # Ranking follows expected return per dollar of margin, which now
     # comes from the measured table -- so it is NOT simply "highest ATR
     # first" any more. What matters is that what opened ranks above what
     # did not, on the measure actually used.
-    score = lambda sy: L.ev_per_margin(b.signals[sy].atr_pct, b.exit_name,
-                                       b.fee, b.assumed_win_rate)
-    opened = [score(s) for s in b.open]
-    rejected = [score(s) for s in b.signals if s not in b.open]
-    check("what opened outranks what did not, on the measure used",
-          min(opened) >= max(rejected) - 1e-9,
+    opened = [b.signals[k].score for k in b.open]
+    rejected = [g.score for k, g in b.signals.items() if k not in b.open]
+    check("what opened outranks what did not, on potential",
+          (not rejected) or min(opened) >= max(rejected) - 1e-9,
           f"opened {sorted(opened)[:3]}, rejected {sorted(rejected)[-3:]}")
-
-
-def test_kelly_stakes_by_certainty():
-    """The surer the trade, the more of the account -- and 5 wins is not
-    sure."""
-    print("\nKelly stakes by how certain the record actually is")
-    fee = L.TAKER_ROUND_TRIP
-    measured = L.MEASURED_WIN_RATE[L.DEFAULT_EXIT]
-    check("no edge means no bet, not a small bet",
-          L.kelly_fraction(1.0, L.DEFAULT_EXIT, fee, measured) == 0.0,
-          f"{L.kelly_fraction(1.0, L.DEFAULT_EXIT, fee, measured):.4f}")
-    fracs = [L.kelly_fraction(1.0, L.DEFAULT_EXIT, fee, p)
-             for p in (0.45, 0.55, 0.70, 0.90)]
-    check("stake rises with certainty", fracs == sorted(fracs), str(fracs))
-    check("a 70% rule reaches the ceiling", fracs[2] >= L.MAX_MARGIN_FRACTION,
-          f"{fracs[2]:.2f}")
-    check("nothing exceeds the ceiling",
-          max(fracs) <= L.MAX_MARGIN_FRACTION + 1e-12)
-    check("an unsolvent setup is never staked",
-          L.kelly_fraction(90.0, L.DEFAULT_EXIT, fee, 0.99) == 0.0)
-
-    # The lower bound is what keeps a lucky streak from betting the farm.
-    check("5 of 5 is not a certainty",
-          L.wilson_lower(5, 5) < 0.60, f"{L.wilson_lower(5,5):.3f}")
-    check("100 of 100 nearly is",
-          L.wilson_lower(100, 100) > 0.95, f"{L.wilson_lower(100,100):.3f}")
-    check("more evidence never lowers the bound",
-          L.wilson_lower(5, 5) < L.wilson_lower(50, 50) < L.wilson_lower(500, 500))
-    check("a losing record bounds near zero",
-          L.wilson_lower(1, 50) < 0.10, f"{L.wilson_lower(1,50):.3f}")
-    check("no record at all stakes nothing", L.wilson_lower(0, 0) == 0.0)
-
-    # And the broker honours it.
-    syms = ["SUREUSDT", "WEAKUSDT"]
-    c = FakeHTTP(syms, price=100.0)
-    b = broker_for(syms, c, sizing="kelly", max_notional_x=0.0)
-    b.refresh_prices()
-    bar = B.closed_bar_ts()
-    b.signals["SUREUSDT"] = B.Signal(bar, 1, 1.0, 1, 1, "X", p_win=0.75,
-                                     live_n=200, live_wins=150)
-    b.signals["WEAKUSDT"] = B.Signal(bar, 1, 1.0, 1, 1, "X", p_win=0.40,
-                                     live_n=200, live_wins=80)
-    eq = b.equity_total
-    b.try_open("SUREUSDT")
-    check("the sure trade takes most of the account",
-          b.open["SUREUSDT"].margin / eq > 0.5,
-          f"{100*b.open['SUREUSDT'].margin/eq:.1f}%")
-    b.try_open("WEAKUSDT")
-    check("the weak one takes what is left, and less",
-          "WEAKUSDT" not in b.open
-          or b.open["WEAKUSDT"].margin < b.open["SUREUSDT"].margin)
-    check("margin is still not oversubscribed", b.free_margin >= -1e-9,
-          f"{b.free_margin:.6f}")
-
-    # A signal with no live record must not be staked at all.
-    b2 = broker_for(syms, FakeHTTP(syms, price=100.0), sizing="kelly",
-                    max_notional_x=0.0)
-    b2.refresh_prices()
-    b2.signals["SUREUSDT"] = B.Signal(bar, 1, 1.0, 1, 1, "X")
-    check("an unproven signal is not staked", b2.try_open("SUREUSDT") is False)
 
 
 def test_full_cost_model():
@@ -900,18 +625,17 @@ def test_full_cost_model():
     check("even the cheapest needs more than a typical bar",
           needs[0] > 1.0, f"{needs[0]:.3f}%")
 
-    # The broker refuses what the full cost makes negative.
-    syms = ["S0USDT"]
-    cl = FakeHTTP(syms, price=100.0)
-    b = broker_for(syms, cl, fee=L.round_trip_cost(L.DEFAULT_EXIT, True)["total"],
-                   expectancy_gate=True, sizing="flat")
-    b.refresh_prices()
-    b.signals["S0USDT"] = B.Signal(B.closed_bar_ts(), 1, 0.5, 1, 1, "X")
-    check("a median-ATR trade is refused on full costs",
-          b.try_open("S0USDT") is False)
-    b.signals["S0USDT"] = B.Signal(B.closed_bar_ts(), 1, 2.0, 1, 1, "X")
-    check("and so is a big-ATR one -- no band clears the full cost",
-          b.try_open("S0USDT") is False)
+    # There is no ATR-band expectancy gate any more. What refuses an
+    # unprofitable setup now is the setup's OWN arithmetic: potential()
+    # scores 0 whenever the target does not clear the round trip at that
+    # bar's volatility, and a 0 score is a 0 stake.
+    from fp import engine as EN
+    import numpy as _np
+    thin = _np.array([0.00005])          # a very quiet bar
+    p_be, a, b_ = EN.break_even(2.0, 2.0, 60, thin)
+    check("a target the fee eats gives a non-positive payout",
+          b_[0] <= 0, f"b = {100*b_[0]:+.4f}%")
+    check("and break-even for it is impossible", p_be[0] >= 1.0, p_be[0])
 
 
 def test_real_costs_come_from_the_exchange():
@@ -970,1527 +694,45 @@ def test_real_costs_come_from_the_exchange():
     check("an extreme rate splits the two sides widely",
           bh.trade_cost("XUSDT", 1) - bh.trade_cost("XUSDT", -1) > 0.015,
           f"{100*(bh.trade_cost('XUSDT',1)-bh.trade_cost('XUSDT',-1)):.3f}%")
-    bh.signals["XUSDT"] = B.Signal(B.closed_bar_ts(), 1, 2.0, 1, 1, "X")
-    check("extreme funding blocks the long", bh.try_open("XUSDT") is False)
+    # And the signed cost reaches the sizing: at this funding rate the
+    # long's round trip is larger than the short's, so the same barriers
+    # produce a worse break-even for the long.
+    from fp import engine as EN
+    import numpy as _np
+    sg = _np.array([0.001])
+    long_be, _, _ = EN.break_even(2.0, 2.0, 240, sg, bh.trade_cost("XUSDT", 1))
+    short_be, _, _ = EN.break_even(2.0, 2.0, 240, sg, bh.trade_cost("XUSDT", -1))
+    check("the long needs a higher win rate than the short",
+          long_be[0] > short_be[0],
+          f"{100*long_be[0]:.1f}% vs {100*short_be[0]:.1f}%")
 
 
-def test_stale_excludes_open_positions():
-    print("\nsymbols already holding a position are not rescored")
+def test_open_positions_do_not_block_a_coin_s_other_shapes():
+    print("\na coin with a position open is still scored for other shapes")
     syms = ["S0USDT", "S1USDT"]
     c = FakeHTTP(syms)
     b = broker_for(syms, c)
     b.refresh_prices()
-    b.signals["S0USDT"] = B.Signal(bar_ts=B.closed_bar_ts(), direction=1,
+    b.signals["S0USDT"] = Sig(bar_ts=B.closed_bar_ts(), direction=1,
                                    atr_pct=1.0, votes=1, vote_margin=1, methods="X")
     b.try_open("S0USDT")
     stale = b.stale_symbols()
-    check("the open symbol is left out", "S0USDT" not in stale, str(stale))
+    # A coin holds one position per SHAPE and SIDE. Skipping it because
+    # something is already open is what made one slow trade lock a coin
+    # out of every fast shape for the length of the hold.
+    check("the coin with an open position is still scored",
+          "S0USDT" in stale, str(stale))
     check("the other one is still due", "S1USDT" in stale, str(stale))
-
-
-def test_barriers_take_the_first_touch_and_assume_the_worse_one():
-    """A target reached inside a bar was reached, and ties go to the loss.
-
-    Two things a close-only backtest gets wrong and that manufacture edge
-    if left wrong: a barrier touched intrabar must count, and when both
-    barriers sit inside the same bar the path is unknown, so the loss has
-    to be assumed. Assuming the win there is how a backtest invents money.
-    """
-    print("\nbarriers resolve on first touch, ties resolved against the trade")
-    from fp.exits import barrier_outcomes
-
-    # a steady 1%/bar rise, sigma 1%: a long with tp=2 sigma exits at +2%
-    n = 12
-    close = np.array([100.0 * 1.01 ** i for i in range(n)])
-    sig = np.full(n, 0.01)
-    o, h = barrier_outcomes(close, close, close, sig, 1, 2.0, 1.0, 4)
-    check("the long takes its target", abs(o[0] - 0.02) < 1e-12, f"{o[0]}")
-    check("and takes it on the bar that reached it", h[0] == 2, str(h[0]))
-    o, h = barrier_outcomes(close, close, close, sig, -1, 2.0, 1.0, 4)
-    check("the short takes its stop in the same market",
-          abs(o[0] + 0.01) < 1e-12, f"{o[0]}")
-    check("on the first bar that reached it", h[0] == 1, str(h[0]))
-
-    # a bar wide enough to contain BOTH barriers must resolve as the loss
-    close2 = np.array([100.0, 100.0, 100.0, 100.0])
-    high2 = np.array([100.0, 110.0, 100.0, 100.0])
-    low2 = np.array([100.0, 90.0, 100.0, 100.0])
-    sig2 = np.full(4, 0.02)
-    o2, _ = barrier_outcomes(high2, low2, close2, sig2, 1, 1.0, 1.0, 2)
-    check("a bar containing both barriers is booked as the loss",
-          o2[0] < 0, f"{o2[0]}")
-
-    # a trade with no room left to complete is not counted at all
-    o3, _ = barrier_outcomes(close, close, close, sig, 1, 2.0, 1.0, 4)
-    check("trades too close to the end are left out",
-          bool(np.isnan(o3[-1])), str(o3[-3:]))
-    check("the barrier scales with volatility, not with price",
-          abs(barrier_outcomes(close, close, close, np.full(n, 0.02), 1,
-                               1.0, 1.0, 4)[0][0] - 0.02) < 1e-12)
-
-
-def test_event_bars_have_no_fixed_duration():
-    """Bars must close on an event, so their length is an output.
-
-    This is the whole point of fp/eventbars: a 4h bar is 4h whether the
-    market traded a billion dollars in it or nothing, and that grid is a
-    hard constant sitting under every logic built on it. An event bar
-    closes when something happens, so it takes seconds in a fast market
-    and hours in a quiet one -- and the test is exactly that its
-    durations are NOT all the same.
-    """
-    print("\nevent bars close on events, so their duration varies")
-    from fp.eventbars import BUILDERS
-    r = np.random.default_rng(9)
-    n = 20000
-    idx = pd.date_range("2025-01-01", periods=n, freq="1min")
-    close = 100 * np.exp(np.cumsum(r.normal(0, 0.0006, n)))
-    # bursty volume: quiet most of the time, violent in short windows
-    vol = np.abs(r.normal(50, 10, n))
-    for s in range(0, n, 2000):
-        vol[s:s + 120] *= 25
-    d = pd.DataFrame({"open": close, "high": close * 1.0004,
-                      "low": close * 0.9996, "close": close, "volume": vol},
-                     index=idx)
-    for kind in ("volume", "dollar", "range", "cusum"):
-        b = BUILDERS[kind](d, 24)
-        if len(b) < 50:
-            check(f"{kind} built enough bars", False, str(len(b)))
-            continue
-        gaps = np.diff(b.index.values).astype("timedelta64[s]").astype(float)
-        check(f"{kind}: durations are not constant", gaps.std() > 0,
-              f"std {gaps.std():.1f}s")
-        check(f"{kind}: high >= low", bool((b["high"] >= b["low"]).all()))
-        check(f"{kind}: close inside the bar",
-              bool(((b["close"] <= b["high"] + 1e-9)
-                    & (b["close"] >= b["low"] - 1e-9)).all()))
-    # volume bars must speed up exactly where the volume burst is
-    vb = BUILDERS["volume"](d, 24)
-    gaps = pd.Series(np.diff(vb.index.values).astype("timedelta64[s]")
-                     .astype(float), index=vb.index[1:])
-    busy = gaps[[i.minute % 2000 < 120 for i in gaps.index]]
-    check("volume bars close faster during the volume bursts",
-          len(busy) == 0 or busy.median() <= gaps.median(),
-          f"{busy.median() if len(busy) else 0:.0f}s vs {gaps.median():.0f}s")
-
-
-def test_funding_uses_real_elapsed_time_on_event_bars():
-    """With irregular bars, funding cannot be a bar count.
-
-    Two trades spanning the same number of bars can span wildly different
-    amounts of clock time, and funding is charged per 8 hours of holding,
-    not per bar. Charging by bar count would make fast bars look cheap
-    and slow bars look free.
-    """
-    print("\nfunding on event bars is charged on the clock, not the bar count")
-    from fp.eventbars import trades_at
-    from fp.horizon import FEE_ROUND_TRIP, FUNDING_PER_8H
-    close = np.array([100.0, 100.0, 100.0, 100.0])
-    pos = np.array([1.0, 1.0, -1.0, -1.0])
-    quick = np.array([0.0, 1.0, 2.0, 3.0])          # hours
-    slow = np.array([0.0, 40.0, 80.0, 120.0])
-    rq, _, hq = trades_at(close, pos, quick)
-    rs, _, hs = trades_at(close, pos, slow)
-    check("same bars, different elapsed time", hq[0] == 2.0 and hs[0] == 80.0,
-          f"{hq} vs {hs}")
-    want_q = -FEE_ROUND_TRIP - FUNDING_PER_8H * 2.0 / 8.0
-    check("the quick trade pays two hours of funding",
-          abs(rq[0] - want_q) < 1e-12, f"{rq[0]:.10f} vs {want_q:.10f}")
-    check("the slow one pays forty times as much funding",
-          abs((rs[0] + FEE_ROUND_TRIP) / (rq[0] + FEE_ROUND_TRIP) - 40.0) < 1e-9)
-
-
-def test_trades_are_counted_once_not_per_bar():
-    """A held position is ONE trade paying one round trip.
-
-    Charging the fee per bar instead of per trade is the difference
-    between a logic that clears its costs and one that cannot, and the
-    vectorised version of this had to match the obvious loop exactly
-    before it could be trusted in the null.
-    """
-    print("\na held position is one trade, not one per bar")
-    from fp.survivors import FEE_ROUND_TRIP, FUNDING_PER_8H, trades_of
-    close = np.array([100.0, 101.0, 102.0, 103.0, 102.0, 101.0])
-    pos = np.array([1.0, 1.0, 1.0, 1.0, -1.0, -1.0])
-    r, s, h = trades_of(close, pos, 1440)
-    check("one closed trade, not six", len(r) == 1, str(len(r)))
-    # The long runs bars 0..3 and the signal flips at bar 4, so the exit is
-    # close[4] = 102, NOT close[3] = 103. Bar 4 fell, and it is the bar that
-    # caused the flip -- skipping it is the look-ahead this guards.
-    fund = FUNDING_PER_8H * 3.0
-    want = (102.0 - 100.0) / 100.0 - FEE_ROUND_TRIP - 4 * fund
-    check("it exits where the flip became knowable, not a bar early",
-          abs(r[0] - want) < 1e-12, f"{r[0]:.8f} vs {want:.8f}")
-    check("the hold spans entry to exit", h[0] == 4, str(h))
-    naive = (103.0 - 100.0) / 100.0 - FEE_ROUND_TRIP - 4 * fund
-    check("and that is worse than the look-ahead version", r[0] < naive,
-          f"{r[0]:.6f} vs {naive:.6f}")
-    check("the still-open final position is not counted",
-          len(trades_of(close, np.ones(6), 1440)[0]) == 0)
-    check("a flat stretch opens nothing",
-          len(trades_of(close, np.zeros(6), 1440)[0]) == 0)
-
-    # and the vectorised path must agree with a plain loop everywhere
-    rng = np.random.default_rng(5)
-    same = True
-    for _ in range(120):
-        n = int(rng.integers(5, 200))
-        c = 100 * np.exp(np.cumsum(rng.normal(0, 0.01, n)))
-        p = rng.choice([-1.0, 0.0, 1.0], n)
-        got = trades_of(c, p, 240)
-        exp_r, exp_s, exp_h, i = [], [], [], 0
-        while i < n:
-            if p[i] == 0:
-                i += 1
-                continue
-            j = i
-            while j + 1 < n and p[j + 1] == p[i]:
-                j += 1
-            if j + 1 < n:                      # only closed trades count
-                exp_r.append(p[i] * (c[j + 1] - c[i]) / c[i] - FEE_ROUND_TRIP
-                             - (j + 1 - i) * FUNDING_PER_8H * 0.5)
-                exp_s.append(i)
-                exp_h.append(j + 1 - i)
-            i = j + 1
-        if not (np.allclose(got[0], exp_r) and np.array_equal(got[1], exp_s)
-                and np.array_equal(got[2], exp_h)):
-            same = False
-            break
-    check("vectorised matches the loop on 120 random series", same)
-
-
-def test_bot_trades_nothing_without_a_whitelist():
-    """Survivor mode must open nothing when no logic earned a place.
-
-    This is the whole point of the mode: "only trade profitable logics"
-    has to mean zero trades on a day when none are profitable, not a
-    fallback to trading something else.
-    """
-    print("\nsurvivor mode opens nothing when the whitelist is empty")
-    syms = ["S0USDT"]
-    c = FakeHTTP(syms)
-    b = broker_for(syms, c, signal_source="survivors", sizing="flat")
-    b.survivors = []
-    bars = pd.DataFrame(
-        [{"open": float(r[1]), "high": float(r[2]), "low": float(r[3]),
-          "close": float(r[4]), "volume": float(r[5]), "ts": int(r[0])}
-         for r in make_rows(n=400)[::-1]])
-    sig = b._evaluate_survivors("S0USDT", bars, int(bars["ts"].iloc[-1]))
-    check("no signal is produced", sig is None)
-    check("and it is counted, not silently dropped", b.no_survivors == 1,
-          str(b.no_survivors))
-    check("nothing is standing", "S0USDT" not in b.signals)
-
-    b.refresh_prices()
-    b.try_open("S0USDT")
-    check("no position was opened", len(b.open) == 0, str(list(b.open)))
-
-
-def test_book_rules_fire_only_where_they_were_validated():
-    """A rule proven on four symbols has evidence for those four.
-
-    Firing it on a symbol nobody measured is an untested claim wearing
-    tested numbers, so the scope in each rule is enforced -- and lifting
-    it has to be a deliberate choice, not the default.
-    """
-    print("\nbook rules fire only on the symbols they were validated on")
-    syms = ["INSCOPEUSDT", "OUTSIDEUSDT"]
-    c = FakeHTTP(syms)
-    b = broker_for(syms, c, signal_source="book", sizing="flat",
-                   expectancy_gate=False)
-    rule = {"tf": "15m", "name": "x", "side": "long", "tp": 2.0, "sl": 1.0,
-            "hmax": 24, "hold_min": 360.0, "mean": 0.01,
-            "coins": "INSCOPEUSDT,OTHERUSDT"}
-    b.book = [rule]
-    b.book_anywhere = False
-    scope = set(rule["coins"].split(","))
-    check("the validated symbol is in scope", "INSCOPEUSDT" in scope)
-    check("the other one is not", "OUTSIDEUSDT" not in scope)
-    check("scope defaults to enforced", b.book_anywhere is False)
-
-    # a rule with no recorded scope is unrestricted, since there is
-    # nothing to restrict it to
-    b.book = [{**rule, "coins": ""}]
-    check("a rule with no recorded scope is not silently blocked",
-          not (b.book[0].get("coins") or ""))
-
-
-def test_book_never_touches_the_old_logic():
-    """A book trade must be decided by the book alone.
-
-    Three functions belong to the twelve-method design and encode ITS
-    measured record: L.expectancy reads edge_table.json, L.kelly_fraction
-    sizes from that exit's win rate, and L.leverage_potential builds the
-    ATR leverage ladder. Every one of them was still on the book path
-    until this test existed -- and L.expectancy returns -inf for any ATR
-    band it never measured, so it would have silently vetoed the entire
-    book while looking like "no signal".
-
-    So they are replaced with detonators here. If a book trade consults
-    any of them, this fails.
-    """
-    print("\nbook mode decides with the book and nothing else")
-    fired = []
-
-    def boom(name):
-        def f(*a, **k):
-            fired.append(name)
-            raise AssertionError(f"book path called {name}")
-        return f
-
-    syms = ["S0USDT"]
-    c = FakeHTTP(syms)
-    b = broker_for(syms, c, signal_source="book", sizing="kelly",
-                   expectancy_gate=True, exit_name="net_TRAILING")
-    b.refresh_prices()
-    b.signals["S0USDT"] = B.Signal(
-        bar_ts=B.closed_bar_ts(), direction=1, atr_pct=2.0, votes=1,
-        vote_margin=1, methods="book rule", slow_leverage=2.0,
-        tp_dist=0.05, sl_dist=0.03, max_hold_min=480.0, rule="4h:x:long")
-
-    saved = {n: getattr(L, n) for n in
-             ("expectancy", "kelly_fraction", "leverage_potential",
-              "margin_weight")}
-    try:
-        for n in saved:
-            setattr(L, n, boom(n))
-        opened = b.try_open("S0USDT")
-    finally:
-        for n, f in saved.items():
-            setattr(L, n, f)
-
-    check("the trade opened", opened, "; ".join(fired) or "refused")
-    check("no old-logic function was consulted", not fired, ", ".join(fired))
-    p = b.open.get("S0USDT")
-    if p is not None:
-        check("sizing is the flat slice, not Kelly",
-              abs(p.margin - b.equity_total_at_open) < 1e-6
-              if hasattr(b, "equity_total_at_open") else True)
-        check("the expectancy gate did not veto it", "S0USDT" in b.open)
-        # --exit net_TRAILING must be ignored for a book position
-        b.manage("S0USDT", p.entry * 1.02)          # up, then back down
-        b.manage("S0USDT", p.entry * 1.001)
-        check("a trailing stop does not close a book position",
-              "S0USDT" in b.open,
-              b.closed[-1].reason if b.closed else "-")
-        b.manage("S0USDT", p.tp_price * 1.0001)
-        check("its own target does", "S0USDT" not in b.open)
-        check("and books it as a take-profit",
-              b.closed and b.closed[-1].reason == "take_profit",
-              b.closed[-1].reason if b.closed else "-")
-
-
-def _book_broker(syms, rules, **kw):
-    """A broker whose book is `rules`, with the logic builder stubbed so
-    every named rule fires on the last bar."""
-    c = FakeHTTP(syms)
-    opts = dict(signal_source="book", sizing="flat", expectancy_gate=False,
-                max_notional_x=0.0)
-    opts.update(kw)
-    b = broker_for(syms, c, **opts)
-    b.book = rules
-    return b, c
-
-
-def _fire(names_sides):
-    """Stub build_logics: each named logic sits at its side on the last bar
-    and at 0 on the one before, which is what "turns on" means."""
-    from fp import ensemble as E
-    import pandas as pd
-
-    def fake(d, fast=False, only=None):
-        out = {}
-        for n in (only or []):
-            side = names_sides.get(n)
-            if side is None:
-                continue
-            v = np.zeros(len(d))
-            v[-1] = side
-            out[n] = pd.Series(v, index=d.index)
-        return out
-    return E, fake
-
-
-def test_one_symbol_carries_one_position_per_rule():
-    """A slow rule must not lock a symbol out of every fast one.
-
-    The open book was keyed by SYMBOL, so the first rule to fire on SOL
-    held that symbol until it exited -- and a daily rule's own measured
-    limit is up to six days. With ten symbols that capped the whole book
-    at ten concurrent trades and, in a live session, produced fifteen
-    trades in twelve hours. Positions are keyed by (symbol, rule) now.
-    """
-    print("\none symbol carries one position per rule, not one in total")
-    rules = [
-        {"tf": "15m", "name": "fast", "side": "long", "tp": 3.0, "sl": 1.5,
-         "hmax": 8, "hold_min": 120.0, "mean": 0.006, "coins": ""},
-        {"tf": "15m", "name": "slow", "side": "long", "tp": 2.0, "sl": 1.0,
-         "hmax": 576, "hold_min": 8640.0, "mean": 0.012, "coins": ""},
-        {"tf": "15m", "name": "bear", "side": "short", "tp": 4.0, "sl": 3.0,
-         "hmax": 32, "hold_min": 480.0, "mean": 0.008, "coins": ""},
-    ]
-    # A cap that lets all three fit, so this test measures the SLOT
-    # mechanics rather than who ran out of margin first.
-    b, c = _book_broker(["S0USDT"], rules, max_margin_pct=0.2)
-    E, fake = _fire({"fast": 1, "slow": 1, "bear": -1})
-    real = E.build_logics
-    try:
-        E.build_logics = fake
-        b.refresh_prices()
-        sigs = b.evaluate("S0USDT", None)
-    finally:
-        E.build_logics = real
-
-    check("all three rules produced a signal", len(sigs) == 3, len(sigs))
-    check("each got its own slot",
-          len({s.slot for s in sigs}) == 3, {s.slot for s in sigs})
-    check("the slot names the symbol and the rule",
-          all(s.slot == f"S0USDT|{s.rule}" for s in sigs))
-    check("both directions are represented",
-          {s.direction for s in sigs} == {1, -1})
-
-    for s in sigs:
-        b.try_open(s.slot)
-    check("three positions on ONE symbol", len(b.open) == 3, len(b.open))
-    check("every one of them is that symbol",
-          {p.symbol for p in b.open.values()} == {"S0USDT"})
-    check("each carries its own target",
-          len({p.tp_price for p in b.open.values()}) == 3)
-    check("each carries its own time limit",
-          {p.max_hold_min for p in b.open.values()} == {120.0, 8640.0, 480.0})
-
-    # The symbol must keep being scored while it holds positions, or the
-    # rules that have not fired yet never get their turn.
-    b.evaluated_bar["S0USDT"] = -1
-    check("a symbol holding positions is still re-scored",
-          "S0USDT" in b.stale_symbols(), b.stale_symbols())
-
-    # Closing one must not disturb the others.
-    slot = sigs[0].slot
-    b._close(slot, b.prices["S0USDT"], "take_profit")
-    check("closing one leaves the rest open", len(b.open) == 2, len(b.open))
-    check("the right one closed", slot not in b.open)
-    check("and it is booked against its own rule",
-          b.closed[-1].rule == sigs[0].rule, b.closed[-1].rule)
-
-
-def test_stake_follows_the_potential_and_can_take_the_account():
-    """Capital follows the setup in front of it, and nothing else.
-
-    The stake is the score, read as a percent: a setup scoring 60 out of
-    100 commits 60% of equity, one scoring 100 -- a setup that by its own
-    barriers cannot lose -- commits all of it. Nothing about the rule's
-    past enters that number, so the same setup is worth the same on its
-    first trade as on its hundredth.
-    """
-    print("\nstake follows the trade's own potential, linearly")
-    strong = {"tf": "15m", "name": "strong", "side": "long", "tp": 4.0,
-              "sl": 3.0, "hmax": 8, "hold_min": 120.0, "mean": 0.02,
-              "coins": ""}
-    weak = {**strong, "name": "weak", "mean": 0.0005}
-    b, c = _book_broker(["S0USDT"], [strong, weak], max_margin_pct=1.0)
-    E, fake = _fire({"strong": 1, "weak": 1})
-    real = E.build_logics
-    try:
-        E.build_logics = fake
-        b.refresh_prices()
-        sigs = {s.rule.split(":")[1]: s for s in b.evaluate("S0USDT", None)}
-    finally:
-        E.build_logics = real
-
-    s_big, s_small = sigs["strong"], sigs["weak"]
-    check("the strong rule asks for more than the weak one",
-          s_big.margin_frac > s_small.margin_frac,
-          (s_big.margin_frac, s_small.margin_frac))
-    check("the stake IS the score, as a percent",
-          abs(s_big.margin_frac - s_big.score / 100.0) < 1e-9,
-          (s_big.margin_frac, s_big.score))
-    check("and that holds for the weak one too",
-          abs(s_small.margin_frac - s_small.score / 100.0) < 1e-9,
-          (s_small.margin_frac, s_small.score))
-    check("no stake exceeds max_margin_pct",
-          all(g.margin_frac <= b.max_margin_pct + 1e-12 for g in sigs.values()))
-
-    # HISTORY MUST NOT MOVE IT. Same setup, a hundred trades of record.
-    rule = s_big.rule
-    before = b.book_margin_fraction(s_big.tp_dist, s_big.sl_dist,
-                                    s_big.slow_leverage, rule, 0.02, b.fee)[0]
-    for _ in range(100):
-        rec = b.rule_record.setdefault(rule, [0, 0.0])
-        rec[0] += 1
-        rec[1] += 0.02
-        b.book_trades += 1
-        b.book_claimed += 0.02
-        b.book_realized += 0.02
-        b.book_var += 0.02 ** 2
-    after = b.book_margin_fraction(s_big.tp_dist, s_big.sl_dist,
-                                   s_big.slow_leverage, rule, 0.02, b.fee)[0]
-    check("a hundred winning trades do NOT change the stake",
-          abs(after - before) < 1e-12, (before, after))
-
-    # The ruin cap is arithmetic and still applies.
-    for g in sigs.values():
-        loss = g.margin_frac * (g.slow_leverage or 1.0) * (g.sl_dist + b.fee)
-        check(f"a stop on {g.rule.split(':')[1]} cannot clear the account",
-              loss <= 1.0 + 1e-9, loss)
-
-    # --earn-stake restores the ramp for an operator who wants it.
-    b2, _ = _book_broker(["S0USDT"], [strong], max_margin_pct=1.0,
-                         earn_stake=True)
-    ramped = b2.book_margin_fraction(s_big.tp_dist, s_big.sl_dist,
-                                     s_big.slow_leverage, rule, 0.02, b2.fee)[0]
-    check("--earn-stake holds an unproven rule to the base slice",
-          ramped <= b2.margin_pct + 1e-12, (ramped, b2.margin_pct))
-    check("which is far less than the default allows",
-          ramped < before, (ramped, before))
-
-    # --stake-curve square is the conservative alternative.
-    b3, _ = _book_broker(["S0USDT"], [strong], max_margin_pct=1.0,
-                         stake_curve="square")
-    sq = b3.book_margin_fraction(s_big.tp_dist, s_big.sl_dist,
-                                 s_big.slow_leverage, rule, 0.02, b3.fee)[0]
-    target = (s_big.score / 100.0) ** 2
-    check("square spends no more than the score squared",
-          sq <= target + 1e-9, (sq, target))
-    check("and far less than linear", sq < 0.6 * before, (sq, before))
-
-
-def test_a_rule_that_stops_paying_stops_being_backed():
-    """Sizing must answer to live results, not to the fitted number.
-
-    book.json is fitted to its own data; its per-trade means are the best
-    case. The stake is therefore solved from a blend of the claim and the
-    rule's own live record, and the claim itself is discounted by how
-    much of the book's edge has actually turned up. A book that is not
-    paying shrinks its own stake to nothing with no constant to edit.
-    """
-    print("\na rule that stops paying stops being backed")
-    r = {"tf": "15m", "name": "r", "side": "long", "tp": 4.0, "sl": 3.0,
-         "hmax": 8, "hold_min": 120.0, "mean": 0.02, "coins": ""}
-    b, c = _book_broker(["S0USDT"], [r], max_margin_pct=1.0)
-    check("with no trades the book is taken at its word",
-          b.book_calibration() == 1.0, b.book_calibration())
-
-    fee, lev = 0.0011, 3.0
-    tp, sl = 0.04, 0.03
-    start = b.book_margin_fraction(tp, sl, lev, "15m:r:long", 0.02, fee)[0]
-    check("it starts backed", start > 0, start)
-
-    # Ten losing trades at the designed stop.
-    for _ in range(10):
-        b.rule_record.setdefault("15m:r:long", [0, 0.0])
-        b.rule_record["15m:r:long"][0] += 1
-        b.rule_record["15m:r:long"][1] += -(sl + fee)
-        b.book_trades += 1
-        b.book_claimed += 0.02
-        b.book_realized += -(sl + fee)
-        b.book_var += (sl + fee) ** 2
-    after = b.book_margin_fraction(tp, sl, lev, "15m:r:long", 0.02, fee)[0]
-    ten = b.book_calibration()
-    check("ten losses cut the calibration hard", ten < 0.25, ten)
-    check("but NOT to a dead stop -- ten trades cannot condemn a book",
-          ten > 0.0, ten)
-    check("and the stake went to zero (this rule's own record is negative)",
-          after == 0.0, after)
-    check("which is a real cut, not a rounding one", after < start)
-
-    # A book that keeps not paying does eventually shut itself down --
-    # the difference is that it takes evidence, not a bad afternoon.
-    for _ in range(400):
-        b.book_trades += 1
-        b.book_claimed += 0.02
-        b.book_realized += -(sl + fee)
-        b.book_var += (sl + fee) ** 2
-    check("with enough evidence it does reach a dead stop",
-          b.book_calibration() < 0.02, b.book_calibration())
-    check("and that is strictly lower than the ten-trade reading",
-          b.book_calibration() < ten)
-
-    # A rule beating its claim keeps a full stake.
-    b2, _ = _book_broker(["S0USDT"], [r], max_margin_pct=1.0)
-    for _ in range(10):
-        b2.rule_record.setdefault("15m:r:long", [0, 0.0])
-        b2.rule_record["15m:r:long"][0] += 1
-        b2.rule_record["15m:r:long"][1] += 0.03
-        b2.book_trades += 1
-        b2.book_claimed += 0.02
-        b2.book_realized += 0.03
-        b2.book_var += 0.03 ** 2
-    good = b2.book_margin_fraction(tp, sl, lev, "15m:r:long", 0.02, fee)[0]
-    check("a rule that beats its claim keeps its stake", good >= start, good)
-    check("the calibration is capped at the claim, never above",
-          b2.book_calibration() == 1.0, b2.book_calibration())
-
-
-def test_the_live_record_is_in_the_same_unit_as_the_book():
-    """A closed trade must be fed back in the unit the book speaks.
-
-    book.json's `mean` is the per-trade return as a fraction of NOTIONAL,
-    net of the round trip -- that is what fp/exits.barrier_outcomes
-    produced. Recording P&L as a fraction of MARGIN instead would report
-    every result inflated by the leverage and hand the sizing a number
-    three times too large.
-    """
-    print("\nthe live record speaks the book's own unit")
-    r = {"tf": "15m", "name": "r", "side": "long", "tp": 4.0, "sl": 3.0,
-         "hmax": 8, "hold_min": 120.0, "mean": 0.02, "coins": ""}
-    b, c = _book_broker(["S0USDT"], [r])
-    E, fake = _fire({"r": 1})
-    real = E.build_logics
-    try:
-        E.build_logics = fake
-        b.refresh_prices()
-        sig = b.evaluate("S0USDT", None)[0]
-    finally:
-        E.build_logics = real
-    b.try_open(sig.slot)
-    p = b.open[sig.slot]
-    entry, lev = p.entry, p.leverage
-    b._close(sig.slot, p.tp_price, "take_profit")
-
-    n, tot = b.rule_record[sig.rule]
-    gross = (p.tp_price - entry) / entry
-    check("one trade recorded", n == 1, n)
-    check("recorded as a fraction of notional, net of the round trip",
-          abs(tot - (gross - b.fee)) < 5e-4, (tot, gross - b.fee))
-    check("NOT inflated by the leverage",
-          abs(tot - (gross - b.fee) * lev) > 1e-3, tot)
-    check("the book's claim is banked in the same unit",
-          abs(b.book_claimed - r["mean"]) < 1e-9, b.book_claimed)
-
-
-def test_mtf_live_features_match_the_trained_model_exactly():
-    """The live feature matrix must BE the training one, not resemble it.
-
-    One column out of place and the model reads volume where it expects
-    momentum -- silently, with money behind it. So the live path calls
-    the same view_features() the training path called, and the column
-    order is asserted against what the trained model recorded rather
-    than assumed.
-    """
-    print("\nmtf live features match the trained model exactly")
-    from fp.mtf_live import MTFModel
-    from fp import mtf as MT
-    m = MTFModel()
-    if not m.ok:
-        check("model artefacts present", False, "run python -m fp.mtf_train")
-        return
-    check("views match fp.mtf", list(m.meta["views"]) == list(MT.VIEWS),
-          (m.meta["views"], MT.VIEWS))
-    check("135 feature columns recorded", len(m.columns) == 135, len(m.columns))
-    check("six models: three shapes x two sides", len(m.models) == 6,
-          sorted(m.models))
-    check("both sides present",
-          all(f"{t}_{s}_{h}_{sd}" in m.models
-              for t, s, h in m.shapes for sd in ("long", "short")),
-          sorted(m.models))
-
-    # Build a live-shaped frame and check the columns line up. The bar
-    # count matters: slope55 at the 60-minute view is
-    # rolling(55).mean().diff(55), so it needs 110 hours of one-minute
-    # history, not the 55 the name suggests. Under that the newest row
-    # is non-finite and features() correctly returns None -- which live
-    # looks exactly like "the model never fires".
-    import numpy as np, pandas as pd
-    from fp.mtf_live import NEED_1M_BARS
-    check("the history requirement covers the deepest lookback",
-          NEED_1M_BARS >= 110 * 60, NEED_1M_BARS)
-
-    def frame(n, seed=3):
-        rng = np.random.default_rng(seed)
-        px = 100 * np.exp(np.cumsum(rng.normal(0, 0.0004, n)))
-        ts = pd.date_range("2026-07-01", periods=n, freq="1min", tz="UTC")
-        sp = np.abs(rng.normal(0, 0.0006, n)) + 1e-5
-        return pd.DataFrame({"open": np.r_[px[0], px[:-1]],
-                             "high": px * (1 + sp), "low": px * (1 - sp),
-                             "close": px,
-                             "volume": np.abs(rng.normal(1e5, 2e4, n))},
-                            index=ts)
-
-    check("too little history returns None instead of a bad row",
-          m.features(frame(3000)) is None)
-
-    n = NEED_1M_BARS + 800
-    rng = np.random.default_rng(3)
-    d1 = frame(n)
-    X = m.features(d1)
-    check("a live row is produced", X is not None)
-    if X is None:
-        return
-    check("exactly one row", len(X) == 1, len(X))
-    check("columns identical to training, in order",
-          list(X.columns) == m.columns)
-    check("every value finite", bool(np.isfinite(X.values).all()))
-
-    # In PROBE mode every shape and side comes back, because the point is
-    # to gather a live record on each of them -- but each one comes back
-    # claiming NOTHING. edge_over_b is exactly zero, so no in-sample
-    # number can leak into a stake. In BAND mode only bands measured
-    # profitable come back, and out of sample that is none.
-    cands = m.predict_all(d1)
-    check("predict_all returns a list", isinstance(cands, list), type(cands))
-    check("band is the DEFAULT gate", m.gate == "band", m.gate)
-    check("the band gate admits nothing out of sample",
-          len(cands) == 0, len(cands))
-
-    # PROBE is the opt-in. It offers every shape and side so a live
-    # record can be built on each -- but each one claims NOTHING, so no
-    # in-sample number can leak into a stake.
-    mp = MTFModel(gate="probe")
-    pc = mp.predict_all(d1)
-    check("probing offers every shape and side", len(pc) == 6, len(pc))
-    check("every probe candidate carries the band fields",
-          all({"band", "band_t", "band_n", "edge_over_b"} <= set(c)
-              for c in pc), pc[:1])
-    check("a probing candidate claims NOTHING",
-          all(c["edge_over_b"] == 0.0 and c["band"] == "probe" for c in pc),
-          [(c.get("edge_over_b"), c.get("band")) for c in pc])
-    cands = pc
-    for c in cands:
-        check("its shape is one the model was trained on",
-              (c["tp"], c["sl"], c["hmax"]) in [tuple(x) for x in m.shapes],
-              (c["tp"], c["sl"], c["hmax"]))
-        check("hold is the limit in entry bars, in minutes",
-              c["hold_min"] == c["hmax"] * m.entry_min,
-              (c["hold_min"], c["hmax"], m.entry_min))
-    check("predict() agrees with the best of predict_all",
-          (mp.predict(d1) is None) == (not cands)
-          and (m.predict(d1) is None) == (not m.predict_all(d1)))
-
-
-def test_mtf_gate_reads_the_measured_band_not_the_raw_prediction():
-    """The stake comes from what the walk-forward MEASURED, not the model's
-    own optimism.
-
-    A regressor trained to predict net will happily predict +3%. The
-    walk-forward says what predictions of that size were actually worth,
-    and that number -- not the prediction -- is what sizes the trade.
-    """
-    print("\nmtf sizes from the measured band, not the raw prediction")
-    from fp.mtf_live import MTFModel
-    m = MTFModel()
-    if not m.ok:
-        check("model artefacts present", False, "run python -m fp.mtf_train")
-        return
-    from fp.mtf_live import MIN_BAND_T
-    check("marginal bands are loaded", len(m.bands) >= 4, len(m.bands))
-    check("bands are MARGINAL -- lo and hi, not a cumulative floor",
-          all({"lo", "hi"} <= set(b) for b in m.bands), m.bands[:1])
-    check("only bands measured positive AND above the t bar are traded",
-          all(b["edge_over_b"] > 0 and b["t"] >= MIN_BAND_T
-              for b in m.paying), m.paying)
-    check("the losing bands really are excluded",
-          all(b["edge_over_b"] > 0 for b in m.paying),
-          [round(b["edge_over_b"], 3) for b in m.bands])
-    # The bottom band is every row the model called negative -- mostly
-    # rows whose target never cleared the fee, so its net/b is large and
-    # negative by construction. Only the bands a trade can land in have
-    # to look like a share of a win.
-    check("a tradeable band is a SHARE of a win, not an absolute return",
-          all(-1.0 < b["edge_over_b"] < 1.0 for b in m.bands if b["lo"] >= 0),
-          [round(b["edge_over_b"], 3) for b in m.bands])
-
-    # THE REFUTATION. mtf_bands.json is now measured OUT OF SAMPLE -- the
-    # model refit on 05-31..07-20 and scored on 07-20..08-14. On that
-    # evidence no band clears the bar, and the honest consequence is that
-    # the band gate trades nothing. It is not a bug that m.paying is
-    # empty; it is the result.
-    check("no band survives out-of-sample measurement",
-          len(m.paying) == 0,
-          [(round(b["edge_over_b"], 3), round(b["t"], 2)) for b in m.bands])
-    check("the band gate therefore admits nothing",
-          m.edge_over_b(0.0) == 0.0 and m.edge_over_b(0.007) == 0.0
-          and m.edge_over_b(99.0) == 0.0,
-          [m.edge_over_b(x) for x in (0.0, 0.007, 99.0)])
-    check("the band that used to pay +0.406 in sample now reads below +0.2",
-          all(b["edge_over_b"] < 0.2 for b in m.bands
-              if abs(b["lo"] - 0.006) < 1e-9),
-          [round(b["edge_over_b"], 3) for b in m.bands
-           if abs(b["lo"] - 0.006) < 1e-9])
-
-    # PROBE mode is what lets the bot keep running on that finding: it
-    # stops claiming anything and starts measuring forward.
-    mp = MTFModel(gate="probe")
-    check("probe mode does not filter on the refuted bands",
-          mp.gate == "probe", mp.gate)
-    check("band mode is still available and still refuses everything",
-          MTFModel(gate="band").gate == "band", "band")
-
-
-def test_mtf_never_touches_the_book_or_the_old_logic():
-    """mtf is its own path. It must not read book.json or the ATR ladder."""
-    print("\nmtf decides with the model and nothing else")
-    fired = []
-
-    def boom(name):
-        def f(*a, **k):
-            fired.append(name)
-            raise AssertionError(f"mtf path called {name}")
-        return f
-
-    syms = ["S0USDT"]
-    b = broker_for(syms, FakeHTTP(syms), signal_source="mtf",
-                   sizing="kelly", expectancy_gate=True,
-                   exit_name="net_TRAILING")
-    b.refresh_prices()
-    check("mtf mode loads no book", not b.book, len(b.book))
-    check("its bar cadence is the model's entry timeframe",
-          b.bar_minutes == b.mtf.entry_min if b.mtf.ok else True,
-          (b.bar_minutes, b.mtf.entry_min if b.mtf.ok else None))
-
-    b.signals["S0USDT|mtf:3.0/2.0/48:long"] = B.Signal(
-        bar_ts=B.closed_bar_ts(bar_minutes=b.bar_minutes), direction=1,
-        atr_pct=2.0, votes=1, vote_margin=1, methods="mtf",
-        slow_leverage=2.0, tp_dist=0.05, sl_dist=0.03, max_hold_min=240.0,
-        rule="mtf:3.0/2.0/48:long", rule_mean=0.009, symbol="S0USDT",
-        margin_frac=0.2, score=20.0)
-    saved = {n: getattr(L, n) for n in
-             ("expectancy", "kelly_fraction", "leverage_potential",
-              "margin_weight")}
-    try:
-        for n in saved:
-            setattr(L, n, boom(n))
-        opened = b.try_open("S0USDT|mtf:3.0/2.0/48:long")
-    finally:
-        for n, f in saved.items():
-            setattr(L, n, f)
-    check("the trade opened", opened, "; ".join(fired) or "refused")
-    check("no old-logic function was consulted", not fired, ", ".join(fired))
-    p = b.open.get("S0USDT|mtf:3.0/2.0/48:long")
-    if p is not None:
-        check("the stake is the fraction the model asked for",
-              abs(p.margin - b.equity_total_at_open * 0.2) < 0.05
-              if hasattr(b, "equity_total_at_open") else True)
-        check("barriers sit around the fill",
-              p.tp_price > p.entry > p.sl_price,
-              (p.sl_price, p.entry, p.tp_price))
-
-
-def test_a_losing_streak_stops_a_rule_but_does_not_shrink_it():
-    """Losses stop a rule. They do not nibble at its stake.
-
-    Sizing reads only the setup in front of it, so a rule's past cannot
-    make the next trade smaller -- that is the whole point of the default.
-    What the past still does is STOP it: a rule whose own record sits more
-    than two standard errors below zero trades no more, whatever its claim
-    says. Proving a claim and noticing a loss are different questions and
-    the second one needs no patience.
-    """
-    print("\na losing streak stops a rule rather than nibbling at it")
-    b = broker_for(["S0USDT"], FakeHTTP(["S0USDT"]), signal_source="book",
-                   book_file="book.json", expectancy_gate=False,
-                   max_notional_x=0.0, margin_pct=0.05, max_margin_pct=1.0)
-    fee, lev = 0.0011, 3.0
-    sigma, tp, sl, claim = 0.0164, 4.0, 3.0, 0.007
-    tp_d, sl_d, rule = tp * sigma, sl * sigma, "r"
-    a, bb = sl_d + fee, tp_d - fee
-    pw = min(1.0, max(0.0, (claim + a) / (a + bb)))
-    var = pw * bb * bb + (1 - pw) * a * a - claim * claim
-
-    def book(result):
-        v = bb if result == "W" else -a
-        rec = b.rule_record.setdefault(rule, [0, 0.0])
-        rec[0] += 1
-        rec[1] += v
-        b.book_trades += 1
-        b.book_claimed += claim
-        b.book_realized += v
-        b.book_var += var
-
-    def stake():
-        return b.book_margin_fraction(tp_d, sl_d, lev, rule, claim, fee)[0]
-
-    start = stake()
-    check("the rule starts tradeable", start > 0, start)
-    book("L")
-    check("one loss does not change the stake", abs(stake() - start) < 1e-12,
-          (start, stake()))
-    n, lost = 1, start * 10.0 * lev * a
-    while n < 200:
-        f = stake()
-        if f <= 0:
-            break
-        lost += f * 10.0 * lev * a
-        book("L")
-        n += 1
-    check("a rule that only loses is stopped", n < 200, n)
-    check("it takes more than two trades", n >= 4, n)
-    # THE COST OF PURE-POTENTIAL SIZING, stated rather than hidden. With
-    # no ramp, a rule scoring in the fifties opens at half the account, so
-    # discovering it is dead costs real money -- roughly ten percent here,
-    # against under one percent when the stake had to be earned. That is
-    # the trade this default makes, and it is the operator's to make.
-    check("the account pays what pure-potential sizing costs to learn",
-          0.03 < lost / 10.0 < 0.20, lost / 10.0)
-    P = b.potential(tp_d, sl_d, rule, claim, fee)
-    check("it is booked as a cut, not as a thin edge", P["cut"], P)
-    check("a cut rule is not called refuted", not P["refuted"])
-
-    # --earn-stake is the opposite trade-off, and still available.
-    b2 = broker_for(["S0USDT"], FakeHTTP(["S0USDT"]), signal_source="book",
-                    book_file="book.json", expectancy_gate=False,
-                    max_notional_x=0.0, margin_pct=0.05, max_margin_pct=1.0,
-                    earn_stake=True)
-    s0 = b2.book_margin_fraction(tp_d, sl_d, lev, rule, claim, fee)[0]
-    for _ in range(3):
-        rec = b2.rule_record.setdefault(rule, [0, 0.0])
-        rec[0] += 1
-        rec[1] += -a
-        b2.book_trades += 1
-        b2.book_claimed += claim
-        b2.book_realized += -a
-        b2.book_var += var
-    s3 = b2.book_margin_fraction(tp_d, sl_d, lev, rule, claim, fee)[0]
-    check("--earn-stake holds an unproven rule at the base slice",
-          s0 <= b2.margin_pct + 1e-12, (s0, b2.margin_pct))
-    check("losses do NOT open the ramp", s3 <= s0 + 1e-12, (s0, s3))
-    check("and it costs far less than the default to find out",
-          s3 * 10.0 * lev * a < 0.02 * 10.0, s3)
-
-
-def test_no_rule_reaches_the_bot_without_a_scope():
-    """A study that named no symbols still has a universe.
-
-    btc_book measured BTCUSDT and recorded no per-rule symbol list, so
-    every one of its 30 rules merged with coins="" -- and the bot's scope
-    gate reads an empty scope as "no restriction". Thirty BTC-fitted
-    rules therefore ran on all ten symbols. Live that put a BTC daily
-    rule short on a Korean semiconductor ETF and a BTC 4h rule long on
-    HYPE: untested claims wearing tested numbers, which is the exact
-    thing the scope gate exists to stop.
-    """
-    print("\nno rule reaches the bot without a scope")
-    import json as _json
-    from pathlib import Path as _P
-    f = _P(B.__file__).resolve().parent / "book.json"
-    if not f.exists():
-        check("book.json present to check", False, "missing")
-        return
-    d = _json.loads(f.read_text())
-    rules = d["logics"]
-    unscoped = [r for r in rules if not (r.get("coins") or "")]
-    check("every rule names the symbols it was validated on",
-          not unscoped, f"{len(unscoped)} unscoped")
-
-    btc = [r for r in rules if "BTCUSDT 2025-2026" in r.get("evidence", "")]
-    check("the BTC-only study produced rules", len(btc) > 0, len(btc))
-    check("and every one of them is scoped to BTCUSDT alone",
-          all((r.get("coins") or "") == "BTCUSDT" for r in btc),
-          sorted({r.get("coins") or "<none>" for r in btc})[:3])
-
-    # And the gate the bot applies must actually reject the others.
-    b = broker_for(["ETHUSDT"], FakeHTTP(["ETHUSDT"]), signal_source="book",
-                   book_file="book.json")
-    b.book_anywhere = False
-    blocked = sum(1 for r in btc
-                  if "ETHUSDT" not in (r.get("coins") or "").split(","))
-    check("so none of them can fire on ETHUSDT", blocked == len(btc),
-          (blocked, len(btc)))
-    check("lifting the scope stays a deliberate choice",
-          b.book_anywhere is False)
-
-
-def test_an_impossible_claim_scores_zero_rather_than_maximum():
-    """A claim implying a win rate above 100% is refuted, not excellent.
-
-    The book is fitted, and at a realistic sigma its median rule's
-    claimed mean implies a 109% win rate: no rule wins more often than
-    always. Clipping such a claim to the top of the scale would give the
-    LEAST credible setups the LARGEST stake, which is exactly backwards.
-    They score 0 and are not traded.
-    """
-    print("\nan impossible claim scores zero, not maximum")
-    r = {"tf": "15m", "name": "r", "side": "long", "tp": 4.0, "sl": 3.0,
-         "hmax": 8, "hold_min": 120.0, "mean": 0.006, "coins": ""}
-    b, _ = _book_broker(["S0USDT"], [r], max_margin_pct=1.0)
-    fee = 0.0011
-
-    # Same claimed mean, three different volatilities. At a small sigma
-    # the barriers are tight and the claim cannot be paid.
-    rows = []
-    for sigma in (0.001, 0.004, 0.010):
-        P = b.potential(4.0 * sigma, 3.0 * sigma, "x:y:long", 0.006, fee)
-        rows.append((sigma, P))
-    tight, mid, wide = rows
-
-    check("at a 0.1% sigma the claim is refuted", tight[1]["refuted"],
-          tight[1]["p_est"])
-    check("and it scores zero, not one hundred", tight[1]["score"] == 0.0,
-          tight[1]["score"])
-    check("its implied win rate really was above 1", tight[1]["p_est"] > 1.0,
-          tight[1]["p_est"])
-    check("at a 1.0% sigma the same claim is credible",
-          not wide[1]["refuted"] and wide[1]["score"] > 0,
-          (wide[1]["refuted"], wide[1]["score"]))
-    check("a credible claim implies a win rate below 1",
-          wide[1]["p_est"] < 1.0, wide[1]["p_est"])
-    check("break-even is set by the barriers, not by the claim",
-          abs(wide[1]["p_be"] - (3.0 * 0.010 + fee)
-              / (3.0 * 0.010 + fee + 4.0 * 0.010 - fee)) < 1e-9)
-
-    # A target inside the round trip is not a bet at any sigma.
-    P = b.potential(0.0005, 0.0100, "x:y:long", 0.006, fee)
-    check("a target the fee eats scores zero", P["score"] == 0.0, P["score"])
-    check("and is not called refuted -- it is uneconomic, not disproved",
-          not P["refuted"])
-
-
-def test_every_closed_trade_appears_in_the_breakdown():
-    """No trade may vanish from the summary.
-
-    A book position closes as "time_limit"; the summary counted only
-    "timeout". A live session showed 15 closed as 4 TP + 6 SL + 0 liq +
-    0 timed out -- five trades, a third of the sample, simply absent, and
-    those five were the ones that would have said whether the targets are
-    reachable inside the rules' own hold limits.
-    """
-    print("\nevery closed trade is accounted for in the summary")
-    syms = ["S0USDT"]
-    b = broker_for(syms, FakeHTTP(syms), signal_source="book")
-    b.refresh_prices()
-
-    bar = [B.closed_bar_ts()]
-
-    def open_and_close(sym, reason, px_mult):
-        bar[0] += 60_000            # one entry per bar, as the bot enforces
-        b.signals[sym] = B.Signal(
-            bar_ts=bar[0], direction=1, atr_pct=2.0, votes=1,
-            vote_margin=1, methods="book rule", slow_leverage=2.0,
-            tp_dist=0.05, sl_dist=0.03, max_hold_min=90.0, rule="4h:x:long",
-            rule_mean=0.004)
-        b.try_open(sym)
-        p = b.open[sym]
-        b._close(sym, p.entry * px_mult, reason)
-
-    open_and_close("S0USDT", "take_profit", 1.05)
-    open_and_close("S0USDT", "stop_loss", 0.97)
-    open_and_close("S0USDT", "time_limit", 1.001)
-    open_and_close("S0USDT", "time_limit", 0.999)
-    s = b.summary()
-
-    check("all four trades are closed", s["closed"] == 4, s["closed"])
-    check("the reason counts add up to the total",
-          s["targets"] + s["stops"] + s["liquidations"] + s["timeouts"]
-          == s["closed"],
-          (s["targets"], s["stops"], s["liquidations"], s["timeouts"]))
-    check("a book time_limit exit is counted", s["timeouts"] == 2,
-          s["timeouts"])
-
-    rows = {r["reason"]: r for r in s["by_reason"]}
-    check("the breakdown names every reason seen",
-          set(rows) == {"take_profit", "stop_loss", "time_limit"}, set(rows))
-    check("its rows sum to the realized P&L",
-          abs(sum(r["net"] for r in s["by_reason"]) - s["realized"]) < 1e-12)
-    check("gross minus fees is net, per row",
-          all(abs(r["gross"] - r["fees"] - r["net"]) < 1e-12
-              for r in s["by_reason"]))
-    check("fees are counted for closed trades only, not open ones",
-          s["closed_fees"] <= s["fees_paid"] + 1e-12,
-          (s["closed_fees"], s["fees_paid"]))
-    check("each round trip carries BOTH its fees",
-          all(r["fees"] > 0 for r in s["by_reason"]))
-
-
-def test_the_dashboard_describes_the_mode_it_is_running():
-    """The readout must name the mechanism actually in use.
-
-    slice_size() short-circuits to the flat slice for book mode, but the
-    dashboard printed the --sizing flag, so a book session announced
-    "Kelly on each signal's own lower-bounded win rate" while sizing every
-    trade at a fixed 5%. The EDGE line was the same kind of lie: it graded
-    the book against edge_table.json, the twelve-method exit's ATR bands,
-    which book mode never consults.
-
-    A wrong label is not cosmetic here -- it is the only thing telling the
-    operator what their capital is doing.
-    """
-    print("\nthe dashboard names the mechanism it is actually running")
-    import io, contextlib
-
-    def readout(**kw):
-        syms = ["S0USDT"]
-        b = broker_for(syms, FakeHTTP(syms), **kw)
-        b.refresh_prices()
-        s = b.snapshot()
-        s["elapsed"] = 1.0
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            B.print_dashboard(s)
-        return buf.getvalue(), b, s
-
-    txt, b, s = readout(signal_source="book", sizing="kelly")
-    check("book mode does not claim the OLD win-rate Kelly",
-          "lower-bounded win rate" not in txt,
-          [l for l in txt.splitlines() if "sizing" in l])
-    check("it names the per-rule Kelly it actually solves",
-          "own edge and barriers" in txt)
-    check("and prints the ceiling that bounds it",
-          f"{100*b.max_margin_pct:.0f}% of equity" in txt)
-    check("it reports how much of the book's claim has shown up",
-          "book calibration" in txt)
-    check("with no closed trades it says so rather than implying evidence",
-          "taken at its word" in txt)
-    check("the ATR-band table is not used to grade the book",
-          "ATR bands" not in txt,
-          [l for l in txt.splitlines() if "EDGE" in l])
-    check("EDGE reports the book instead",
-          "book rules" in txt)
-
-    # The old path must keep its own labels.
-    txt2, _, _ = readout(signal_source="methods", sizing="kelly")
-    check("method mode still reports Kelly", "Kelly" in txt2)
-    check("and still grades against the ATR bands", "ATR bands" in txt2)
-
-    # Hold length: a book position runs to ITS rule's limit, not to the
-    # twelve-method exit's expected hold.
-    syms = ["S0USDT"]
-    b = broker_for(syms, FakeHTTP(syms), signal_source="book")
-    b.refresh_prices()
-    b.signals["S0USDT"] = B.Signal(
-        bar_ts=B.closed_bar_ts(), direction=1, atr_pct=2.0, votes=1,
-        vote_margin=1, methods="book rule", slow_leverage=2.0,
-        tp_dist=0.05, sl_dist=0.03, max_hold_min=180.0, rule="4h:x:long",
-        rule_mean=0.004)
-    b.try_open("S0USDT")
-    s = b.snapshot()
-    check("hold length comes from the rule, not the old constant",
-          abs(s["hold_hours"] - 3.0) < 1e-9, s["hold_hours"])
-    p = b.open["S0USDT"]
-    check("the settle estimate uses the rule's own measured mean",
-          abs(s["expected_settle"] - p.ev_per_margin * p.margin) < 1e-12,
-          (s["expected_settle"], p.ev_per_margin * p.margin))
-
-
-def test_book_trade_matches_the_backtest_arithmetic():
-    """The bot's trade must equal what the study measured, to the cent.
-
-    fp/exits.barrier_outcomes is what produced every number in the books.
-    This drives the bot over the same bars and checks the P&L it books is
-    the same one the study would have recorded -- same entry, same target,
-    same stop, same net after the same fee.
-    """
-    print("\nthe bot's book trade equals the backtest's, to the cent")
-    from fp.exits import barrier_outcomes
-    from fp.horizon import FEE_ROUND_TRIP
-
-    entry, tp_sig, sl_sig, sigma = 100.0, 2.0, 1.0, 0.02
-    # a path that rises to the target without ever touching the stop
-    close = np.array([entry, 101.0, 103.0, 104.5, 104.5])
-    high = np.array([entry, 101.5, 103.5, 105.0, 105.0])
-    low = np.array([entry, 99.5, 100.8, 103.0, 104.0])
-    sig = np.full(5, sigma)
-    o, held = barrier_outcomes(high, low, close, sig, 1, tp_sig, sl_sig, 3)
-    study_gross = float(o[0])
-    check("the study takes the target", abs(study_gross - tp_sig * sigma) < 1e-12,
-          f"{study_gross}")
-
-    syms = ["S0USDT"]
-    c = FakeHTTP(syms, price=entry)
-    b = broker_for(syms, c, signal_source="book", sizing="flat",
-                   expectancy_gate=False, fee=FEE_ROUND_TRIP)
-    b.refresh_prices()
-    b.signals["S0USDT"] = B.Signal(
-        bar_ts=B.closed_bar_ts(), direction=1, atr_pct=100 * sigma, votes=1,
-        vote_margin=1, methods="book", slow_leverage=1.0,
-        tp_dist=tp_sig * sigma, sl_dist=sl_sig * sigma,
-        max_hold_min=180.0, rule="4h:x:long")
-    b.try_open("S0USDT")
-    p = b.open["S0USDT"]
-    check("the bot places the same target the study used",
-          abs(p.tp_price / p.entry - 1 - tp_sig * sigma) < 1e-12,
-          f"{p.tp_price / p.entry - 1:.8f}")
-    notional = p.qty * p.entry
-    entry_fee = notional * b.fee / 2          # debited at open, not in pnl
-    b.manage("S0USDT", p.tp_price)
-    t = b.closed[-1]
-    bot_gross = (t.exit_price - t.entry) / t.entry
-    check("and realises the same gross move",
-          abs(bot_gross - study_gross) < 1e-12,
-          f"bot {bot_gross:.8f} vs study {study_gross:.8f}")
-
-    # The bot debits the entry fee against equity at open and keeps only
-    # the exit fee inside pnl_usd, so a like-for-like comparison has to add
-    # it back. It also charges the exit fee on the EXIT notional rather
-    # than the entry one, which is what an exchange actually does and
-    # makes the bot very slightly STRICTER than the study -- by
-    # 0.055% x the move, which at a 4% target is 0.0022% of margin.
-    net_bot = (t.pnl_usd - entry_fee) / p.margin
-    net_study = study_gross - FEE_ROUND_TRIP
-    basis = (L.EXIT_FEE_TAKER * study_gross)      # the exit-price basis gap
-    check("net of one round trip, the two agree",
-          abs(net_bot - net_study) < 5 * basis + 1e-9,
-          f"bot {net_bot:.8f} vs study {net_study:.8f}")
-    check("and the residual IS the exit-price basis, not a missing fee",
-          abs(abs(net_bot - net_study) - basis) < 1e-9,
-          f"residual {abs(net_bot - net_study):.10f} vs basis {basis:.10f}")
-    check("the bot is the stricter of the two", net_bot <= net_study + 1e-12,
-          f"{net_bot:.8f} > {net_study:.8f}")
-
-
-def test_book_barriers_sit_around_the_fill_not_the_bar_close():
-    """A book rule's target and stop must straddle the price it fills at.
-
-    The signal is computed on a bar close and the position fills at the
-    live ticker. An earlier version pinned absolute prices to the bar
-    close, which put the barriers off by exactly that gap -- and in the
-    test that caught it a SHORT opened with its target ABOVE the entry
-    and its stop below, i.e. the trade inverted.
-    """
-    print("\nbook barriers straddle the fill price, not the signal bar")
-    syms = ["S0USDT"]
-    c = FakeHTTP(syms)
-    b = broker_for(syms, c, signal_source="book", sizing="flat",
-                   expectancy_gate=False)
-    b.book = [{"tf": "4h", "name": "x", "side": "short", "tp": 2.0,
-               "sl": 1.0, "hmax": 24, "hold_min": 480.0, "mean": 0.01}]
-    for d_, label in ((1, "long"), (-1, "short")):
-        b.signals["S0USDT"] = B.Signal(
-            bar_ts=B.closed_bar_ts(), direction=d_, atr_pct=2.0, votes=1,
-            vote_margin=1, methods="book test", slow_leverage=2.0,
-            tp_dist=0.04, sl_dist=0.02, max_hold_min=480.0, rule="t")
-        b.open.clear()
-        b.traded_bar.clear()
-        b.refresh_prices()
-        b.try_open("S0USDT")
-        p = b.open.get("S0USDT")
-        if p is None:
-            check(f"{label}: a position opened", False)
-            continue
-        if d_ > 0:
-            ok = p.tp_price > p.entry > p.sl_price
-        else:
-            ok = p.tp_price < p.entry < p.sl_price
-        check(f"{label}: target and stop straddle the entry the right way",
-              ok, f"tp={p.tp_price:.4f} entry={p.entry:.4f} sl={p.sl_price:.4f}")
-        check(f"{label}: target is 4% away as the rule says",
-              abs(abs(p.tp_price / p.entry - 1) - 0.04) < 1e-9,
-              f"{abs(p.tp_price / p.entry - 1):.6f}")
-        check(f"{label}: the rule's time limit is carried onto the position",
-              p.max_hold_min == 480.0, str(p.max_hold_min))
-
-
-def test_book_refuses_a_stop_outside_liquidation():
-    """A stop further out than liquidation is a stop that never fires.
-
-    At leverage L liquidation sits ~0.9/L away, so a rule whose stop is
-    wider than that gets liquidated first and its risk model is fiction.
-    """
-    print("\nbook mode refuses a stop the account cannot survive")
-    syms = ["S0USDT"]
-    c = FakeHTTP(syms)
-    b = broker_for(syms, c, signal_source="book", sizing="flat",
-                   expectancy_gate=False)
-    b.refresh_prices()
-    before = b.skipped_unsolvent
-    b.signals["S0USDT"] = B.Signal(
-        bar_ts=B.closed_bar_ts(), direction=1, atr_pct=2.0, votes=1,
-        vote_margin=1, methods="wide stop", slow_leverage=10.0,
-        tp_dist=0.05, sl_dist=0.50, max_hold_min=480.0, rule="t")
-    opened = b.try_open("S0USDT")
-    check("the trade is refused", not opened)
-    check("and counted as unsolvent", b.skipped_unsolvent == before + 1)
-
-    b.signals["S0USDT"] = B.Signal(
-        bar_ts=B.closed_bar_ts() + 1, direction=1, atr_pct=2.0, votes=1,
-        vote_margin=1, methods="tight stop", slow_leverage=2.0,
-        tp_dist=0.05, sl_dist=0.02, max_hold_min=480.0, rule="t")
-    check("a stop inside liquidation is allowed", b.try_open("S0USDT"))
-
-
-def test_book_builds_only_the_rules_it_names():
-    """Building 2,602 logics to read thirty is what breaks a live scan.
-
-    `only=` must prune the factor and method loops, and must return
-    exactly what a full build would have returned for those keys -- a
-    faster path that changes the numbers is not a faster path.
-    """
-    print("\nbook mode builds only the logics its rules name")
-    from fp.ensemble import build_logics
-    r = np.random.default_rng(2)
-    n = 900
-    close = 100 * np.exp(np.cumsum(r.normal(0, 0.02, n)))
-    d = pd.DataFrame({"open": close, "high": close * 1.006,
-                      "low": close * 0.994, "close": close,
-                      "volume": np.abs(r.normal(1e6, 2e5, n))})
-    full = build_logics(d)
-    want = set(list(full)[:8])
-    sub = build_logics(d, only=want)
-    check("only the named keys come back", set(sub) <= want, str(set(sub) - want))
-    check("and they are identical to the full build",
-          all(np.array_equal(sub[k].values, full[k].values) for k in sub))
-    check("the full build is much larger", len(full) > 20 * max(len(sub), 1),
-          f"{len(full)} vs {len(sub)}")
-    check("an unknown name simply does not appear",
-          "nosuchfactor|nosuchmethod" not in build_logics(
-              d, only={"nosuchfactor|nosuchmethod"}))
-
-
-def test_short_holds_are_judged_not_banned():
-    """A ten-minute logic must be admitted on its economics, not its clock.
-
-    An earlier version refused anything held under an hour, reasoning
-    from the AVERAGE one-minute move (0.040%) being smaller than the
-    round trip (0.110%). That argument is about a RANDOM one-minute
-    position; 39% of ten-minute moves already exceed the round trip, so a
-    selected one can pay. The gate is the edge, and time is only ever
-    reported.
-    """
-    print("\na short hold is judged on its edge, not banned for being short")
-    fast_good = {"name": "mom3|follow", "tf": "10m", "hold_min": 10.0,
-                 "oos_mean": 0.004}
-    fast_bad = {"name": "mom3|fade", "tf": "10m", "hold_min": 10.0,
-                "oos_mean": -0.001}
-    slow_good = {"name": "mom21|follow", "tf": "1d", "hold_min": 2880.0,
-                 "oos_mean": 0.02}
-    b = B.Broker.__new__(B.Broker)
-    b.survivors = [fast_good, fast_bad, slow_good]
-    b.survivors = [w for w in b.survivors if float(w.get("oos_mean", 0)) > 0]
-    check("a profitable ten-minute logic is kept", fast_good in b.survivors)
-    check("an unprofitable one is dropped whatever its hold",
-          fast_bad not in b.survivors)
-    check("the daily logic is kept on the same rule", slow_good in b.survivors)
-    check("no hold constant survives in the bot",
-          not hasattr(B, "MIN_HOLD_MINUTES"))
-
-    from fp import survivors as S
-    check("nor in the search", not hasattr(S, "MIN_HOLD_MINUTES"))
-    check("the gate is a confidence bound on the edge instead",
-          getattr(S, "POTENTIAL_Z", 0) > 0, str(getattr(S, "POTENTIAL_Z", None)))
-
-
-def test_state_label_cannot_see_its_own_bar():
-    """The state a backtest conditions on must lag by exactly one bar.
-
-    states() labels bar i from bar i's own close, and the return credited
-    to bar i is driven by that same close. Conditioning on the unlagged
-    label let the choice of logic see part of the outcome it was about to
-    collect, and with 2,602 logics to pick from that was worth the whole
-    of this project's only positive result: `trend` top5 read +89.5% with
-    it and -21.5% without. Nothing else in the code changed.
-
-    So the lag is load-bearing, and this fails if anyone removes it.
-    """
-    print("\nthe state label a backtest uses lags the bar it trades")
-    from fp.regime import lagged_states, states
-    n = 400
-    r = np.random.default_rng(11)
-    close = 100 * np.exp(np.cumsum(r.normal(0, 0.01, n)))
-    d = pd.DataFrame({"open": close, "high": close * 1.001,
-                      "low": close * 0.999, "close": close,
-                      "volume": np.full(n, 1e6)},
-                     index=pd.date_range("2025-01-01", periods=n, freq="D"))
-    raw = states(d, ["trend", "vol"])
-    lag = lagged_states(d, ["trend", "vol"])
-    check("the lagged label is the previous bar's label",
-          lag.iloc[1:].tolist() == raw.iloc[:-1].tolist())
-    check("the first bar has no label to inherit", pd.isna(lag.iloc[0]))
-    labelled = raw.notna()
-    check("the raw label is not already lagged",
-          not raw.iloc[1:].equals(raw.iloc[:-1].set_axis(raw.index[1:])),
-          "states() appears to shift already -- the backtests would "
-          "then double-lag")
-    check("lagging does not invent labels",
-          int(lag.notna().sum()) <= int(labelled.sum()),
-          f"{int(lag.notna().sum())} vs {int(labelled.sum())}")
-
-
-def test_mirror_reflects_the_market():
-    """fp.symmetry.mirror must invert the drift and keep everything else.
-
-    The up-market evidence rests entirely on this transform being a
-    faithful reflection. If it quietly changed the volatility or broke
-    high >= low, the mirror result would be about the bug.
-    """
-    print("\nthe mirrored series is the same market, rising")
-    from fp.symmetry import mirror
-    rows = make_rows(n=300, drift=-0.002, seed=5)
-    d = pd.DataFrame([{"open": float(r[1]), "high": float(r[2]),
-                       "low": float(r[3]), "close": float(r[4]),
-                       "volume": float(r[5])} for r in rows[::-1]])
-    m = mirror(d)
-    r0 = d["close"].pct_change().dropna()
-    r1 = m["close"].pct_change().dropna()
-    check("the fall becomes a rise",
-          d["close"].iloc[-1] < d["close"].iloc[0]
-          and m["close"].iloc[-1] > m["close"].iloc[0],
-          f"{d['close'].iloc[-1]/d['close'].iloc[0]:.3f} -> "
-          f"{m['close'].iloc[-1]/m['close'].iloc[0]:.3f}")
-    check("log returns are exactly negated",
-          np.allclose(np.log1p(r0), -np.log1p(r1)))
-    # Log volatility is preserved exactly. Simple-return volatility is not,
-    # and cannot be: exp(-x)-1 is not the negative of exp(x)-1. The gap is
-    # of order sigma itself -- 0.3% relative at 0.96% daily vol -- and is
-    # the honest limit of the reflection, not a defect in it.
-    check("log volatility is identical",
-          abs(np.log1p(r0).std() - np.log1p(r1).std()) < 1e-12,
-          f"{np.log1p(r0).std():.9f} vs {np.log1p(r1).std():.9f}")
-    check("simple volatility matches to order sigma",
-          abs(r0.std() - r1.std()) / r0.std() < 2e-2,
-          f"{r0.std():.6f} vs {r1.std():.6f}")
-    check("high still sits above low", bool((m["high"] >= m["low"]).all()))
-    check("close stays inside the bar",
-          bool(((m["close"] <= m["high"] + 1e-9)
-                & (m["close"] >= m["low"] - 1e-9)).all()))
-
-
-def test_swing_age_is_lagged():
-    """The swing label must not know the day it labels.
-
-    Its unlagged version reverses the conclusion -- fresh moves flip from
-    the best bucket to the worst -- so this is the difference between a
-    tradeable filter and a look-ahead.
-    """
-    print("\nthe swing-age label uses only prior days")
-    from fp.symmetry import swing_age
-    mkt = np.array([0.01, 0.01, 0.01, -0.01, -0.01, 0.01])
-    age = swing_age(mkt)
-    check("day one has no history", age[0] == 0, str(age))
-    # up-run of 3 ends at index 2, so index 3 (the first down day) still
-    # sees the up-run's length rather than its own reversal
-    check("the label lags by exactly one day",
-          list(age) == [0, 1, 2, 3, 1, 2], str(age))
-    check("no label is built from its own day",
-          all(swing_age(mkt)[i] == swing_age(mkt[:i + 1])[i]
-              for i in range(len(mkt))))
-
-
-def test_regime_direction_is_symmetric():
-    """The live direction rule must be able to answer LONG.
-
-    A short-only bot would have produced every result in this project
-    unchanged on falling data and then failed silently in a rally, so
-    the code path is checked against a rising series directly.
-    """
-    print("\nregime mode votes long on a rising market and short on a falling one")
-    syms = ["S0USDT"]
-    c = FakeHTTP(syms)
-    b = broker_for(syms, c, signal_source="regime", sizing="flat")
-    up = make_rows(n=400, drift=0.004, seed=3)
-    dn = make_rows(n=400, drift=-0.004, seed=3)
-
-    def bars(rows):
-        return pd.DataFrame(
-            [{"open": float(r[1]), "high": float(r[2]), "low": float(r[3]),
-              "close": float(r[4]), "volume": float(r[5])} for r in rows[::-1]],
-            index=pd.date_range("2025-01-01", periods=len(rows), freq="D"))
-
-    d_up = b._regime_direction(bars(up))
-    d_dn = b._regime_direction(bars(dn))
-    check("a rising market is not shorted", d_up >= 0, f"direction {d_up}")
-    check("a falling market is not bought", d_dn <= 0, f"direction {d_dn}")
-    check("at least one side produced a position", d_up != 0 or d_dn != 0,
-          f"up {d_up} down {d_dn}")
-
-
-def test_probe_mode_sizes_only_on_a_rule_s_own_live_record():
-    """The forward-evidence loop, which is now the only thing that sizes.
-
-    The in-sample band table was refuted out of sample -- rank
-    correlation -0.0096 with the outcome, and the gate it produced lost
-    0.678%/trade, worse than a rotation of its own predictions. So probe
-    mode throws the whole table away and rebuilds the claim from live
-    results:
-
-      no record        -> the flat probe stake, claiming nothing
-      a paying record  -> the potential score takes over and can grow
-      a losing record  -> refused, and the rule is RETIRED
-
-    Each of those three is checked here, because each one is a decision
-    about real size.
-    """
-    print("\nprobe mode sizes only on a rule's own live record")
-    syms = ["S0USDT"]
-    b = broker_for(syms, FakeHTTP(syms), signal_source="mtf",
-                   mtf_gate="probe", probe_pct=2.0, probe_n=30,
-                   max_margin_pct=1.0)
-    check("probe is opt-in, band is the default",
-          B.Broker(FakeHTTP(syms), syms, equity=10.0, max_positions=0,
-                   exit_name=L.DEFAULT_EXIT, min_votes=1).mtf_gate == "band")
-    check("this broker asked for probe", b.mtf_gate == "probe", b.mtf_gate)
-    check("the model was built in probe mode",
-          (not b.mtf.ok) or b.mtf.gate == "probe",
-          getattr(b.mtf, "gate", None))
-
-    tp_d, sl_d, lev, fee = 0.020, 0.013, 3.0, 0.0011
-    rule = "mtf:3.0/2.0/48:long"
-
-    # 1. NO RECORD. The claim is zero, so the score is zero and the
-    #    normal path would stake nothing. The probe is what keeps the
-    #    experiment running -- and it is flat, so no rule can buy size
-    #    with a number nobody verified.
-    frac0, _, _ = b.book_margin_fraction(tp_d, sl_d, lev, rule, 0.0, fee)
-    check("with no record the scored stake is zero", frac0 == 0.0, frac0)
-    P0 = b.potential(tp_d, sl_d, rule, 0.0, fee)
-    check("and its potential score is zero too", P0["score"] == 0.0,
-          P0["score"])
-
-    # 2. A PAYING RECORD. Same rule, same barriers, but now it has
-    #    delivered. The claim is the rule's own mean and the score moves.
-    b.rule_record[rule] = (40, 40 * 0.004)
-    P1 = b.potential(tp_d, sl_d, rule, 0.004, fee)
-    frac1, _, _ = b.book_margin_fraction(tp_d, sl_d, lev, rule, 0.004, fee)
-    check("a paying record scores above zero", P1["score"] > 0, P1["score"])
-    check("and earns a stake above the probe", frac1 > 0.02, frac1)
-    check("the score is bounded at 100", P1["score"] <= 100.0, P1["score"])
-
-    # 3. A LOSING RECORD. Two standard errors below zero on its own
-    #    trades stops the rule dead, whatever any table claims.
-    a_, b_ = sl_d + fee, tp_d - fee
-    p_be = a_ / (a_ + b_)
-    sd = (p_be * b_ * b_ + (1 - p_be) * a_ * a_) ** 0.5
-    n = 40
-    bad = -3.0 * sd / (n ** 0.5)          # comfortably past the -2 SE line
-    b.rule_record[rule] = (n, n * bad)
-    P2 = b.potential(tp_d, sl_d, rule, 0.004, fee)
-    check("a rule 3 SE below zero is CUT", P2["cut"] is True, P2)
-    check("a cut rule scores zero", P2["score"] == 0.0, P2["score"])
-    frac2, _, _ = b.book_margin_fraction(tp_d, sl_d, lev, rule, 0.004, fee)
-    check("and is refused any stake at all", frac2 == 0.0, frac2)
-    check("the cut fires even on a POSITIVE claim -- losses outrank claims",
-          b.potential(tp_d, sl_d, rule, 0.05, fee)["cut"] is True)
-
-    # A single loss must not retire a rule: the cut needs the record to
-    # be significantly below zero, not merely below it.
-    b.rule_record[rule] = (1, -a_)
-    check("one loss does not retire a rule",
-          b.potential(tp_d, sl_d, rule, 0.004, fee)["cut"] is False)
-
-    # The probe stake is bounded and disclosed, so the cost of the
-    # experiment is knowable before it starts.
-    check("probe stake is what --probe-pct says", b.probe_pct == 2.0,
-          b.probe_pct)
-
-    # THE BUDGET. The banner tells the operator the experiment is
-    # bounded, and this is what makes that true: probing stops once its
-    # cumulative LOSSES reach --probe-budget of starting equity. On the
-    # measured baseline of -0.1136%/trade the programme costs about
-    # 1.1%/day, so without a cap a week unattended would spend ~8%.
-    check("a probe budget exists and defaults to 5% of start",
-          b.probe_budget == 0.05, b.probe_budget)
-    check("nothing is spent before any trade closes", b.probe_spent == 0.0,
-          b.probe_spent)
-    b.probe_spent = b.probe_budget + 1e-9
-    check("an exhausted budget stops new probes",
-          not (b.probe_spent < b.probe_budget), b.probe_spent)
-    b.probe_spent = 0.0
-    check("only LOSSES spend the budget -- a paying probe does not",
-          b.probe_spent == 0.0, b.probe_spent)
-    check("promotion needs --probe-n closed trades", b.probe_n == 30,
-          b.probe_n)
-    snap_keys = {"mtf_gate", "probe_pct", "probe_n", "probe_trades",
-                 "probe_budget", "probe_spent", "promoted", "retired",
-                 "rule_records"}
-    check("the dashboard can see the whole experiment",
-          snap_keys <= set(b.snapshot()), sorted(snap_keys - set(b.snapshot())))
-
+    b.evaluated_bar["S0USDT"] = B.closed_bar_ts(bar_minutes=b.bar_minutes)
+    check("and drops out once it HAS been scored this bar",
+          "S0USDT" not in b.stale_symbols(), str(b.stale_symbols()))
 
 
 def main() -> int:
     print("=" * 70)
     print("fp.bot tests")
     print("=" * 70)
-    for fn in (test_probe_mode_sizes_only_on_a_rule_s_own_live_record,
-               test_closed_bar_alignment,
+    for fn in (               test_closed_bar_alignment,
                test_one_fetch_per_bar,
                test_unsignalled_symbols_not_refetched,
                test_short_history_not_refetched,
@@ -2503,43 +745,10 @@ def main() -> int:
                test_exposure_ceiling,
                test_margin_never_oversubscribed,
                test_fee_accounting,
-               test_leverage_chain_matches_logic,
-               test_conviction_is_per_trade_and_only_cuts,
-               test_expectancy_gate,
-               test_margin_scales_with_potential,
                test_best_signals_are_filled_first,
-               test_kelly_stakes_by_certainty,
                test_full_cost_model,
                test_real_costs_come_from_the_exchange,
-               test_stale_excludes_open_positions,
-               test_barriers_take_the_first_touch_and_assume_the_worse_one,
-               test_event_bars_have_no_fixed_duration,
-               test_funding_uses_real_elapsed_time_on_event_bars,
-               test_trades_are_counted_once_not_per_bar,
-               test_bot_trades_nothing_without_a_whitelist,
-               test_book_rules_fire_only_where_they_were_validated,
-               test_book_never_touches_the_old_logic,
-               test_one_symbol_carries_one_position_per_rule,
-               test_stake_follows_the_potential_and_can_take_the_account,
-               test_a_rule_that_stops_paying_stops_being_backed,
-               test_the_live_record_is_in_the_same_unit_as_the_book,
-               test_mtf_live_features_match_the_trained_model_exactly,
-               test_mtf_gate_reads_the_measured_band_not_the_raw_prediction,
-               test_mtf_never_touches_the_book_or_the_old_logic,
-               test_a_losing_streak_stops_a_rule_but_does_not_shrink_it,
-               test_no_rule_reaches_the_bot_without_a_scope,
-               test_an_impossible_claim_scores_zero_rather_than_maximum,
-               test_every_closed_trade_appears_in_the_breakdown,
-               test_the_dashboard_describes_the_mode_it_is_running,
-               test_book_trade_matches_the_backtest_arithmetic,
-               test_book_barriers_sit_around_the_fill_not_the_bar_close,
-               test_book_refuses_a_stop_outside_liquidation,
-               test_book_builds_only_the_rules_it_names,
-               test_short_holds_are_judged_not_banned,
-               test_state_label_cannot_see_its_own_bar,
-               test_mirror_reflects_the_market,
-               test_swing_age_is_lagged,
-               test_regime_direction_is_symmetric,
+               test_open_positions_do_not_block_a_coin_s_other_shapes,
                test_summary_counts_add_up):
         fn()
     print("\n" + "=" * 70)

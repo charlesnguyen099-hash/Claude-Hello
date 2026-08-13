@@ -1,0 +1,8 @@
+{
+ "shapes": [],
+ "gate": 20.0,
+ "bonferroni_t": 3.2,
+ "min_trades": 20,
+ "attempted": 32,
+ "folds": 3
+}

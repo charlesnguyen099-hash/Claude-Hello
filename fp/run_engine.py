@@ -17,6 +17,29 @@ What is printed:
 
 MODEL above NULL is the only result that counts. MODEL above zero with
 NULL above zero too means the market drifted, not that the logic worked.
+
+RESULT, 2026-05-31..08-14, 965,484 one-minute bars, 10 coins, 32
+shape/side combinations, gate fixed at 20/100 before anything was read:
+
+  fold          market      CEILING      BASELINE     MODEL        p(null)
+  07-01..07-15  +1.13%      +0.699%      -0.117%      -0.173%      0.900
+  07-15..07-30  -5.33%      +0.742%      -0.146%      +0.220%      0.000
+  07-30..08-14  +6.51%      +0.925%      -0.085%      -0.093%      0.440
+
+  ACROSS 3 FOLDS: 2159 independent trades, -0.0203%/trade.
+  0 of 32 shape/side combinations ship.
+
+Fold 2 looks like a discovery -- +148% total, t = +2.23, beating its own
+null at p < 0.001, with 21 of 32 shapes positive. Every one of those 21
+is a SHORT, and the window's median coin fell 5.33% (SOXL -48.7%, SNDK
+-42.8%). The model sold a falling market. Folds 1 and 3, whose markets
+rose 1.13% and 6.51%, both lost. That is beta, and beta is not an edge:
+it pays only when the market happens to go your way and it costs the same
+when it does not.
+
+This is exactly what the all-folds requirement exists to catch. Nothing
+ships, and fp/train_engine.py writes an empty model rather than a small
+one.
 """
 from __future__ import annotations
 
@@ -120,6 +143,20 @@ def main():
                                lambda p: p >= GATE)
         pval = float((null >= st["mean"]).mean()) if st["n"] >= 2 else 1.0
 
+        # WHICH WAY THE MARKET WENT. Without this the fold results are
+        # unreadable: fold 2 of the 05-31..08-14 run earned +0.22%/trade
+        # at t=+2.23 and every one of its 21 positive shapes was a SHORT
+        # -- in a window whose median coin fell 5.33%, with SOXL -48.7%
+        # and SNDK -42.8%. That is beta, not skill, and the two look
+        # identical until the market move is printed next to the result.
+        import numpy as _np
+        _P = E.DATA.load(*tew)
+        _mv = [100 * (d["close"].iloc[-1] / d["close"].iloc[0] - 1)
+               for d in _P.values()]
+        print(f"  MARKET this window          : median coin "
+              f"{_np.median(_mv):+.2f}%, "
+              f"{sum(1 for v in _mv if v < 0)}/{len(_mv)} down")
+        del _P
         print(f"  CEILING (perfect selection) : {ceil['n']:>6} trades  "
               f"{100*ceil['mean']:+.4f}%/trade  {100*ceil['tot']:+.0f}% total")
         print(f"  BASELINE (take everything)  : {base['n']:>6} trades  "

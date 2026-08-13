@@ -59,6 +59,25 @@ which is what the methods actually produce.
 """
 from __future__ import annotations
 
+# OpenBLAS reserves a per-thread scratch buffer for as many threads as it
+# thinks the machine has, and numpy/sklearn load it on import. Together
+# with the bot's own scanner and manager threads that was enough to end a
+# live run with
+#
+#     OpenBLAS error: Memory allocation still failed after 10 retries
+#
+# before a single bar was scanned. The model here is six small gradient
+# boosters predicting one row at a time -- there is nothing to parallelise
+# and nothing to lose by pinning the maths libraries to one thread each.
+#
+# This MUST run before numpy is imported by anything, so it sits above
+# every other import in the file.
+import os as _os
+for _v in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
+           "NUMEXPR_NUM_THREADS", "VECLIB_MAXIMUM_THREADS"):
+    _os.environ.setdefault(_v, "1")
+
+
 import argparse
 import logging
 import sys
@@ -293,11 +312,18 @@ def main() -> int:
     print(f"  Max open at once : "
           + ("no cap (limited by free margin)" if not args.max_positions
              else str(args.max_positions)))
-    print(f"  Margin per trade : {args.margin_pct:.1f}% of equity "
-          f"(${args.equity * args.margin_pct / 100:.2f} at the start, "
-          f"~{int(100 / args.margin_pct) - 1} positions max)")
-    print(f"  Risk per trade   : ~{args.margin_pct * 0.42:.2f}% of the account "
-          f"(a stop costs ~42% of the trade's margin)")
+    if args.signals not in ("book", "mtf"):
+        print(f"  Margin per trade : {args.margin_pct:.1f}% of equity "
+              f"(${args.equity * args.margin_pct / 100:.2f} at the start, "
+              f"~{int(100 / args.margin_pct) - 1} positions max)")
+        print(f"  Risk per trade   : ~{args.margin_pct * 0.42:.2f}% of the "
+              f"account (a stop costs ~42% of the trade's margin)")
+    else:
+        # Both of these solve the stake per setup. A single "margin per
+        # trade" number would be a fiction, and printing one next to a
+        # 0-100% stake curve made the banner contradict itself.
+        print(f"  Margin per trade : NOT fixed -- solved per setup, "
+              f"0% to {args.max_margin_pct:.0f}% of equity")
     mode = "flat" if args.flat_sizing else args.sizing
     if args.signals == "mtf":
         import json as _j
@@ -389,6 +415,34 @@ def main() -> int:
                   f"than 2 standard errors")
             print(f"    below zero on its own record still stops trading "
                   f"entirely.")
+    elif args.signals == "mtf":
+        # mtf shares the book's potential score and stake curve; it does
+        # NOT use the ATR ladder's Kelly-on-live-record, which is what
+        # this chain used to fall through to and print.
+        print(f"  Sizing           : the setup's own potential score, "
+              f"0% up to {args.max_margin_pct:.0f}% of equity")
+        print(f"  Potential scale  : 100 x edge/b -- the band's measured edge "
+              f"as a share of what")
+        print(f"                     a win pays. 0 = break-even, 100 = cannot "
+              f"lose by its barriers.")
+        if args.stake_curve == "linear":
+            print(f"  Stake            : score, read as a percent of equity. "
+                  f"Capped at {args.max_margin_pct:.0f}%.")
+            print(f"      score  20 -> 20%     40 -> 40%     60 -> 60%     "
+                  f"80 -> 80%    100 -> ALL IN")
+        else:
+            print(f"  Stake            : score^2/100 percent of equity, "
+                  f"capped at {args.max_margin_pct:.0f}%.")
+            print(f"      score  20 ->  4%     40 -> 16%     60 -> 36%     "
+                  f"80 -> 64%    100 -> ALL IN")
+        print(f"    Half-Kelly and a ruin cap apply on top, so a big score "
+              f"on a wide stop")
+        print(f"    still cannot bet the account. Nothing reads the previous "
+              f"trade's result.")
+        print(f"  Slots            : one position per SYMBOL x RULE, so a "
+              f"symbol can carry")
+        print(f"                     several shapes at once instead of being "
+              f"locked by the first.")
     elif args.signals in ("survivors", "slow", "regime"):
         # These modes size flat on purpose: the potential already lives in
         # the leverage, and Kelly's win-rate input is the record of the
@@ -468,11 +522,20 @@ def main() -> int:
         print(f"    Why not 17-100x: on this data a PERFECTLY correct short")
         print(f"    returned +14.1% held as one position and -274.6% at 10x")
         print(f"    rebalanced. Drag scales with L squared. Run python -m fp.slow.")
-    else:
+    elif args.signals != "mtf":
         print(f"  Methods          : {len(M.METHOD_NAMES)} voting on 30m bars")
-    print(f"  Min votes to open: {args.min_votes} (and they must agree)")
-    print(f"  Exit strategy    : {args.exit} (fixed at entry)")
-    print(f"  Leverage         : {lev_note}")
+    if args.signals == "mtf":
+        # No vote count, no fixed exit, no ATR leverage ladder: the model
+        # picks the side, the barrier shape carries the exit, and each
+        # trade solves its own leverage from its own stop distance.
+        print(f"  Exit             : the barrier shape the model chose -- its "
+              f"own target, stop")
+        print(f"                     and time limit, in units of the "
+              f"volatility at entry")
+    else:
+        print(f"  Min votes to open: {args.min_votes} (and they must agree)")
+        print(f"  Exit strategy    : {args.exit} (fixed at entry)")
+        print(f"  Leverage         : {lev_note}")
     entry_kind = "maker (resting limit)" if args.limit_entry else "taker (market order)"
     print(f"  Cost per round trip: {fee*100:.3f}% of notional -- everything")
     print(f"    entry   {cost['entry']*100:.3f}%  {entry_kind}")
@@ -486,6 +549,14 @@ def main() -> int:
     print(f"  Price source     : Bybit {'TESTNET' if args.testnet else 'MAINNET'} "
           f"public API (no key, no orders)")
     print("=" * 70)
+    if args.signals == "mtf":
+        # Everything below this point describes the twelve-method design:
+        # its method list, its ATR leverage ladder and its expectancy gate.
+        # mtf uses none of them, and printing them made a live banner
+        # contradict itself twice in the same screen.
+        print("  Ctrl+C stops the bot and prints the session summary.")
+        print("=" * 70)
+        return _run(args, client, symbols, fee)
     for m in M.METHOD_NAMES:
         print(f"    {m}")
     print("=" * 70)
@@ -565,6 +636,12 @@ def main() -> int:
     print("=" * 70)
     print()
 
+    return _run(args, client, symbols, fee)
+
+
+def _run(args, client, symbols, fee) -> int:
+    """Start the bot. Split out so a mode with its own banner can skip the
+    twelve-method sections and still launch by the same path."""
     try:
         B.run(client, symbols, args.equity, args.max_positions, args.exit,
               args.min_votes, args.poll_seconds, args.trades_csv, fee,
@@ -578,7 +655,8 @@ def main() -> int:
     except KeyboardInterrupt:
         pass
     except Exception as exc:
-        print(f"\nStopped on an error: {type(exc).__name__}: {exc}", file=sys.stderr)
+        print(f"\nStopped on an error: {type(exc).__name__}: {exc}",
+              file=sys.stderr)
         return 1
     return 0
 

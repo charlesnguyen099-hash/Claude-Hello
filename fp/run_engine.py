@@ -32,6 +32,13 @@ from fp import labels as LB
 # the way from break-even to certainty.
 GATE = 20.0
 
+# A shape must clear Bonferroni over every combination attempted -- 32 of
+# them -- not over the handful that happened to look good. Two-sided 0.05
+# at 32 tests is |t| >= 3.2. And it must have traded enough in each fold
+# for the number to mean anything.
+BONF_T = 3.20
+MIN_TRADES = 20
+
 FOLDS = (
     (("2026-05-31", "2026-07-01"), ("2026-07-01", "2026-07-15")),
     (("2026-05-31", "2026-07-15"), ("2026-07-15", "2026-07-30")),
@@ -40,9 +47,11 @@ FOLDS = (
 
 
 def run_fold(train_win, test_win, gate=GATE, verbose=True):
+    import gc
     tr = E.load_panel(train_win)
     te = E.load_panel(test_win)
     keys = sorted(LB.SHAPES)
+    sigcol = list(next(iter(tr.values()))["X"].columns).index("sigma")
     rows = []
     P_all, N_all, S_all, X_all, H_all, K_all = [], [], [], [], [], []
 
@@ -55,17 +64,21 @@ def run_fold(train_win, test_win, gate=GATE, verbose=True):
                 continue
             Xtr, ytr = a[0], a[1]
             fit = E.fit_one(Xtr, ytr)
+            del a, Xtr, ytr
+            gc.collect()
             if fit is None:
                 continue
             Xte, yte, net, held, sym, pos = b
             p = E.p_hat(fit, Xte)
             # sigma is a factor column, so each test row carries its own.
-            sg = Xte[:, list(tr[next(iter(tr))]["X"].columns).index("sigma")]
+            sg = Xte[:, sigcol].astype("float64")
             p_be, _, _ = E.break_even(tp, sl, hold, sg)
-            score = E.potential(p, p_be)
+            score = E.potential(p, p_be).astype("float32")
+            del b, Xte, yte, fit, p, sg, p_be
+            gc.collect()
             P_all.append(score); N_all.append(net); S_all.append(sym)
             X_all.append(pos); H_all.append(held)
-            K_all.append(np.full(len(p), f"{tp}/{sl}/{hold}/{side}"))
+            K_all.append(np.full(len(score), len(rows), dtype="int16"))
             take = score >= gate
             keep = E.independent(sym, pos, held, take)
             st = E.stats(net[keep])
@@ -84,7 +97,7 @@ def main():
     print(f"  gate: potential >= {GATE:.0f}/100, fixed before reading anything")
     print("=" * 74, flush=True)
 
-    grand = []
+    grand, per_fold = [], []
     for i, (trw, tew) in enumerate(FOLDS, 1):
         print(f"\n--- FOLD {i}   train {trw[0]}..{trw[1]}   "
               f"test {tew[0]}..{tew[1]}", flush=True)
@@ -118,6 +131,7 @@ def main():
               f"{100*null.mean():+.4f}%/trade  sd {100*null.std():.4f}   "
               f"p(null >= model) = {pval:.3f}")
         grand.append((st, base, ceil, pval))
+        per_fold.append(rows)
 
         good = [r for r in rows if r[3] >= 10 and r[4] > 0]
         good.sort(key=lambda r: -r[5])
@@ -140,6 +154,52 @@ def main():
           f"{100*tot_sum/max(tot_n,1):+.4f}%/trade")
     print(f"  folds beating their own rotation null at p<0.05: "
           f"{beat}/{len(grand)}")
+
+    # ---- WHICH SHAPES SHIP -------------------------------------------
+    # A shape ships only if it was profitable in EVERY fold it traded in
+    # and traded enough to mean something. Picking the best fold, or the
+    # best shape within a fold, is how this repo shipped a band that read
+    # +0.406 in sample and -0.678 out of it.
+    #
+    # Bonferroni over every shape/side attempted, not over the survivors:
+    # 32 combinations tried means a two-sided 0.05 needs |t| >= 3.2.
+    per = {}
+    for rows in per_fold:
+        for sh, sd, raw, n, mn, t, w in rows:
+            per.setdefault((sh, sd), []).append((n, mn, t))
+    keep = []
+    print(f"\n  {'shape':<16} {'side':<6} {'folds':>5} {'trades':>7} "
+          f"{'mean%':>9} {'min t':>7}")
+    for (sh, sd), got in sorted(per.items()):
+        traded = [g for g in got if g[0] >= MIN_TRADES]
+        if len(traded) < len(FOLDS):
+            continue
+        n = sum(g[0] for g in traded)
+        mean = sum(g[1] * g[0] for g in traded) / max(n, 1)
+        mint = min(g[2] for g in traded)
+        allpos = all(g[1] > 0 for g in traded)
+        mark = "SHIP" if (allpos and mint >= BONF_T) else "    "
+        if allpos and mint >= BONF_T:
+            tp, sl, hold = (float(x) if "." in x else int(x)
+                            for x in sh.split("/"))
+            keep.append([tp, sl, int(hold), int(sd)])
+        if allpos:
+            print(f"  {mark} {sh:<11} {'long' if sd > 0 else 'short':<6} "
+                  f"{len(traded):>5} {n:>7} {100*mean:>+9.4f} {mint:>+7.2f}")
+
+    import json
+    from pathlib import Path
+    Path(__file__).resolve().parent.joinpath("engine_shapes.json").write_text(
+        json.dumps({"shapes": keep, "gate": GATE,
+                    "bonferroni_t": BONF_T, "min_trades": MIN_TRADES,
+                    "attempted": len(per), "folds": len(FOLDS)}, indent=1))
+    print(f"\n  {len(keep)} of {len(per)} shape/side combinations SHIP "
+          f"(profitable in all {len(FOLDS)} folds, |t| >= {BONF_T} in each,")
+    print(f"  at least {MIN_TRADES} independent trades per fold).")
+    if not keep:
+        print("  Nothing survived. That is a result, not a fault -- and it")
+        print("  is what fp/train_engine.py will honour: an empty model, and")
+        print("  a bot that does not open anything.")
     print("=" * 74)
     return 0
 

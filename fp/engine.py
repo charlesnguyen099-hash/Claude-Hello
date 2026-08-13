@@ -57,14 +57,25 @@ from fp import labels as LB
 # completely, so the 5th bar carries nearly all the information of the
 # five and the fit runs five times faster. Evaluation uses every bar and
 # then applies the independence mask, so nothing is hidden by this.
-TRAIN_STRIDE = 5
-EVAL_STRIDE = 1
+# Every 8th bar. At a 60-720 minute horizon, eight consecutive
+# one-minute entries are the same trade eight times over, so the 8th bar
+# carries essentially all of the information and the fit runs eight times
+# faster. Two full walk-forwards were killed for memory before finishing,
+# which is worse than a slightly coarser sample.
+TRAIN_STRIDE = 8
+# Evaluate every 3rd bar. The independence mask already collapses
+# overlapping entries -- with holds of 60 to 720 minutes, consecutive
+# one-minute entries are the same trade seen three times -- so this costs
+# almost no information and cuts peak memory threefold. The first version
+# held 32 combinations x 200k rows of PYTHON STRINGS for the symbol
+# column and was killed by the OOM reaper halfway through fold 2.
+EVAL_STRIDE = 3
 
 # Held out from the END of each training window, never fitted, used only
 # to turn the classifier's ranking into a frequency.
 CALIB_FRAC = 0.20
 
-MODEL = dict(max_depth=3, min_samples_leaf=500, max_iter=200,
+MODEL = dict(max_depth=3, min_samples_leaf=500, max_iter=120,
              l2_regularization=5.0, learning_rate=0.05,
              early_stopping=True, validation_fraction=0.12)
 
@@ -90,6 +101,7 @@ def stack(panel, key, stride=1):
     comparable rows.
     """
     Xs, y, net, held, sym, pos = [], [], [], [], [], []
+    order = sorted(panel)
     for s, P in sorted(panel.items()):
         L = P["labels"][key]
         ok = L["tradeable"] & np.isfinite(P["X"].values).all(axis=1)
@@ -100,10 +112,15 @@ def stack(panel, key, stride=1):
             continue
         Xs.append(P["X"].values[idx])
         y.append(L["win"][idx])
-        net.append(L["net"][idx])
-        held.append(L["held"][idx])
-        sym.append(np.full(len(idx), s))
-        pos.append(idx)
+        net.append(L["net"][idx].astype("float32"))
+        held.append(L["held"][idx].astype("int32"))
+        # Symbols as small integer CODES, not strings. A string column
+        # over a few million rows is a few million Python objects, and
+        # that alone was most of the memory that got an earlier run
+        # killed. The order is the sorted panel order, so the code is
+        # stable within a fold, which is all the independence mask needs.
+        sym.append(np.full(len(idx), order.index(s), dtype="int16"))
+        pos.append(idx.astype("int32"))
     if not Xs:
         return None
     return (np.vstack(Xs), np.concatenate(y), np.concatenate(net),

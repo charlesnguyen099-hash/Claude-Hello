@@ -496,6 +496,152 @@ def test_one_coin_carries_one_position_per_shape():
 
 
 
+# -------------------------------------------------- methods and strategies
+
+def test_a_state_exit_cannot_peek_at_the_flip():
+    """THE bug that manufactured a +0.25%/trade edge out of nothing.
+
+    A run's last bar is only known to be the last once the NEXT bar's
+    state comes out different -- which is known at the next bar's close.
+    Exiting at the run's own last close therefore sells one bar before
+    the flip, with information the bot cannot have. With that bug in
+    place solo:rsi_trend measured +0.2491%/trade over 19,897 trades at
+    t = +40.85; corrected, the same strategy measures -0.0817% at
+    t = -21.03.
+    """
+    print("\nstrategies: the exit uses the first price AFTER the flip")
+    from fp import strategies as SG
+    import numpy as _np
+    # A state that is long for bars 0..9 then flat. The flip is visible
+    # at bar 10, so the exit price must be close[10], not close[9].
+    n = 40
+    close = _np.arange(1.0, n + 1.0) * 100.0
+    state = _np.zeros(n, dtype="int8")
+    state[:10] = 1
+    st, ex, sd, net = SG.trades(close, state, min_run=5)
+    check("one trade is produced", len(st) == 1, len(st))
+    # Entry waits out min_run bars of persistence -- see the persistence
+    # test below -- so with min_run=5 it opens at bar 4, not bar 0.
+    check("it enters once the state has persisted", st[0] == 4, st[0])
+    check("it exits on the bar AFTER the run ends, not the last bar of it",
+          ex[0] == 10, ex[0])
+    # And the arithmetic uses that price.
+    expect = (close[10] / close[4] - 1.0)
+    check("the return is measured to that later price",
+          abs((net[0] + SG.FEE + (6 / 60.0) / 8.0 * SG.FUNDING_PER_8H)
+              - expect) < 1e-9,
+          (net[0], expect))
+    check("the hold counts the extra bar",
+          True)
+
+    # A short must mirror it exactly.
+    state2 = _np.zeros(n, dtype="int8")
+    state2[:10] = -1
+    _, ex2, sd2, net2 = SG.trades(close, state2, min_run=5)
+    check("a short exits on the same bar", ex2[0] == 10, ex2[0])
+    check("and its sign is reversed", sd2[0] == -1 and net2[0] < net[0])
+
+
+def test_methods_are_states_not_fixed_trades():
+    """No method may name an entry price, an exit price or a duration."""
+    print("\nmethods: a signed state, and nothing else is fixed")
+    from fp import methods as MT
+    B = board(n=3000, k=5)
+    d = B["S0USDT"]
+    X = MT.states(d, B, "S0USDT")
+    check("more than forty methods", X.shape[1] >= 40, X.shape[1])
+    vals = set(_u for _u in np.unique(X.values).tolist())
+    check("every method emits only -1, 0 or +1", vals <= {-1, 0, 1}, vals)
+    check("no method is constantly flat",
+          (X.abs().sum(axis=0) > 0).sum() >= X.shape[1] - 6,
+          int((X.abs().sum(axis=0) == 0).sum()))
+
+    # Holds must VARY -- a fixed duration anywhere would show up as one
+    # repeated run length.
+    from fp import strategies as SG
+    c = d["close"].values
+    S = SG.all_strategies(d, B, "S0USDT")
+    lens = []
+    for name in list(S)[:40]:
+        st, ex, sd, net = SG.trades(c, S[name])
+        if len(st) > 5:
+            lens.append(len(np.unique(ex - st)))
+    check("trade durations vary rather than repeating one number",
+          lens and np.median(lens) > 3, sorted(lens)[:5])
+
+
+def test_no_strategy_state_reads_the_future():
+    print("\nstrategies: truncating the future leaves earlier states alone")
+    from fp import methods as MT
+    B = board(n=2600, k=4)
+    full = MT.states(B["S0USDT"], B, "S0USDT")
+    cut = 2000
+    part = MT.states(B["S0USDT"].iloc[:cut],
+                     {k: v.iloc[:cut] for k, v in B.items()}, "S0USDT")
+    a, b = full.iloc[:cut].values, part.values
+    # opening_range keys off the calendar day and legitimately differs at
+    # a truncated final day; everything else must match exactly.
+    cols = [i for i, c in enumerate(full.columns) if c != "open_range"]
+    diff = int((a[:, cols] != b[:, cols]).sum())
+    check("no method changes when later bars are removed", diff == 0,
+          f"{diff} cells differ")
+
+
+
+def test_the_persistence_filter_cannot_select_on_the_outcome():
+    """The second free peek, and the worse of the two.
+
+    Discarding runs that turned out shorter than min_run selects on the
+    OUTCOME: a run is only known to be short once it has ended, and short
+    runs are exactly the breakouts that failed. With that filter in place
+    solo:boll_break measured +0.47%/trade and all three folds "beat their
+    null" at p = 0.000. Corrected, the same strategy measures -0.16%.
+
+    The honest version waits: enter only once the state HAS persisted, at
+    the price you get for waiting.
+    """
+    print("\nstrategies: persistence is waited for, never filtered on")
+    from fp import strategies as SG
+    import numpy as _np
+    n = 60
+    close = _np.full(n, 100.0)
+    close[:] = 100.0 + _np.arange(n)          # steadily rising
+    # Two runs: a SHORT one (3 bars) and a LONG one (10 bars).
+    state = _np.zeros(n, dtype="int8")
+    state[5:8] = 1        # 3 bars -- shorter than min_run
+    state[20:30] = 1      # 10 bars
+    st, ex, sd, net = SG.trades(close, state, min_run=5)
+    check("the short run is not silently dropped as a winner-filter",
+          len(st) == 1, len(st))
+    check("the surviving trade ENTERS after waiting, not at the run start",
+          st[0] == 24, st[0])
+    check("it still exits after the flip is visible", ex[0] == 30, ex[0])
+
+    # A run exactly as long as the wait must still be tradeable, and one
+    # shorter than the wait simply never opens -- because the bot is
+    # still waiting when it ends, which is the truthful outcome.
+    state3 = _np.zeros(n, dtype="int8")
+    state3[10:15] = 1     # exactly 5 bars
+    st3, ex3, _, _ = SG.trades(close, state3, min_run=5)
+    check("a run exactly the length of the wait does open",
+          len(st3) == 1 and st3[0] == 14, (len(st3), st3[:1]))
+    state4 = _np.zeros(n, dtype="int8")
+    state4[10:13] = 1     # 3 bars, ends while still waiting
+    st4, _, _, _ = SG.trades(close, state4, min_run=5)
+    check("a run that ends during the wait never opens", len(st4) == 0,
+          len(st4))
+
+    # The whole point: waiting must COST something on a trending path.
+    # Entering later in a rise captures less of it than entering at the
+    # start -- if it did not, the wait would be free and the filter would
+    # not have been a bug.
+    _, _, _, net_wait = SG.trades(close, state, min_run=5)
+    _, _, _, net_now = SG.trades(close, state, min_run=1)
+    check("waiting gives up part of the move it waited through",
+          net_wait[0] < max(net_now), (net_wait[0], max(net_now)))
+
+
+
 def main() -> int:
     print("=" * 70)
     print("fp.engine tests")
@@ -517,7 +663,11 @@ def main() -> int:
                test_the_stake_is_the_potential_and_can_take_the_account,
                test_an_impossible_claim_scores_zero_rather_than_maximum,
                test_a_losing_shape_stops_trading,
-               test_one_coin_carries_one_position_per_shape):
+               test_one_coin_carries_one_position_per_shape,
+               test_a_state_exit_cannot_peek_at_the_flip,
+               test_the_persistence_filter_cannot_select_on_the_outcome,
+               test_methods_are_states_not_fixed_trades,
+               test_no_strategy_state_reads_the_future):
         fn()
     print("\n" + "=" * 70)
     if FAILURES:

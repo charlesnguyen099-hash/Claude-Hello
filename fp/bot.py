@@ -238,7 +238,8 @@ class Broker:
                  limit_entry: bool = False, slippage: float = 0.0,
                  fee_override: float | None = None,
                  mtf_gate: str = "band", probe_pct: float = 2.0,
-                 probe_n: int = 30, probe_budget: float = 0.05):
+                 probe_n: int = 30, probe_budget: float = 0.05,
+                 min_stake: float = 0.05):
         self.client = client
         self.symbols = symbols
         self.equity = equity
@@ -322,6 +323,10 @@ class Broker:
         self.probe_pct = probe_pct
         self.probe_n = probe_n
         self.probe_budget = probe_budget
+        # No trade smaller than this fraction of live equity. See
+        # book_margin_fraction: it is a floor on a stake already judged
+        # worth taking, never a reason to take one.
+        self.min_stake = min_stake
         self.probe_trades = 0
         # What probing has actually cost, as a fraction of STARTING equity.
         # The banner promises the experiment is bounded; this is what makes
@@ -689,8 +694,20 @@ class Broker:
                       + (self.max_margin_pct - self.margin_pct) * w * paid)
         else:
             earned = self.max_margin_pct
-        return (min(by_score, frac, ruin_cap, earned, self.max_margin_pct),
-                kelly, edge)
+        stake = min(by_score, frac, ruin_cap, earned, self.max_margin_pct)
+        # THE FLOOR. If a setup is worth taking at all it is worth taking
+        # properly: no trade smaller than --min-stake of live equity. A
+        # 0.4% slice cannot pay for the attention it costs, and drip-fed
+        # sizing is what made a thirteen-hour session commit almost
+        # nothing. The floor never overrides the two limits that are
+        # arithmetic rather than preference -- a stop must not be able to
+        # cost more than the account (ruin_cap), and the operator's own
+        # ceiling stands -- so a setup that cannot be sized safely at the
+        # floor is refused instead of being forced through.
+        if stake <= 0:
+            return 0.0, kelly, edge
+        floor = min(self.min_stake, ruin_cap, self.max_margin_pct)
+        return (max(stake, floor), kelly, edge)
 
     def stake_scale(self) -> float:
         """How far every standing stake must be scaled to fit the account.
@@ -1996,7 +2013,7 @@ def run(client, symbols: list[str], equity: float, max_positions: int,
         earn_stake: bool = False, stake_curve: str = "linear",
         share_stakes: bool = False, mtf_gate: str = "band",
         probe_pct: float = 2.0, probe_n: int = 30,
-        probe_budget: float = 0.05) -> None:
+        probe_budget: float = 0.05, min_stake: float = 0.05) -> None:
     broker = Broker(client, symbols, equity, max_positions, exit_name,
                     min_votes, fee, max_leverage, margin_pct, max_notional_x,
                     conviction_floor, expectancy_gate, assumed_win_rate,
@@ -2004,7 +2021,7 @@ def run(client, symbols: list[str], equity: float, max_positions: int,
                     earn_stake, stake_curve, share_stakes,
                     potential_sizing, sizing, max_margin_pct, limit_entry,
                     slippage, fee_override, mtf_gate, probe_pct, probe_n,
-                    probe_budget)
+                    probe_budget, min_stake)
     stop_event = threading.Event()
 
     def stop(signum, frame):

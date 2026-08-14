@@ -78,6 +78,11 @@ class Engine:
         if len(good) < 2:
             return {}
         X = F.build(good)
+        # With no model loaded there is nothing to feed, so there is
+        # nothing to assert against -- and raising here every bar buried
+        # the log while the logic book was the thing actually trading.
+        if not self.models:
+            return X
         for s, x in X.items():
             if list(x.columns) != self.columns:
                 raise ValueError(

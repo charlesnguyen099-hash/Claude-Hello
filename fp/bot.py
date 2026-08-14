@@ -341,9 +341,16 @@ class Broker:
         # measured and every one of them failed out of sample. What is
         # left is the logic in fp/engine.py, and it only ships the shapes
         # that survived fp/run_engine.py's walk-forward.
+        from fp.live_book import LogicBook
         from fp.live_engine import Engine
+        # The logic book comes first: it holds (coin, strategy) pairs that
+        # were profitable FORWARD in every walk-forward fold. The engine
+        # stays as the alternative signal source, but the book is what the
+        # bot trades when it has one.
+        self.book_logic = LogicBook()
         self.engine = Engine()
         self._eng_cache: dict = {}
+        self._book_states: dict = {}
         self._eng_lock = threading.Lock()
         # Scored on one-minute bars: the finest resolution the factors
         # were built at, and re-asking faster only re-reads a closed bar.
@@ -372,6 +379,10 @@ class Broker:
         # fraction of notional]. This is what lets a rule's stake follow
         # what it is ACTUALLY earning rather than what it was fitted to.
         self.rule_record: dict[str, list] = {}
+        # Running sum of squares per rule, so a live mean can be judged
+        # against its own dispersion rather than an assumed one.
+        self.rule_sq: dict[str, float] = {}
+        self.rule_sd: dict[str, float] = {}
         # Global calibration of the book against reality: how much of the
         # edge the book claimed has actually turned up. Two running sums,
         # claimed and realized, over every closed book trade.
@@ -898,6 +909,8 @@ class Broker:
         self.evaluations += 1
         now_bar = closed_bar_ts(bar_minutes=self.bar_minutes)
         self.evaluated_bar[symbol] = now_bar
+        if getattr(self, "book_logic", None) and self.book_logic.pairs:
+            return self._evaluate_book(symbol, now_bar)
         return self._evaluate_engine(symbol, now_bar)
 
     def _engine_panel(self, bar_ts: int):
@@ -931,8 +944,104 @@ class Broker:
             except Exception:
                 logger.exception("engine panel failed")
                 X = {}
-            self._eng_cache = {"bar": bar_ts, "X": X}
+            self._eng_cache = {"bar": bar_ts, "X": X, "bars": bars}
             return X
+
+    def _evaluate_book(self, symbol: str, bar_ts: int) -> list:
+        """Hold exactly the state each shipped strategy is in.
+
+        This is the whole contract, and it is deliberately thin: a
+        strategy says +1, -1 or 0, and the bot is long, short or flat. It
+        adds no target, no stop and no time limit, because the study that
+        validated these pairs used none -- bolting one on live would be
+        trading a different rule from the one that was measured.
+
+        Exits therefore happen here, by the state going to 0 or flipping,
+        rather than in manage(). A position whose state has turned off is
+        closed on the next pass.
+        """
+        X = self._engine_panel(bar_ts)
+        cur = self._book_states.get(bar_ts)
+        if cur is None:
+            cur = self.book_logic.states(self._eng_cache.get("bars") or {})
+            self._book_states = {bar_ts: cur}
+        want = cur.get(symbol) or {}
+
+        out, keep = [], set()
+        for strat, state in want.items():
+            rule = f"book:{strat}"
+            slot = f"{symbol}|{rule}"
+            pos = self.open.get(slot)
+            # THE EXIT. State off, or flipped: close what is open.
+            if pos is not None and (state == 0 or state != pos.direction):
+                px = self.last_price(symbol)
+                if px:
+                    self._close(slot, px, "state_off" if state == 0
+                                else "state_flip")
+            if state == 0:
+                self.signals.pop(slot, None)
+                continue
+            stake = self.book_logic.stake_for(symbol, strat)
+            edge = self.book_logic.edge_for(symbol, strat)
+            if stake <= 0:
+                continue
+            # THE LIVE RECORD IS THE JUDGE. None of these pairs cleared
+            # significance on history -- they are candidates, and the
+            # paper run is their test. So a pair more than two standard
+            # errors below zero on its OWN closed trades stops trading,
+            # and one that is paying may grow past the floor.
+            n_live, tot_live = self.rule_record.get(rule, (0, 0.0))
+            if n_live >= self.probe_n:
+                mean_live = tot_live / n_live
+                sd_live = self.rule_sd.get(rule)
+                if sd_live and sd_live > 0:
+                    se = sd_live / (n_live ** 0.5)
+                    if mean_live < -2.0 * se:
+                        self.retired.add(rule)
+                        self.signals.pop(slot, None)
+                        continue
+                    self.promoted.add(rule)
+                    # Half-Kelly on what it has ACTUALLY earned here,
+                    # never on what the study claimed.
+                    if mean_live > 0:
+                        k = 0.5 * mean_live / (sd_live * sd_live)
+                        stake = float(min(max(k, self.min_stake),
+                                          self.max_margin_pct))
+            if rule in self.retired:
+                continue
+            sigma = self._sigma_for(symbol)
+            if sigma is None:
+                continue
+            # No target and no stop of our own -- but leverage still has
+            # to be solvable, and a position with none is not openable.
+            lev = min(self.max_leverage or 3.0, 3.0)
+            sig = Signal(
+                bar_ts=bar_ts, direction=int(state), atr_pct=100.0 * sigma,
+                votes=1, vote_margin=1,
+                methods=(f"{strat} state {state:+d} | measured "
+                         f"{100*edge:+.4f}%/trade | stake {100*stake:.0f}%"),
+                confidence=None, slow_leverage=lev,
+                tp_dist=None, sl_dist=None, max_hold_min=None,
+                rule=rule, rule_mean=edge, symbol=symbol,
+                margin_frac=stake, kelly_full=stake, edge_used=edge,
+                score=100.0 * min(stake / max(self.max_margin_pct, 1e-9), 1.0))
+            self.signals[slot] = sig
+            keep.add(slot)
+            out.append(sig)
+        self._drop_signals(symbol, keep)
+        if not out:
+            self.no_signal += 1
+        return out
+
+    def _sigma_for(self, symbol: str):
+        """Per-bar volatility from the cached board, for reporting and
+        for the leverage solver."""
+        bars = (self._eng_cache.get("bars") or {}).get(symbol)
+        if bars is None or len(bars) < 130:
+            return None
+        r = bars["close"].pct_change()
+        v = float(r.rolling(120, min_periods=60).std().iloc[-1])
+        return v if np.isfinite(v) and v > 0 else None
 
     def _evaluate_engine(self, symbol: str, bar_ts: int) -> list:
         """Score one symbol with the shipped logic.
@@ -1432,6 +1541,12 @@ class Broker:
                 rec = self.rule_record.setdefault(pos.rule, [0, 0.0])
                 rec[0] += 1
                 rec[1] += net
+                self.rule_sq[pos.rule] = self.rule_sq.get(pos.rule, 0.0) \
+                    + net * net
+                if rec[0] >= 2:
+                    m = rec[1] / rec[0]
+                    var = max(self.rule_sq[pos.rule] / rec[0] - m * m, 0.0)
+                    self.rule_sd[pos.rule] = var ** 0.5
                 if pos.probing:
                     loss = (pos.entry_fee - pnl) / max(self.starting_equity,
                                                        1e-9)

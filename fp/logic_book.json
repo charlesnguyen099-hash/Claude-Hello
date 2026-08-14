@@ -1,0 +1,291 @@
+{
+ "pairs": [
+  {
+   "symbol": "SOXLUSDT",
+   "strategy": "and:donch_fast+open_range",
+   "folds": 2,
+   "trades": 472,
+   "mean": 0.000876619367848022,
+   "sd": 0.01754521888371268,
+   "min_t": 0.6334023633278286,
+   "stake": 0.05,
+   "proven": false
+  },
+  {
+   "symbol": "SOXLUSDT",
+   "strategy": "and:psar+open_range",
+   "folds": 2,
+   "trades": 429,
+   "mean": 0.0007364014683309792,
+   "sd": 0.017225672165053642,
+   "min_t": 0.5737715844861011,
+   "stake": 0.05,
+   "proven": false
+  },
+  {
+   "symbol": "SKHYNIXUSDT",
+   "strategy": "solo:open_range|quiet",
+   "folds": 2,
+   "trades": 259,
+   "mean": 0.000564004992220323,
+   "sd": 0.010388654897891992,
+   "min_t": 0.5469440708591292,
+   "stake": 0.05,
+   "proven": false
+  },
+  {
+   "symbol": "SOXLUSDT",
+   "strategy": "solo:open_range",
+   "folds": 2,
+   "trades": 219,
+   "mean": 0.0016642771572831136,
+   "sd": 0.029598986836840056,
+   "min_t": 0.5315217373785314,
+   "stake": 0.05,
+   "proven": false
+  },
+  {
+   "symbol": "SOXLUSDT",
+   "strategy": "and:macd_zero+open_range",
+   "folds": 2,
+   "trades": 569,
+   "mean": 0.0005070860555210835,
+   "sd": 0.015378570385628537,
+   "min_t": 0.5240418933405961,
+   "stake": 0.05,
+   "proven": false
+  },
+  {
+   "symbol": "SNDKUSDT",
+   "strategy": "solo:open_range",
+   "folds": 2,
+   "trades": 227,
+   "mean": 0.0016669469500491495,
+   "sd": 0.02987436516532411,
+   "min_t": 0.4745143389368538,
+   "stake": 0.05,
+   "proven": false
+  },
+  {
+   "symbol": "SOXLUSDT",
+   "strategy": "and:donch_mid+open_range",
+   "folds": 2,
+   "trades": 270,
+   "mean": 0.0014268532825931733,
+   "sd": 0.022910678976280623,
+   "min_t": 0.3666550993974566,
+   "stake": 0.05,
+   "proven": false
+  },
+  {
+   "symbol": "SNDKUSDT",
+   "strategy": "and:donch_mid+open_range",
+   "folds": 2,
+   "trades": 271,
+   "mean": 0.000560557936660105,
+   "sd": 0.0195025526346874,
+   "min_t": 0.33128262779674583,
+   "stake": 0.05,
+   "proven": false
+  },
+  {
+   "symbol": "SOXLUSDT",
+   "strategy": "and:ema_mid+open_range",
+   "folds": 2,
+   "trades": 366,
+   "mean": 0.0007435547436826393,
+   "sd": 0.019516249628427337,
+   "min_t": 0.3055068641633692,
+   "stake": 0.05,
+   "proven": false
+  },
+  {
+   "symbol": "SOXLUSDT",
+   "strategy": "solo:vwap_trend",
+   "folds": 2,
+   "trades": 616,
+   "mean": 0.000643241904060668,
+   "sd": 0.020636412663427015,
+   "min_t": 0.30208588863277985,
+   "stake": 0.05,
+   "proven": false
+  },
+  {
+   "symbol": "SOXLUSDT",
+   "strategy": "and:donch_slow+open_range",
+   "folds": 2,
+   "trades": 180,
+   "mean": 0.00098231951845927,
+   "sd": 0.02937777005013609,
+   "min_t": 0.2554129140987796,
+   "stake": 0.05,
+   "proven": false
+  },
+  {
+   "symbol": "SOXLUSDT",
+   "strategy": "and:donch_fast+vwap_trend",
+   "folds": 2,
+   "trades": 805,
+   "mean": 0.00013344622915283043,
+   "sd": 0.015315845207855165,
+   "min_t": 0.17379663151722272,
+   "stake": 0.05,
+   "proven": false
+  },
+  {
+   "symbol": "SKHYNIXUSDT",
+   "strategy": "solo:open_range",
+   "folds": 2,
+   "trades": 169,
+   "mean": 0.00047149659762887793,
+   "sd": 0.019441141434818725,
+   "min_t": 0.1471146624351482,
+   "stake": 0.05,
+   "proven": false
+  },
+  {
+   "symbol": "SOXLUSDT",
+   "strategy": "xs:ema_mid+rel_weak",
+   "folds": 2,
+   "trades": 99,
+   "mean": 0.0003940350346890722,
+   "sd": 0.004327587391335383,
+   "min_t": 0.12173884190994025,
+   "stake": 0.05,
+   "proven": false
+  },
+  {
+   "symbol": "SOXLUSDT",
+   "strategy": "and:psar+vwap_trend",
+   "folds": 2,
+   "trades": 764,
+   "mean": 0.00010665143190277595,
+   "sd": 0.015374403735204083,
+   "min_t": 0.11856267333793646,
+   "stake": 0.05,
+   "proven": false
+  },
+  {
+   "symbol": "SOXLUSDT",
+   "strategy": "and:ema_fast+open_range|busy",
+   "folds": 2,
+   "trades": 312,
+   "mean": 0.0007053908476207394,
+   "sd": 0.01674385445699541,
+   "min_t": 0.1037527140891482,
+   "stake": 0.05,
+   "proven": false
+  },
+  {
+   "symbol": "SNDKUSDT",
+   "strategy": "and:donch_slow+open_range",
+   "folds": 2,
+   "trades": 204,
+   "mean": 0.00035542420015400846,
+   "sd": 0.0275980345948743,
+   "min_t": 0.03928534553168605,
+   "stake": 0.05,
+   "proven": false
+  },
+  {
+   "symbol": "SOXLUSDT",
+   "strategy": "and:donch_mid+vwap_trend",
+   "folds": 2,
+   "trades": 520,
+   "mean": 0.000742576875531143,
+   "sd": 0.020319391939641135,
+   "min_t": 0.012916341638261615,
+   "stake": 0.05,
+   "proven": false
+  },
+  {
+   "symbol": "SOXLUSDT",
+   "strategy": "and:price_ma+open_range",
+   "folds": 2,
+   "trades": 499,
+   "mean": 0.0003426855729161744,
+   "sd": 0.017283325628211738,
+   "min_t": 0.006227709968728486,
+   "stake": 0.05,
+   "proven": false
+  },
+  {
+   "symbol": "SOXLUSDT",
+   "strategy": "and:ema_slow+open_range",
+   "folds": 2,
+   "trades": 196,
+   "mean": 0.00012926422115069476,
+   "sd": 0.028574230288644628,
+   "min_t": 0.0007432078040664282,
+   "stake": 0.05,
+   "proven": false
+  }
+ ],
+ "proven": 0,
+ "bonferroni_t": 3.94,
+ "min_trades": 30,
+ "min_folds": 2,
+ "min_stake": 0.05,
+ "coins": [
+  {
+   "symbol": "BLESSUSDT",
+   "bars": 102656,
+   "folds": 2,
+   "opportunities": 295639
+  },
+  {
+   "symbol": "BTCUSDT",
+   "bars": 848640,
+   "folds": 4,
+   "opportunities": 869143
+  },
+  {
+   "symbol": "ETHUSDT",
+   "bars": 102656,
+   "folds": 2,
+   "opportunities": 132613
+  },
+  {
+   "symbol": "HYPEUSDT",
+   "bars": 102656,
+   "folds": 2,
+   "opportunities": 212295
+  },
+  {
+   "symbol": "SKHYNIXUSDT",
+   "bars": 93416,
+   "folds": 2,
+   "opportunities": 196987
+  },
+  {
+   "symbol": "SNDKUSDT",
+   "bars": 102656,
+   "folds": 2,
+   "opportunities": 204615
+  },
+  {
+   "symbol": "SOLUSDT",
+   "bars": 102656,
+   "folds": 2,
+   "opportunities": 153654
+  },
+  {
+   "symbol": "SOXLUSDT",
+   "bars": 102656,
+   "folds": 2,
+   "opportunities": 256515
+  },
+  {
+   "symbol": "XAUUSDT",
+   "bars": 102656,
+   "folds": 2,
+   "opportunities": 65865
+  },
+  {
+   "symbol": "XRPUSDT",
+   "bars": 102656,
+   "folds": 2,
+   "opportunities": 140275
+  }
+ ]
+}

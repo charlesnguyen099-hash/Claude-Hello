@@ -100,9 +100,13 @@ def main() -> int:
     p.add_argument("--max-positions", type=int, default=0,
                    help="cap concurrent positions (default 0 = no cap; free "
                         "margin is the limit)")
-    p.add_argument("--margin-pct", type=float, default=2.0,
-                   help="floor slice, percent of equity (default 2). Only "
-                        "used with --earn-stake")
+    p.add_argument("--min-stake", type=float, default=5.0,
+                   help="FLOOR on one trade's margin, percent of live equity "
+                        "(default 5). If a setup is worth taking it is taken "
+                        "properly; the floor never overrides the ruin cap")
+    p.add_argument("--margin-pct", type=float, default=5.0,
+                   help="base slice, percent of equity. Only used with "
+                        "--earn-stake")
     p.add_argument("--max-margin-pct", type=float, default=100.0,
                    help="ceiling on ONE trade's margin, percent of equity "
                         "(default 100: a setup scoring 100/100 may take the "
@@ -144,8 +148,10 @@ def main() -> int:
     from pybit.unified_trading import HTTP
 
     from fp import bot as B
+    from fp.live_book import LogicBook
     from fp.live_engine import Engine
 
+    lb = LogicBook()
     eng = Engine()
     client = HTTP(testnet=args.testnet)
 
@@ -153,6 +159,9 @@ def main() -> int:
         symbols = [s.strip().upper() for s in args.symbols.split(",")
                    if s.strip()]
     else:
+        # The board has to include every coin the cross-sectional methods
+        # rank against, not only the coins being traded -- dropping one
+        # changes every other coin's rank.
         symbols = scoped_symbols()
     if not symbols:
         print("No symbols. Pass --symbols, or run python -m fp.train_engine "
@@ -166,15 +175,60 @@ def main() -> int:
     print(f"  Starting balance : ${args.equity:,.2f} (simulated)")
     print(f"  Coins scanned    : {len(symbols)}")
     print(f"    {', '.join(symbols)}")
-    if not eng.ok or not eng.models:
+    if lb.ok and lb.pairs:
+        by = {}
+        for p_ in lb.pairs:
+            by.setdefault(p_["symbol"], []).append(p_)
+        proven = int(lb.meta.get("proven", 0))
+        print(f"  Logic            : {len(lb.pairs)} (coin, strategy) pairs, "
+              f"{proven} PROVEN, "
+              f"{len(lb.pairs) - proven} CANDIDATE")
+        print(f"                     Each was profitable FORWARD in every "
+              f"walk-forward fold it")
+        print(f"                     traded in. A CANDIDATE was chosen by "
+              f"looking across those")
+        print(f"                     folds, so it is NOT independently "
+              f"validated -- THIS RUN is")
+        print(f"                     its test. The live record promotes what "
+              f"pays and RETIRES")
+        print(f"                     anything two standard errors below zero "
+              f"on its own trades.")
+        for symb in sorted(by):
+            for p_ in sorted(by[symb], key=lambda r: -r["min_t"])[:6]:
+                print(f"      {symb:<12} {p_['strategy']:<30} "
+                      f"{100*p_['mean']:+.4f}%/trade  "
+                      f"{p_['folds']} folds  stake {100*p_['stake']:.0f}%")
+        print(f"  Entry            : when the strategy's state turns on, at "
+              f"whatever the market is")
+        print(f"  Exit             : when it turns off or flips. No target, "
+              f"no stop, no time")
+        print(f"                     limit -- the study that validated these "
+              f"used none, and")
+        print(f"                     adding one live would trade a different "
+              f"rule.")
+        print(f"  Stake            : floor {args.min_stake:.0f}% of live "
+              f"equity while unproven, then that")
+        print(f"                     pair's own half-Kelly on its LIVE "
+              f"record, up to "
+              f"{args.max_margin_pct:.0f}%")
+        print(f"  Cost per round trip: {100*fee:.3f}% taker both sides, plus "
+              f"live funding")
+        print(f"  Price source     : Bybit "
+              f"{'TESTNET' if args.testnet else 'MAINNET'} public API "
+              f"(no key, no orders)")
+        print("=" * 74)
+        print("  Ctrl+C stops the bot and prints the session summary.")
+        print("=" * 74)
+    elif not eng.ok or not eng.models:
         print()
         print("  NO LOGIC IS LOADED.")
-        print("  fp/engine_model.pkl is missing or empty, so the bot will not")
-        print("  open anything. Build it with:")
-        print("      python -m fp.run_engine     # walk-forward: what survives")
-        print("      python -m fp.train_engine   # fit the survivors")
-        print("  An empty model means no shape beat its own rotation null.")
-        print("  That is a result, not a fault.")
+        print("  Neither fp/logic_book.json nor fp/engine_model.pkl holds")
+        print("  anything that survived validation, so the bot will not open")
+        print("  a position. Build one with:")
+        print("      python -m fp.run_percoin    # every method, every coin")
+        print("      python -m fp.run_engine     # the model, then train_engine")
+        print("  An empty book means nothing was profitable FORWARD in every")
+        print("  fold it traded in. That is a result, not a fault.")
         print("=" * 74)
     else:
         m = eng.meta
@@ -246,7 +300,8 @@ def main() -> int:
               args.max_notional_x, 1.0, False, None, "engine",
               True, "kelly", args.max_margin_pct / 100.0, False, 0.0,
               None, "book.json", False, False, args.earn_stake,
-              args.stake_curve, args.share_stakes)
+              args.stake_curve, args.share_stakes,
+              "band", 2.0, 30, 0.05, args.min_stake / 100.0)
     except KeyboardInterrupt:
         pass
     except Exception as exc:

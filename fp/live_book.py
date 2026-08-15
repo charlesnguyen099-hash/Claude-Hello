@@ -61,24 +61,38 @@ class LogicBook:
                            path.name)
             return
         self.meta = json.loads(path.read_text())
-        self.pairs = list(self.meta.get("pairs", []))
+        # New format: per_coin -> [{strategy, expect, stake}], ranked.
+        # The bot holds the best signal that is ON, one per coin.
+        per = self.meta.get("per_coin")
+        if per is not None:
+            self.by_symbol = {s_: sorted(v, key=lambda r: -r["expect"])
+                              for s_, v in per.items() if v}
+            self.pairs = [{"symbol": s_, **r}
+                          for s_, v in self.by_symbol.items() for r in v]
+        else:
+            self.pairs = list(self.meta.get("pairs", []))
+            self.by_symbol = {}
+            for p_ in self.pairs:
+                self.by_symbol.setdefault(p_["symbol"], []).append(p_)
+        self.walk = self.meta.get("walk_forward", {})
+        self.min_stake = float(self.meta.get("min_stake", 0.05))
         if not self.pairs:
-            logger.warning("%s is EMPTY -- no (coin, strategy) pair was "
-                           "profitable forward in every fold, so nothing "
-                           "will be traded", path.name)
-        self.by_symbol: dict[str, list[dict]] = {}
-        for p in self.pairs:
-            self.by_symbol.setdefault(p["symbol"], []).append(p)
+            logger.warning("%s holds no tradeable strategy -- nothing will "
+                           "be opened", path.name)
 
     @property
     def symbols(self) -> list[str]:
         return sorted(self.by_symbol)
 
     def states(self, bars: dict[str, pd.DataFrame]) -> dict[str, dict]:
-        """Every shipped pair's current state, keyed symbol -> name -> state.
+        """The ONE signal each coin should be holding, or nothing.
 
-        Returns the state of the last CLOSED bar, and only after it has
-        persisted the same number of bars the study required.
+        A coin holds at most one position, and it is the highest-
+        expectation strategy currently on. That is the operator's rule and
+        it is also what keeps the account solvent: 623 strategies riding
+        the same move asked for exposure the account does not have, and
+        switching between them every few minutes cost 0.11% a time --
+        measured at -540% in fees against +193% of gross signal.
         """
         good = {s: d for s, d in bars.items()
                 if d is not None and len(d) >= 400}
@@ -94,20 +108,18 @@ class LogicBook:
             except Exception:
                 logger.debug("strategy build failed %s", sym, exc_info=True)
                 continue
-            cur = {}
+            # `want` is already ranked by expectation, so the first one
+            # found ON is the best one available.
+            chosen = {}
             for p in want:
                 v = S.get(p["strategy"])
                 if v is None or len(v) < SG.MIN_RUN + 1:
                     continue
                 tail = v[-SG.MIN_RUN:]
-                # Act only on a state that has already persisted -- the
-                # same wait the study priced. A state that just turned on
-                # is not yet a trade.
                 if tail[-1] != 0 and np.all(tail == tail[-1]):
-                    cur[p["strategy"]] = int(tail[-1])
-                else:
-                    cur[p["strategy"]] = 0
-            out[sym] = cur
+                    chosen[p["strategy"]] = int(tail[-1])
+                    break
+            out[sym] = chosen
         return out
 
     def stake_for(self, symbol: str, strategy: str) -> float:
@@ -119,5 +131,5 @@ class LogicBook:
     def edge_for(self, symbol: str, strategy: str) -> float:
         for p in self.by_symbol.get(symbol, ()):
             if p["strategy"] == strategy:
-                return float(p.get("mean", 0.0))
+                return float(p.get("mean", p.get("expect", 0.0)))
         return 0.0

@@ -176,41 +176,53 @@ def main() -> int:
     print(f"  Coins scanned    : {len(symbols)}")
     print(f"    {', '.join(symbols)}")
     if lb.ok and lb.pairs:
-        by = {}
-        for p_ in lb.pairs:
-            by.setdefault(p_["symbol"], []).append(p_)
-        proven = int(lb.meta.get("proven", 0))
-        print(f"  Logic            : {len(lb.pairs)} (coin, strategy) pairs, "
-              f"{proven} PROVEN, "
-              f"{len(lb.pairs) - proven} CANDIDATE")
-        print(f"                     Each was profitable FORWARD in every "
-              f"walk-forward fold it")
-        print(f"                     traded in. A CANDIDATE was chosen by "
-              f"looking across those")
-        print(f"                     folds, so it is NOT independently "
-              f"validated -- THIS RUN is")
-        print(f"                     its test. The live record promotes what "
-              f"pays and RETIRES")
-        print(f"                     anything two standard errors below zero "
-              f"on its own trades.")
-        for symb in sorted(by):
-            for p_ in sorted(by[symb], key=lambda r: -r["min_t"])[:6]:
-                print(f"      {symb:<12} {p_['strategy']:<30} "
-                      f"{100*p_['mean']:+.4f}%/trade  "
-                      f"{p_['folds']} folds  stake {100*p_['stake']:.0f}%")
-        print(f"  Entry            : when the strategy's state turns on, at "
-              f"whatever the market is")
-        print(f"  Exit             : when it turns off or flips. No target, "
-              f"no stop, no time")
-        print(f"                     limit -- the study that validated these "
-              f"used none, and")
-        print(f"                     adding one live would trade a different "
-              f"rule.")
-        print(f"  Stake            : floor {args.min_stake:.0f}% of live "
-              f"equity while unproven, then that")
-        print(f"                     pair's own half-Kelly on its LIVE "
-              f"record, up to "
-              f"{args.max_margin_pct:.0f}%")
+        print(f"  Logic            : {len(lb.pairs)} strategies across "
+              f"{len(lb.by_symbol)} coins, ONE position per coin")
+        print(f"  Rules            : the coin holds the highest-expectation "
+              f"signal that is ON.")
+        print(f"                     A signal is skipped while a better one "
+              f"is already running.")
+        print(f"                     Entry at whatever the market is when "
+              f"the state turns on;")
+        print(f"                     exit when it turns off or flips. No "
+              f"fixed price, no fixed")
+        print(f"                     duration. A win means +1% net of every "
+              f"fee.")
+        print()
+        print(f"  WHAT HISTORY SAYS, per coin, walked forward -- unedited:")
+        for symb in sorted(lb.by_symbol):
+            w = lb.walk.get(symb, {})
+            folds = ", ".join(f"{100*x:+.1f}%" for x in w.get("folds", []))
+            print(f"      {symb:<12} {w.get('verdict', '?'):<28} "
+                  f"{folds or 'no trades'}")
+        cn = lb.meta.get("ceiling_trades", 0)
+        ct = lb.meta.get("ceiling_total", 0.0)
+        bt = lb.meta.get("bot_trades", 0)
+        bh = lb.meta.get("bot_hits", 0)
+        bg = lb.meta.get("bot_total", 0.0)
+        print()
+        print(f"  CEILING          : {cn:,} distinct +1% trades existed, "
+              f"worth {100*ct:+.0f}%")
+        print(f"                     -- chosen with hindsight, so it is a "
+              f"denominator, not a target")
+        print(f"  THIS LOGIC       : {bt:,} trades, {bh:,} of them above "
+              f"+1% ({100*bh/max(cn,1):.1f}% of the ceiling),")
+        print(f"                     {100*bg:+.1f}% NET on those same bars. "
+              f"IT LOST MONEY ON HISTORY.")
+        print(f"  Why              : every trade pays {100*fee:.3f}%. Catching "
+              f"more of the ceiling")
+        print(f"                     needs more trades, and the fees plus the "
+              f"losers cost more")
+        print(f"                     than the extra winners bring in. A "
+              f"+1% take-profit caught")
+        print(f"                     68-72% instead of 7% and lost far more.")
+        print(f"  So this run is   : an EXPERIMENT, not an edge. Each pair "
+              f"stakes the "
+              f"{100*lb.min_stake:.0f}% floor,")
+        print(f"                     the live record is kept per strategy, "
+              f"and anything two")
+        print(f"                     standard errors below zero on its own "
+              f"trades is RETIRED.")
         print(f"  Cost per round trip: {100*fee:.3f}% taker both sides, plus "
               f"live funding")
         print(f"  Price source     : Bybit "

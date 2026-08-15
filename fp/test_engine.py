@@ -692,6 +692,90 @@ def test_a_coin_takes_a_second_position_only_when_it_is_free():
 
 
 
+# ------------------------------------------------- direction and leverage
+
+def test_the_direction_label_is_a_race_not_a_guess():
+    """+1 means a long reached +1% net BEFORE a short could, and the
+    barrier is charged the fee, so the price has to travel further than
+    1% to earn 1%."""
+    print("\ndirection: the label is a first-touch race, fee included")
+    from fp import direction as DIR
+    import numpy as _np
+    n = 200
+    # A path that rises 3% and never falls: every early bar is a long.
+    up = 100.0 * (1.0 + _np.linspace(0, 0.03, n))
+    y = DIR.label(up, horizon=n)
+    check("a rising path labels long", y[0] == 1, y[0])
+    check("and never labels short", not (y == -1).any(),
+          int((y == -1).sum()))
+    dn = 100.0 * (1.0 - _np.linspace(0, 0.03, n))
+    check("a falling path labels short", DIR.label(dn, horizon=n)[0] == -1)
+
+    # A move of exactly +1% does NOT clear a +1% NET barrier, because the
+    # round trip has to come out of it first.
+    flat = _np.full(n, 100.0)
+    flat[50:] = 100.0 * (1.0 + DIR.WIN)          # exactly +1%, no more
+    check("a move of exactly the target does not clear it net of fees",
+          DIR.label(flat, horizon=n)[0] == 0, DIR.label(flat, horizon=n)[0])
+    flat2 = _np.full(n, 100.0)
+    flat2[50:] = 100.0 * (1.0 + DIR.WIN + DIR.FEE + 1e-6)
+    check("a move of target PLUS the round trip does clear it",
+          DIR.label(flat2, horizon=n)[0] == 1)
+
+    # Nothing may be labelled from beyond its own horizon.
+    late = _np.full(n, 100.0)
+    late[150:] = 130.0
+    check("a move outside the horizon is not labelled",
+          DIR.label(late, horizon=20)[0] == 0)
+
+
+def test_break_even_accuracy_is_the_bar_the_model_must_clear():
+    print("\ndirection: break-even accuracy comes from the barrier and fee")
+    from fp import direction as DIR
+    p_be = DIR.break_even()
+    gain, loss = DIR.WIN - DIR.FEE, DIR.WIN + DIR.FEE
+    check("break-even is loss/(loss+gain)",
+          abs(p_be - loss / (loss + gain)) < 1e-12, p_be)
+    check("it is above a coin flip -- the fee has to be paid",
+          p_be > 0.5, p_be)
+    ev = p_be * gain - (1 - p_be) * loss
+    check("at exactly break-even the expected value is zero",
+          abs(ev) < 1e-12, ev)
+    check("one point above break-even is profitable",
+          (p_be + 0.01) * gain - (1 - p_be - 0.01) * loss > 0)
+    check("a zero-fee world would need only 50%",
+          abs(DIR.break_even(fee=0.0) - 0.5) < 1e-12)
+
+
+def test_leverage_rides_the_same_potential_as_the_stake():
+    """The operator's rule: capital and leverage are one decision, not
+    two. Both run from their floor to their ceiling on the same score."""
+    print("\ndirection: leverage scales with potential, floor to ceiling")
+    from fp import direction as DIR
+    import numpy as _np
+    lo, hi = DIR.LEV_MIN, DIR.LEV_MAX
+    check("potential 0 takes the floor",
+          abs(DIR.leverage_for(0) - lo) < 1e-12, DIR.leverage_for(0))
+    check("potential 100 takes the ceiling",
+          abs(DIR.leverage_for(100) - hi) < 1e-12, DIR.leverage_for(100))
+    check("halfway is halfway",
+          abs(DIR.leverage_for(50) - (lo + hi) / 2) < 1e-12)
+    v = DIR.leverage_for([0, 25, 50, 75, 100])
+    check("it is monotone", bool((_np.diff(v) > 0).all()), v)
+    check("it never exceeds the ceiling, whatever is passed in",
+          DIR.leverage_for(1e6) <= hi + 1e-12 and DIR.leverage_for(-50) >= lo)
+
+    # And the score itself: 0 at break-even, 100 at certainty.
+    p_be = DIR.break_even()
+    check("potential is 0 at break-even",
+          DIR.potential(_np.array([p_be]), p_be)[0] == 0.0)
+    check("potential is 100 at certainty",
+          abs(DIR.potential(_np.array([1.0]), p_be)[0] - 100.0) < 1e-9)
+    check("below break-even scores 0, never negative",
+          DIR.potential(_np.array([p_be - 0.1]), p_be)[0] == 0.0)
+
+
+
 def main() -> int:
     print("=" * 70)
     print("fp.engine tests")
@@ -715,6 +799,9 @@ def main() -> int:
                test_a_losing_shape_stops_trading,
                test_one_coin_carries_one_position_per_shape,
                test_a_coin_takes_a_second_position_only_when_it_is_free,
+               test_the_direction_label_is_a_race_not_a_guess,
+               test_break_even_accuracy_is_the_bar_the_model_must_clear,
+               test_leverage_rides_the_same_potential_as_the_stake,
                test_a_state_exit_cannot_peek_at_the_flip,
                test_the_persistence_filter_cannot_select_on_the_outcome,
                test_methods_are_states_not_fixed_trades,

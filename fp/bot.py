@@ -239,7 +239,8 @@ class Broker:
                  fee_override: float | None = None,
                  mtf_gate: str = "band", probe_pct: float = 2.0,
                  probe_n: int = 30, probe_budget: float = 0.05,
-                 min_stake: float = 0.05):
+                 min_stake: float = 0.05,
+                 lev_min: float = 1.0, lev_max: float = 10.0):
         self.client = client
         self.symbols = symbols
         self.equity = equity
@@ -327,6 +328,10 @@ class Broker:
         # book_margin_fraction: it is a floor on a stake already judged
         # worth taking, never a reason to take one.
         self.min_stake = min_stake
+        # Leverage floor and ceiling. Every trade lands somewhere between
+        # them according to its own potential -- see _evaluate_book.
+        self.lev_min = lev_min
+        self.lev_max = lev_max
         self.probe_trades = 0
         # What probing has actually cost, as a fraction of STARTING equity.
         # The banner promises the experiment is bounded; this is what makes
@@ -1022,19 +1027,32 @@ class Broker:
             sigma = self._sigma_for(symbol)
             if sigma is None:
                 continue
-            # No target and no stop of our own -- but leverage still has
-            # to be solvable, and a position with none is not openable.
-            lev = min(self.max_leverage or 3.0, 3.0)
+            # LEVERAGE RIDES THE POTENTIAL, exactly as the stake does.
+            # It is not a constant and it is not a separate decision: a
+            # setup the logic is barely sure of takes the minimum of both,
+            # one it is certain of takes the maximum of both. The score is
+            # the single number behind each.
+            score = 100.0 * min(stake / max(self.max_margin_pct, 1e-9), 1.0)
+            lev = float(self.lev_min + (self.lev_max - self.lev_min)
+                        * min(max(score, 0.0), 100.0) / 100.0)
+            if self.max_leverage:
+                lev = min(lev, self.max_leverage)
+            # And the stop must still fire before liquidation. Without a
+            # stop of our own the exposure is bounded by the leverage
+            # itself, so the cap is what keeps a bad hold survivable.
+            lev = max(1.0, min(lev, L.LIQ_MARGIN_FRACTION
+                               / max(2.0 * sigma * L.SOLVENCY_BUFFER, 1e-9)))
             sig = Signal(
                 bar_ts=bar_ts, direction=int(state), atr_pct=100.0 * sigma,
                 votes=1, vote_margin=1,
                 methods=(f"{strat} state {state:+d} | measured "
-                         f"{100*edge:+.4f}%/trade | stake {100*stake:.0f}%"),
+                         f"{100*edge:+.4f}%/trade | potential {score:.0f}/100"
+                         f" | stake {100*stake:.0f}% | lev {lev:.1f}x"),
                 confidence=None, slow_leverage=lev,
                 tp_dist=None, sl_dist=None, max_hold_min=None,
                 rule=rule, rule_mean=edge, symbol=symbol,
                 margin_frac=stake, kelly_full=stake, edge_used=edge,
-                score=100.0 * min(stake / max(self.max_margin_pct, 1e-9), 1.0))
+                score=score)
             self.signals[slot] = sig
             keep.add(slot)
             out.append(sig)
@@ -2138,7 +2156,8 @@ def run(client, symbols: list[str], equity: float, max_positions: int,
         earn_stake: bool = False, stake_curve: str = "linear",
         share_stakes: bool = False, mtf_gate: str = "band",
         probe_pct: float = 2.0, probe_n: int = 30,
-        probe_budget: float = 0.05, min_stake: float = 0.05) -> None:
+        probe_budget: float = 0.05, min_stake: float = 0.05,
+        lev_min: float = 1.0, lev_max: float = 10.0) -> None:
     broker = Broker(client, symbols, equity, max_positions, exit_name,
                     min_votes, fee, max_leverage, margin_pct, max_notional_x,
                     conviction_floor, expectancy_gate, assumed_win_rate,
@@ -2146,7 +2165,7 @@ def run(client, symbols: list[str], equity: float, max_positions: int,
                     earn_stake, stake_curve, share_stakes,
                     potential_sizing, sizing, max_margin_pct, limit_entry,
                     slippage, fee_override, mtf_gate, probe_pct, probe_n,
-                    probe_budget, min_stake)
+                    probe_budget, min_stake, lev_min, lev_max)
     stop_event = threading.Event()
 
     def stop(signum, frame):

@@ -131,9 +131,14 @@ def main() -> int:
                    help="ceiling on total position value as a multiple of "
                         "equity. 0 = none: how much to hold is decided by "
                         "each trade's potential")
+    p.add_argument("--lev-min", type=float, default=1.0,
+                   help="leverage floor (default 1). Leverage rides the "
+                        "potential score, exactly as the stake does")
+    p.add_argument("--lev-max", type=float, default=10.0,
+                   help="leverage ceiling (default 10). A setup at "
+                        "potential 100 takes this; one at 0 takes --lev-min")
     p.add_argument("--max-leverage", type=float, default=None,
-                   help="cap leverage (default: solved per trade from the "
-                        "stop distance and the hold)")
+                   help="hard cap on top of --lev-max, if you want one")
     p.add_argument("--poll-seconds", type=int, default=20)
     p.add_argument("--trades-csv", default=None,
                    help="append every closed trade to this file")
@@ -223,6 +228,14 @@ def main() -> int:
               f"and anything two")
         print(f"                     standard errors below zero on its own "
               f"trades is RETIRED.")
+        print(f"  Stake            : {args.min_stake:.0f}%.."
+              f"{args.max_margin_pct:.0f}% of equity, scaled by potential")
+        print(f"  Leverage         : {args.lev_min:.0f}x..{args.lev_max:.0f}x, "
+              f"scaled by the SAME potential --")
+        print(f"                     capital and leverage move together, "
+              f"never separately.")
+        print(f"                     Capped so a move against cannot reach "
+              f"the liquidation price.")
         print(f"  Cost per round trip: {100*fee:.3f}% taker both sides, plus "
               f"live funding")
         print(f"  Price source     : Bybit "
@@ -313,7 +326,8 @@ def main() -> int:
               True, "kelly", args.max_margin_pct / 100.0, False, 0.0,
               None, "book.json", False, False, args.earn_stake,
               args.stake_curve, args.share_stakes,
-              "band", 2.0, 30, 0.05, args.min_stake / 100.0)
+              "band", 2.0, 30, 0.05, args.min_stake / 100.0,
+              args.lev_min, args.lev_max)
     except KeyboardInterrupt:
         pass
     except Exception as exc:

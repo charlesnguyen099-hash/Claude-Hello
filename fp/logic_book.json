@@ -1,196 +1,44 @@
 {
- "mode": "one_per_coin",
+ "mode": "hold_until_win",
  "win_threshold": 0.01,
  "min_stake": 0.05,
- "max_stake": 1.0,
  "top_n": 40,
- "per_coin": {
-  "BLESSUSDT": [
-   {
-    "strategy": "xs:boll_fade+rel_weak",
-    "expect": 0.0005058264301196749,
-    "stake": 0.05
-   },
-   {
-    "strategy": "solo:obv|busy",
-    "expect": 0.0005003779948250439,
-    "stake": 0.05
-   },
-   {
-    "strategy": "solo:boll_fade|busy",
-    "expect": 0.0004975279987615695,
-    "stake": 0.05
-   },
-   {
-    "strategy": "xs:boll_fade+mkt_fade",
-    "expect": 0.0004946559604854915,
-    "stake": 0.05
-   },
-   {
-    "strategy": "solo:boll_fade",
-    "expect": 0.0003057923599971578,
-    "stake": 0.05
-   },
-   {
-    "strategy": "and:boll_fade+mfi",
-    "expect": 0.00024218888504502238,
-    "stake": 0.05
-   },
-   {
-    "strategy": "solo:boll_fade|quiet",
-    "expect": 0.00012246136489784795,
-    "stake": 0.05
-   },
-   {
-    "strategy": "and:donch_slow+open_range",
-    "expect": 7.255014562542752e-05,
-    "stake": 0.05
-   },
-   {
-    "strategy": "and:ema_slow+open_range",
-    "expect": 1.5950742947610505e-05,
-    "stake": 0.05
-   }
-  ],
-  "HYPEUSDT": [
-   {
-    "strategy": "xs:hurst+rel_weak",
-    "expect": 3.3581670895136716e-05,
-    "stake": 0.05
-   }
-  ],
-  "SKHYNIXUSDT": [
-   {
-    "strategy": "solo:open_range|quiet",
-    "expect": 0.00010392362975052546,
-    "stake": 0.05
-   }
-  ],
-  "SOXLUSDT": [
-   {
-    "strategy": "solo:open_range",
-    "expect": 0.0020057175674311058,
-    "stake": 0.05
-   },
-   {
-    "strategy": "solo:donch_slow",
-    "expect": 0.0010465533435679774,
-    "stake": 0.05
-   },
-   {
-    "strategy": "and:ema_fast+boll_break|busy",
-    "expect": 0.0009855565893473837,
-    "stake": 0.05
-   },
-   {
-    "strategy": "and:ema_slow+open_range",
-    "expect": 0.0009425560692516641,
-    "stake": 0.05
-   },
-   {
-    "strategy": "and:donch_slow+open_range",
-    "expect": 0.0008687652621166195,
-    "stake": 0.05
-   },
-   {
-    "strategy": "solo:boll_break|busy",
-    "expect": 0.0008446785705858992,
-    "stake": 0.05
-   },
-   {
-    "strategy": "and:ema_fast+atr_con|busy",
-    "expect": 0.0006231958254782204,
-    "stake": 0.05
-   },
-   {
-    "strategy": "solo:open_range|quiet",
-    "expect": 0.00029625278841588455,
-    "stake": 0.05
-   },
-   {
-    "strategy": "solo:macd_zero|busy",
-    "expect": 0.00019711202981551415,
-    "stake": 0.05
-   },
-   {
-    "strategy": "and:linreg+open_range",
-    "expect": 0.0001698281824600074,
-    "stake": 0.05
-   },
-   {
-    "strategy": "and:macd_zero+open_range",
-    "expect": 0.00013301007684961248,
-    "stake": 0.05
-   },
-   {
-    "strategy": "and:donch_slow+mom240",
-    "expect": 0.00012012885129896491,
-    "stake": 0.05
-   },
-   {
-    "strategy": "and:ema_fast+mom240|busy",
-    "expect": 9.291720228984672e-05,
-    "stake": 0.05
-   },
-   {
-    "strategy": "and:ema_mid+open_range",
-    "expect": 5.611813737050909e-05,
-    "stake": 0.05
-   },
-   {
-    "strategy": "xs:cci+breadth",
-    "expect": 5.274640194068122e-05,
-    "stake": 0.05
-   },
-   {
-    "strategy": "xs:williams+breadth",
-    "expect": 2.7718796915838747e-05,
-    "stake": 0.05
-   },
-   {
-    "strategy": "and:macd_zero+mom240",
-    "expect": 1.345245277935288e-05,
-    "stake": 0.05
-   }
-  ]
- },
+ "per_coin": {},
  "walk_forward": {
   "BLESSUSDT": {
    "folds": [
-    -1.1592344648919188,
-    -2.093488925857066
+    0.3322923220782783,
+    -0.32338976059982194
    ],
-   "verdict": "LOSES forward",
+   "verdict": "MIXED",
    "strategies": 9
   },
   "HYPEUSDT": {
    "folds": [
-    -0.058957570053822815,
+    0.05709436927101381,
     0.0
    ],
-   "verdict": "LOSES forward",
+   "verdict": "MIXED",
    "strategies": 1
   },
   "SKHYNIXUSDT": {
    "folds": [
-    -0.06595005536997842,
-    0.02412487858039674
+    0.13768136382284057,
+    -0.13605667714854613
    ],
-   "verdict": "MIXED across folds",
+   "verdict": "MIXED",
    "strategies": 1
   },
   "SOXLUSDT": {
    "folds": [
-    -0.11859821191945599,
-    0.1392073577235161
+    -0.24787195808353324,
+    -0.07832444730306107
    ],
-   "verdict": "MIXED across folds",
+   "verdict": "LOSES forward",
    "strategies": 17
   }
  },
- "ceiling_trades": 3280,
- "ceiling_total": 68.48764285853018,
- "bot_trades": 3744,
- "bot_hits": 238,
- "bot_total": -3.332896991788329
+ "realized": 0.8394492196251324,
+ "unrealized": -1.0980240075879621,
+ "closed": 66
 }

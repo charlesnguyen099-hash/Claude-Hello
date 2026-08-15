@@ -967,10 +967,20 @@ class Broker:
             self._book_states = {bar_ts: cur}
         want = cur.get(symbol) or {}
 
+        # ONE POSITION PER COIN, CHECKED HERE AND ONLY HERE. The logic
+        # library is not narrowed at build time -- fp/coverage.py measures
+        # it reaching 100% of the market's >1% chances -- so every signal
+        # is still computed. What is refused is a SECOND position on a
+        # coin that already holds one.
+        open_here = [k for k in self.open if k.startswith(f"{symbol}|")]
         out, keep = [], set()
         for strat, state in want.items():
             rule = f"book:{strat}"
             slot = f"{symbol}|{rule}"
+            if open_here and slot not in open_here:
+                # Already trading this coin. Skip -- and keep the signal
+                # standing so it can be taken the moment the coin frees.
+                continue
             pos = self.open.get(slot)
             # THE EXIT. State off, or flipped: close what is open.
             if pos is not None and (state == 0 or state != pos.direction):

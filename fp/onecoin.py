@@ -66,7 +66,7 @@ def ceiling(entries, exits, nets, threshold: float = WIN):
 
 def simulate(close, states: dict, expect: dict, threshold: float = WIN,
              min_hold: int = 0, take_profit: bool = False,
-             giveback: float = 0.0):
+             giveback: float = 0.0, only_win_exit: bool = False):
     """Trade one coin under the operator's rules.
 
     states  {name: signed int8 array}   what each strategy says, per bar
@@ -135,6 +135,15 @@ def simulate(close, states: dict, expect: dict, threshold: float = WIN,
             if giveback > 0 and peak > 0 and live <= peak * (1.0 - giveback):
                 out.append((entry_i, i, side, live, names[held]))
                 held = -1
+                continue
+            if only_win_exit:
+                # THE OPERATOR'S RULE, taken literally: never close at a
+                # loss. A position is released only once it is worth more
+                # than +1% net, so by construction EVERY CLOSED TRADE IS A
+                # WINNER. What that cannot do is make the money appear --
+                # it moves the loss from the realized column to the open
+                # one, and the open one still spends the account. See
+                # run_hold.py, which reports both.
                 continue
             still = col[held] == side
             if still and live > 0:

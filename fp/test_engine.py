@@ -642,6 +642,56 @@ def test_the_persistence_filter_cannot_select_on_the_outcome():
 
 
 
+def test_a_coin_takes_a_second_position_only_when_it_is_free():
+    """One position per coin, enforced at TRADE time and nowhere else.
+
+    The logic library is deliberately not narrowed when it is built --
+    fp/coverage.py measures it reaching 100% of the market's >1% chances,
+    and filtering at build time would throw that away. The constraint
+    belongs at the moment of entry: if the coin already holds something,
+    a second signal on it waits.
+    """
+    print("\nexecution: a coin holds one position, checked at entry")
+    from fp import bot as B
+    b, _ = _broker(("S0USDT", "S1USDT"), max_margin_pct=1.0)
+    b.refresh_prices()
+    bar = B.closed_bar_ts(bar_minutes=b.bar_minutes)
+
+    def sig(sym, rule, direction=1):
+        s = B.Signal(bar_ts=bar, direction=direction, atr_pct=0.2, votes=1,
+                     vote_margin=1, methods="test", slow_leverage=2.0,
+                     tp_dist=0.02, sl_dist=0.015, max_hold_min=240.0,
+                     rule=rule, symbol=sym, margin_frac=0.10, score=50.0)
+        b.signals[s.slot] = s
+        return s
+
+    a1 = sig("S0USDT", "book:one")
+    a2 = sig("S0USDT", "book:two")
+    c1 = sig("S1USDT", "book:one")
+    check("the first position on a coin opens", b.try_open(a1.slot) is True)
+    held = [k for k in b.open if k.startswith("S0USDT|")]
+    check("the coin now holds exactly one", len(held) == 1, held)
+
+    # A different coin is unaffected -- the rule is per coin, not global.
+    check("another coin can still open", b.try_open(c1.slot) is True)
+
+    # And the second signal on the busy coin must not become a position.
+    opened = [k for k in b.open if k.startswith("S0USDT|")]
+    check("a second signal did not open on the busy coin",
+          a2.slot not in opened, opened)
+    check("but its signal is still standing, ready for when the coin frees",
+          a2.slot in b.signals, sorted(b.signals))
+
+    # Free the coin and the waiting signal becomes tradeable.
+    px = b.last_price("S0USDT")
+    b._close(a1.slot, px, "take_profit")
+    b.traded_bar.pop(a2.slot, None)
+    check("once the coin is free the waiting signal can open",
+          b.try_open(a2.slot) is True,
+          [k for k in b.open if k.startswith("S0USDT|")])
+
+
+
 def main() -> int:
     print("=" * 70)
     print("fp.engine tests")
@@ -664,6 +714,7 @@ def main() -> int:
                test_an_impossible_claim_scores_zero_rather_than_maximum,
                test_a_losing_shape_stops_trading,
                test_one_coin_carries_one_position_per_shape,
+               test_a_coin_takes_a_second_position_only_when_it_is_free,
                test_a_state_exit_cannot_peek_at_the_flip,
                test_the_persistence_filter_cannot_select_on_the_outcome,
                test_methods_are_states_not_fixed_trades,

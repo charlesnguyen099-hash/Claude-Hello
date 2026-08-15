@@ -1,0 +1,14 @@
+{
+ "BLESSUSDT": {
+  "bars": 102656,
+  "equity": 3.0707169360039015e+99,
+  "max_profit": 1.658063267337224,
+  "min_profit": 0.010000487696312926,
+  "opportunities": 102479,
+  "reachable": 99425,
+  "recovered": 99425,
+  "trades": 5376,
+  "win_rate": 1.0,
+  "worst_trade": 4.578683956476223e-06
+ }
+}

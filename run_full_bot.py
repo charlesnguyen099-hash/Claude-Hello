@@ -57,7 +57,7 @@ import numpy as np
 import pandas as pd
 
 from fp import costs as C
-from fp.data import SYMBOLS
+from fp import full as FU
 from fp.live_full import Decision, FullLogic
 
 BARS = 1000          # Bybit's cap for one kline call
@@ -104,6 +104,61 @@ def fetch_tickers(client, symbols):
     except Exception:
         pass
     return out
+
+
+class LiveFeed:
+    """Closed 1-minute bars from Bybit's public endpoint."""
+
+    def __init__(self, client):
+        self.client = client
+        self.live = True
+
+    def bars(self, symbol: str):
+        return fetch_klines(self.client, symbol)
+
+    def advance(self) -> bool:
+        return True
+
+
+class ReplayFeed:
+    """The same bars, from the cache, one minute at a time.
+
+    Bybit is not reachable from every environment -- this sandbox's
+    proxy denies api.bybit.com outright -- and "it imported cleanly" is
+    not evidence that a bot trades. Replay walks cached history through
+    the SAME scan, exits and accounting the live path uses, so the whole
+    route is exercised without a network.
+
+    The cursor is a TIMESTAMP, not a row number. Slicing by row number
+    lines up BTCUSDT's 1,500th bar (January 2025) with BLESSUSDT's
+    (June 2026) and hands the cross-section features -- a third of the
+    200 columns -- readings from coins eighteen months apart. Live, all
+    ten coins are always at the same minute; replay has to be too.
+    """
+
+    def __init__(self, panel: dict, start: int, steps: int):
+        self.full = panel
+        lo = max(d.index[0] for d in panel.values())
+        hi = min(d.index[-1] for d in panel.values())
+        axis = pd.date_range(lo, hi, freq="min")
+        first = min(max(start, 300), max(len(axis) - 2, 0))
+        self.axis = axis[first:first + max(steps, 1)]
+        self.i = 0
+        self.live = False
+
+    @property
+    def now(self):
+        return self.axis[min(self.i, len(self.axis) - 1)]
+
+    def bars(self, symbol: str):
+        d = self.full.get(symbol)
+        if d is None:
+            return None
+        return d.loc[:self.now].tail(BARS)
+
+    def advance(self) -> bool:
+        self.i += 1
+        return self.i < len(self.axis)
 
 
 # ------------------------------------------------------------------ account
@@ -188,13 +243,13 @@ class Account:
 
 
 # --------------------------------------------------------------------- loop
-def scan(client, logic: FullLogic, acct: Account, symbols, panel):
+def scan(feed, logic: FullLogic, acct: Account, symbols, panel):
     """Refresh bars, close what is due, open what is offered."""
     for s in symbols:
-        df = fetch_klines(client, s)
+        df = feed.bars(s)
         if df is not None and len(df) > 60:
             panel[s] = df
-    if len(panel) < 2:
+    if not panel:
         return 0, 0
 
     # --- exits first, so capital frees up before entries are considered
@@ -307,13 +362,29 @@ def summary(acct: Account, panel):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--symbols", default=",".join(SYMBOLS))
+    ap.add_argument("--symbols", default=None,
+                    help="default: every coin fp/full.py has fitted")
     ap.add_argument("--equity", type=float, default=10.0)
     ap.add_argument("--once", action="store_true")
     ap.add_argument("--interval", type=int, default=SCAN_SECONDS)
+    ap.add_argument("--replay", action="store_true",
+                    help="walk cached history instead of live Bybit")
+    ap.add_argument("--replay-start", type=int, default=1500)
+    ap.add_argument("--replay-steps", type=int, default=4000)
     a = ap.parse_args()
 
-    symbols = [s.strip().upper() for s in a.symbols.split(",") if s.strip()]
+    # The default coin list IS the set of fitted models. Anything else
+    # would let the bot be pointed at a coin whose logic was never built
+    # and then report "no model" as if that were a configuration
+    # mistake rather than a missing build step.
+    if a.symbols:
+        symbols = [s.strip().upper() for s in a.symbols.split(",") if s.strip()]
+    else:
+        symbols = sorted(f.stem for f in FU.MODELS.glob("*.pkl"))
+        if not symbols:
+            print("No fitted logic in fp/models/. Build it first:\n\n"
+                  "    python -m fp.full\n", file=sys.stderr)
+            return 2
     logic = FullLogic(symbols)
     if not logic.ready:
         print("No fitted logic found. Build it first:\n\n"
@@ -336,7 +407,21 @@ def main():
               f"on {m.get('trades', 0):,} past trades")
     print("=" * 78, flush=True)
 
-    client = make_client()
+    if a.replay:
+        from fp import data as D
+        cached = D.load()
+        miss = [s for s in symbols if s not in cached]
+        if miss:
+            print(f"  no cached bars for {', '.join(miss)}", file=sys.stderr)
+        symbols = [s for s in symbols if s in cached]
+        if not symbols:
+            return 2
+        feed = ReplayFeed({s: cached[s] for s in symbols},
+                          a.replay_start, a.replay_steps)
+        print(f"  REPLAY: {len(symbols)} coin(s), "
+              f"{feed.axis[0]} .. {feed.axis[-1]} from cache, no network")
+    else:
+        feed = LiveFeed(make_client())
     acct = Account(equity=a.equity, start=a.equity)
     panel: dict = {}
     started = time.time()
@@ -350,14 +435,20 @@ def main():
         while not stop["flag"]:
             t0 = time.time()
             try:
-                scan(client, logic, acct, symbols, panel)
+                scan(feed, logic, acct, symbols, panel)
             except Exception as exc:                      # keep trading
                 print(f"  scan error: {exc}", flush=True)
-            dashboard(acct, panel, started)
             if a.once:
+                dashboard(acct, panel, started)
                 break
-            while time.time() - t0 < a.interval and not stop["flag"]:
-                time.sleep(0.25)
+            if not feed.advance():
+                break
+            if feed.live:
+                dashboard(acct, panel, started)
+                while time.time() - t0 < a.interval and not stop["flag"]:
+                    time.sleep(0.25)
+            elif len(acct.closed) and len(acct.closed) % 25 == 0:
+                dashboard(acct, panel, started)
     finally:
         summary(acct, panel)
     return 0

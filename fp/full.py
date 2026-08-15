@@ -274,16 +274,28 @@ def learn(X, side, profit, mae, seed: int = 0, log=print):
 
     clf, rec = None, 0.0
     for rung, extra in enumerate(LADDER, 1):
-        m = HistGradientBoostingClassifier(random_state=seed,
-                                           **BASE, **extra)
-        m.fit(X, side)
-        got = m.predict(X)
+        # Drop the previous rung BEFORE building the next: holding two
+        # fitted boosters plus their working set is what killed the run
+        # on BTC. A rung that is being replaced is worth nothing.
+        clf = None
+        gc.collect()
+        try:
+            m = HistGradientBoostingClassifier(random_state=seed,
+                                               **BASE, **extra)
+            m.fit(X, side)
+            got = m.predict(X)
+        except MemoryError:
+            log(f"      rung {rung}: out of memory, keeping rung {rung-1}")
+            break
         rec = float((got[live] == side[live]).mean())
+        del got
         log(f"      rung {rung} ({extra['max_leaf_nodes']} leaves x "
             f"{extra['max_iter']}): recovery {100*rec:.2f}%")
         clf = m
         if rec >= RECOVERY_TARGET:
             break
+    if clf is None:
+        return None
 
     fine = dict(BASE, **LADDER[min(1, len(LADDER) - 1)])
     rp = HistGradientBoostingRegressor(random_state=seed, **fine)
@@ -484,10 +496,21 @@ def main():
         print(f"    hold    median {int(np.median(bars[live]))}m   "
               f"MAE median {100*np.median(mae[live]):.2f}%", flush=True)
 
+        # BTC is 848,640 x 200 float32 = 680 MB per copy, and the naive
+        # sequence held three of them at once -- the memmap materialised,
+        # the masked copy, and sklearn's internal one. That is what the
+        # reaper took mid-fit. Keep exactly one: skip the mask entirely
+        # when nothing is masked out, and release the original the
+        # moment the copy exists.
         X = features_for(d, P, sym)
         ok = np.isfinite(X).all(axis=1)
-        Xg = np.ascontiguousarray(X[ok])
-        print("    fitting", flush=True)
+        if ok.all():
+            Xg = np.ascontiguousarray(X)
+        else:
+            Xg = np.ascontiguousarray(X[ok])
+        del X
+        gc.collect()
+        print(f"    fitting on {Xg.nbytes/2**20:,.0f} MB", flush=True)
         models = learn(Xg, side[ok], profit[ok], mae[ok],
                        log=lambda s: print(s, flush=True))
         if models is None:

@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import gc
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -73,14 +74,42 @@ FLOOR = DIR.WIN                 # +1% net is the minimum, never the target
 # Each rung is tried, recovery is measured on the rows themselves, and
 # the first rung that reproduces them wins. Easy coins stop at the first
 # and stay cheap; hard coins pay for what they need.
+# The rungs climb ROUNDS before they climb LEAVES, because those two
+# cost very different things. Leaves drive the grower's per-tree
+# histogram cache -- 96 leaves holds ~0.09 GB, 512 holds ~0.49 GB, on
+# top of the 1.26 GB sklearn spends upcasting BTC's float32 matrix to
+# its internal float64. Rounds cost almost nothing: the same working set,
+# more passes. BTCUSDT died three times climbing straight to 512 leaves
+# on 848,640 rows, so it now gets four times the rounds at the cheap
+# width first, and only widens if that still cannot reproduce the coin.
 LADDER = (dict(max_leaf_nodes=96, min_samples_leaf=2, max_iter=200,
                learning_rate=0.3),
-          dict(max_leaf_nodes=512, min_samples_leaf=1, max_iter=300,
+          dict(max_leaf_nodes=96, min_samples_leaf=1, max_iter=800,
                learning_rate=0.3),
-          dict(max_leaf_nodes=2048, min_samples_leaf=1, max_iter=500,
+          dict(max_leaf_nodes=256, min_samples_leaf=1, max_iter=600,
+               learning_rate=0.3),
+          dict(max_leaf_nodes=512, min_samples_leaf=1, max_iter=400,
                learning_rate=0.25))
 BASE = dict(max_depth=None, l2_regularization=0.0, early_stopping=False)
 RECOVERY_TARGET = 1.0
+
+# Turn "the kernel killed us" into a Python exception we can act on.
+# Three runs ended with a truncated log and no traceback, which says
+# nothing about which allocation was too big; a MemoryError names the
+# line and lets the ladder fall back to the rung that did fit.
+MEM_LIMIT_GB = float(os.environ.get("FP_MEM_LIMIT_GB", "11"))
+
+
+def cap_memory(gb: float = MEM_LIMIT_GB) -> None:
+    try:
+        import resource
+        n = int(gb * 2 ** 30)
+        soft, hard = resource.getrlimit(resource.RLIMIT_AS)
+        if hard != resource.RLIM_INFINITY:
+            n = min(n, hard)
+        resource.setrlimit(resource.RLIMIT_AS, (n, hard))
+    except (ImportError, ValueError, OSError):
+        pass
 
 MIN_STAKE, MAX_STAKE = 0.05, 1.00   # 5% floor, all-in ceiling
 LEV_FLOOR = 1.0
@@ -315,12 +344,8 @@ def learn(X, side, profit, mae, seed: int = 0, log=print):
     if live.sum() < 200:
         return None
 
-    clf, rec = None, 0.0
+    best, best_rec = None, -1.0
     for rung, extra in enumerate(LADDER, 1):
-        # Drop the previous rung BEFORE building the next: holding two
-        # fitted boosters plus their working set is what killed the run
-        # on BTC. A rung that is being replaced is worth nothing.
-        clf = None
         gc.collect()
         try:
             m = HistGradientBoostingClassifier(random_state=seed,
@@ -328,19 +353,34 @@ def learn(X, side, profit, mae, seed: int = 0, log=print):
             m.fit(X, side)
             got = m.predict(X)
         except MemoryError:
-            log(f"      rung {rung}: out of memory, keeping rung {rung-1}")
+            # Keep the best rung that DID fit. An earlier version set
+            # clf=None before each attempt and returned None on failure,
+            # throwing away a working model to report a failure.
+            log(f"      rung {rung} ({extra['max_leaf_nodes']} leaves x "
+                f"{extra['max_iter']}): out of memory, keeping "
+                f"{100*best_rec:.2f}%")
+            gc.collect()
             break
         rec = float((got[live] == side[live]).mean())
         del got
         log(f"      rung {rung} ({extra['max_leaf_nodes']} leaves x "
             f"{extra['max_iter']}): recovery {100*rec:.2f}%")
-        clf = m
+        if rec > best_rec:
+            best, best_rec = m, rec
+        else:
+            del m
+        gc.collect()
         if rec >= RECOVERY_TARGET:
             break
+    clf = best
     if clf is None:
         return None
 
-    fine = dict(BASE, **LADDER[min(1, len(LADDER) - 1)])
+    # Regressors ride the cheap-width rung on purpose: they predict
+    # magnitudes, not a class boundary, and widening them buys
+    # accuracy nobody reads while costing the memory that killed
+    # the classifier three times.
+    fine = dict(BASE, **LADDER[1])
     rp = HistGradientBoostingRegressor(random_state=seed, **fine)
     rp.fit(X[live], profit[live])
     rm = HistGradientBoostingRegressor(random_state=seed, **fine)
@@ -505,6 +545,7 @@ def replay(d, X, models, cost_v, lev_cap, equity=1.0, floor=FLOOR,
 
 # ------------------------------------------------------------------- main
 def main():
+    cap_memory()
     args = sys.argv[1:]
     fresh = "--fresh" in args
     syms = [a for a in args if not a.startswith("-")]

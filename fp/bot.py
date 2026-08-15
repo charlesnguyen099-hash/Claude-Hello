@@ -51,6 +51,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from fp import costs as C
 from fp import logic as L
 
 
@@ -1037,6 +1038,12 @@ class Broker:
                         * min(max(score, 0.0), 100.0) / 100.0)
             if self.max_leverage:
                 lev = min(lev, self.max_leverage)
+            # PER COIN. Bybit does not offer the same maximum on every
+            # symbol -- majors go far higher than thin alts, and the cap
+            # moves with the risk tier. Asking for more than the venue
+            # allows is an order that gets rejected, so the symbol's own
+            # ceiling binds here.
+            lev = min(lev, C.max_leverage(symbol))
             # And the stop must still fire before liquidation. Without a
             # stop of our own the exposure is bounded by the leverage
             # itself, so the cap is what keeps a bad hold survivable.

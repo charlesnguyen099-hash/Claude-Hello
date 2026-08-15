@@ -776,6 +776,64 @@ def test_leverage_rides_the_same_potential_as_the_stake():
 
 
 
+def test_the_cost_model_is_per_coin_and_leverage_scales_it():
+    """A flat 0.110% was wrong twice: it ignored the spread, and it
+    ignored what leverage does to the same cost."""
+    print("\ncosts: per coin, spread included, scaled by leverage")
+    from fp import costs as C
+    import numpy as _np
+
+    # A synthetic book with a WIDE spread must be measured as expensive.
+    n = 3000
+    rng = _np.random.default_rng(2)
+    mid = 100.0 * _np.exp(_np.cumsum(rng.normal(0, 0.0005, n)))
+    for spread in (0.0, 0.004):
+        h = mid * (1 + spread / 2 + _np.abs(rng.normal(0, 1e-4, n)))
+        l = mid * (1 - spread / 2 - _np.abs(rng.normal(0, 1e-4, n)))
+        d = pd.DataFrame({"open": mid, "high": h, "low": l, "close": mid,
+                          "volume": _np.ones(n)})
+        rt = float(_np.nanmedian(C.round_trip(d)))
+        if spread == 0.0:
+            tight = rt
+        else:
+            wide = rt
+    check("a tight book costs about two taker fees",
+          abs(tight - 2 * C.TAKER_PER_SIDE) < 6e-4,
+          f"{100*tight:.4f}% vs {100*2*C.TAKER_PER_SIDE:.4f}%")
+    check("a wide book costs materially more", wide > tight * 1.5,
+          f"{100*wide:.4f}% vs {100*tight:.4f}%")
+
+    # LEVERAGE. The cost per unit of MARGIN scales exactly with it.
+    check("10x makes the same round trip ten times the margin cost",
+          abs(C.margin_cost(0.0011, 10) - 0.011) < 1e-12,
+          C.margin_cost(0.0011, 10))
+    # And the thing that matters: it does NOT move break-even accuracy,
+    # because the winnings scale by the same factor.
+    b1 = float(C.break_even(0.01, 0.0011))
+    b10 = float(C.break_even(0.01 * 10, 0.0011 * 10))
+    check("leverage cannot turn a losing edge into a winning one",
+          abs(b1 - b10) < 1e-12, (b1, b10))
+
+    # A wider cost raises the bar the model has to clear.
+    check("a costlier coin needs a higher win rate",
+          C.break_even(0.01, 0.0024) > C.break_even(0.01, 0.0011),
+          (float(C.break_even(0.01, 0.0024)),
+           float(C.break_even(0.01, 0.0011))))
+    check("a target the cost eats needs certainty",
+          float(C.break_even(0.001, 0.0011)) >= 1.0)
+
+
+def test_leverage_never_exceeds_what_the_venue_allows():
+    print("\ncosts: the per-coin ceiling is read, not assumed")
+    from fp import costs as C
+    lev = C.max_leverage("DEFINITELY_NOT_A_SYMBOL")
+    check("an unknown symbol falls back LOW, not high",
+          lev <= C.DEFAULT_MAX_LEVERAGE, lev)
+    check("the fallback is conservative", C.DEFAULT_MAX_LEVERAGE <= 25,
+          C.DEFAULT_MAX_LEVERAGE)
+
+
+
 def main() -> int:
     print("=" * 70)
     print("fp.engine tests")
@@ -802,6 +860,8 @@ def main() -> int:
                test_the_direction_label_is_a_race_not_a_guess,
                test_break_even_accuracy_is_the_bar_the_model_must_clear,
                test_leverage_rides_the_same_potential_as_the_stake,
+               test_the_cost_model_is_per_coin_and_leverage_scales_it,
+               test_leverage_never_exceeds_what_the_venue_allows,
                test_a_state_exit_cannot_peek_at_the_flip,
                test_the_persistence_filter_cannot_select_on_the_outcome,
                test_methods_are_states_not_fixed_trades,

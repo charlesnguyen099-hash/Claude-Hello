@@ -23,6 +23,7 @@ from pathlib import Path
 import numpy as np
 
 from fp import data as D
+from fp import costs as C
 from fp import direction as DIR
 
 HERE = Path(__file__).resolve().parent
@@ -78,6 +79,17 @@ def main():
         if not fl:
             continue
         print(f"\n--- {sym}   {len(d):,} bars   {len(fl)} folds", flush=True)
+        # PER-COIN COST, not a flat 0.110%. The spread is estimated from
+        # the bars themselves: BLESS pays 0.2408% a round trip against
+        # BTC's 0.1100%, which moves its break-even accuracy from 55.50%
+        # to 62.04%. A single global cost flatters the illiquid coins and
+        # is why every "it nearly works" result showed up on them.
+        cost = float(np.nanmedian(C.round_trip(d)))
+        p_be_sym = float(C.break_even(DIR.WIN, cost))
+        lev_cap = min(C.max_leverage(sym), DIR.LEV_MAX)
+        print(f"    cost {100*cost:.4f}%/round trip   "
+              f"break-even {100*p_be_sym:.2f}%   max leverage {lev_cap:.0f}x",
+              flush=True)
         Xdf = DIR.features(d, P, sym)
         # float32 and a plain array: the DataFrame doubles the footprint
         # and nothing below needs its index.
@@ -106,7 +118,7 @@ def main():
             pr, side, conf = DIR.predict(fit, X[te])
             del fit
             gc.collect()
-            score = DIR.potential(conf, p_be)
+            score = DIR.potential(conf, p_be_sym)
             take = score > 0
             yt = y[te]
             # Accuracy only counts bars where a barrier was actually hit;
@@ -114,22 +126,31 @@ def main():
             res = take & (yt != 0)
             acc = float((side[res] == yt[res]).mean()) if res.any() else np.nan
             # The account: stake and leverage BOTH ride the potential.
+            # ONE POSITION AT A TIME, COMPOUNDED. Summing thousands of
+            # overlapping bets each sized up to 100% at up to 10x is not
+            # an account -- it reported +4,390% off 50.48% accuracy,
+            # which is arithmetically impossible. The equity path below
+            # takes the calls in order, one at a time, and compounds.
             stake = MIN_STAKE + (MAX_STAKE - MIN_STAKE) * score[res] / 100.0
-            lev = DIR.leverage_for(score[res])
+            lev = np.minimum(DIR.leverage_for(score[res]), lev_cap)
             won = side[res] == yt[res]
-            per = np.where(won, DIR.WIN - DIR.FEE, -(DIR.WIN + DIR.FEE))
-            net = float((stake * lev * per).sum())
+            per = np.where(won, DIR.WIN - cost, -(DIR.WIN + cost))
+            step = stake * lev * per
+            # A single trade cannot lose more than the account.
+            eq = float(np.prod(1.0 + np.maximum(step, -0.99))) - 1.0
+            net = eq
             fold_net.append(net)
             rng = np.random.default_rng(fi)
             nulls = []
             for _ in range(60):
                 sh = np.roll(side, int(rng.integers(1, max(len(side) - 1, 2))))
                 w2 = sh[res] == yt[res]
-                p2 = np.where(w2, DIR.WIN - DIR.FEE, -(DIR.WIN + DIR.FEE))
-                nulls.append(float((stake * lev * p2).sum()))
+                p2 = np.where(w2, DIR.WIN - cost, -(DIR.WIN + cost))
+                s2 = stake * lev * p2
+                nulls.append(float(np.prod(1.0 + np.maximum(s2, -0.99))) - 1.0)
             pv = float((np.array(nulls) >= net).mean())
             print(f"    fold {fi}: took {int(res.sum()):>6} resolved calls  "
-                  f"accuracy {100*acc:>5.2f}% (needs {100*p_be:.1f}%)  "
+                  f"accuracy {100*acc:>5.2f}% (needs {100*p_be_sym:.1f}%)  "
                   f"net {100*net:>+9.1f}%  p(null) {pv:.3f}", flush=True)
             rows.append(dict(sym=sym, fold=fi, n=int(res.sum()), acc=acc,
                              net=net, p=pv))

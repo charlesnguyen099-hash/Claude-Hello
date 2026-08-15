@@ -173,7 +173,14 @@ def main() -> int:
               "to write data/scope.json.", file=sys.stderr)
         return 1
 
-    fee = 2 * 0.00055
+    # Pull each symbol's REAL leverage ceiling before anything trades.
+    # It differs per coin and it moves with the risk tier, so a number
+    # baked into the code would be wrong for some symbol on some day.
+    from fp import costs as C
+    got = C.refresh(client, symbols)
+    if got:
+        print(f"  Leverage limits  : read from Bybit for {len(got)} symbols")
+    fee = 2 * C.TAKER_PER_SIDE
     print("=" * 74)
     print("  PAPER TRADING - virtual money, real Bybit prices")
     print("=" * 74)

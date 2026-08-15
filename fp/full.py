@@ -58,17 +58,25 @@ OUT = HERE / "full_report.json"
 HORIZON = DIR.HORIZON
 FLOOR = DIR.WIN                 # +1% net is the minimum, never the target
 
-# Capacity, and the amount of it that is actually needed is far less
-# than it first appeared. The instinct was to make the model enormous --
-# max_leaf_nodes=None grew a tree per row, took 14 GB and was reaped;
-# 1024 leaves over 400 rounds took twenty minutes for ONE coin. Neither
-# was necessary: recovery of the reachable signals was already 100.00%
-# at the default 31 leaves. Capacity was never what limited this. The
-# losses came from the exit rules and from false positives, and those
-# are fixed where they live -- in the exit logic and the gate below.
-LEARN = dict(max_depth=None, max_leaf_nodes=96, min_samples_leaf=2,
-             max_iter=200, l2_regularization=0.0, learning_rate=0.3,
-             early_stopping=False)
+# Capacity is not a constant, because the coins are not equally hard and
+# guessing one setting for all ten was wrong twice in a row. Too much
+# (max_leaf_nodes=None) grew a tree per row, took 14 GB and was reaped.
+# Too little looked fine on XAUUSDT -- 100% recovery at the default 31
+# leaves -- and then recovered 69.78% on BLESSUSDT, where 99.8% of bars
+# carry an opportunity and the label is almost all sign.
+#
+# So the model is not chosen; it is escalated until the coin is learned.
+# Each rung is tried, recovery is measured on the rows themselves, and
+# the first rung that reproduces them wins. Easy coins stop at the first
+# and stay cheap; hard coins pay for what they need.
+LADDER = (dict(max_leaf_nodes=96, min_samples_leaf=2, max_iter=200,
+               learning_rate=0.3),
+          dict(max_leaf_nodes=512, min_samples_leaf=1, max_iter=300,
+               learning_rate=0.3),
+          dict(max_leaf_nodes=2048, min_samples_leaf=1, max_iter=500,
+               learning_rate=0.25))
+BASE = dict(max_depth=None, l2_regularization=0.0, early_stopping=False)
+RECOVERY_TARGET = 1.0
 
 MIN_STAKE, MAX_STAKE = 0.05, 1.00   # 5% floor, all-in ceiling
 LEV_FLOOR = 1.0
@@ -245,7 +253,7 @@ def opportunities(d: pd.DataFrame, cost: np.ndarray, horizon: int = HORIZON,
 
 
 # ------------------------------------------------------------------ learn
-def learn(X, side, profit, mae, seed: int = 0):
+def learn(X, side, profit, mae, seed: int = 0, log=print):
     """Three models: which way, how far, and how much pain on the way.
 
     All three read only the 200 columns at the entry bar. Nothing about
@@ -253,17 +261,34 @@ def learn(X, side, profit, mae, seed: int = 0):
     object applied to any bar of any coin produces a trade, and the only
     reason it produces a GOOD one is that it was fitted where the answer
     was known.
+
+    The classifier climbs the ladder until it recovers every signal it
+    can see, because "miss nothing" is the requirement and no single
+    capacity meets it on all ten coins.
     """
     from sklearn.ensemble import HistGradientBoostingClassifier
     from sklearn.ensemble import HistGradientBoostingRegressor
-    clf = HistGradientBoostingClassifier(random_state=seed, **LEARN)
-    clf.fit(X, side)
     live = side != 0
     if live.sum() < 200:
         return None
-    rp = HistGradientBoostingRegressor(random_state=seed, **LEARN)
+
+    clf, rec = None, 0.0
+    for rung, extra in enumerate(LADDER, 1):
+        m = HistGradientBoostingClassifier(random_state=seed,
+                                           **BASE, **extra)
+        m.fit(X, side)
+        got = m.predict(X)
+        rec = float((got[live] == side[live]).mean())
+        log(f"      rung {rung} ({extra['max_leaf_nodes']} leaves x "
+            f"{extra['max_iter']}): recovery {100*rec:.2f}%")
+        clf = m
+        if rec >= RECOVERY_TARGET:
+            break
+
+    fine = dict(BASE, **LADDER[min(1, len(LADDER) - 1)])
+    rp = HistGradientBoostingRegressor(random_state=seed, **fine)
     rp.fit(X[live], profit[live])
-    rm = HistGradientBoostingRegressor(random_state=seed, **LEARN)
+    rm = HistGradientBoostingRegressor(random_state=seed, **fine)
     rm.fit(X[live], mae[live])
     return {"side": clf, "profit": rp, "mae": rm}
 
@@ -462,7 +487,9 @@ def main():
         X = features_for(d, P, sym)
         ok = np.isfinite(X).all(axis=1)
         Xg = np.ascontiguousarray(X[ok])
-        models = learn(Xg, side[ok], profit[ok], mae[ok])
+        print("    fitting", flush=True)
+        models = learn(Xg, side[ok], profit[ok], mae[ok],
+                       log=lambda s: print(s, flush=True))
         if models is None:
             print("    could not fit")
             continue

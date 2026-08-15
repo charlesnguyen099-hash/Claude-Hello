@@ -1,3 +1,7 @@
 __pycache__/
 *.pyc
 .wf_cache.pkl
+
+# Fitted boosters: hundreds of MB, rebuilt by python -m fp.full
+fp/models/
+fp/full_report.tmp

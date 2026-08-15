@@ -54,6 +54,10 @@ from fp import direction as DIR
 
 HERE = Path(__file__).resolve().parent
 OUT = HERE / "full_report.json"
+# Fitted models land here so the bot trades the SAME objects this file
+# proved, rather than a refit that would have to earn trust again. Not
+# in git -- BTCUSDT's booster is hundreds of megabytes.
+MODELS = HERE / "models"
 
 HORIZON = DIR.HORIZON
 FLOOR = DIR.WIN                 # +1% net is the minimum, never the target
@@ -105,6 +109,45 @@ def features_for(d, P, sym):
     except OSError:
         pass
     return X
+
+
+def save(report: dict) -> None:
+    """Persist what is finished, atomically, after every coin."""
+    tmp = OUT.with_suffix(".tmp")
+    tmp.write_text(json.dumps(report, indent=1, sort_keys=True))
+    tmp.replace(OUT)
+
+
+def save_models(sym: str, models: dict, meta: dict) -> None:
+    """Persist the fitted logic for one coin, for the live bot to load.
+
+    The bot must trade the objects this file measured. Refitting at
+    startup would be a different model with different mistakes, and the
+    100% on past data would say nothing about what is running.
+    """
+    import pickle
+    MODELS.mkdir(parents=True, exist_ok=True)
+    with open(MODELS / f"{sym}.pkl", "wb") as fh:
+        pickle.dump({"models": models, "meta": meta}, fh,
+                    protocol=pickle.HIGHEST_PROTOCOL)
+
+
+def load_models(sym: str):
+    """The fitted logic for one coin, or None if it was never fitted."""
+    import pickle
+    f = MODELS / f"{sym}.pkl"
+    if not f.exists():
+        return None
+    with open(f, "rb") as fh:
+        return pickle.load(fh)
+
+
+def load_report() -> dict:
+    """Whatever a previous run got through before it stopped."""
+    try:
+        return json.loads(OUT.read_text())
+    except (OSError, ValueError):
+        return {}
 
 
 # ----------------------------------------------------------------- ranges
@@ -462,7 +505,9 @@ def replay(d, X, models, cost_v, lev_cap, equity=1.0, floor=FLOOR,
 
 # ------------------------------------------------------------------- main
 def main():
-    syms = [a for a in sys.argv[1:] if not a.startswith("-")]
+    args = sys.argv[1:]
+    fresh = "--fresh" in args
+    syms = [a for a in args if not a.startswith("-")]
     P = D.load()
     if syms:
         P = {k: v for k, v in P.items() if k in syms}
@@ -473,8 +518,17 @@ def main():
           f"horizon {HORIZON}m")
     print("=" * 88, flush=True)
 
-    report, eq_all = {}, 1.0
+    # Resume by default. A coin takes tens of minutes to fit and BTCUSDT
+    # takes longer than that; redoing finished ones to reach the one
+    # that stopped is how an afternoon disappears. --fresh starts over.
+    report = {} if fresh else load_report()
+    eq_all = 1.0
+    if report:
+        print(f"  resuming: {len(report)} coin(s) already done "
+              f"({', '.join(sorted(report))})", flush=True)
     for sym in sorted(P):
+        if sym in report:
+            continue
         d = P[sym]
         cost_v = C.round_trip(d)
         cost_v = np.where(np.isfinite(cost_v), cost_v,
@@ -571,12 +625,29 @@ def main():
                     else f"10^{np.log10(max(eq, 1e-9)):.0f}")
             print(f"    EQUITY            : {eq_s}", flush=True)
             report[sym] = dict(bars=len(d), opportunities=n_opp,
-                               recovered=caught, trades=nt,
-                               win_rate=wins / nt, equity=eq,
+                               reachable=n_seen, recovered=caught,
+                               trades=nt, win_rate=wins / nt, equity=eq,
+                               worst_trade=worst,
                                min_profit=float(pv.min()),
                                max_profit=float(pv.max()))
             eq_all *= eq
-        del X, Xg, models
+            # Save after EVERY coin, not at the end. BTCUSDT reached
+            # rung 2 at 100.00% recovery and then the process died, and
+            # because the report was written once at the end, every
+            # finished coin went with it. Hours of fitting, nothing on
+            # disk. A result that exists only in a live process is not
+            # a result.
+            save(report)
+            save_models(sym, models, dict(
+                gate=float(gate), lev_cap=float(lev_cap),
+                cost=float(np.nanmedian(cost_v)), horizon=HORIZON,
+                floor=FLOOR, min_stake=MIN_STAKE, max_stake=MAX_STAKE,
+                lev_floor=LEV_FLOOR, liq_safety=LIQ_SAFETY,
+                win_rate=wins / nt, trades=nt))
+            print(f"    saved model       : "
+                  f"{(MODELS / (sym + '.pkl')).stat().st_size / 2**20:,.0f} MB",
+                  flush=True)
+        del Xg, models
         gc.collect()
 
     print("\n" + "=" * 88)
@@ -593,7 +664,7 @@ def main():
         print(f"  COINS ALL-POSITIVE  : "
               f"{sum(1 for r in report.values() if r['equity'] > 1)}"
               f"/{len(report)}")
-    OUT.write_text(json.dumps(report, indent=1))
+    save(report)
     print(f"  wrote {OUT.name}")
     print("=" * 88)
     return 0

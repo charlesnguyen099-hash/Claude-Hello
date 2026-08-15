@@ -68,6 +68,28 @@ MODEL = dict(max_depth=4, min_samples_leaf=2000, max_iter=150,
              early_stopping=True, validation_fraction=0.12)
 
 
+def excursion(close: np.ndarray, horizon: int = HORIZON):
+    """How far a trade could actually have run, each way, per bar.
+
+    +1% is the operator's FLOOR for calling something a win, not a
+    target. A move that runs 10%, 20% or 200% is the same trade held
+    longer, and a system that sells at +1% throws the tail away. So the
+    reward the model is judged on is the real excursion, not a fixed
+    number:
+
+      up[i]  the best a long could have done, gross
+      dn[i]  the best a short could have done, gross
+
+    Both are measured to the extreme reached inside the horizon, so the
+    upside is unbounded while the barrier that DEFINES a win stays at
+    +1% net.
+    """
+    s = pd.Series(np.asarray(close, dtype="float64"))
+    fmax = s[::-1].rolling(horizon, min_periods=1).max()[::-1].values
+    fmin = s[::-1].rolling(horizon, min_periods=1).min()[::-1].values
+    return fmax / close - 1.0, 1.0 - fmin / close
+
+
 def label(close: np.ndarray, horizon: int = HORIZON, win: float = WIN):
     """Which side reaches +win net FIRST, per bar. +1, -1 or 0.
 

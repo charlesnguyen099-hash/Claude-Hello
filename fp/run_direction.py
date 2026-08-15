@@ -15,6 +15,7 @@ must believe the setup clears the fee before a cent is committed.
 """
 from __future__ import annotations
 
+import gc
 import json
 import sys
 from pathlib import Path
@@ -30,7 +31,12 @@ OUT = HERE / "direction_model.json"
 TRAIN_FRAC = 0.55
 FOLD_DAYS = 70
 MIN_TEST_DAYS = 7
-STRIDE = 5            # every 5th bar; neighbours are near-duplicates
+# Training rows are capped rather than strided by a constant: BTC has
+# 848,640 bars and a fixed stride of 5 put ~170k rows x 200 float64
+# columns into one fit, which the OOM reaper ended halfway through. The
+# cap keeps every coin's fit the same size whatever its history, and
+# neighbouring one-minute rows are near-duplicates anyway.
+MAX_TRAIN_ROWS = 60_000
 
 MIN_STAKE, MAX_STAKE = 0.05, 1.00
 
@@ -72,9 +78,14 @@ def main():
         if not fl:
             continue
         print(f"\n--- {sym}   {len(d):,} bars   {len(fl)} folds", flush=True)
-        X = DIR.features(d, P, sym)
+        Xdf = DIR.features(d, P, sym)
+        # float32 and a plain array: the DataFrame doubles the footprint
+        # and nothing below needs its index.
+        X = Xdf.values.astype("float32")
+        del Xdf
+        gc.collect()
         y = DIR.label(d["close"].values.astype("float64"))
-        ok = np.isfinite(X.values).all(axis=1)
+        ok = np.isfinite(X).all(axis=1)
         pos = {t: i for i, t in enumerate(idx)}
         fold_net = []
         for fi, (a, cut, stop) in enumerate(fl, 1):
@@ -83,15 +94,18 @@ def main():
             ib = pos[idx[idx < stop][-1]]
             tr = np.flatnonzero(ok[ia:ic]) + ia
             te = np.flatnonzero(ok[ic:ib]) + ic
-            tr = tr[::STRIDE]
+            if len(tr) > MAX_TRAIN_ROWS:
+                tr = tr[::int(np.ceil(len(tr) / MAX_TRAIN_ROWS))]
             if len(tr) < 2000 or len(te) < 200:
                 print(f"    fold {fi}: too few usable rows")
                 continue
-            fit = DIR.fit(X.values[tr], y[tr])
+            fit = DIR.fit(X[tr], y[tr])
             if fit is None:
                 print(f"    fold {fi}: could not fit")
                 continue
-            pr, side, conf = DIR.predict(fit, X.values[te])
+            pr, side, conf = DIR.predict(fit, X[te])
+            del fit
+            gc.collect()
             score = DIR.potential(conf, p_be)
             take = score > 0
             yt = y[te]
@@ -121,6 +135,8 @@ def main():
                              net=net, p=pv))
         if fold_net and all(v > 0 for v in fold_net):
             keepers[sym] = [float(v) for v in fold_net]
+        del X, y, ok
+        gc.collect()
 
     print("\n" + "=" * 84)
     if rows:

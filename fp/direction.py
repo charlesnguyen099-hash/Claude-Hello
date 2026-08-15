@@ -71,42 +71,87 @@ MODEL = dict(max_depth=4, min_samples_leaf=2000, max_iter=150,
 def label(close: np.ndarray, horizon: int = HORIZON, win: float = WIN):
     """Which side reaches +win net FIRST, per bar. +1, -1 or 0.
 
-    Walks the horizon once, keeping the first touch. A close-only test
-    would call a move that never happened a win, so both barriers are
-    checked bar by bar and whichever is hit first ends the race.
+    STAGED, because the obvious version does not finish. Scanning up to
+    `horizon` bars ahead for every bar is 846,640 x 1440 element
+    comparisons on BTC alone, in a Python loop -- it ran for over an hour
+    without clearing one coin. Almost every bar resolves within the first
+    few minutes, so the window is opened in blocks: a rolling max/min
+    says whether ANY bar in the block crosses, and only the handful that
+    do get scanned precisely. Same answer, a fraction of the work.
     """
     n = len(close)
     out = np.zeros(n, dtype="int8")
-    # The cost is charged at the barrier, so the price has to travel
-    # win + fee before the trade is worth +win NET.
-    up = 1.0 + win + FEE
-    dn = 1.0 - (win + FEE)
-    hi = pd.Series(close)[::-1].rolling(horizon, min_periods=1).max()[::-1].values
-    lo = pd.Series(close)[::-1].rolling(horizon, min_periods=1).min()[::-1].values
-    # Cheap pre-filter: bars where neither barrier is reachable at all.
-    maybe = np.flatnonzero((hi >= close * up) | (lo <= close * dn))
-    for i in maybe:
-        j_end = min(i + horizon, n - 1)
-        seg = close[i + 1:j_end + 1]
-        if len(seg) == 0:
+    if n < 2:
+        return out
+    up = close * (1.0 + win + FEE)
+    dn = close * (1.0 - (win + FEE))
+    s = pd.Series(close)
+    pending = np.ones(n, dtype=bool)
+    pending[-1] = False
+
+    lo_off = 1
+    for block in (15, 60, 240, 720, horizon):
+        hi_off = min(block, horizon)
+        if hi_off < lo_off:
             continue
-        u = np.flatnonzero(seg >= close[i] * up)
-        d = np.flatnonzero(seg <= close[i] * dn)
-        fu = u[0] if len(u) else n + 1
-        fd = d[0] if len(d) else n + 1
-        if fu < fd:
-            out[i] = 1
-        elif fd < fu:
-            out[i] = -1
+        w = hi_off - lo_off + 1
+        # Max and min over close[i+lo_off : i+hi_off], for every i at once.
+        fwd_max = s[::-1].rolling(w, min_periods=1).max()[::-1] \
+            .shift(-lo_off).values
+        fwd_min = s[::-1].rolling(w, min_periods=1).min()[::-1] \
+            .shift(-lo_off).values
+        hits = pending & (((fwd_max >= up) & np.isfinite(fwd_max))
+                          | ((fwd_min <= dn) & np.isfinite(fwd_min)))
+        for i in np.flatnonzero(hits):
+            j0, j1 = i + lo_off, min(i + hi_off, n - 1)
+            if j1 < j0:
+                continue
+            seg = close[j0:j1 + 1]
+            u = np.flatnonzero(seg >= up[i])
+            dd = np.flatnonzero(seg <= dn[i])
+            fu = u[0] if len(u) else n + 1
+            fd = dd[0] if len(dd) else n + 1
+            if fu == fd:
+                continue
+            out[i] = 1 if fu < fd else -1
+            pending[i] = False
+        lo_off = hi_off + 1
+        if lo_off > horizon or not pending.any():
+            break
     return out
 
 
+# What a cross-sectional factor means when there is no board to compare
+# against: nothing. Rank sits in the middle, the market has not moved,
+# dispersion is zero, the residual is zero, breadth is even.
+XS_NEUTRAL = {"rank": 0.5, "breadth": 0.5, "mkt": 0.0, "disp": 0.0,
+              "resid": 0.0}
+
+
 def features(d: pd.DataFrame, panel: dict, sym: str) -> pd.DataFrame:
-    """The 200 columns: every method's state plus every factor."""
+    """The 200 columns: every method's state plus every factor.
+
+    WHERE THE BOARD DOES NOT EXIST. BTC has bars from January 2025; the
+    other nine coins start in May 2026. For those first sixteen months
+    there is nothing to rank BTC against, so every cross-sectional column
+    is NaN -- and dropping rows with a NaN threw away 88% of the longest
+    history in the cache, which is the exact opposite of "each coin on
+    the data it actually has".
+
+    So the cross-section is filled with its NEUTRAL value there: rank in
+    the middle, no market move, no dispersion, no residual. That says
+    "the board is silent", which is true, instead of "this row is
+    unusable", which is not.
+    """
     st = M.states(d, panel, sym).add_prefix("m_")
     fx = F.build({sym: d} if len(panel) < 2 else panel)[sym]
     X = pd.concat([st.astype("float32"), fx], axis=1)
-    return X.replace([np.inf, -np.inf], np.nan)
+    X = X.replace([np.inf, -np.inf], np.nan)
+    for col in X.columns:
+        base = col.rstrip("0123456789")
+        if base in XS_NEUTRAL:
+            X[col] = X[col].fillna(XS_NEUTRAL[base])
+    return X
 
 
 def break_even(win: float = WIN, fee: float = FEE) -> float:

@@ -82,14 +82,18 @@ FLOOR = DIR.WIN                 # +1% net is the minimum, never the target
 # more passes. BTCUSDT died three times climbing straight to 512 leaves
 # on 848,640 rows, so it now gets four times the rounds at the cheap
 # width first, and only widens if that still cannot reproduce the coin.
+# The 800-round rung is GONE. It was added on the theory that rounds buy
+# capacity more cheaply than leaves, which is true of memory and false of
+# accuracy: on BTCUSDT it drove recovery from 92.70% DOWN to 73.05%.
+# That is softmax boosting saturating at learning_rate 0.3, not learning.
+# Width is what a hard coin actually needs, so the ladder widens, and
+# the learning rate comes down as it does.
 LADDER = (dict(max_leaf_nodes=96, min_samples_leaf=2, max_iter=200,
                learning_rate=0.3),
-          dict(max_leaf_nodes=96, min_samples_leaf=1, max_iter=800,
-               learning_rate=0.3),
-          dict(max_leaf_nodes=256, min_samples_leaf=1, max_iter=600,
-               learning_rate=0.3),
-          dict(max_leaf_nodes=512, min_samples_leaf=1, max_iter=400,
-               learning_rate=0.25))
+          dict(max_leaf_nodes=256, min_samples_leaf=1, max_iter=300,
+               learning_rate=0.2),
+          dict(max_leaf_nodes=768, min_samples_leaf=1, max_iter=300,
+               learning_rate=0.15))
 BASE = dict(max_depth=None, l2_regularization=0.0, early_stopping=False)
 RECOVERY_TARGET = 1.0
 
@@ -325,7 +329,8 @@ def opportunities(d: pd.DataFrame, cost: np.ndarray, horizon: int = HORIZON,
 
 
 # ------------------------------------------------------------------ learn
-def learn(X, side, profit, mae, seed: int = 0, log=print):
+def learn(X, side, profit, mae, seed: int = 0, log=print,
+          max_rungs: int = len(LADDER)):
     """Three models: which way, how far, and how much pain on the way.
 
     All three read only the 200 columns at the entry bar. Nothing about
@@ -345,7 +350,7 @@ def learn(X, side, profit, mae, seed: int = 0, log=print):
         return None
 
     best, best_rec = None, -1.0
-    for rung, extra in enumerate(LADDER, 1):
+    for rung, extra in enumerate(LADDER[:max_rungs], 1):
         gc.collect()
         try:
             m = HistGradientBoostingClassifier(random_state=seed,
@@ -376,11 +381,12 @@ def learn(X, side, profit, mae, seed: int = 0, log=print):
     if clf is None:
         return None
 
-    # Regressors ride the cheap-width rung on purpose: they predict
-    # magnitudes, not a class boundary, and widening them buys
-    # accuracy nobody reads while costing the memory that killed
-    # the classifier three times.
-    fine = dict(BASE, **LADDER[1])
+    # Regressors ride the FIRST rung. They predict magnitudes, not a
+    # class boundary, and rung 2 turned out to be actively harmful:
+    # 800 rounds at learning_rate 0.3 drove BTCUSDT's classifier from
+    # 92.70% down to 73.05%, which is softmax boosting saturating, not
+    # learning. More rounds is not more capacity past that point.
+    fine = dict(BASE, **LADDER[0])
     rp = HistGradientBoostingRegressor(random_state=seed, **fine)
     rp.fit(X[live], profit[live])
     rm = HistGradientBoostingRegressor(random_state=seed, **fine)
@@ -548,6 +554,14 @@ def main():
     cap_memory()
     args = sys.argv[1:]
     fresh = "--fresh" in args
+    # Stop climbing after N rungs. Useful when a coin's best rung is
+    # already known and the rest of the ladder only costs time -- or,
+    # as with BTCUSDT, actively makes it worse.
+    max_rungs = len(LADDER)
+    for i, t in enumerate(args):
+        if t == "--rungs" and i + 1 < len(args):
+            max_rungs = max(1, int(args[i + 1]))
+    args = [t for t in args if not t.isdigit() or t != str(max_rungs)]
     syms = [a for a in args if not a.startswith("-")]
     P = D.load()
     if syms:
@@ -607,7 +621,8 @@ def main():
         gc.collect()
         print(f"    fitting on {Xg.nbytes/2**20:,.0f} MB", flush=True)
         models = learn(Xg, side[ok], profit[ok], mae[ok],
-                       log=lambda s: print(s, flush=True))
+                       log=lambda s: print(s, flush=True),
+                       max_rungs=max_rungs)
         if models is None:
             print("    could not fit")
             continue

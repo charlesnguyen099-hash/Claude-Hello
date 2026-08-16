@@ -101,9 +101,66 @@ def test_gate():
     chk(g0 == 0.0 and n0 == 0, "no mistakes means no gate")
 
 
+def test_rotation():
+    """Top stays every cycle; the tail is covered, never dropped."""
+    from fp.universe import Rotation
+    syms = [f"C{i}" for i in range(130)]
+    r = Rotation(syms, top=50, slice_size=20)
+    chk(len(r) == 130, "rotation must account for every symbol")
+    chk(r.cycles_for_full_sweep == 4, f"80 tail / 20 = 4 cycles, "
+        f"got {r.cycles_for_full_sweep}")
+    seen = set()
+    for _ in range(r.cycles_for_full_sweep):
+        b = r.next_batch()
+        chk(all(q in b for q in syms[:50]), "the top must be in every batch")
+        chk(len(b) == len(set(b)), "a batch must not repeat a symbol")
+        seen |= set(b)
+    chk(seen == set(syms), f"a full sweep must reach every coin, "
+        f"missed {len(set(syms) - seen)}")
+
+
+def test_ensemble_unanimity():
+    """A split panel trades nothing; agreement sizes to the worst member."""
+    from fp.live_full import FullLogic
+
+    class Fake:
+        def __init__(self, side, conf, profit, mae):
+            self.v = (side, conf, profit, mae)
+
+    lg = FullLogic.__new__(FullLogic)
+    lg.models, lg.meta = {}, {}
+    calls = {}
+
+    def fake_call(m, row):
+        s, c, p, a = m.v
+        return (np.array([s]), np.array([c]), np.array([p]), np.array([a]))
+
+    import fp.full as _FU
+    real, _FU.call = _FU.call, fake_call
+    try:
+        lg.models = {"A": Fake(1, 0.9, 0.05, 0.01),
+                     "B": Fake(-1, 0.8, 0.04, 0.02)}
+        lg.meta = {"A": {"gate": 0.1}, "B": {"gate": 0.2}}
+        side, conf, profit, mae, gate = lg.ensemble_call(None, "X")
+        chk(side == 0, "a split panel must not trade")
+        chk(gate == 1.0, "a split panel's gate must admit nothing")
+
+        lg.models = {"A": Fake(1, 0.9, 0.05, 0.01),
+                     "B": Fake(1, 0.8, 0.04, 0.02)}
+        side, conf, profit, mae, gate = lg.ensemble_call(None, "X")
+        chk(side == 1, "unanimity trades")
+        chk(abs(conf - 0.8) < 1e-9, "confidence is the weakest vote")
+        chk(abs(profit - 0.04) < 1e-9, "target is the least optimistic")
+        chk(abs(mae - 0.02) < 1e-9, "stop respects the most pessimistic")
+        chk(abs(gate - 0.2) < 1e-9, "gate is the strictest member's")
+    finally:
+        _FU.call = real
+
+
 def main():
     for fn in (test_ranges, test_first_cross, test_opportunities,
-               test_cost_bites, test_potential, test_gate):
+               test_cost_bites, test_potential, test_gate,
+               test_rotation, test_ensemble_unanimity):
         fn()
     print("=" * 70)
     print(f"all {PASS} checks passed")

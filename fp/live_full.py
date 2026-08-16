@@ -64,6 +64,42 @@ class FullLogic:
     def ready(self) -> list[str]:
         return sorted(self.models)
 
+    def ensemble_call(self, row, sym: str):
+        """Score a coin that has no model of its own, using every model.
+
+        All 200 columns are scale-free, so a booster fitted on SOLUSDT
+        produces a number on a coin it has never seen. What it does NOT
+        produce is a reason to trust that number, so the panel votes:
+
+          side    only if EVERY model agrees. One dissent and the coin
+                  is left alone -- across six hundred coins the cost of
+                  skipping is one missed trade, and the cost of being
+                  wrong is a levered loss.
+          profit  the MINIMUM predicted, not the mean. The target sets
+                  the exit, and the optimistic member of a disagreeing
+                  panel is the one that leaves a trade hanging.
+          mae     the MAXIMUM predicted, for the mirror reason: the stop
+                  should respect the most pessimistic member.
+          conf    the minimum, so the gate is met by the weakest vote.
+
+        Measured honestly, cross-coin transfer showed no edge out of
+        sample -- see fp/transfer.py, 1,423 independent trades, 0/10
+        coins clearing their own break-even at p<0.05. This path exists
+        because the operator asked for the whole board; unanimity and
+        worst-case sizing are what keep that from being reckless.
+        """
+        sides, confs, profits, maes, gates = [], [], [], [], []
+        for other, m in self.models.items():
+            s, c, p, a = FU.call(m, row)
+            sides.append(int(s[0]))
+            confs.append(float(c[0]))
+            profits.append(float(p[0]))
+            maes.append(float(a[0]))
+            gates.append(self.meta[other]["gate"])
+        if not sides or 0 in sides or len(set(sides)) != 1:
+            return 0, 0.0, 0.0, 0.0, 1.0
+        return (sides[0], min(confs), min(profits), max(maes), max(gates))
+
     def decide(self, d: pd.DataFrame, panel: dict, sym: str) -> Decision | None:
         """The verdict for the LAST bar of `d`. None means no trade.
 
@@ -71,19 +107,32 @@ class FullLogic:
         every coin, because a third of the 200 columns are cross-section
         -- what the other coins are doing this minute.
         """
-        m = self.models.get(sym)
-        if m is None or len(d) < 2:
+        if not self.models or len(d) < 2:
             return None
         X = DIR.features(d, panel, sym).values.astype("float32")
         row = X[-1:]
         if not np.isfinite(row).all():
             return None                      # still warming up
 
-        meta = self.meta[sym]
-        side, conf, profit, mae = FU.call(m, row)
-        s = int(side[0])
-        if s == 0 or float(conf[0]) <= meta["gate"]:
+        own = self.models.get(sym)
+        if own is not None:
+            meta = dict(self.meta[sym])
+            sd, cf, pf, ma = FU.call(own, row)
+            s, conf0 = int(sd[0]), float(cf[0])
+            profit0, mae0 = float(pf[0]), float(ma[0])
+        else:
+            # No model for this coin: the panel votes, and the leverage
+            # ceiling comes from Bybit for THIS coin, not from whichever
+            # coin the models happen to have been fitted on.
+            meta = dict(next(iter(self.meta.values())))
+            s, conf0, profit0, mae0, gate = self.ensemble_call(row, sym)
+            meta["gate"] = gate
+            meta["lev_cap"] = C.max_leverage(sym)
+        if s == 0 or conf0 <= meta["gate"]:
             return None
+        conf = np.array([conf0])
+        profit = np.array([profit0])
+        mae = np.array([mae0])
 
         # The live cost is estimated from the bars in hand, not from the
         # figure that happened to hold during training -- spreads widen.
@@ -92,7 +141,7 @@ class FullLogic:
         if not np.isfinite(cost):
             cost = meta["cost"]
 
-        target = float(profit[0])
+        target = float(profit0)
         if target < meta["floor"]:
             return None                      # below the floor, not a trade
 
@@ -100,11 +149,11 @@ class FullLogic:
         if sc <= 0:
             return None
         stake = meta["min_stake"] + (meta["max_stake"] - meta["min_stake"]) * sc / 100.0
-        stop = max(float(mae[0]) * 1.5, meta["floor"] + cost)
+        stop = max(float(mae0) * 1.5, meta["floor"] + cost)
         lev = meta["lev_floor"] + (meta["lev_cap"] - meta["lev_floor"]) * sc / 100.0
         lev = float(np.clip(min(lev, meta["liq_safety"] / stop),
                             meta["lev_floor"], meta["lev_cap"]))
-        trail = max(min(float(mae[0]), 0.5 * target), 2.0 * cost)
+        trail = max(min(float(mae0), 0.5 * target), 2.0 * cost)
         return Decision(symbol=sym, side=s, potential=sc, stake=stake,
                         leverage=lev, target=target, stop=stop,
                         trail=trail, cost=cost)

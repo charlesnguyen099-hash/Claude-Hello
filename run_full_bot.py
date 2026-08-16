@@ -51,6 +51,7 @@ import argparse
 import signal
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -58,6 +59,7 @@ import pandas as pd
 
 from fp import costs as C
 from fp import full as FU
+from fp import universe as U
 from fp.live_full import Decision, FullLogic
 
 BARS = 1000          # Bybit's cap for one kline call
@@ -107,14 +109,28 @@ def fetch_tickers(client, symbols):
 
 
 class LiveFeed:
-    """Closed 1-minute bars from Bybit's public endpoint."""
+    """Closed 1-minute bars from Bybit's public endpoint.
 
-    def __init__(self, client):
+    Fetched in parallel. Fifty symbols served one at a time do not fit
+    inside a scan interval, and a scan that runs late is scoring bars
+    that have already moved.
+    """
+
+    def __init__(self, client, workers: int = 8):
         self.client = client
+        self.workers = workers
         self.live = True
 
     def bars(self, symbol: str):
         return fetch_klines(self.client, symbol)
+
+    def bars_many(self, symbols):
+        out = {}
+        with ThreadPoolExecutor(max_workers=self.workers) as pool:
+            for sym, df in zip(symbols, pool.map(self.bars, symbols)):
+                if df is not None:
+                    out[sym] = df
+        return out
 
     def advance(self) -> bool:
         return True
@@ -155,6 +171,10 @@ class ReplayFeed:
         if d is None:
             return None
         return d.loc[:self.now].tail(BARS)
+
+    def bars_many(self, symbols):
+        return {s: d for s in symbols
+                if (d := self.bars(s)) is not None}
 
     def advance(self) -> bool:
         self.i += 1
@@ -243,11 +263,27 @@ class Account:
 
 
 # --------------------------------------------------------------------- loop
-def scan(feed, logic: FullLogic, acct: Account, symbols, panel):
-    """Refresh bars, close what is due, open what is offered."""
-    for s in symbols:
-        df = feed.bars(s)
-        if df is not None and len(df) > 60:
+def scan(feed, logic: FullLogic, acct: Account, symbols, panel,
+         reference=()):
+    """Refresh bars, close what is due, open what is offered.
+
+    `reference` is the FIXED set of coins the cross-section columns are
+    computed against, and it is fetched every cycle whatever else is.
+    A third of the 200 features ask "what are the other coins doing
+    right now" -- rank, breadth, market move, dispersion, residual --
+    so their meaning depends on which coins are in the panel. The
+    models were fitted with the ten in the cache; scoring them against
+    a panel of three, or against a rotating slice of six hundred, feeds
+    the same column a different question every cycle. Holding the
+    reference fixed is what makes a fitted model portable at all.
+    """
+    # Open positions are always refreshed, whatever slice of the board
+    # this cycle is scanning -- a position the scanner rotated past is a
+    # position with no stop.
+    need = list(dict.fromkeys(list(reference) + list(symbols)
+                              + list(acct.open)))
+    for s, df in feed.bars_many(need).items():
+        if len(df) > 60:
             panel[s] = df
     if not panel:
         return 0, 0
@@ -363,7 +399,14 @@ def summary(acct: Account, panel):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--symbols", default=None,
-                    help="default: every coin fp/full.py has fitted")
+                    help="explicit list; default is the whole Bybit board")
+    ap.add_argument("--top", type=int, default=50,
+                    help="scanned every cycle, ranked by 24h turnover")
+    ap.add_argument("--sweep", type=int, default=50,
+                    help="tail coins added per cycle, rotating")
+    ap.add_argument("--fitted-only", action="store_true",
+                    help="trade only coins fp/full.py fitted directly")
+    ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--equity", type=float, default=10.0)
     ap.add_argument("--once", action="store_true")
     ap.add_argument("--interval", type=int, default=SCAN_SECONDS)
@@ -373,55 +416,65 @@ def main():
     ap.add_argument("--replay-steps", type=int, default=4000)
     a = ap.parse_args()
 
-    # The default coin list IS the set of fitted models. Anything else
-    # would let the bot be pointed at a coin whose logic was never built
-    # and then report "no model" as if that were a configuration
-    # mistake rather than a missing build step.
-    if a.symbols:
-        symbols = [s.strip().upper() for s in a.symbols.split(",") if s.strip()]
-    else:
-        symbols = sorted(f.stem for f in FU.MODELS.glob("*.pkl"))
-        if not symbols:
-            print("No fitted logic in fp/models/. Build it first:\n\n"
-                  "    python -m fp.full\n", file=sys.stderr)
-            return 2
-    logic = FullLogic(symbols)
-    if not logic.ready:
-        print("No fitted logic found. Build it first:\n\n"
-              "    python -m fp.full\n\n"
-              "That writes fp/models/<SYMBOL>.pkl per coin.", file=sys.stderr)
+    fitted = sorted(f.stem for f in FU.MODELS.glob("*.pkl"))
+    if not fitted:
+        print("No fitted logic in fp/models/. Build it first:\n\n"
+              "    python -m fp.full\n", file=sys.stderr)
         return 2
-    if logic.missing:
-        print(f"  no model for {', '.join(logic.missing)} -- not traded")
-    symbols = logic.ready
+    logic = FullLogic(fitted)
 
     print("=" * 78)
     print("  PAPER TRADING fp/full.py  --  virtual money, real prices")
-    print(f"  equity ${a.equity:.2f}   coins {len(symbols)}   "
-          f"one position per coin")
-    for s in symbols:
-        m = logic.meta[s]
-        print(f"    {s:<12} lev<= {m['lev_cap']:.0f}x   "
-              f"cost {100*m['cost']:.4f}%   gate {m['gate']:.3f}   "
-              f"fitted win {100*m.get('win_rate', 0):.2f}% "
-              f"on {m.get('trades', 0):,} past trades")
-    print("=" * 78, flush=True)
+    print(f"  equity ${a.equity:.2f}   one position per coin, no cap on "
+          f"how many coins")
+    for q in fitted:
+        m = logic.meta[q]
+        print(f"    fitted {q:<12} lev<= {m['lev_cap']:.0f}x  "
+              f"cost {100*m['cost']:.4f}%  gate {m['gate']:.3f}  "
+              f"win {100*m.get('win_rate', 0):.2f}% on "
+              f"{m.get('trades', 0):,} past trades")
 
+    rotation = None
     if a.replay:
         from fp import data as D
         cached = D.load()
-        miss = [s for s in symbols if s not in cached]
-        if miss:
-            print(f"  no cached bars for {', '.join(miss)}", file=sys.stderr)
-        symbols = [s for s in symbols if s in cached]
-        if not symbols:
-            return 2
-        feed = ReplayFeed({s: cached[s] for s in symbols},
-                          a.replay_start, a.replay_steps)
+        if a.symbols:
+            symbols = [q.strip().upper() for q in a.symbols.split(",")
+                       if q.strip()]
+        else:
+            symbols = fitted
+        symbols = [q for q in symbols if q in cached]
+        # The feed carries EVERY cached coin even when only a few are
+        # traded, because the cross-section columns are computed against
+        # the reference panel and a reference the feed cannot serve is
+        # not a reference. --symbols narrows what is traded, not what is
+        # looked at.
+        feed = ReplayFeed(dict(cached), a.replay_start, a.replay_steps)
         print(f"  REPLAY: {len(symbols)} coin(s), "
               f"{feed.axis[0]} .. {feed.axis[-1]} from cache, no network")
     else:
-        feed = LiveFeed(make_client())
+        client = make_client()
+        feed = LiveFeed(client, workers=a.workers)
+        if a.symbols:
+            symbols = [q.strip().upper() for q in a.symbols.split(",")
+                       if q.strip()]
+            U.all_perpetuals(client)          # cache real leverage caps
+        elif a.fitted_only:
+            symbols = fitted
+            U.all_perpetuals(client)
+        else:
+            # THE WHOLE BOARD. Every USDT perpetual Bybit lists, ranked
+            # by 24h turnover, with the real per-coin leverage ceiling
+            # cached for the sizing code to read.
+            symbols, caps, tvr = U.ranked(client)
+            print(f"  universe: {len(symbols)} USDT perpetuals from Bybit")
+        rotation = U.Rotation(symbols, top=a.top, slice_size=a.sweep)
+        print(f"  scanning: top {len(rotation.top)} every cycle, "
+              f"{len(rotation.tail)} more in slices of {a.sweep} "
+              f"(full sweep every {rotation.cycles_for_full_sweep} cycles)")
+        print(f"  logic:    {len(fitted)} fitted models; coins without one "
+              f"are scored by unanimous vote of all {len(fitted)}")
+    print("=" * 78, flush=True)
     acct = Account(equity=a.equity, start=a.equity)
     panel: dict = {}
     started = time.time()
@@ -435,7 +488,8 @@ def main():
         while not stop["flag"]:
             t0 = time.time()
             try:
-                scan(feed, logic, acct, symbols, panel)
+                batch = rotation.next_batch() if rotation else symbols
+                scan(feed, logic, acct, batch, panel, reference=fitted)
             except Exception as exc:                      # keep trading
                 print(f"  scan error: {exc}", flush=True)
             if a.once:

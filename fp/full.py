@@ -56,8 +56,9 @@ from fp import direction as DIR
 HERE = Path(__file__).resolve().parent
 OUT = HERE / "full_report.json"
 # Fitted models land here so the bot trades the SAME objects this file
-# proved, rather than a refit that would have to earn trust again. Not
-# in git -- BTCUSDT's booster is hundreds of megabytes.
+# proved, rather than a refit that would have to earn trust again. They
+# ARE committed, gzipped: fitting the board takes hours and a clone
+# should be able to trade immediately.
 MODELS = HERE / "models"
 
 HORIZON = DIR.HORIZON
@@ -157,22 +158,35 @@ def save_models(sym: str, models: dict, meta: dict) -> None:
     The bot must trade the objects this file measured. Refitting at
     startup would be a different model with different mistakes, and the
     100% on past data would say nothing about what is running.
+
+    Gzipped, because these ship in the repository. Fitting the board
+    takes hours; a clone should not have to repeat it. Boosted trees
+    compress better than half -- 239 MB of pickles becomes 109 MB, and
+    the largest single coin drops from 53 MB to 25 MB.
     """
+    import gzip
     import pickle
     MODELS.mkdir(parents=True, exist_ok=True)
-    with open(MODELS / f"{sym}.pkl", "wb") as fh:
-        pickle.dump({"models": models, "meta": meta}, fh,
-                    protocol=pickle.HIGHEST_PROTOCOL)
+    blob = pickle.dumps({"models": models, "meta": meta},
+                        protocol=pickle.HIGHEST_PROTOCOL)
+    (MODELS / f"{sym}.pkl.gz").write_bytes(gzip.compress(blob, 6))
+    # Drop any uncompressed leftover so the two cannot disagree.
+    old = MODELS / f"{sym}.pkl"
+    if old.exists():
+        old.unlink()
 
 
 def load_models(sym: str):
     """The fitted logic for one coin, or None if it was never fitted."""
+    import gzip
     import pickle
-    f = MODELS / f"{sym}.pkl"
-    if not f.exists():
-        return None
-    with open(f, "rb") as fh:
-        return pickle.load(fh)
+    gz = MODELS / f"{sym}.pkl.gz"
+    if gz.exists():
+        return pickle.loads(gzip.decompress(gz.read_bytes()))
+    plain = MODELS / f"{sym}.pkl"
+    if plain.exists():
+        return pickle.loads(plain.read_bytes())
+    return None
 
 
 def load_report() -> dict:

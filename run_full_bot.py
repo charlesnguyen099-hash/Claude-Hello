@@ -416,7 +416,8 @@ def main():
     ap.add_argument("--replay-steps", type=int, default=4000)
     a = ap.parse_args()
 
-    fitted = sorted(f.stem for f in FU.MODELS.glob("*.pkl"))
+    fitted = sorted({f.name.split(".")[0]
+                     for f in FU.MODELS.glob("*.pkl*")})
     if not fitted:
         print("No fitted logic in fp/models/. Build it first:\n\n"
               "    python -m fp.full\n", file=sys.stderr)

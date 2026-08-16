@@ -41,6 +41,12 @@ class Decision:
     stop: float           # adverse fraction that ends it
     trail: float          # giveback from peak that books the profit
     cost: float           # round-trip cost, fraction of notional
+    # WHICH LOGIC FIRED. "own" when the coin's own fitted model called
+    # it, otherwise the coin whose model recognised the setup here.
+    # Without this, a losing session cannot be split into "the logic is
+    # wrong" and "the logic was applied where it does not belong", and
+    # that is the only split that matters on a 713-coin board.
+    source: str = "own"
 
     @property
     def hold_limit(self) -> int:
@@ -95,8 +101,8 @@ class FullLogic:
         models equally confident and pointing opposite ways. There is no
         signal to follow there, only a coin flip.
 
-        Returns (side, conf, profit, mae, gate) -- gate 1.0 means no
-        trade, since nothing can clear it.
+        Returns (side, conf, profit, mae, gate, which model) -- gate
+        1.0 means no trade, since nothing can clear it.
         """
         best = None
         for other, m in self.models.items():
@@ -110,16 +116,16 @@ class FullLogic:
             if best is None or cand[0] > best[0]:
                 best = cand
         if best is None:
-            return 0, 0.0, 0.0, 0.0, 1.0
+            return 0, 0.0, 0.0, 0.0, 1.0, ""
         # A dead heat pointing both ways is not a signal.
         for other, m in self.models.items():
             if other == best[5]:
                 continue
             s, c, _, _ = FU.call(m, row)
             if int(s[0]) == -best[1] and abs(float(c[0]) - best[0]) < 1e-12:
-                return 0, 0.0, 0.0, 0.0, 1.0
-        conf, side, profit, mae, gate, _ = best
-        return side, conf, profit, mae, gate
+                return 0, 0.0, 0.0, 0.0, 1.0, ""
+        conf, side, profit, mae, gate, who = best
+        return side, conf, profit, mae, gate, who
 
     def decide(self, d: pd.DataFrame, panel: dict, sym: str) -> Decision | None:
         """The verdict for the LAST bar of `d`. None means no trade.
@@ -150,10 +156,12 @@ class FullLogic:
             sd, cf, pf, ma = FU.call(own, row)
             s, conf0 = int(sd[0]), float(cf[0])
             profit0, mae0 = float(pf[0]), float(ma[0])
+            source = "own"
         else:
-            meta = dict(next(iter(self.meta.values())))
-            s, conf0, profit0, mae0, gate = self.ensemble_call(row, sym)
+            s, conf0, profit0, mae0, gate, who = self.ensemble_call(row, sym)
+            meta = dict(self.meta.get(who) or next(iter(self.meta.values())))
             meta["gate"] = gate
+            source = who or "none"
         # The leverage ceiling is always THIS coin's, read from Bybit,
         # never inherited from whichever coin the winning logic was
         # fitted on.
@@ -175,7 +183,9 @@ class FullLogic:
         if target < meta["floor"]:
             return None                      # below the floor, not a trade
 
-        sc = float(FU.potential(conf, profit, mae, np.array([cost]))[0])
+        # The reference comes from the fit, never from this one row.
+        sc = float(FU.potential(conf, profit, mae, np.array([cost]),
+                                ref=meta.get("edge_ref"))[0])
         if sc <= 0:
             return None
         stake = meta["min_stake"] + (meta["max_stake"] - meta["min_stake"]) * sc / 100.0
@@ -186,7 +196,7 @@ class FullLogic:
         trail = max(min(float(mae0), 0.5 * target), 2.0 * cost)
         return Decision(symbol=sym, side=s, potential=sc, stake=stake,
                         leverage=lev, target=target, stop=stop,
-                        trail=trail, cost=cost)
+                        trail=trail, cost=cost, source=source)
 
     @staticmethod
     def exit_now(dec: Decision, entry: float, high: float, low: float,

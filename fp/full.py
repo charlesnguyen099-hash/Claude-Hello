@@ -445,20 +445,34 @@ def calibrate_gate(pred_side, conf, truth_side):
     return float(np.max(conf[err])), int(err.sum())
 
 
-def potential(conf, profit, mae, cost, floor=FLOOR):
+def edge_of(conf, profit, mae, cost, floor=FLOOR):
+    """Expected return on one unit of margin at 1x, per bar."""
+    gain = np.maximum(profit - cost, 0.0)
+    loss = floor + cost
+    return conf * gain - (1.0 - conf) * loss
+
+
+def potential(conf, profit, mae, cost, floor=FLOOR, ref=None):
     """One number, 0..100, that scales BOTH the stake and the leverage.
 
     It is an expected return, not a preference: what one unit of margin
     at 1x earns on average if the model's confidence is taken at face
     value, with the loss being the stop it would have taken instead.
-    Normalised per coin by its own strong-setup level, so no constant
+    Normalised by the coin's own strong-setup level, so no constant
     crosses from one coin to another.
+
+    `ref` IS THAT LEVEL AND IT MUST BE PASSED IN LIVE. Deriving it from
+    the array in hand works here, where the array is a coin's whole
+    history, and fails silently in the bot, where the array is a single
+    bar: the 90th percentile of one number is that number, so every
+    live setup scored exactly 100 -- all-in, maximum leverage, every
+    time, on every coin. The saved reference is what makes a live score
+    comparable to the ones this file measured.
     """
-    gain = np.maximum(profit - cost, 0.0)
-    loss = floor + cost
-    edge = conf * gain - (1.0 - conf) * loss
-    ref = np.quantile(edge[edge > 0], 0.90) if (edge > 0).any() else 1.0
-    return 100.0 * np.clip(edge / max(ref, 1e-9), 0.0, 1.0)
+    edge = edge_of(conf, profit, mae, cost, floor)
+    if ref is None:
+        ref = np.quantile(edge[edge > 0], 0.90) if (edge > 0).any() else 1.0
+    return 100.0 * np.clip(edge / max(float(ref), 1e-9), 0.0, 1.0)
 
 
 # ----------------------------------------------------------------- replay
@@ -481,7 +495,9 @@ def replay(d, X, models, cost_v, lev_cap, equity=1.0, floor=FLOOR,
     low = d["low"].values.astype("float64")
     n = len(close)
     side, conf, pr_profit, pr_mae = call(models, X)
-    score = potential(conf, pr_profit, pr_mae, cost_v)
+    edge = edge_of(conf, pr_profit, pr_mae, cost_v)
+    ref = float(np.quantile(edge[edge > 0], 0.90)) if (edge > 0).any() else 1.0
+    score = potential(conf, pr_profit, pr_mae, cost_v, ref=ref)
     gate, n_err = (calibrate_gate(side, conf, truth_side)
                    if truth_side is not None else (0.0, 0))
 
@@ -560,7 +576,7 @@ def replay(d, X, models, cost_v, lev_cap, equity=1.0, floor=FLOOR,
             wins += 1
         trades.append((i, j, s, net, stake, lev, sc, hit))
         i = j + 1          # one position per coin: no overlap, ever
-    return eq, trades, wins, side, score, gate, n_err
+    return eq, trades, wins, side, score, gate, n_err, ref
 
 
 # ------------------------------------------------------------------- main
@@ -640,7 +656,7 @@ def main():
         if models is None:
             print("    could not fit")
             continue
-        eq, trades, wins, psd, score, gate, n_err = replay(
+        eq, trades, wins, psd, score, gate, n_err, edge_ref = replay(
             d.iloc[ok], Xg, models, cost_v[ok], lev_cap,
             truth_side=side[ok])
         nt = len(trades)
@@ -709,7 +725,8 @@ def main():
             # a result.
             save(report)
             save_models(sym, models, dict(
-                gate=float(gate), lev_cap=float(lev_cap),
+                gate=float(gate), edge_ref=float(edge_ref),
+                lev_cap=float(lev_cap),
                 cost=float(np.nanmedian(cost_v)), horizon=HORIZON,
                 floor=FLOOR, min_stake=MIN_STAKE, max_stake=MAX_STAKE,
                 lev_floor=LEV_FLOOR, liq_safety=LIQ_SAFETY,

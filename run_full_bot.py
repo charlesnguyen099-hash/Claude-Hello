@@ -228,6 +228,7 @@ class Closed:
     closed_at: float = 0.0
     equity_after: float = 0.0
     n: int = 0
+    source: str = "own"
 
 
 @dataclass
@@ -238,6 +239,19 @@ class Account:
     closed: list = field(default_factory=list)
     fees_paid: float = 0.0
     rejected: int = 0
+    # Below this a trade is dust: the fee is a bigger share of it than
+    # any move it could make.
+    min_margin: float = 0.01
+
+    @property
+    def committed(self) -> float:
+        """Margin currently posted against open positions."""
+        return sum(p.margin for p in self.open.values())
+
+    @property
+    def free(self) -> float:
+        """What is left to open anything new with."""
+        return max(self.equity - self.committed, 0.0)
 
     def can_open(self, symbol: str) -> bool:
         # ONE POSITION PER COIN AT A TIME. Coverage of every signal is a
@@ -246,8 +260,28 @@ class Account:
         return symbol not in self.open
 
     def open_position(self, dec: Decision, price: float) -> Position | None:
-        margin = dec.stake * self.equity
-        if margin <= 0 or margin > self.equity:
+        """Post margin out of FREE equity, never out of the total.
+
+        This is the bug that put a paper account at -$27.21 on a $10
+        start. Stake was a fraction of TOTAL equity and margin was never
+        set aside, so a potential-100 signal took "100% of the account"
+        -- and then did it again on the next coin, and the next. The
+        scanner found 88 signals across 713 perpetuals and opened all
+        88, each sized at the whole account and levered up to 54x. The
+        account was committed 88 times over before a single trade
+        closed, so the first losses had nothing left to come out of.
+        fp/full.py never showed this: there, a coin trades one position
+        at a time and the equity path is sequential, so total exposure
+        can never exceed the account by construction. Live, it is 713
+        coins at once and the constraint has to be enforced.
+
+        Stake is now a fraction of what is FREE. When the account is
+        fully committed there is nothing to open with, which is the
+        correct answer rather than a hidden loan.
+        """
+        margin = dec.stake * self.free
+        if margin < self.min_margin or margin > self.free:
+            self.rejected += 1
             return None
         p = Position(symbol=dec.symbol, dec=dec, entry=price, margin=margin,
                      notional=margin * dec.leverage, opened_at=time.time(),
@@ -279,7 +313,7 @@ class Account:
                    notional=p.notional, target=p.dec.target,
                    stop=p.dec.stop, opened_at=p.opened_at,
                    closed_at=time.time(), equity_after=self.equity,
-                   n=len(self.closed) + 1)
+                   n=len(self.closed) + 1, source=p.dec.source)
         self.closed.append(c)
         self.open.pop(p.symbol, None)
         return c
@@ -354,6 +388,7 @@ def scan(feed, logic: FullLogic, acct: Account, symbols, panel,
         print(f"  OPEN  {s:<12} {'LONG' if dec.side > 0 else 'SHORT':<5} "
               f"@{price:<12.6f} pot {dec.potential:5.1f}  "
               f"stake {100*dec.stake:4.0f}%  lev {dec.leverage:4.1f}x  "
+              f"[{dec.source}]  "
               f"target {100*dec.target:+5.2f}%  stop {100*dec.stop:.2f}%",
               flush=True)
     return opened_now, closed_now
@@ -372,11 +407,17 @@ def dashboard(acct: Account, panel, started: float):
     up = time.time() - started
     print(f"\n  equity ${eq:.4f}  ({ret:+.2f}%)   realised "
           f"${acct.equity - acct.start:+.4f}   unrealised ${unreal:+.4f}")
+    # Committed and free are printed because their absence is what let
+    # the account go to -$27.21 unnoticed: 88 positions each sized at
+    # "100% of the account".
+    print(f"  committed ${acct.committed:.4f}   free ${acct.free:.4f}   "
+          f"exposure ${sum(p.notional for p in acct.open.values()):.2f}")
     print(f"  open {len(acct.open)}   closed {len(acct.closed)}   "
           f"wins {len(wins)}/{len(acct.closed)}"
           + (f" ({100.0*len(wins)/len(acct.closed):.1f}%)"
              if acct.closed else "")
-          + f"   fees ${acct.fees_paid:.4f}   up {up/60:.1f}m", flush=True)
+          + f"   fees ${acct.fees_paid:.4f}   rejected {acct.rejected}"
+          + f"   up {up/60:.1f}m", flush=True)
 
 
 def _px(x: float) -> str:
@@ -405,7 +446,7 @@ def write_log(acct: Account, path: str = "trades.csv") -> str | None:
     cols = ["n", "symbol", "side", "opened", "closed", "held_s", "reason",
             "entry", "exit", "target", "stop", "potential", "stake",
             "leverage", "margin", "notional", "move", "pnl", "fees",
-            "equity_after"]
+            "equity_after", "source"]
     try:
         with open(path, "w", newline="", encoding="utf-8") as fh:
             w = csv.writer(fh)
@@ -423,7 +464,7 @@ def write_log(acct: Account, path: str = "trades.csv") -> str | None:
                     round(c.leverage, 2), round(c.margin, 6),
                     round(c.notional, 6), round(c.move, 6),
                     round(c.pnl, 6), round(c.fees, 6),
-                    round(c.equity_after, 6)])
+                    round(c.equity_after, 6), c.source])
         return path
     except OSError:
         return None
@@ -481,6 +522,21 @@ def summary(acct: Account, panel):
             w = sum(1 for c in cs if c.pnl > 0)
             print(f"    {r:<8} {len(cs):>5}   won {w}/{len(cs)}   "
                   f"pnl ${sum(c.pnl for c in cs):+.4f}")
+        print("\n  BY LOGIC")
+        # The split that matters: a coin's own logic against logic
+        # borrowed from another coin. On the operator's first live run
+        # every one of the twelve losses came from a borrowed logic and
+        # not one fitted coin closed red.
+        src = {}
+        for c in acct.closed:
+            src.setdefault(c.source, []).append(c)
+        for k, cs in sorted(src.items(),
+                            key=lambda kv: -sum(c.pnl for c in kv[1])):
+            w = sum(1 for c in cs if c.pnl > 0)
+            label = "own coin's logic" if k == "own" else f"logic from {k}"
+            print(f"    {label:<26} {len(cs):>4} trades   won {w}/{len(cs)}"
+                  f"   pnl ${sum(c.pnl for c in cs):+.4f}")
+
         print("\n  BY COIN")
         per = {}
         for c in acct.closed:
@@ -509,6 +565,12 @@ def summary(acct: Account, panel):
           + (f" ({100.0*len(wins)/len(acct.closed):.1f}%)"
              if acct.closed else ""))
     print(f"  fees     ${acct.fees_paid:.4f}")
+    print(f"  capital  committed ${acct.committed:.4f}, "
+          f"free ${acct.free:.4f}, {acct.rejected} signals skipped for "
+          f"want of margin")
+    if acct.equity < 0:
+        print("  WARNING: negative equity means the exposure accounting "
+              "let positions be opened on capital that was not there.")
     path = write_log(acct)
     if path:
         print(f"\n  full ledger written to {path}")

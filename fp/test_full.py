@@ -142,7 +142,7 @@ def test_ensemble_recognition():
                      "B": Fake(0, 0.10, 0.00, 0.00),
                      "C": Fake(0, 0.20, 0.00, 0.00)}
         lg.meta = {k: dict(meta) for k in lg.models}
-        side, conf, profit, mae, gate = lg.ensemble_call(None, "X")
+        side, conf, profit, mae, gate, who = lg.ensemble_call(None, "X")
         chk(side == 1, "a lone recognised signal must trade")
         chk(abs(profit - 0.05) < 1e-9, "the recogniser sets the target")
 
@@ -162,15 +162,16 @@ def test_ensemble_recognition():
         lg.models = {"A": Fake(1, 0.95, 0.05, 0.01),
                      "B": Fake(-1, 0.70, 0.09, 0.03)}
         lg.meta = {k: dict(meta) for k in lg.models}
-        side, conf, profit, mae, gate = lg.ensemble_call(None, "X")
+        side, conf, profit, mae, gate, who = lg.ensemble_call(None, "X")
         chk(side == 1, "the stronger signal names the side")
         chk(abs(conf - 0.95) < 1e-9, "and its confidence is the one used")
+        chk(who == "A", f"and the trade is attributed to it, got {who}")
 
         # An exact dead heat pointing both ways is a coin flip, not a signal.
         lg.models = {"A": Fake(1, 0.90, 0.05, 0.01),
                      "B": Fake(-1, 0.90, 0.05, 0.01)}
         lg.meta = {k: dict(meta) for k in lg.models}
-        side, _, _, _, gate = lg.ensemble_call(None, "X")
+        side, _, _, _, gate, _ = lg.ensemble_call(None, "X")
         chk(side == 0, "a dead heat both ways must not trade")
         chk(gate == 1.0, "and its gate must admit nothing")
     finally:

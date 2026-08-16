@@ -201,6 +201,13 @@ class Position:
 
 @dataclass
 class Closed:
+    """One finished trade, kept in full.
+
+    Every field the operator needs to audit a trade after the fact:
+    what was entered, at what price, on whose signal, how it was sized,
+    where it came out and why. Aggregates hide the trade that went
+    wrong; this does not.
+    """
     symbol: str
     side: int
     reason: str
@@ -211,6 +218,16 @@ class Closed:
     leverage: float
     stake: float
     potential: float
+    entry: float = 0.0
+    exit: float = 0.0
+    margin: float = 0.0
+    notional: float = 0.0
+    target: float = 0.0
+    stop: float = 0.0
+    opened_at: float = 0.0
+    closed_at: float = 0.0
+    equity_after: float = 0.0
+    n: int = 0
 
 
 @dataclass
@@ -252,11 +269,17 @@ class Account:
         pnl = max(pnl, -p.margin)
         self.equity += pnl
         self.fees_paid += fees
+        exit_px = p.entry * (1.0 + p.dec.side * move)
         c = Closed(symbol=p.symbol, side=p.dec.side, reason=reason,
                    move=move, pnl=pnl, fees=fees,
                    held_s=time.time() - p.opened_at,
                    leverage=p.dec.leverage, stake=p.dec.stake,
-                   potential=p.dec.potential)
+                   potential=p.dec.potential,
+                   entry=p.entry, exit=exit_px, margin=p.margin,
+                   notional=p.notional, target=p.dec.target,
+                   stop=p.dec.stop, opened_at=p.opened_at,
+                   closed_at=time.time(), equity_after=self.equity,
+                   n=len(self.closed) + 1)
         self.closed.append(c)
         self.open.pop(p.symbol, None)
         return c
@@ -356,44 +379,140 @@ def dashboard(acct: Account, panel, started: float):
           + f"   fees ${acct.fees_paid:.4f}   up {up/60:.1f}m", flush=True)
 
 
+def _px(x: float) -> str:
+    """Prices span $0.000002 to $100,000 on this board -- one width fails."""
+    if x >= 1000:
+        return f"{x:,.2f}"
+    if x >= 1:
+        return f"{x:.4f}"
+    if x >= 0.01:
+        return f"{x:.6f}"
+    return f"{x:.8f}"
+
+
+def _dur(sec: float) -> str:
+    sec = int(max(sec, 0))
+    if sec < 3600:
+        return f"{sec // 60}m{sec % 60:02d}s"
+    return f"{sec // 3600}h{(sec % 3600) // 60:02d}m"
+
+
+def write_log(acct: Account, path: str = "trades.csv") -> str | None:
+    """Every closed trade to CSV, because scrollback is not a record."""
+    if not acct.closed:
+        return None
+    import csv
+    cols = ["n", "symbol", "side", "opened", "closed", "held_s", "reason",
+            "entry", "exit", "target", "stop", "potential", "stake",
+            "leverage", "margin", "notional", "move", "pnl", "fees",
+            "equity_after"]
+    try:
+        with open(path, "w", newline="", encoding="utf-8") as fh:
+            w = csv.writer(fh)
+            w.writerow(cols)
+            for c in acct.closed:
+                w.writerow([
+                    c.n, c.symbol, "LONG" if c.side > 0 else "SHORT",
+                    time.strftime("%Y-%m-%d %H:%M:%S",
+                                  time.localtime(c.opened_at)),
+                    time.strftime("%Y-%m-%d %H:%M:%S",
+                                  time.localtime(c.closed_at)),
+                    round(c.held_s, 1), c.reason,
+                    c.entry, c.exit, round(c.target, 6), round(c.stop, 6),
+                    round(c.potential, 2), round(c.stake, 4),
+                    round(c.leverage, 2), round(c.margin, 6),
+                    round(c.notional, 6), round(c.move, 6),
+                    round(c.pnl, 6), round(c.fees, 6),
+                    round(c.equity_after, 6)])
+        return path
+    except OSError:
+        return None
+
+
 def summary(acct: Account, panel):
-    print("\n" + "=" * 78)
+    print("\n" + "=" * 118)
     print("  SESSION SUMMARY")
-    print("=" * 78)
-    wins = [c for c in acct.closed if c.pnl > 0]
+    print("=" * 118)
+
+    # EVERY trade, won or lost, in the order they happened. Aggregates
+    # hide the one that went wrong; a ledger does not.
+    if acct.closed:
+        print("\n  ALL TRADES")
+        print(f"  {'#':>4} {'coin':<14}{'side':<6}{'opened':<9}{'held':>8}"
+              f"{'entry':>14}{'exit':>14}{'lev':>6}{'stake':>7}{'pot':>6}"
+              f"{'move':>9}{'pnl $':>11}  {'why':<7}{'equity $':>11}")
+        print("  " + "-" * 114)
+        for c in acct.closed:
+            print(f"  {c.n:>4} {c.symbol:<14}"
+                  f"{'LONG' if c.side > 0 else 'SHORT':<6}"
+                  f"{time.strftime('%H:%M:%S', time.localtime(c.opened_at)):<9}"
+                  f"{_dur(c.held_s):>8}"
+                  f"{_px(c.entry):>14}{_px(c.exit):>14}"
+                  f"{c.leverage:>5.1f}x{100*c.stake:>6.0f}%{c.potential:>6.1f}"
+                  f"{100*c.move:>+8.2f}%{c.pnl:>+11.4f}  {c.reason:<7}"
+                  f"{c.equity_after:>11.4f}")
+
     unreal = 0.0
-    for s, p in acct.open.items():
-        df = panel.get(s)
-        px = float(df["close"].iloc[-1]) if df is not None and len(df) else p.entry
-        m = p.move(px) - p.dec.cost
-        unreal += m * p.notional
-        print(f"  OPEN  {s:<12} {'LONG' if p.dec.side > 0 else 'SHORT':<5} "
-              f"move {100*m:+6.2f}%  lev {p.dec.leverage:.1f}x  "
-              f"mark ${m * p.notional:+.4f}")
+    if acct.open:
+        print("\n  STILL OPEN")
+        print(f"  {'coin':<14}{'side':<6}{'held':>8}{'entry':>14}{'mark':>14}"
+              f"{'lev':>6}{'stake':>7}{'move':>9}{'unreal $':>11}")
+        print("  " + "-" * 89)
+        for sym, p in sorted(acct.open.items()):
+            df = panel.get(sym)
+            px = (float(df["close"].iloc[-1])
+                  if df is not None and len(df) else p.entry)
+            m = p.move(px) - p.dec.cost
+            unreal += m * p.notional
+            print(f"  {sym:<14}{'LONG' if p.dec.side > 0 else 'SHORT':<6}"
+                  f"{_dur(time.time() - p.opened_at):>8}"
+                  f"{_px(p.entry):>14}{_px(px):>14}"
+                  f"{p.dec.leverage:>5.1f}x{100*p.dec.stake:>6.0f}%"
+                  f"{100*m:>+8.2f}%{m * p.notional:>+11.4f}")
+
+    wins = [c for c in acct.closed if c.pnl > 0]
+    losses = [c for c in acct.closed if c.pnl <= 0]
     if acct.closed:
         by = {}
         for c in acct.closed:
             by.setdefault(c.reason, []).append(c)
-        print("\n  exits")
+        print("\n  BY EXIT")
         for r, cs in sorted(by.items()):
             w = sum(1 for c in cs if c.pnl > 0)
-            print(f"    {r:<8} {len(cs):>4}   won {w}/{len(cs)}   "
+            print(f"    {r:<8} {len(cs):>5}   won {w}/{len(cs)}   "
                   f"pnl ${sum(c.pnl for c in cs):+.4f}")
-        best = max(acct.closed, key=lambda c: c.pnl)
-        worst = min(acct.closed, key=lambda c: c.pnl)
-        print(f"\n  best  {best.symbol} {100*best.move:+.2f}% "
-              f"${best.pnl:+.4f} at {best.leverage:.1f}x")
-        print(f"  worst {worst.symbol} {100*worst.move:+.2f}% "
-              f"${worst.pnl:+.4f} at {worst.leverage:.1f}x")
+        print("\n  BY COIN")
+        per = {}
+        for c in acct.closed:
+            per.setdefault(c.symbol, []).append(c)
+        for sym, cs in sorted(per.items(),
+                              key=lambda kv: -sum(c.pnl for c in kv[1])):
+            w = sum(1 for c in cs if c.pnl > 0)
+            print(f"    {sym:<14} {len(cs):>4} trades   won {w}/{len(cs)}   "
+                  f"pnl ${sum(c.pnl for c in cs):+.4f}")
+        if losses:
+            print(f"\n  LOSING TRADES: {len(losses)}")
+            for c in losses:
+                print(f"    #{c.n} {c.symbol} "
+                      f"{'LONG' if c.side > 0 else 'SHORT'} "
+                      f"{100*c.move:+.2f}% at {c.leverage:.1f}x "
+                      f"= ${c.pnl:+.4f}   exit: {c.reason}")
+        else:
+            print("\n  LOSING TRADES: none")
+
     eq = acct.equity + unreal
     print(f"\n  start    ${acct.start:.4f}")
-    print(f"  realised ${acct.equity:.4f}")
+    print(f"  realised ${acct.equity:.4f}   ({acct.equity - acct.start:+.4f})")
     print(f"  mark     ${eq:.4f}   ({100.0*(eq/acct.start-1.0):+.2f}%)")
-    print(f"  trades   {len(acct.closed)}   wins {len(wins)}"
-          + (f"   ({100.0*len(wins)/len(acct.closed):.1f}%)"
+    print(f"  trades   {len(acct.closed)} closed, {len(acct.open)} open   "
+          f"wins {len(wins)}"
+          + (f" ({100.0*len(wins)/len(acct.closed):.1f}%)"
              if acct.closed else ""))
     print(f"  fees     ${acct.fees_paid:.4f}")
-    print("=" * 78)
+    path = write_log(acct)
+    if path:
+        print(f"\n  full ledger written to {path}")
+    print("=" * 118)
 
 
 def main():

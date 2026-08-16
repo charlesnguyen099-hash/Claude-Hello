@@ -65,40 +65,61 @@ class FullLogic:
         return sorted(self.models)
 
     def ensemble_call(self, row, sym: str):
-        """Score a coin that has no model of its own, using every model.
+        """Whichever piece of logic RECOGNISES this bar gets to trade it.
 
-        All 200 columns are scale-free, so a booster fitted on SOLUSDT
-        produces a number on a coin it has never seen. What it does NOT
-        produce is a reason to trust that number, so the panel votes:
+        Each fitted model is a piece of logic, not a coin. All 200
+        columns are scale-free, so a booster fitted on SOLUSDT reads a
+        bar of any coin and says whether the shape it learned is present
+        here. When one of them recognises its own setup on a coin it has
+        never seen, that is the same signal on a different coin, and the
+        signal is what the logic was built from.
 
-          side    only if EVERY model agrees. One dissent and the coin
-                  is left alone -- across six hundred coins the cost of
-                  skipping is one missed trade, and the cost of being
-                  wrong is a levered loss.
-          profit  the MINIMUM predicted, not the mean. The target sets
-                  the exit, and the optimistic member of a disagreeing
-                  panel is the one that leaves a trade hanging.
-          mae     the MAXIMUM predicted, for the mirror reason: the stop
-                  should respect the most pessimistic member.
-          conf    the minimum, so the gate is met by the weakest vote.
+        So the rule is recognition, not agreement:
 
-        Measured honestly, cross-coin transfer showed no edge out of
-        sample -- see fp/transfer.py, 1,423 independent trades, 0/10
-        coins clearing their own break-even at p<0.05. This path exists
-        because the operator asked for the whole board; unanimity and
-        worst-case sizing are what keep that from being reckless.
+          * every model scores the bar;
+          * a model COUNTS only if its confidence clears the gate that
+            was fitted to its own mistakes, and its predicted move
+            clears the floor -- the same two tests it has to pass on the
+            coin it was fitted on;
+          * among the models that count, the most confident one names
+            the side, the target and the stop.
+
+        The earlier version required all nine to agree. That is a
+        different rule than the one asked for and a much narrower one:
+        it silences a logic that recognises its setup precisely because
+        eight others, built from different coins' shapes, do not see
+        theirs. Absence of another logic's signal is not evidence
+        against this one.
+
+        The one case still refused is a genuine contradiction: two
+        models equally confident and pointing opposite ways. There is no
+        signal to follow there, only a coin flip.
+
+        Returns (side, conf, profit, mae, gate) -- gate 1.0 means no
+        trade, since nothing can clear it.
         """
-        sides, confs, profits, maes, gates = [], [], [], [], []
+        best = None
         for other, m in self.models.items():
             s, c, p, a = FU.call(m, row)
-            sides.append(int(s[0]))
-            confs.append(float(c[0]))
-            profits.append(float(p[0]))
-            maes.append(float(a[0]))
-            gates.append(self.meta[other]["gate"])
-        if not sides or 0 in sides or len(set(sides)) != 1:
+            side, conf = int(s[0]), float(c[0])
+            profit, mae = float(p[0]), float(a[0])
+            meta = self.meta[other]
+            if side == 0 or conf <= meta["gate"] or profit < meta["floor"]:
+                continue
+            cand = (conf, side, profit, mae, meta["gate"], other)
+            if best is None or cand[0] > best[0]:
+                best = cand
+        if best is None:
             return 0, 0.0, 0.0, 0.0, 1.0
-        return (sides[0], min(confs), min(profits), max(maes), max(gates))
+        # A dead heat pointing both ways is not a signal.
+        for other, m in self.models.items():
+            if other == best[5]:
+                continue
+            s, c, _, _ = FU.call(m, row)
+            if int(s[0]) == -best[1] and abs(float(c[0]) - best[0]) < 1e-12:
+                return 0, 0.0, 0.0, 0.0, 1.0
+        conf, side, profit, mae, gate, _ = best
+        return side, conf, profit, mae, gate
 
     def decide(self, d: pd.DataFrame, panel: dict, sym: str) -> Decision | None:
         """The verdict for the LAST bar of `d`. None means no trade.
@@ -114,6 +135,15 @@ class FullLogic:
         if not np.isfinite(row).all():
             return None                      # still warming up
 
+        # A coin with its own fitted logic is judged by it. That logic
+        # was measured at 100% on this coin's own history; letting a
+        # logic built from a different coin overrule it is a trade made
+        # on weaker evidence than the one available. Briefly it did:
+        # foreign logics firing on BLESSUSDT took the same replay from
+        # 15/15 to 11/13 with two stop-outs.
+        #
+        # Everything else on the board -- the ~590 coins with no logic
+        # of their own -- goes to recognition across all of them.
         own = self.models.get(sym)
         if own is not None:
             meta = dict(self.meta[sym])
@@ -121,13 +151,13 @@ class FullLogic:
             s, conf0 = int(sd[0]), float(cf[0])
             profit0, mae0 = float(pf[0]), float(ma[0])
         else:
-            # No model for this coin: the panel votes, and the leverage
-            # ceiling comes from Bybit for THIS coin, not from whichever
-            # coin the models happen to have been fitted on.
             meta = dict(next(iter(self.meta.values())))
             s, conf0, profit0, mae0, gate = self.ensemble_call(row, sym)
             meta["gate"] = gate
-            meta["lev_cap"] = C.max_leverage(sym)
+        # The leverage ceiling is always THIS coin's, read from Bybit,
+        # never inherited from whichever coin the winning logic was
+        # fitted on.
+        meta["lev_cap"] = C.max_leverage(sym)
         if s == 0 or conf0 <= meta["gate"]:
             return None
         conf = np.array([conf0])

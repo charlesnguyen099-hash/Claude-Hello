@@ -119,17 +119,13 @@ def test_rotation():
         f"missed {len(set(syms) - seen)}")
 
 
-def test_ensemble_unanimity():
-    """A split panel trades nothing; agreement sizes to the worst member."""
+def test_ensemble_recognition():
+    """Whichever logic recognises the bar trades it; a dead heat does not."""
     from fp.live_full import FullLogic
 
     class Fake:
         def __init__(self, side, conf, profit, mae):
             self.v = (side, conf, profit, mae)
-
-    lg = FullLogic.__new__(FullLogic)
-    lg.models, lg.meta = {}, {}
-    calls = {}
 
     def fake_call(m, row):
         s, c, p, a = m.v
@@ -137,22 +133,46 @@ def test_ensemble_unanimity():
 
     import fp.full as _FU
     real, _FU.call = _FU.call, fake_call
+    lg = FullLogic.__new__(FullLogic)
+    meta = {"gate": 0.5, "floor": 0.01}
     try:
-        lg.models = {"A": Fake(1, 0.9, 0.05, 0.01),
-                     "B": Fake(-1, 0.8, 0.04, 0.02)}
-        lg.meta = {"A": {"gate": 0.1}, "B": {"gate": 0.2}}
+        # One model recognises its setup, the others see nothing. The
+        # old unanimity rule silenced this; recognition trades it.
+        lg.models = {"A": Fake(1, 0.95, 0.05, 0.01),
+                     "B": Fake(0, 0.10, 0.00, 0.00),
+                     "C": Fake(0, 0.20, 0.00, 0.00)}
+        lg.meta = {k: dict(meta) for k in lg.models}
         side, conf, profit, mae, gate = lg.ensemble_call(None, "X")
-        chk(side == 0, "a split panel must not trade")
-        chk(gate == 1.0, "a split panel's gate must admit nothing")
+        chk(side == 1, "a lone recognised signal must trade")
+        chk(abs(profit - 0.05) < 1e-9, "the recogniser sets the target")
 
-        lg.models = {"A": Fake(1, 0.9, 0.05, 0.01),
-                     "B": Fake(1, 0.8, 0.04, 0.02)}
+        # Below its own gate is not recognition.
+        lg.models = {"A": Fake(1, 0.40, 0.05, 0.01)}
+        lg.meta = {"A": dict(meta)}
+        side, *_ = lg.ensemble_call(None, "X")
+        chk(side == 0, "confidence under the gate is not a signal")
+
+        # Below the floor is not a trade either.
+        lg.models = {"A": Fake(1, 0.95, 0.002, 0.01)}
+        lg.meta = {"A": dict(meta)}
+        side, *_ = lg.ensemble_call(None, "X")
+        chk(side == 0, "a move under the floor is not a trade")
+
+        # The most confident recogniser wins a disagreement.
+        lg.models = {"A": Fake(1, 0.95, 0.05, 0.01),
+                     "B": Fake(-1, 0.70, 0.09, 0.03)}
+        lg.meta = {k: dict(meta) for k in lg.models}
         side, conf, profit, mae, gate = lg.ensemble_call(None, "X")
-        chk(side == 1, "unanimity trades")
-        chk(abs(conf - 0.8) < 1e-9, "confidence is the weakest vote")
-        chk(abs(profit - 0.04) < 1e-9, "target is the least optimistic")
-        chk(abs(mae - 0.02) < 1e-9, "stop respects the most pessimistic")
-        chk(abs(gate - 0.2) < 1e-9, "gate is the strictest member's")
+        chk(side == 1, "the stronger signal names the side")
+        chk(abs(conf - 0.95) < 1e-9, "and its confidence is the one used")
+
+        # An exact dead heat pointing both ways is a coin flip, not a signal.
+        lg.models = {"A": Fake(1, 0.90, 0.05, 0.01),
+                     "B": Fake(-1, 0.90, 0.05, 0.01)}
+        lg.meta = {k: dict(meta) for k in lg.models}
+        side, _, _, _, gate = lg.ensemble_call(None, "X")
+        chk(side == 0, "a dead heat both ways must not trade")
+        chk(gate == 1.0, "and its gate must admit nothing")
     finally:
         _FU.call = real
 
@@ -160,7 +180,7 @@ def test_ensemble_unanimity():
 def main():
     for fn in (test_ranges, test_first_cross, test_opportunities,
                test_cost_bites, test_potential, test_gate,
-               test_rotation, test_ensemble_unanimity):
+               test_rotation, test_ensemble_recognition):
         fn()
     print("=" * 70)
     print(f"all {PASS} checks passed")

@@ -123,15 +123,35 @@ LEV_FLOOR = 1.0
 LIQ_SAFETY = 0.60
 
 
+def panel_key(P) -> str:
+    """A short fingerprint of the WHOLE panel, for the feature cache.
+
+    A third of the 200 columns are cross-section -- rank, breadth,
+    market move, dispersion, residual -- so a coin's features change
+    whenever ANY coin's bars change, not just its own. Keying the cache
+    on one symbol's row count misses that completely: after five new
+    weeks were merged, BTCUSDT's own length was unchanged, so it would
+    have silently reused features computed against the old panel and
+    fitted a model on a mixture of two different markets.
+    """
+    import hashlib
+    h = hashlib.blake2s(digest_size=6)
+    for k in sorted(P):
+        d = P[k]
+        h.update(f"{k}:{len(d)}:{d.index[0]}:{d.index[-1]}|".encode())
+    return h.hexdigest()
+
+
 def features_for(d, P, sym):
     """The 200 columns, from disk when they are already there.
 
-    Same cache fp/transfer.py fills: building them for 1.76M bars is a
-    twenty-minute job and they are a pure function of the bars.
+    Same cache fp/transfer.py fills: building them for 1.84M bars is a
+    twenty-minute job and they are a pure function of the bars -- of ALL
+    the bars, which is why the filename carries the panel fingerprint.
     """
     import os
     cache = Path(os.environ.get("FP_CACHE", "/tmp/fp-features"))
-    f = cache / f"{sym}.X.npy"
+    f = cache / f"{sym}.{panel_key(P)}.X.npy"
     if f.exists():
         X = np.load(f, mmap_mode="r")
         if len(X) == len(d):

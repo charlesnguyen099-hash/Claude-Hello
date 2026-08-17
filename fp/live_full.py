@@ -102,7 +102,12 @@ class FullLogic:
         signal to follow there, only a coin flip.
 
         Returns (side, conf, profit, mae, gate, which model) -- gate
-        1.0 means no trade, since nothing can clear it.
+        1.0 means no trade, since nothing can clear it. The gate
+        compared against is `live_gate`: a confidence floor measured on
+        a fold that model never trained on, not `gate`, which is
+        measured on the same rows the model was fit to reproduce and is
+        therefore ~0.0000 by construction -- see fp/full.py's
+        oof_gate() for why the same-rows number admits everything.
         """
         best = None
         for other, m in self.models.items():
@@ -110,9 +115,10 @@ class FullLogic:
             side, conf = int(s[0]), float(c[0])
             profit, mae = float(p[0]), float(a[0])
             meta = self.meta[other]
-            if side == 0 or conf <= meta["gate"] or profit < meta["floor"]:
+            live_gate = meta.get("live_gate", meta["gate"])
+            if side == 0 or conf <= live_gate or profit < meta["floor"]:
                 continue
-            cand = (conf, side, profit, mae, meta["gate"], other)
+            cand = (conf, side, profit, mae, live_gate, other)
             if best is None or cand[0] > best[0]:
                 best = cand
         if best is None:
@@ -160,13 +166,17 @@ class FullLogic:
         else:
             s, conf0, profit0, mae0, gate, who = self.ensemble_call(row, sym)
             meta = dict(self.meta.get(who) or next(iter(self.meta.values())))
-            meta["gate"] = gate
+            meta["live_gate"] = gate
             source = who or "none"
         # The leverage ceiling is always THIS coin's, read from Bybit,
         # never inherited from whichever coin the winning logic was
         # fitted on.
         meta["lev_cap"] = C.max_leverage(sym)
-        if s == 0 or conf0 <= meta["gate"]:
+        # live_gate, not gate: see the docstring above ensemble_call.
+        # Falls back to gate only for a model file built before this was
+        # added.
+        live_gate = meta.get("live_gate", meta["gate"])
+        if s == 0 or conf0 <= live_gate:
             return None
         conf = np.array([conf0])
         profit = np.array([profit0])

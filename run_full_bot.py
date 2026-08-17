@@ -31,6 +31,7 @@ the same code with no constant changed.
     python run_full_bot.py --all-coins   # the whole Bybit board, borrowed logic
     python run_full_bot.py --equity 100
     python run_full_bot.py --once        # one scan, print, exit
+    python run_full_bot.py --retrain-hours 0   # disable the retrain thread
 
 BY DEFAULT IT TRADES ONLY THE FITTED COINS. Every measurement that says
 this logic works -- 100% of reachable signals recovered, 100% win rate,
@@ -41,6 +42,22 @@ their own break-even at p<0.05, and the first live run of the whole
 board lost twelve trades out of fifteen, every one of them on borrowed
 logic. --all-coins is there because it was asked for; it is not the
 default because it has not been shown to work.
+
+A FITTED MODEL GOES STALE. It reproduces 100% of the trades in the
+window it was shown, but that window stops moving the moment the fit
+finishes, and the market does not. Measured honestly -- fp/full.py's
+oof_gate(), several expanding folds walked forward in time, isotonic
+calibration, no lookahead -- confidence on genuinely unseen bars falls
+the CLOSER the held-out fold sits to the present, the signature of a
+regime the training window never saw. So this drives its own retraining
+by default: every --retrain-hours (24 by default, live mode only), it
+pulls whatever bars Bybit has produced since the last cycle, folds them
+into the cache, and reruns the exact fp/full.py pipeline this session
+built -- the 100%-recovery, 100%-win requirement on all data then in the
+cache is enforced identically every time, it is just that "all data"
+keeps growing. On success the running bot swaps in the freshly fitted
+models without a restart. See fp/retrain.py for the mechanism and why a
+single fixed fit cannot be the end state of this design.
 
 Ctrl+C prints the session summary, open positions included.
 """
@@ -60,6 +77,7 @@ for _v in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS",
 import argparse
 import signal
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -69,6 +87,7 @@ import pandas as pd
 
 from fp import costs as C
 from fp import full as FU
+from fp import retrain as RT
 from fp import universe as U
 from fp.live_full import Decision, FullLogic
 
@@ -336,6 +355,52 @@ class Account:
         self.closed.append(c)
         self.open.pop(p.symbol, None)
         return c
+
+
+class LogicHolder:
+    """The live FullLogic, swappable in place without a restart.
+
+    CPython attribute assignment is atomic under the GIL, so the scan
+    loop reading `holder.logic` and the retrain thread writing it never
+    tears -- the loop always sees either the old, fully-formed object or
+    the new one, never a half-built one.
+    """
+
+    def __init__(self, logic: FullLogic):
+        self.logic = logic
+
+
+def retrain_worker(holder: LogicHolder, symbols, hours: float,
+                   stop_event: threading.Event) -> None:
+    """Refresh the cache and refit on a schedule; swap the logic in.
+
+    Runs fp.retrain.cycle(), which is itself a subprocess call to
+    `python -m fp.full --fresh` -- fitting happens in a CHILD process,
+    so this thread only blocks waiting for it, and the fitting pipeline's
+    own memory history (the OOM history fp/full.py's comments record)
+    never touches a bot that may already have been running for days.
+    """
+    while not stop_event.wait(hours * 3600):
+        try:
+            ok = RT.cycle(symbols, log=lambda s: print(s, flush=True))
+        except Exception as exc:
+            print(f"  retrain cycle raised: {exc}", flush=True)
+            continue
+        if not ok:
+            print("  retrain cycle failed; keeping the current models",
+                  flush=True)
+            continue
+        fitted_now = sorted({f.name.split(".")[0]
+                             for f in FU.MODELS.glob("*.pkl*")})
+        if symbols:
+            fitted_now = [s for s in fitted_now if s in symbols]
+        if not fitted_now:
+            print("  retrain produced no models; keeping the current ones",
+                  flush=True)
+            continue
+        holder.logic = FullLogic(fitted_now)
+        print(f"  retrain cycle complete: {len(fitted_now)} coin(s) "
+              f"reloaded, live from the next scan", flush=True)
 
 
 # --------------------------------------------------------------------- loop
@@ -635,6 +700,9 @@ def main():
                     help="walk cached history instead of live Bybit")
     ap.add_argument("--replay-start", type=int, default=1500)
     ap.add_argument("--replay-steps", type=int, default=4000)
+    ap.add_argument("--retrain-hours", type=float, default=24.0,
+                    help="refresh the cache and refit on this cadence "
+                         "(live mode only); 0 disables it")
     a = ap.parse_args()
 
     fitted = sorted({f.name.split(".")[0]
@@ -643,7 +711,8 @@ def main():
         print("No fitted logic in fp/models/. Build it first:\n\n"
               "    python -m fp.full\n", file=sys.stderr)
         return 2
-    logic = FullLogic(fitted)
+    holder = LogicHolder(FullLogic(fitted))
+    logic = holder.logic       # for the startup banner below only
 
     print("=" * 78)
     print("  PAPER TRADING fp/full.py  --  virtual money, real prices")
@@ -712,11 +781,33 @@ def main():
         print(f"  logic:    {len(fitted)} fitted models"
               + (f"; {len(borrowed)} coins scored by borrowed logic"
                  if borrowed else " -- every coin traded by its own"))
+        if a.retrain_hours > 0:
+            print(f"  retrain:  every {a.retrain_hours:.1f}h, models "
+                  f"swapped in live -- see fp/retrain.py")
     print("=" * 78, flush=True)
     acct = Account(equity=a.equity, start=a.equity)
     panel: dict = {}
     started = time.time()
     stop = {"flag": False}
+    retrain_stop = threading.Event()
+    retrain_thread = None
+    # Only against live Bybit, never in replay: a scheduled cycle would
+    # try to fetch fresh candles into a run that is deliberately walking
+    # OLD cached bars, and a model swap mid-replay would silently change
+    # which logic scored which minute.
+    if not a.replay and a.retrain_hours > 0:
+        # Retrain always targets the coins already SEEDED with history
+        # in the cache (None -> fp.full processes whatever is there),
+        # never the live scan's symbol list -- in --all-coins mode that
+        # list is ~700 tickers, most with no cached bars at all, and
+        # refresh_cache would try to backfill each one from scratch.
+        # Retraining keeps the fitted logic current; it does not onboard
+        # a new coin, which needs its own seeded history first.
+        retrain_thread = threading.Thread(
+            target=retrain_worker, args=(holder, None, a.retrain_hours,
+                                         retrain_stop),
+            daemon=True)
+        retrain_thread.start()
 
     def onint(*_):
         stop["flag"] = True
@@ -727,7 +818,8 @@ def main():
             t0 = time.time()
             try:
                 batch = rotation.next_batch() if rotation else symbols
-                scan(feed, logic, acct, batch, panel, reference=fitted)
+                scan(feed, holder.logic, acct, batch, panel,
+                    reference=fitted)
             except Exception as exc:                      # keep trading
                 print(f"  scan error: {exc}", flush=True)
             if a.once:
@@ -742,6 +834,7 @@ def main():
             elif len(acct.closed) and len(acct.closed) % 25 == 0:
                 dashboard(acct, panel, started)
     finally:
+        retrain_stop.set()
         summary(acct, panel)
     return 0
 

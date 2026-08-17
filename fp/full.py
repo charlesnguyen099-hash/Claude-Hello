@@ -476,6 +476,96 @@ def calibrate_gate(pred_side, conf, truth_side):
     return float(np.max(conf[err])), int(err.sum())
 
 
+def oof_gate(X, side, p_be, log=print, n_folds: int = 4, span: float = 0.5):
+    """A confidence floor measured across several regimes, not one.
+
+    THIS IS THE 17 LOSING LIVE TRADES, TRACED TO ITS SOURCE. calibrate_gate()
+    reads the gate off the SAME model scored on the SAME rows it was fit to
+    reproduce -- and the capacity ladder escalates specifically until
+    recovery hits 100% on those rows, so its errors there are exactly zero
+    by construction. The gate it produces, `confidence of the worst
+    mistake`, has no mistake to find and lands at 0.0000: every model
+    shipped this way admits every signal, at any confidence, because the
+    number meant to filter them was measured on a model that had already
+    memorised the answer key. Live, on genuinely new bars, that memorised
+    shape can be wrong far more than half the time -- the operator's own
+    ledger: 21 won, 17 lost, every one called at gate 0.0000.
+
+    A SINGLE held-out fold turned out to be its own trap. The first
+    version of this function used one 80/20 split, and on XAUUSDT it
+    measured 30.34% accuracy -- worse than a coin flip -- with the
+    single worst miss pinning the gate at 1.0000, which would have
+    stopped the coin trading at all. Walking the split forward in time
+    (55/65/75/85% cuts) showed why: accuracy fell from 49% to 34%
+    monotonically as the held-out window moved closer to the present,
+    the signature of a trend the training window never saw. One fold
+    answers "was this particular stretch of market kind to the model",
+    not "is the model any good" -- and a single overconfident miss in
+    that one fold can disable a coin on pure noise.
+
+    So this walks SEVERAL expanding folds across the back half of the
+    timeline -- each trained on everything before it, scored on the
+    slice after -- and pools every (confidence, right/wrong) pair across
+    all of them. The threshold is read off an ISOTONIC fit of confidence
+    to calibrated accuracy over that pooled, multi-regime sample, not
+    the single worst point in it. The gate is the lowest confidence at
+    which calibrated accuracy clears the coin's OWN break-even
+    probability `p_be` -- below it the model has been measured, on bars
+    it never trained on, to lose money after fees; above it, to clear
+    its own cost. If no confidence clears that bar, the honest answer is
+    that this shape has no live edge right now, and the gate is 1.0 --
+    not traded, rather than traded on a memorised shape that does not
+    hold up going forward. Stake and leverage are untouched by any of
+    this and still ride potential exactly as before; this only decides
+    whether a setup is trusted enough to be sized at all.
+    """
+    from sklearn.ensemble import HistGradientBoostingClassifier
+    from sklearn.isotonic import IsotonicRegression
+    n = len(X)
+    start = int(n * (1.0 - span))
+    if n - start < 4000:
+        return 0.0, 0, float("nan")
+    cuts = np.linspace(start, n - 1, n_folds + 1)[:-1].astype(int)
+    step = max((n - start) // n_folds, 1000)
+    confs, oks = [], []
+    for cut in cuts:
+        stop = min(cut + step, n)
+        if stop - cut < 500 or cut < 2000:
+            continue
+        m = HistGradientBoostingClassifier(random_state=0, **BASE, **LADDER[0])
+        m.fit(X[:cut], side[:cut])
+        proba = m.predict_proba(X[cut:stop])
+        cls = list(m.classes_)
+        w = stop - cut
+        pl = proba[:, cls.index(1)] if 1 in cls else np.zeros(w)
+        ps = proba[:, cls.index(-1)] if -1 in cls else np.zeros(w)
+        p0 = proba[:, cls.index(0)] if 0 in cls else np.zeros(w)
+        pred = np.where(pl >= ps, 1, -1).astype("int8")
+        c = np.maximum(pl, ps)
+        pred = np.where(c > p0, pred, 0).astype("int8")
+        truth = side[cut:stop]
+        took = pred != 0
+        confs.append(c[took])
+        oks.append((pred[took] == truth[took]).astype(float))
+        del m
+        gc.collect()
+    if not confs or sum(len(a) for a in confs) < 300:
+        return 0.0, 0, float("nan")
+    conf_all = np.concatenate(confs)
+    ok_all = np.concatenate(oks)
+    acc = float(ok_all.mean())
+    iso = IsotonicRegression(out_of_bounds="clip", y_min=0.0, y_max=1.0)
+    iso.fit(conf_all, ok_all)
+    grid = np.linspace(0.0, 1.0, 201)
+    passing = grid[iso.predict(grid) >= p_be]
+    gate = float(passing.min()) if len(passing) else 1.0
+    n_err = int((ok_all < 0.5).sum())
+    log(f"      held-out gate: {len(conf_all):,} calls across "
+        f"{len(confs)} folds, {n_err:,} wrong (pooled accuracy "
+        f"{100*acc:.2f}%, need {100*p_be:.2f}%) -> gate {gate:.4f}")
+    return gate, n_err, acc
+
+
 def edge_of(conf, profit, mae, cost, floor=FLOOR):
     """Expected return on one unit of margin at 1x, per bar."""
     gain = np.maximum(profit - cost, 0.0)
@@ -709,6 +799,19 @@ def main():
         if models is None:
             print("    could not fit")
             continue
+        # The gate that ships to the live bot is measured on a fold
+        # this coin's classifier never trained on -- see oof_gate()'s
+        # docstring for why the same-rows gate is not a filter at all.
+        cached_live = (cached_blob or {}).get("meta", {}).get("live_gate") \
+            if cached_blob is not None else None
+        if cached_live is not None:
+            live_gate, live_n_err, live_acc = (
+                cached_live, cached_blob["meta"].get("live_n_err", 0),
+                cached_blob["meta"].get("live_acc", float("nan")))
+        else:
+            p_be = float(C.break_even(FLOOR, float(np.nanmedian(cost_v))))
+            live_gate, live_n_err, live_acc = oof_gate(
+                Xg, side[ok], p_be, log=lambda s: print(s, flush=True))
         eq, trades, wins, psd, score, gate, n_err, edge_ref = replay(
             d.iloc[ok], Xg, models, cost_v[ok], lev_cap,
             truth_side=side[ok])
@@ -728,6 +831,10 @@ def main():
                  if n_blind else ""))
         print(f"    confidence gate   : {gate:.4f} "
               f"(fitted to clear {n_err:,} false positives)")
+        print(f"    LIVE gate         : {live_gate:.4f} "
+              f"(held-out accuracy {100*live_acc:.2f}% on "
+              f"{live_n_err:,} unseen mistakes) -- this is what the bot "
+              f"actually uses")
         if nt:
             nets = np.array([t[3] for t in trades])
             levs = np.array([t[5] for t in trades])
@@ -786,7 +893,9 @@ def main():
             # a result.
             save(report)
             save_models(sym, models, dict(
-                gate=float(gate), edge_ref=float(edge_ref),
+                gate=float(gate), live_gate=float(live_gate),
+                live_n_err=int(live_n_err), live_acc=float(live_acc),
+                edge_ref=float(edge_ref),
                 lev_cap=float(lev_cap),
                 cost=float(np.nanmedian(cost_v)), horizon=HORIZON,
                 floor=FLOOR, min_stake=MIN_STAKE, max_stake=MAX_STAKE,

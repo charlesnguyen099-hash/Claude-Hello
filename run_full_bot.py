@@ -204,6 +204,10 @@ class Position:
     peak: float = 0.0
     high: float = 0.0
     low: float = 0.0
+    # The timestamp of the last CLOSED bar this position was updated on.
+    # Scans run every 20s but a 1-minute bar changes once a minute, so
+    # counting scans counted the same bar three times.
+    last_bar: object = None
 
     def move(self, price: float) -> float:
         return (price / self.entry - 1.0) * self.dec.side
@@ -249,6 +253,11 @@ class Account:
     closed: list = field(default_factory=list)
     fees_paid: float = 0.0
     rejected: int = 0
+    # Bar a coin was last acted on, so the same candle is never traded
+    # twice. Without it the bot re-entered SNDKUSDT three times off one
+    # bar -- same entry 1,773.26, same exit, three sets of fees -- and
+    # BLESSUSDT twice off another.
+    last_action: dict = field(default_factory=dict)
     # Below this a trade is dust: the fee is a bigger share of it than
     # any move it could make.
     min_margin: float = 0.01
@@ -362,6 +371,10 @@ def scan(feed, logic: FullLogic, acct: Account, symbols, panel,
         df = panel.get(s)
         if df is None or df.empty:
             continue
+        stamp = df.index[-1]
+        if p.last_bar is not None and stamp == p.last_bar:
+            continue                 # same candle, nothing new to judge
+        p.last_bar = stamp
         bar = df.iloc[-1]
         p.bars_held += 1
         p.high = max(p.high, float(bar["high"]))
@@ -386,7 +399,15 @@ def scan(feed, logic: FullLogic, acct: Account, symbols, panel,
         df = panel.get(s)
         if df is None or len(df) < 60:
             continue
+        stamp = df.index[-1]
+        # ONE DECISION PER CANDLE. A signal is a property of a closed
+        # bar, not of the clock: acting on it again twenty seconds later
+        # is the same trade booked twice, at the same entry, paying the
+        # round trip each time.
+        if acct.last_action.get(s) == stamp:
+            continue
         dec = logic.decide(df, panel, s)
+        acct.last_action[s] = stamp
         if dec is None:
             continue
         price = float(df["close"].iloc[-1])
@@ -394,6 +415,7 @@ def scan(feed, logic: FullLogic, acct: Account, symbols, panel,
         if p is None:
             acct.rejected += 1
             continue
+        p.last_bar = stamp
         opened_now += 1
         print(f"  OPEN  {s:<12} {'LONG' if dec.side > 0 else 'SHORT':<5} "
               f"@{price:<12.6f} pot {dec.potential:5.1f}  "

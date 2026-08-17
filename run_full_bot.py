@@ -27,10 +27,20 @@ comes from the predicted adverse excursion; the leverage ceiling is read
 from Bybit per coin. A coin trading at $0.002 and one at $100,000 run
 the same code with no constant changed.
 
-    python run_full_bot.py
-    python run_full_bot.py --symbols BTCUSDT,ETHUSDT
+    python run_full_bot.py               # the coins the logic was built on
+    python run_full_bot.py --all-coins   # the whole Bybit board, borrowed logic
     python run_full_bot.py --equity 100
     python run_full_bot.py --once        # one scan, print, exit
+
+BY DEFAULT IT TRADES ONLY THE FITTED COINS. Every measurement that says
+this logic works -- 100% of reachable signals recovered, 100% win rate,
+never liquidated -- was made on those coins and only those. Applying a
+coin's logic to a coin it was never built on is a separate claim, and
+the evidence is against it: fp/transfer.py finds 0/10 coins clearing
+their own break-even at p<0.05, and the first live run of the whole
+board lost twelve trades out of fifteen, every one of them on borrowed
+logic. --all-coins is there because it was asked for; it is not the
+default because it has not been shown to work.
 
 Ctrl+C prints the session summary, open positions included.
 """
@@ -585,8 +595,9 @@ def main():
                     help="scanned every cycle, ranked by 24h turnover")
     ap.add_argument("--sweep", type=int, default=50,
                     help="tail coins added per cycle, rotating")
-    ap.add_argument("--fitted-only", action="store_true",
-                    help="trade only coins fp/full.py fitted directly")
+    ap.add_argument("--all-coins", action="store_true",
+                    help="scan the whole Bybit board, applying fitted "
+                         "logic to coins it was not built on")
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--equity", type=float, default=10.0)
     ap.add_argument("--once", action="store_true")
@@ -641,21 +652,37 @@ def main():
             symbols = [q.strip().upper() for q in a.symbols.split(",")
                        if q.strip()]
             U.all_perpetuals(client)          # cache real leverage caps
-        elif a.fitted_only:
-            symbols = fitted
-            U.all_perpetuals(client)
-        else:
+        elif a.all_coins:
             # THE WHOLE BOARD. Every USDT perpetual Bybit lists, ranked
             # by 24h turnover, with the real per-coin leverage ceiling
-            # cached for the sizing code to read.
+            # cached for the sizing code to read. Off by default -- see
+            # below.
             symbols, caps, tvr = U.ranked(client)
             print(f"  universe: {len(symbols)} USDT perpetuals from Bybit")
+            print("  WARNING: borrowed logic. On the first live run of "
+                  "the whole board")
+            print("  all twelve losses came from a logic built on a "
+                  "different coin,")
+            print("  and no fitted coin closed red. fp/transfer.py "
+                  "measures the same")
+            print("  thing: 0/10 coins clear their own break-even at "
+                  "p<0.05.")
+        else:
+            # THE DEFAULT IS THE COINS THE LOGIC WAS BUILT ON. Every
+            # measurement that says this works -- 100% recovery, 100%
+            # win, never liquidated -- was made on these nine and only
+            # these nine. Trading elsewhere is a separate, unproven
+            # claim, so it is opt-in rather than the default.
+            symbols = fitted
+            U.all_perpetuals(client)      # real leverage caps per coin
         rotation = U.Rotation(symbols, top=a.top, slice_size=a.sweep)
         print(f"  scanning: top {len(rotation.top)} every cycle, "
               f"{len(rotation.tail)} more in slices of {a.sweep} "
               f"(full sweep every {rotation.cycles_for_full_sweep} cycles)")
-        print(f"  logic:    {len(fitted)} fitted models; coins without one "
-              f"are scored by unanimous vote of all {len(fitted)}")
+        borrowed = [q for q in symbols if q not in set(fitted)]
+        print(f"  logic:    {len(fitted)} fitted models"
+              + (f"; {len(borrowed)} coins scored by borrowed logic"
+                 if borrowed else " -- every coin traded by its own"))
     print("=" * 78, flush=True)
     acct = Account(equity=a.equity, start=a.equity)
     panel: dict = {}

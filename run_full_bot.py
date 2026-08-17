@@ -521,8 +521,12 @@ def summary(acct: Account, panel):
                   f"{p.dec.leverage:>5.1f}x{100*p.dec.stake:>6.0f}%"
                   f"{100*m:>+8.2f}%{m * p.notional:>+11.4f}")
 
-    wins = [c for c in acct.closed if c.pnl > 0]
-    losses = [c for c in acct.closed if c.pnl <= 0]
+    # Three outcomes, not two. A trade the break-even ratchet closes at
+    # zero neither won nor lost, and lumping it in with the losses hides
+    # whether anything actually lost money.
+    wins = [c for c in acct.closed if c.pnl > 1e-9]
+    flat = [c for c in acct.closed if abs(c.pnl) <= 1e-9]
+    losses = [c for c in acct.closed if c.pnl < -1e-9]
     if acct.closed:
         by = {}
         for c in acct.closed:
@@ -556,6 +560,9 @@ def summary(acct: Account, panel):
             w = sum(1 for c in cs if c.pnl > 0)
             print(f"    {sym:<14} {len(cs):>4} trades   won {w}/{len(cs)}   "
                   f"pnl ${sum(c.pnl for c in cs):+.4f}")
+        if flat:
+            print(f"\n  FLAT (closed at break-even by the ratchet): "
+                  f"{len(flat)}")
         if losses:
             print(f"\n  LOSING TRADES: {len(losses)}")
             for c in losses:
@@ -571,8 +578,8 @@ def summary(acct: Account, panel):
     print(f"  realised ${acct.equity:.4f}   ({acct.equity - acct.start:+.4f})")
     print(f"  mark     ${eq:.4f}   ({100.0*(eq/acct.start-1.0):+.2f}%)")
     print(f"  trades   {len(acct.closed)} closed, {len(acct.open)} open   "
-          f"wins {len(wins)}"
-          + (f" ({100.0*len(wins)/len(acct.closed):.1f}%)"
+          f"won {len(wins)}, flat {len(flat)}, lost {len(losses)}"
+          + (f"   ({100.0*len(wins)/len(acct.closed):.1f}% won)"
              if acct.closed else ""))
     print(f"  fees     ${acct.fees_paid:.4f}")
     print(f"  capital  committed ${acct.committed:.4f}, "

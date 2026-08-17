@@ -344,7 +344,7 @@ def opportunities(d: pd.DataFrame, cost: np.ndarray, horizon: int = HORIZON,
 
 # ------------------------------------------------------------------ learn
 def learn(X, side, profit, mae, seed: int = 0, log=print,
-          max_rungs: int = len(LADDER)):
+          max_rungs: int = len(LADDER), only_rung: int = 0):
     """Three models: which way, how far, and how much pain on the way.
 
     All three read only the 200 columns at the entry bar. Nothing about
@@ -363,8 +363,19 @@ def learn(X, side, profit, mae, seed: int = 0, log=print,
     if live.sum() < 200:
         return None
 
+    # A coin whose best rung is already known should not spend an hour
+    # re-proving that the cheaper ones fall short. BTCUSDT needs the
+    # widest rung: at 848,640 rows it has 8.3x another coin's data, so
+    # 96 leaves gives it an eighth of the decision regions per row that
+    # the same setting gives a 100k-bar coin, and it recovers 92.70%
+    # where they reach 100%.
+    rungs = list(enumerate(LADDER, 1))
+    if only_rung:
+        rungs = [r for r in rungs if r[0] == only_rung] or rungs[-1:]
+    else:
+        rungs = rungs[:max_rungs]
     best, best_rec = None, -1.0
-    for rung, extra in enumerate(LADDER[:max_rungs], 1):
+    for rung, extra in rungs:
         gc.collect()
         try:
             m = HistGradientBoostingClassifier(random_state=seed,
@@ -546,25 +557,32 @@ def replay(d, X, models, cost_v, lev_cap, equity=1.0, floor=FLOOR,
                 hit, move = "target", target + c
                 break
             peak = max(peak, fav)
+            cur = (close[j] / entry - 1.0) * s
             # Trail out only at a level that actually pays. Without this
             # guard a wide trail on a barely-profitable peak books a
             # small LOSS, which is where 103 of BLESS's 4,827 losses came
             # from, none worse than -1.4%.
             if peak - trail > c:
-                cur = (close[j] / entry - 1.0) * s
                 if peak - cur >= trail:
                     hit, move = "trail", peak - trail
                     break
-            # THE STOP IS UNCONDITIONAL. It used to be skipped once the
-            # trade had been in profit, on the reasoning that the trail
-            # would take over -- but the trail is disabled while the peak
-            # is too small to exit above cost, and in that gap a position
-            # had NO protection at all. One BLESS trade rode to the
-            # horizon for -203.94%: past liquidation, off a logic that
-            # was otherwise winning 99.9%. A stop that switches itself
-            # off is not a stop.
-            if adv >= stop_frac:
-                hit, move = "stop", -stop_frac
+            # THE STOP IS UNCONDITIONAL, and it RATCHETS. Unconditional
+            # because a stop that switches itself off once a trade is in
+            # profit is how one BLESS trade rode to -203.94%. Ratcheting
+            # because of the opposite failure: BTCUSDT's only two losses
+            # in 2,665 trades were true opportunities -- gate 0.0000, no
+            # false positives -- whose predicted target overshot the
+            # actual peak, leaving a trail too wide to arm, so a trade
+            # that had been in profit ran all the way back to the stop
+            # for -14.4% of margin.
+            #
+            # Once a trade has been up by more than the round trip, the
+            # exit floor moves to break-even. A winner is not allowed to
+            # become a loser. This is a stop moved to entry, which is
+            # what any desk does, and it can only ever improve an exit.
+            guard = c if peak >= floor + c else -stop_frac
+            if cur <= guard:
+                hit, move = ("breakeven" if guard >= 0 else "stop"), guard
                 break
             j += 1
         if hit == "time":
@@ -584,14 +602,24 @@ def main():
     cap_memory()
     args = sys.argv[1:]
     fresh = "--fresh" in args
+    # Re-run the replay against a model already on disk. A fit is the
+    # expensive half; changing an exit rule should not cost forty
+    # minutes of refitting to find out what it did.
+    reuse = "--reuse" in args
     # Stop climbing after N rungs. Useful when a coin's best rung is
     # already known and the rest of the ladder only costs time -- or,
     # as with BTCUSDT, actively makes it worse.
-    max_rungs = len(LADDER)
+    max_rungs, only_rung = len(LADDER), 0
+    drop = set()
     for i, t in enumerate(args):
-        if t == "--rungs" and i + 1 < len(args):
-            max_rungs = max(1, int(args[i + 1]))
-    args = [t for t in args if not t.isdigit() or t != str(max_rungs)]
+        if t in ("--rungs", "--rung") and i + 1 < len(args):
+            v = max(1, int(args[i + 1]))
+            drop.add(i + 1)
+            if t == "--rungs":
+                max_rungs = v
+            else:
+                only_rung = v
+    args = [t for i, t in enumerate(args) if i not in drop]
     syms = [a for a in args if not a.startswith("-")]
     P = D.load()
     if syms:
@@ -649,10 +677,15 @@ def main():
             Xg = np.ascontiguousarray(X[ok])
         del X
         gc.collect()
-        print(f"    fitting on {Xg.nbytes/2**20:,.0f} MB", flush=True)
-        models = learn(Xg, side[ok], profit[ok], mae[ok],
-                       log=lambda s: print(s, flush=True),
-                       max_rungs=max_rungs)
+        cached_blob = load_models(sym) if reuse else None
+        if cached_blob is not None:
+            print(f"    reusing saved model", flush=True)
+            models = cached_blob["models"]
+        else:
+            print(f"    fitting on {Xg.nbytes/2**20:,.0f} MB", flush=True)
+            models = learn(Xg, side[ok], profit[ok], mae[ok],
+                           log=lambda s: print(s, flush=True),
+                           max_rungs=max_rungs, only_rung=only_rung)
         if models is None:
             print("    could not fit")
             continue
@@ -689,9 +722,17 @@ def main():
                 why[t[7]] = why.get(t[7], 0) + 1
             print(f"    exits             : "
                   + "  ".join(f"{k} {v}" for k, v in sorted(why.items())))
-            bad = [t for t in trades if t[3] <= 0]
+            # Won, flat and lost are three different things. A trade
+            # the ratchet takes out at exactly break-even returned
+            # nothing and cost nothing; filing it under "losers"
+            # understates the result and, worse, hides whether any
+            # trade actually lost money.
+            flat = [t for t in trades if abs(t[3]) < 1e-9]
+            bad = [t for t in trades if t[3] < -1e-9]
+            print(f"    won {nt - len(flat) - len(bad):,}   "
+                  f"flat {len(flat):,}   LOST {len(bad):,}")
             if bad:
-                print(f"    LOSERS            : {len(bad)} -- "
+                print(f"    losing trades     : "
                       + ", ".join(f"{t[7]} {100*t[3]:+.1f}%"
                                   for t in bad[:6]))
             # Leverage is only safe if the stop lands inside the
@@ -731,9 +772,14 @@ def main():
                 floor=FLOOR, min_stake=MIN_STAKE, max_stake=MAX_STAKE,
                 lev_floor=LEV_FLOOR, liq_safety=LIQ_SAFETY,
                 win_rate=wins / nt, trades=nt))
+            # Report the file that was actually written. This line
+            # still pointed at the uncompressed name after save_models
+            # switched to .pkl.gz, so BTCUSDT finished a forty-minute
+            # fit, saved correctly, and then died on its own success
+            # message -- the one place a crash costs the most.
+            saved = MODELS / f"{sym}.pkl.gz"
             print(f"    saved model       : "
-                  f"{(MODELS / (sym + '.pkl')).stat().st_size / 2**20:,.0f} MB",
-                  flush=True)
+                  f"{saved.stat().st_size / 2**20:,.0f} MB", flush=True)
         del Xg, models
         gc.collect()
 

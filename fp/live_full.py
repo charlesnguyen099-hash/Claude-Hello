@@ -219,8 +219,13 @@ class FullLogic:
         peak = max(peak, fav)
         if peak - dec.trail > dec.cost and peak - cur >= dec.trail:
             return "trail", peak - dec.trail
-        if adv >= dec.stop:
-            return "stop", -dec.stop
+        # The stop ratchets to break-even once the trade has been up by
+        # more than the round trip: a winner is not allowed to become a
+        # loser. See fp/full.py -- BTCUSDT's only two losses in 2,665
+        # trades were exactly this, and both were true opportunities.
+        guard = dec.cost if peak >= FU.FLOOR + dec.cost else -dec.stop
+        if cur <= guard:
+            return ("breakeven" if guard >= 0 else "stop"), guard
         if bars_held >= dec.hold_limit:
             return "time", cur
         return None, peak

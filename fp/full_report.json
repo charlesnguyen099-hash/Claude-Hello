@@ -11,6 +11,18 @@
   "win_rate": 1.0,
   "worst_trade": 4.578683956476223e-06
  },
+ "BTCUSDT": {
+  "bars": 848640,
+  "equity": 8.4269067757523e+43,
+  "max_profit": 0.1931180971657797,
+  "min_profit": 0.010000004245025933,
+  "opportunities": 733795,
+  "reachable": 733494,
+  "recovered": 733494,
+  "trades": 2669,
+  "win_rate": 0.9981266391907081,
+  "worst_trade": 0.0
+ },
  "ETHUSDT": {
   "bars": 102656,
   "equity": 6622948.900347126,

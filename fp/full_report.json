@@ -1,50 +1,50 @@
 {
  "BLESSUSDT": {
-  "bars": 182335,
-  "equity": 1.7196161681614055e+178,
+  "bars": 212575,
+  "equity": 5.249588802163431e+195,
   "max_profit": 3.405171140191751,
-  "min_profit": 0.010000482511338376,
-  "opportunities": 181937,
-  "reachable": 176605,
-  "recovered": 176605,
-  "trades": 8441,
-  "win_rate": 0.9934841843383485,
+  "min_profit": 0.010000401789668174,
+  "opportunities": 212174,
+  "reachable": 203646,
+  "recovered": 203646,
+  "trades": 9023,
+  "win_rate": 0.9936828105951457,
   "worst_trade": 0.0
  },
  "BTCUSDT": {
   "bars": 848640,
-  "equity": 3.2690191466074145e+43,
+  "equity": 5.700741596288428e+42,
   "max_profit": 0.1931180971657797,
   "min_profit": 0.010000004245025933,
   "opportunities": 733795,
   "reachable": 733494,
   "recovered": 733494,
-  "trades": 2668,
-  "win_rate": 0.9988755622188905,
+  "trades": 2652,
+  "win_rate": 0.9996229260935143,
   "worst_trade": 0.0
  },
  "ETHUSDT": {
-  "bars": 182335,
-  "equity": 9370102196.959602,
+  "bars": 212575,
+  "equity": 908922472841.0945,
   "max_profit": 0.13712997108499758,
   "min_profit": 0.010000157774286535,
-  "opportunities": 170426,
-  "reachable": 170126,
-  "recovered": 170126,
-  "trades": 712,
+  "opportunities": 199686,
+  "reachable": 199385,
+  "recovered": 199385,
+  "trades": 903,
   "win_rate": 1.0,
-  "worst_trade": 0.00010716250158122771
+  "worst_trade": 3.7951295329265823e-06
  },
  "HYPEUSDT": {
-  "bars": 182335,
-  "equity": 7.052160375034043e+22,
+  "bars": 212575,
+  "equity": 1.8656058653578115e+26,
   "max_profit": 0.2287599014310859,
   "min_profit": 0.010000110135081165,
-  "opportunities": 181889,
-  "reachable": 181566,
-  "recovered": 181566,
-  "trades": 1536,
-  "win_rate": 0.9915364583333334,
+  "opportunities": 211957,
+  "reachable": 211633,
+  "recovered": 211633,
+  "trades": 1788,
+  "win_rate": 0.9932885906040269,
   "worst_trade": 0.0
  },
  "SKHYNIXUSDT": {
@@ -72,16 +72,16 @@
   "worst_trade": 0.0
  },
  "SOLUSDT": {
-  "bars": 182335,
-  "equity": 4451838231032.067,
+  "bars": 212575,
+  "equity": 3200466347748740.5,
   "max_profit": 0.13111304264711493,
   "min_profit": 0.010000009015416584,
-  "opportunities": 176091,
-  "reachable": 175706,
-  "recovered": 175706,
-  "trades": 811,
+  "opportunities": 206162,
+  "reachable": 205773,
+  "recovered": 205773,
+  "trades": 940,
   "win_rate": 1.0,
-  "worst_trade": 1.1736937939108985e-05
+  "worst_trade": 1.7290933902882218e-05
  },
  "SOXLUSDT": {
   "bars": 121855,
@@ -96,27 +96,27 @@
   "worst_trade": 0.0
  },
  "XAUUSDT": {
-  "bars": 182335,
-  "equity": 290.41809645859536,
-  "max_profit": 0.053081151293020566,
+  "bars": 212575,
+  "equity": 14739.89777323055,
+  "max_profit": 0.09281775052268408,
   "min_profit": 0.010000061350907353,
-  "opportunities": 104911,
-  "reachable": 100394,
-  "recovered": 100394,
-  "trades": 260,
+  "opportunities": 128563,
+  "reachable": 122818,
+  "recovered": 122818,
+  "trades": 353,
   "win_rate": 1.0,
-  "worst_trade": 6.3223825990124665e-06
+  "worst_trade": 0.00013056766376416069
  },
  "XRPUSDT": {
-  "bars": 182335,
-  "equity": 4090385009.744935,
+  "bars": 212575,
+  "equity": 196556662291.2276,
   "max_profit": 0.14336827489893564,
   "min_profit": 0.010000369877975469,
-  "opportunities": 169096,
-  "reachable": 168699,
-  "recovered": 168699,
-  "trades": 677,
-  "win_rate": 0.9985228951255539,
-  "worst_trade": 0.0
+  "opportunities": 198111,
+  "reachable": 197704,
+  "recovered": 197704,
+  "trades": 811,
+  "win_rate": 1.0,
+  "worst_trade": 3.358626763323252e-05
  }
 }

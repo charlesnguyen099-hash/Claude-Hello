@@ -29,12 +29,12 @@ from fp import full as FU
 # the report BEFORE this session's merge. A coin not listed here gained
 # no new history in this drop and has nothing to test.
 PRIOR_START = {
-    "BLESSUSDT": "2026-04-08T17:00:00Z",
-    "ETHUSDT": "2026-04-08T17:00:00Z",
-    "HYPEUSDT": "2026-04-08T17:00:00Z",
-    "SOLUSDT": "2026-04-08T17:00:00Z",
-    "XAUUSDT": "2026-04-08T17:00:00Z",
-    "XRPUSDT": "2026-04-08T17:00:00Z",
+    "BLESSUSDT": "2026-03-18T17:00:00Z",
+    "ETHUSDT": "2026-03-18T17:00:00Z",
+    "HYPEUSDT": "2026-03-18T17:00:00Z",
+    "SOLUSDT": "2026-03-18T17:00:00Z",
+    "XAUUSDT": "2026-03-18T17:00:00Z",
+    "XRPUSDT": "2026-03-18T17:00:00Z",
 }
 
 

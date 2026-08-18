@@ -27,9 +27,15 @@ CACHE = HERE.parent / "data" / "instruments.json"
 
 
 def all_perpetuals(client, quote: str = "USDT") -> dict:
-    """Every tradable linear perpetual, with its real leverage ceiling.
+    """Every tradable linear perpetual, with its real leverage ceiling
+    AND the exchange's own minimum order size.
 
-    Returns {symbol: {"max_leverage": float, "min_leverage": float}}.
+    Returns {symbol: {"max_leverage", "min_leverage", "min_qty",
+    "qty_step", "min_notional"}}. The order-size fields matter because
+    the operator's sizing floor is "5% of capital available right now,
+    AND whatever the coin's own minimum order requires, combined with
+    leverage" -- the second half needs Bybit's actual numbers, not a
+    guess, and they differ per coin the same way leverage does.
     Paginated to the end -- a partial page is a partial market.
     """
     out, cursor = {}, None
@@ -52,9 +58,15 @@ def all_perpetuals(client, quote: str = "USDT") -> dict:
             if x.get("contractType") != "LinearPerpetual":
                 continue
             lf = x.get("leverageFilter", {}) or {}
+            ls = x.get("lotSizeFilter", {}) or {}
             out[s] = {
                 "max_leverage": float(lf.get("maxLeverage", 1) or 1),
                 "min_leverage": float(lf.get("minLeverage", 1) or 1),
+                "min_qty": float(ls.get("minOrderQty", 0) or 0),
+                "qty_step": float(ls.get("qtyStep", 0) or 0),
+                # Bybit's field for this has moved before; try the
+                # current name and fall back to 0, never crash on it.
+                "min_notional": float(ls.get("minNotionalValue", 0) or 0),
             }
         cursor = res.get("nextPageCursor")
         if not cursor or not rows:

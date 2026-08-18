@@ -120,6 +120,35 @@ def max_leverage(symbol: str) -> float:
         return DEFAULT_MAX_LEVERAGE
 
 
+# Bybit's common floor for a linear USDT perpetual, used only when the
+# instruments cache has nothing for a symbol -- missing data should make
+# an order request MORE conservative, never less.
+DEFAULT_MIN_NOTIONAL = 5.0
+
+
+def min_notional(symbol: str, price: float = 0.0) -> float:
+    """The smallest position value Bybit will accept on this symbol.
+
+    Two numbers on the exchange can bind: a minimum ORDER VALUE
+    (min_notional directly) and a minimum ORDER QUANTITY (min_qty,
+    which only becomes a dollar figure once multiplied by price). This
+    returns whichever is larger, in dollars, so a caller has one number
+    to compare margin x leverage against. Falls back to
+    DEFAULT_MIN_NOTIONAL when the cache has nothing usable for this
+    symbol, rather than falling back to zero -- a silent zero floor
+    would let a trade below the exchange's real minimum through and
+    fail at the order, not here.
+    """
+    try:
+        row = json.loads(CACHE.read_text())[symbol]
+        by_value = float(row.get("min_notional", 0) or 0)
+        by_qty = float(row.get("min_qty", 0) or 0) * price
+        best = max(by_value, by_qty)
+        return best if best > 0 else DEFAULT_MIN_NOTIONAL
+    except Exception:
+        return DEFAULT_MIN_NOTIONAL
+
+
 def refresh(client, symbols) -> dict:
     """Pull the real per-symbol limits and cache them."""
     out = {}

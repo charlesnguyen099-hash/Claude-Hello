@@ -277,16 +277,6 @@ class Account:
     # bar -- same entry 1,773.26, same exit, three sets of fees -- and
     # BLESSUSDT twice off another.
     last_action: dict = field(default_factory=dict)
-    # The operator's floor: no trade opens for less than this share of
-    # CURRENT equity, whatever else is already committed. fp.full's
-    # potential formula already guarantees dec.stake >= MIN_STAKE
-    # (0.05), so this restates that contract at the account level rather
-    # than introducing a second number that could drift from it.
-    min_stake_frac: float = 0.05
-    # Below this a trade is dust: the fee is a bigger share of it than
-    # any move it could make. A secondary safety net, not the floor
-    # itself -- see min_stake_frac.
-    min_margin: float = 0.01
 
     @property
     def committed(self) -> float:
@@ -295,7 +285,7 @@ class Account:
 
     @property
     def free(self) -> float:
-        """What is left to open anything new with."""
+        """What is left to open anything new with -- 'vốn lúc trade'."""
         return max(self.equity - self.committed, 0.0)
 
     def can_open(self, symbol: str) -> bool:
@@ -305,40 +295,44 @@ class Account:
         return symbol not in self.open
 
     def open_position(self, dec: Decision, price: float) -> Position | None:
-        """Size against CURRENT EQUITY, capped by what is actually free.
+        """5% of capital available RIGHT NOW, never less than the
+        exchange will actually accept, never rejected for being small.
 
-        This went through two shapes and both were wrong in opposite
-        directions.
+        THE FLOOR IS RELATIVE, NOT ABSOLUTE. "Vốn lúc trade" -- the
+        capital a trade is sized against -- is whatever is free at that
+        moment, which already reflects every earlier trade: $10 start,
+        first trade at least 5% of $10 = $0.50; if that leaves $9.50
+        free, the next trade is at least 5% of $9.50 = $0.475; and so
+        on, compounding down as capital gets committed and up again as
+        positions close and profit returns to the pool. dec.stake is
+        already 5%..100% BY CONSTRUCTION (fp.full's MIN_STAKE), a
+        fraction of THE ACCOUNT -- so `dec.stake * self.free` already
+        IS "at least 5% of capital right now" with no extra floor
+        logic needed. An earlier version multiplied against a fixed
+        equity snapshot instead and rejected trades free capital
+        couldn't cover; that answered a question nobody asked.
 
-        First it sized against TOTAL equity with nothing set aside, so a
-        potential-100 signal took "100% of the account" -- and then did
-        it again on the next coin, and the next: 88 signals across 713
-        perpetuals opened 88 positions, each sized at the whole account,
-        before a single one closed. That put a paper account at -$27.21
-        on a $10 start.
+        THE OTHER FLOOR IS THE EXCHANGE'S, NOT OURS. Bybit will not
+        open a position below that symbol's own minimum order value,
+        and that minimum turns into a MARGIN requirement once leverage
+        is applied: min_notional / leverage. If the 5%-of-free amount
+        would fall under it, the trade is bumped up to the exchange
+        minimum instead of being silently sent to fail at the order --
+        a higher-leverage setup needs less margin to clear the same
+        notional floor, which is the "kết hợp với leverage" part.
 
-        The fix sized against FREE equity instead, which stopped the
-        overcommit -- and quietly broke the operator's other rule: "mỗi
-        lệnh ít nhất 5% vốn hiện tại". dec.stake is already 5%..100% BY
-        CONSTRUCTION (fp.full's MIN_STAKE), a fraction of the WHOLE
-        account -- but multiplying it against a shrinking FREE pool
-        means the same 5%-potential signal is worth 5% of equity when
-        nothing else is open and a sliver of a sliver once several
-        coins already hold positions. Sizes kept shrinking the longer
-        the bot ran, which is what "vốn trade mỗi lệnh khá ít" was.
-
-        So the size requested is a fraction of EQUITY, matching what
-        fp.full's backtest actually measured -- and it is only GRANTED
-        up to what is free. If free capital cannot cover the 5% floor,
-        the trade is skipped this cycle rather than opened undersized;
-        shrinking below the promised floor to fit whatever is left is
-        exactly the bug this replaces.
+        The ONLY reason to skip a trade is that even the exchange's own
+        minimum does not fit in what is free -- not that our number was
+        smaller than 5% of the original stake, which is expected and
+        fine.
         """
-        margin = dec.stake * self.equity
-        floor = self.min_stake_frac * self.equity
-        if margin < floor:
-            margin = floor
-        if margin > self.free or margin < self.min_margin:
+        margin = dec.stake * self.free
+        need = C.min_notional(dec.symbol, price) / max(dec.leverage, 1e-9)
+        if margin < need:
+            margin = need
+        # margin <= 0 covers free == 0 exactly: 5% of nothing is
+        # nothing, and a zero-margin "position" is not a trade.
+        if margin <= 0 or margin > self.free:
             self.rejected += 1
             return None
         p = Position(symbol=dec.symbol, dec=dec, entry=price, margin=margin,

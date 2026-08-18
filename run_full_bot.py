@@ -277,8 +277,15 @@ class Account:
     # bar -- same entry 1,773.26, same exit, three sets of fees -- and
     # BLESSUSDT twice off another.
     last_action: dict = field(default_factory=dict)
+    # The operator's floor: no trade opens for less than this share of
+    # CURRENT equity, whatever else is already committed. fp.full's
+    # potential formula already guarantees dec.stake >= MIN_STAKE
+    # (0.05), so this restates that contract at the account level rather
+    # than introducing a second number that could drift from it.
+    min_stake_frac: float = 0.05
     # Below this a trade is dust: the fee is a bigger share of it than
-    # any move it could make.
+    # any move it could make. A secondary safety net, not the floor
+    # itself -- see min_stake_frac.
     min_margin: float = 0.01
 
     @property
@@ -298,27 +305,40 @@ class Account:
         return symbol not in self.open
 
     def open_position(self, dec: Decision, price: float) -> Position | None:
-        """Post margin out of FREE equity, never out of the total.
+        """Size against CURRENT EQUITY, capped by what is actually free.
 
-        This is the bug that put a paper account at -$27.21 on a $10
-        start. Stake was a fraction of TOTAL equity and margin was never
-        set aside, so a potential-100 signal took "100% of the account"
-        -- and then did it again on the next coin, and the next. The
-        scanner found 88 signals across 713 perpetuals and opened all
-        88, each sized at the whole account and levered up to 54x. The
-        account was committed 88 times over before a single trade
-        closed, so the first losses had nothing left to come out of.
-        fp/full.py never showed this: there, a coin trades one position
-        at a time and the equity path is sequential, so total exposure
-        can never exceed the account by construction. Live, it is 713
-        coins at once and the constraint has to be enforced.
+        This went through two shapes and both were wrong in opposite
+        directions.
 
-        Stake is now a fraction of what is FREE. When the account is
-        fully committed there is nothing to open with, which is the
-        correct answer rather than a hidden loan.
+        First it sized against TOTAL equity with nothing set aside, so a
+        potential-100 signal took "100% of the account" -- and then did
+        it again on the next coin, and the next: 88 signals across 713
+        perpetuals opened 88 positions, each sized at the whole account,
+        before a single one closed. That put a paper account at -$27.21
+        on a $10 start.
+
+        The fix sized against FREE equity instead, which stopped the
+        overcommit -- and quietly broke the operator's other rule: "mỗi
+        lệnh ít nhất 5% vốn hiện tại". dec.stake is already 5%..100% BY
+        CONSTRUCTION (fp.full's MIN_STAKE), a fraction of the WHOLE
+        account -- but multiplying it against a shrinking FREE pool
+        means the same 5%-potential signal is worth 5% of equity when
+        nothing else is open and a sliver of a sliver once several
+        coins already hold positions. Sizes kept shrinking the longer
+        the bot ran, which is what "vốn trade mỗi lệnh khá ít" was.
+
+        So the size requested is a fraction of EQUITY, matching what
+        fp.full's backtest actually measured -- and it is only GRANTED
+        up to what is free. If free capital cannot cover the 5% floor,
+        the trade is skipped this cycle rather than opened undersized;
+        shrinking below the promised floor to fit whatever is left is
+        exactly the bug this replaces.
         """
-        margin = dec.stake * self.free
-        if margin < self.min_margin or margin > self.free:
+        margin = dec.stake * self.equity
+        floor = self.min_stake_frac * self.equity
+        if margin < floor:
+            margin = floor
+        if margin > self.free or margin < self.min_margin:
             self.rejected += 1
             return None
         p = Position(symbol=dec.symbol, dec=dec, entry=price, margin=margin,
@@ -720,8 +740,13 @@ def main():
           f"how many coins")
     for q in fitted:
         m = logic.meta[q]
+        # live_gate, not gate: gate is measured on the rows the model
+        # was fit to reproduce and is ~0 by construction (see
+        # fp/full.py's oof_gate docstring); live_gate is the number
+        # this process actually compares confidence against.
+        lg = m.get("live_gate", m["gate"])
         print(f"    fitted {q:<12} lev<= {m['lev_cap']:.0f}x  "
-              f"cost {100*m['cost']:.4f}%  gate {m['gate']:.3f}  "
+              f"cost {100*m['cost']:.4f}%  live_gate {lg:.3f}  "
               f"win {100*m.get('win_rate', 0):.2f}% on "
               f"{m.get('trades', 0):,} past trades")
 

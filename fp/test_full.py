@@ -134,7 +134,12 @@ def test_ensemble_recognition():
     import fp.full as _FU
     real, _FU.call = _FU.call, fake_call
     lg = FullLogic.__new__(FullLogic)
-    meta = {"gate": 0.5, "floor": 0.01}
+    # live_gate is what ensemble_call actually compares confidence
+    # against (see fp/live_full.py); every real model file has one, so
+    # the test's synthetic meta carries one too rather than exercising
+    # the "no live_gate at all" fallback, which fp/test_scan.py covers
+    # on its own.
+    meta = {"gate": 0.5, "live_gate": 0.5, "floor": 0.01}
     try:
         # One model recognises its setup, the others see nothing. The
         # old unanimity rule silenced this; recognition trades it.

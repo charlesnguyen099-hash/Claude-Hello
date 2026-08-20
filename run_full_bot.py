@@ -466,6 +466,18 @@ def scan(feed, logic: FullLogic, acct: Account, symbols, panel,
             continue
         c = acct.close_position(p, reason, val)
         closed_now += 1
+        # Mark this bar as already acted on for s, or the entries loop
+        # below -- running later in this SAME scan() call, against this
+        # SAME just-fetched panel -- sees the coin free again (can_open
+        # is true the instant close_position pops it) and a stale
+        # last_action (frozen from before this position was opened,
+        # since the entries loop skips a symbol outright while it holds
+        # a position and never touches last_action for it) reads as "a
+        # new bar", so it reopens on the exact price that just closed.
+        # That is how one HYPEUSDT setup traded itself from $10 to
+        # $2000+ and back in twenty-second steps: not a losing signal,
+        # a signal replayed dozens of times against its own single move.
+        acct.last_action[s] = stamp
         print(f"  CLOSE {c.symbol:<12} {'LONG' if c.side > 0 else 'SHORT':<5} "
               f"{c.reason:<7} move {100*c.move:+6.2f}%  "
               f"pnl ${c.pnl:+.4f}  equity ${acct.equity:.4f}", flush=True)
@@ -506,7 +518,9 @@ def scan(feed, logic: FullLogic, acct: Account, symbols, panel,
 
 
 def dashboard(acct: Account, panel, started: float):
-    wins = [c for c in acct.closed if c.pnl > 0]
+    wins = [c for c in acct.closed if c.pnl > 1e-9]
+    flat = [c for c in acct.closed if abs(c.pnl) <= 1e-9]
+    losses = [c for c in acct.closed if c.pnl < -1e-9]
     unreal = 0.0
     for s, p in acct.open.items():
         df = panel.get(s)
@@ -516,7 +530,15 @@ def dashboard(acct: Account, panel, started: float):
     eq = acct.equity + unreal
     ret = 100.0 * (eq / acct.start - 1.0)
     up = time.time() - started
-    print(f"\n  equity ${eq:.4f}  ({ret:+.2f}%)   realised "
+    # ONE LINE, ALWAYS VISIBLE, THAT ANSWERS "IS THIS BOT WINNING OR
+    # LOSING RIGHT NOW": the operator should never have to wait for
+    # Ctrl+C or scroll back through OPEN/CLOSE lines to find out.
+    print(f"\n  P&L: {'+' if eq >= acct.start else ''}${eq - acct.start:.4f} "
+          f"({ret:+.2f}%) on ${acct.start:.2f} start   "
+          f"won {len(wins)} / flat {len(flat)} / lost {len(losses)}"
+          + (f"  ({100.0*len(wins)/len(acct.closed):.1f}% won)"
+             if acct.closed else ""))
+    print(f"  equity ${eq:.4f}  ({ret:+.2f}%)   realised "
           f"${acct.equity - acct.start:+.4f}   unrealised ${unreal:+.4f}")
     # Committed and free are printed because their absence is what let
     # the account go to -$27.21 unnoticed: 88 positions each sized at
@@ -586,6 +608,24 @@ def summary(acct: Account, panel):
     print("  SESSION SUMMARY")
     print("=" * 118)
 
+    unreal = 0.0
+    for sym, p in acct.open.items():
+        df = panel.get(sym)
+        px = (float(df["close"].iloc[-1])
+              if df is not None and len(df) else p.entry)
+        unreal += (p.move(px) - p.dec.cost) * p.notional
+    eq = acct.equity + unreal
+    wins = [c for c in acct.closed if c.pnl > 1e-9]
+    flat = [c for c in acct.closed if abs(c.pnl) <= 1e-9]
+    losses = [c for c in acct.closed if c.pnl < -1e-9]
+    # THE ANSWER, FIRST LINE, BEFORE ANY TABLE: won or lost, how much,
+    # how many of each. Everything below this is how it got there.
+    print(f"\n  P&L: {'+' if eq >= acct.start else ''}${eq - acct.start:.4f} "
+          f"({100.0*(eq/acct.start-1.0):+.2f}%) on ${acct.start:.2f} start"
+          f"   won {len(wins)} / flat {len(flat)} / lost {len(losses)}"
+          + (f"  ({100.0*len(wins)/len(acct.closed):.1f}% won)"
+             if acct.closed else "  (no trades closed)"))
+
     # EVERY trade, won or lost, in the order they happened. Aggregates
     # hide the one that went wrong; a ledger does not.
     if acct.closed:
@@ -604,7 +644,6 @@ def summary(acct: Account, panel):
                   f"{100*c.move:>+8.2f}%{c.pnl:>+11.4f}  {c.reason:<7}"
                   f"{c.equity_after:>11.4f}")
 
-    unreal = 0.0
     if acct.open:
         print("\n  STILL OPEN")
         print(f"  {'coin':<14}{'side':<6}{'held':>8}{'entry':>14}{'mark':>14}"
@@ -615,7 +654,6 @@ def summary(acct: Account, panel):
             px = (float(df["close"].iloc[-1])
                   if df is not None and len(df) else p.entry)
             m = p.move(px) - p.dec.cost
-            unreal += m * p.notional
             print(f"  {sym:<14}{'LONG' if p.dec.side > 0 else 'SHORT':<6}"
                   f"{_dur(time.time() - p.opened_at):>8}"
                   f"{_px(p.entry):>14}{_px(px):>14}"
@@ -624,10 +662,8 @@ def summary(acct: Account, panel):
 
     # Three outcomes, not two. A trade the break-even ratchet closes at
     # zero neither won nor lost, and lumping it in with the losses hides
-    # whether anything actually lost money.
-    wins = [c for c in acct.closed if c.pnl > 1e-9]
-    flat = [c for c in acct.closed if abs(c.pnl) <= 1e-9]
-    losses = [c for c in acct.closed if c.pnl < -1e-9]
+    # whether anything actually lost money. (wins/flat/losses/unreal/eq
+    # were computed above, for the P&L headline.)
     if acct.closed:
         by = {}
         for c in acct.closed:
@@ -674,7 +710,6 @@ def summary(acct: Account, panel):
         else:
             print("\n  LOSING TRADES: none")
 
-    eq = acct.equity + unreal
     print(f"\n  start    ${acct.start:.4f}")
     print(f"  realised ${acct.equity:.4f}   ({acct.equity - acct.start:+.4f})")
     print(f"  mark     ${eq:.4f}   ({100.0*(eq/acct.start-1.0):+.2f}%)")
@@ -737,8 +772,10 @@ def main():
         # live_gate, not gate: gate is measured on the rows the model
         # was fit to reproduce and is ~0 by construction (see
         # fp/full.py's oof_gate docstring); live_gate is the number
-        # this process actually compares confidence against.
-        lg = m.get("live_gate", m["gate"])
+        # this process actually compares confidence against. A model
+        # file with no live_gate at all is shown -- and traded -- as
+        # gate 1.0 (unproven), matching fp/live_full.py's fallback.
+        lg = m.get("live_gate", 1.0)
         print(f"    fitted {q:<12} lev<= {m['lev_cap']:.0f}x  "
               f"cost {100*m['cost']:.4f}%  live_gate {lg:.3f}  "
               f"win {100*m.get('win_rate', 0):.2f}% on "

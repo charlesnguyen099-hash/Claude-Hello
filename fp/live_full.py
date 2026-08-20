@@ -115,7 +115,16 @@ class FullLogic:
             side, conf = int(s[0]), float(c[0])
             profit, mae = float(p[0]), float(a[0])
             meta = self.meta[other]
-            live_gate = meta.get("live_gate", meta["gate"])
+            # A model file with no live_gate at all predates the honest
+            # gate. Falling back to meta["gate"] there means falling
+            # back to a number measured in-sample (~0.0000 by
+            # construction, see fp/full.py's oof_gate docstring) --
+            # exactly the "every one called at gate 0.0000" failure this
+            # session traced the 17 losing live trades to. Missing
+            # live_gate must mean "unproven, do not trade this coin",
+            # not "trade it on the one number known not to filter
+            # anything".
+            live_gate = meta.get("live_gate", 1.0)
             if side == 0 or conf <= live_gate or profit < meta["floor"]:
                 continue
             cand = (conf, side, profit, mae, live_gate, other)
@@ -172,10 +181,12 @@ class FullLogic:
         # never inherited from whichever coin the winning logic was
         # fitted on.
         meta["lev_cap"] = C.max_leverage(sym)
-        # live_gate, not gate: see the docstring above ensemble_call.
-        # Falls back to gate only for a model file built before this was
-        # added.
-        live_gate = meta.get("live_gate", meta["gate"])
+        # live_gate, not gate: see the docstring above ensemble_call, and
+        # the same comment on the fallback there -- a model file with no
+        # live_gate is treated as unproven (gate 1.0), never as
+        # meta["gate"], which is ~0.0000 by construction and would
+        # silently readmit every signal.
+        live_gate = meta.get("live_gate", 1.0)
         if s == 0 or conf0 <= live_gate:
             return None
         conf = np.array([conf0])

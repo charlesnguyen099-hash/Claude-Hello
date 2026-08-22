@@ -1,12 +1,11 @@
 """Does the CURRENTLY SHIPPED model hold up on data it has never seen?
 
-This drop extends the cache FORWARD: one new week (2026-08-14 to
-2026-08-21) sitting AFTER every coin's shipped fit window ends
-(2026-08-13). That is the cleanest kind of out-of-sample slice there
-is -- a genuine future the model could not have seen -- and scoring
-the model already on disk against exactly that slice, with no
-refitting, is the most direct "does the old logic generalise" test
-available.
+This drop extends the cache BACKWARD again: one more week
+(2025-12-31 to 2026-01-07) that sits BEFORE five coins' shipped fit
+window begins (2026-01-07). That is a genuinely clean out-of-sample
+slice -- a past the model was simply never shown -- and scoring the
+model already on disk against exactly that slice, with no refitting,
+is the most direct "does the old logic generalise" test available.
 
 This is NOT fp/full.py's oof_gate(): that fits a fresh throwaway
 classifier per fold to measure what a model SHAPED like this tends to
@@ -24,10 +23,16 @@ from fp import costs as C
 from fp import data as D
 from fp import full as FU
 
-# The exact boundary every coin's shipped model was fit up to, read
-# from the report BEFORE this session's merge -- every coin in the
-# cache gained the same forward week, so one boundary covers all ten.
-OLD_END = "2026-08-13T07:59:00Z"
+# The exact boundary each coin's shipped model was fit up to, read
+# from the report BEFORE this session's merge. A coin not listed here
+# gained no new history in this drop and has nothing to test.
+PRIOR_START = {
+    "BLESSUSDT": "2026-01-07T17:00:00Z",
+    "ETHUSDT": "2026-01-07T17:00:00Z",
+    "HYPEUSDT": "2026-01-07T17:00:00Z",
+    "SOLUSDT": "2026-01-07T17:00:00Z",
+    "XRPUSDT": "2026-01-07T17:00:00Z",
+}
 
 
 def main():
@@ -35,19 +40,21 @@ def main():
     print("=" * 92)
     print("  DOES THE SHIPPED MODEL GENERALISE TO DATA IT HAS NEVER SEEN?")
     print("  Scoring the CURRENT fp/models/*.pkl.gz -- no refitting -- on")
-    print("  the slice of each coin's history that sits AFTER its fit window.")
+    print("  the slice of each coin's history that sits BEFORE its fit window.")
     print("=" * 92, flush=True)
 
     rows = []
-    for sym in sorted(P):
+    for sym, start in sorted(PRIOR_START.items()):
         d = P.get(sym)
+        if d is None:
+            continue
         blob = FU.load_models(sym)
         if blob is None:
             print(f"\n--- {sym}: no shipped model, skipping")
             continue
         models, meta = blob["models"], blob["meta"]
 
-        new_slice = d.loc[OLD_END:].iloc[1:]     # strictly after the old end
+        new_slice = d.loc[:start].iloc[:-1]      # strictly before the old start
         n_new = len(new_slice)
         if n_new < 2000:
             print(f"\n--- {sym}: only {n_new} bars in the new "
@@ -60,8 +67,7 @@ def main():
 
         X = FU.features_for(d, P, sym)
         ok = np.isfinite(X).all(axis=1)
-        n_total = len(d)
-        idx_new = np.arange(n_total - n_new, n_total)
+        idx_new = np.arange(n_new)
         ok_new = ok[idx_new]
         side_new = side_full[idx_new]
         cost_new = cost[idx_new]
@@ -86,7 +92,7 @@ def main():
                       if trusted.any() else float("nan"))
 
         print(f"\n--- {sym}   new slice: {n_new:,} bars "
-              f"({OLD_END[:10]} .. {str(d.index[-1])[:10]})")
+              f"({str(d.index[0])[:10]} .. {start[:10]})")
         print(f"    resolved bars in slice     : {int(live.sum()):,}")
         print(f"    called (any confidence)    : {int(called.sum()):,}   "
               f"accuracy {100*acc:.2f}%   (need {100*p_be:.2f}%)")

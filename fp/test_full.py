@@ -101,6 +101,79 @@ def test_gate():
     chk(g0 == 0.0 and n0 == 0, "no mistakes means no gate")
 
 
+def test_gate_from_isotonic():
+    """A 201-point grid over [0,1] steps clean over a real edge packed
+    into the last 0.001 of confidence -- exactly what SKHYNIXUSDT and
+    SNDKUSDT did in production, where classifier confidence saturates
+    within ~0.00002 of 1.0. gate_from_isotonic must find that edge by
+    searching the isotonic fit's own breakpoints instead.
+    """
+    from sklearn.isotonic import IsotonicRegression
+    rng = np.random.default_rng(0)
+    p_be = 0.56
+
+    # Bulk of the mass sits at middling confidence with ~50% accuracy
+    # (no edge) -- padding, like most of BLESSUSDT's curve.
+    n_bulk = 3000
+    conf_bulk = rng.uniform(0.3, 0.95, n_bulk)
+    ok_bulk = (rng.uniform(size=n_bulk) < 0.50).astype(float)
+
+    # A narrow, amply-sampled band right under 1.0 carries a genuine,
+    # well-supported edge -- accuracy rising to ~65% as confidence
+    # climbs from 0.999 to 1.0. A 0.005-spaced grid cannot see inside
+    # a 0.001-wide band at all.
+    n_edge = 1200
+    conf_edge = 1.0 - rng.uniform(0.0, 0.001, n_edge)
+    p_true = 0.55 + 0.10 * (conf_edge - 0.999) / 0.001
+    ok_edge = (rng.uniform(size=n_edge) < p_true).astype(float)
+
+    conf_all = np.concatenate([conf_bulk, conf_edge])
+    ok_all = np.concatenate([ok_bulk, ok_edge])
+
+    iso = IsotonicRegression(out_of_bounds="clip", y_min=0.0, y_max=1.0)
+    iso.fit(conf_all, ok_all)
+
+    # The bug this guards against: a fixed grid at 0.005 spacing steps
+    # over the whole 0.999-1.0 band and only ever samples its two
+    # endpoints, which (with padding at the very top diluting the
+    # edge's own accuracy) can under- or over-state it -- the point is
+    # it cannot resolve anything strictly inside that band.
+    grid = np.linspace(0.0, 1.0, 201)
+    grid_passing = grid[iso.predict(grid) >= p_be]
+    old_gate = float(grid_passing.min()) if len(grid_passing) else 1.0
+
+    gate = FU.gate_from_isotonic(iso, conf_all, ok_all, p_be)
+    chk(gate < 1.0, f"a real, well-sampled edge near 1.0 must be found, "
+        f"got gate={gate}")
+    chk(0.999 - 1e-6 <= gate <= 1.0, f"gate must land inside the edge "
+        f"band, not fall back to the top endpoint, got {gate}")
+    chk(gate <= old_gate + 1e-9,
+        "the exact-breakpoint search must never miss an edge the "
+        f"coarse grid found (grid={old_gate}, exact={gate})")
+
+    # A threshold backed by too few calls must not be accepted even if
+    # its point estimate clears break-even -- the sample-size floor.
+    conf_tiny = np.concatenate([conf_bulk, np.full(50, 0.999)])
+    ok_tiny = np.concatenate([ok_bulk, np.ones(50)])
+    iso2 = IsotonicRegression(out_of_bounds="clip", y_min=0.0, y_max=1.0)
+    iso2.fit(conf_tiny, ok_tiny)
+    gate2 = FU.gate_from_isotonic(iso2, conf_tiny, ok_tiny, p_be)
+    chk(gate2 == 1.0, f"a lucky handful of calls must not set the gate, "
+        f"got {gate2}")
+
+
+def test_wilson_lower():
+    lo = FU.wilson_lower(50, 100)
+    chk(0.40 < lo < 0.50, f"wilson lower bound at 50/100 should sit "
+        f"below 0.5 but not collapse, got {lo}")
+    chk(FU.wilson_lower(1000, 1000) > 0.99,
+        "near-certain evidence should give a high lower bound")
+    lo_small = FU.wilson_lower(9, 10)
+    lo_big = FU.wilson_lower(900, 1000)
+    chk(lo_small < lo_big, "same 90% point estimate, but far fewer "
+        "calls must give a lower (more conservative) bound")
+
+
 def test_rotation():
     """Top stays every cycle; the tail is covered, never dropped."""
     from fp.universe import Rotation
@@ -186,6 +259,7 @@ def test_ensemble_recognition():
 def main():
     for fn in (test_ranges, test_first_cross, test_opportunities,
                test_cost_bites, test_potential, test_gate,
+               test_gate_from_isotonic, test_wilson_lower,
                test_rotation, test_ensemble_recognition):
         fn()
     print("=" * 70)

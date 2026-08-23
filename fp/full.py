@@ -476,6 +476,69 @@ def calibrate_gate(pred_side, conf, truth_side):
     return float(np.max(conf[err])), int(err.sum())
 
 
+def wilson_lower(k: int, n: int, z: float = 1.96) -> float:
+    """95% lower confidence bound on a binomial proportion.
+
+    A raw accuracy of k/n can look like it clears break-even purely
+    because n was small and luck ran one way. The Wilson interval asks
+    the harder question: even allowing for that sampling noise, how
+    low could the TRUE accuracy plausibly be? Used to keep oof_gate's
+    finer threshold search (see its docstring) from settling on a
+    threshold whose only support is a lucky handful of calls.
+    """
+    if n == 0:
+        return float("nan")
+    p = k / n
+    denom = 1.0 + z * z / n
+    centre = p + z * z / (2 * n)
+    adj = z * np.sqrt(p * (1 - p) / n + z * z / (4 * n * n))
+    return (centre - adj) / denom
+
+
+def gate_from_isotonic(iso, conf_all: np.ndarray, ok_all: np.ndarray,
+                       p_be: float) -> float:
+    """The lowest confidence where BOTH the isotonic-calibrated curve
+    AND the raw empirical accuracy's 95% lower bound clear break-even.
+
+    Searches the isotonic fit's own breakpoints (`X_thresholds_`), not
+    an arbitrary fixed grid -- see oof_gate()'s docstring for why a
+    201-point grid silently missed real, amply-sampled edges on two
+    coins by stepping clean over the narrow band near 1.0 where
+    confidence actually varies. Every point where the calibrated curve
+    can change value is visited here, at whatever resolution the data
+    itself has.
+    """
+    thresholds = np.asarray(iso.X_thresholds_, dtype="float64")
+    calibrated = np.asarray(iso.y_thresholds_, dtype="float64")
+    order = np.argsort(conf_all)
+    conf_sorted = conf_all[order]
+    ok_sorted = ok_all[order]
+    # Cumulative count/sum from the RIGHT: at conf_sorted[i], how many
+    # held-out calls sit at or above it, and how many of those were
+    # correct -- a single pass down the sorted array, not a mask per
+    # candidate threshold.
+    n_total = len(conf_sorted)
+    cum_ok_from_right = np.cumsum(ok_sorted[::-1])[::-1]
+    # searchsorted finds, for each candidate threshold, the first index
+    # in conf_sorted at or above it -- everything from there to the end
+    # is "conf >= threshold".
+    idx = np.searchsorted(conf_sorted, thresholds, side="left")
+    idx = np.clip(idx, 0, n_total - 1 if n_total else 0)
+    n_at_or_above = n_total - idx
+    k_at_or_above = np.where(n_at_or_above > 0, cum_ok_from_right[idx], 0)
+
+    for i in range(len(thresholds)):
+        if calibrated[i] < p_be:
+            continue
+        n = int(n_at_or_above[i])
+        if n < 200:
+            continue
+        low = wilson_lower(int(k_at_or_above[i]), n)
+        if low >= p_be:
+            return float(thresholds[i])
+    return 1.0
+
+
 def oof_gate(X, side, p_be, log=print, n_folds: int = 4, span: float = 0.5):
     """A confidence floor measured across several regimes, not one.
 
@@ -518,6 +581,34 @@ def oof_gate(X, side, p_be, log=print, n_folds: int = 4, span: float = 0.5):
     hold up going forward. Stake and leverage are untouched by any of
     this and still ride potential exactly as before; this only decides
     whether a setup is trusted enough to be sized at all.
+
+    THE SEARCH GRID WAS TOO COARSE TO FIND ITS OWN ANSWER. This used to
+    query the isotonic fit at 201 points evenly spaced from 0 to 1 --
+    0.005 apart -- and take the lowest one clearing p_be. Confidence
+    from a high-leaf-count booster saturates within a hair of 1.0 (real
+    values traced on SKHYNIXUSDT: 0.999981 to 1.0, a span of 0.00002),
+    and that is exactly where the calibrated curve does its climbing:
+    on both SKHYNIXUSDT and SNDKUSDT the true curve rose from ~52% to
+    ~68% entirely between grid points 0.995 and 1.000, so the coarse
+    grid saw only the two endpoints, missed the amply-sampled edge in
+    between, and planted the gate at the top -- 1.0, admitting nothing,
+    on a coin that in fact clears break-even (with thousands of calls
+    to back it) a little below there. Now the search runs over the
+    isotonic fit's OWN breakpoints (`X_thresholds_`/`y_thresholds_`),
+    which is exact by construction: every point where the calibrated
+    curve's value can change is visited, none are skipped, whatever the
+    resolution.
+
+    A finer search needed a matching safeguard, not just a finer one.
+    The isotonic curve is fit on POOLED counts and can still call a
+    threshold "clearing" on the strength of a small, lucky tail (21,178
+    calls at gate 1.0000 backing BLESSUSDT's flat curve is plenty; 525
+    calls at a coin's very top percentile is not). So a candidate
+    threshold must pass twice: the isotonic-calibrated value at that
+    confidence clears p_be, AND the RAW empirical accuracy of every
+    held-out call actually at or above it -- at its 95% Wilson lower
+    bound, not the point estimate -- also clears p_be. The lower bound
+    is what a small, possibly-lucky sample cannot fake.
     """
     from sklearn.ensemble import HistGradientBoostingClassifier
     from sklearn.isotonic import IsotonicRegression
@@ -556,9 +647,7 @@ def oof_gate(X, side, p_be, log=print, n_folds: int = 4, span: float = 0.5):
     acc = float(ok_all.mean())
     iso = IsotonicRegression(out_of_bounds="clip", y_min=0.0, y_max=1.0)
     iso.fit(conf_all, ok_all)
-    grid = np.linspace(0.0, 1.0, 201)
-    passing = grid[iso.predict(grid) >= p_be]
-    gate = float(passing.min()) if len(passing) else 1.0
+    gate = gate_from_isotonic(iso, conf_all, ok_all, p_be)
     n_err = int((ok_all < 0.5).sum())
     log(f"      held-out gate: {len(conf_all):,} calls across "
         f"{len(confs)} folds, {n_err:,} wrong (pooled accuracy "

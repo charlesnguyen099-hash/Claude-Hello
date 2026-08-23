@@ -191,10 +191,63 @@ def test_missing_live_gate_refuses_to_trade():
         f"got {dec}")
 
 
+def test_entries_allocate_highest_potential_first():
+    """When several coins signal in the same cycle and the shared pool
+    cannot cover them all, the strongest signal must claim capital
+    first -- not whichever coin happened to be scanned first. A live
+    session showed committed sitting at $9.995/$10 for hours: the
+    scan-order coins (by turnover rank) exhausted the pool before
+    later, possibly stronger, signals were even granted a chance."""
+    sym_weak, sym_strong, sym_mid = "AUSDT", "BUSDT", "CUSDT"
+
+    def dec_for(sym, potential, stake):
+        return Decision(symbol=sym, side=1, potential=potential,
+                        stake=stake, leverage=1.0, target=0.10,
+                        stop=0.02, trail=0.01, cost=0.0)
+
+    # Weak signal scanned FIRST (as if ranked ahead by 24h turnover),
+    # asking for nearly the whole pool. Strong signal scanned LAST,
+    # asking for a modest slice. Priced so the weak one alone would
+    # exhaust free capital if entries were granted in scan order.
+    decisions = {
+        sym_weak: dec_for(sym_weak, potential=10.0, stake=0.95),
+        sym_mid: dec_for(sym_mid, potential=50.0, stake=0.50),
+        sym_strong: dec_for(sym_strong, potential=90.0, stake=0.50),
+    }
+
+    class ByCoin:
+        def decide(self, d, panel, sym):
+            return decisions.get(sym)
+
+    df = make_df(65, close=100.0)
+    panel = {}
+
+    class Feed:
+        def bars_many(self, symbols):
+            return {s: df for s in symbols}
+
+    acct = B.Account(equity=10.0, start=10.0)
+    # Scan order deliberately puts the WEAK signal first.
+    order = [sym_weak, sym_mid, sym_strong]
+    B.scan(Feed(), ByCoin(), acct, order, panel, reference=order)
+
+    chk(sym_strong in acct.open,
+        "the highest-potential signal must be granted capital even "
+        "though it was scanned last")
+    chk(sym_weak not in acct.open or acct.open[sym_weak].margin < 9.5,
+        "the weakest signal must not be free to exhaust the whole "
+        "pool ahead of stronger ones")
+    strong_margin = acct.open[sym_strong].margin
+    chk(strong_margin >= 0.5 * 9.0 - 1e-6,
+        f"the strong signal should have received close to its full "
+        f"50% stake off a near-full pool, got margin {strong_margin}")
+
+
 def main():
     for fn in (test_no_reentry_within_same_bar,
                test_reentry_allowed_on_a_genuinely_new_bar,
-               test_missing_live_gate_refuses_to_trade):
+               test_missing_live_gate_refuses_to_trade,
+               test_entries_allocate_highest_potential_first):
         fn()
     print(f"all {PASS} checks passed")
     return 0

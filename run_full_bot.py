@@ -483,7 +483,17 @@ def scan(feed, logic: FullLogic, acct: Account, symbols, panel,
               f"pnl ${c.pnl:+.4f}  equity ${acct.equity:.4f}", flush=True)
 
     # --- entries
-    opened_now = 0
+    # SCORE EVERY SIGNAL FIRST, ALLOCATE THE STRONGEST FIRST. The shared
+    # pool is finite; granting it in scan order (roughly 24h turnover
+    # rank) let whichever coin happened to be evaluated first exhaust
+    # free capital before a much higher-potential signal later in the
+    # same cycle was even scored -- capital sized by potential, but
+    # HANDED OUT by an order that had nothing to do with it. This does
+    # not shrink any trade's stake or leverage; every number a Decision
+    # carries is exactly what fp.live_full computed. It only decides
+    # WHICH signal gets first claim when several compete for the same
+    # dollars in the same cycle.
+    candidates = []
     for s in symbols:
         if not acct.can_open(s):
             continue
@@ -502,11 +512,16 @@ def scan(feed, logic: FullLogic, acct: Account, symbols, panel,
         if dec is None:
             continue
         price = float(df["close"].iloc[-1])
+        candidates.append((dec.potential, s, dec, price))
+    candidates.sort(key=lambda c: c[0], reverse=True)
+
+    opened_now = 0
+    for _, s, dec, price in candidates:
         p = acct.open_position(dec, price)
         if p is None:
             acct.rejected += 1
             continue
-        p.last_bar = stamp
+        p.last_bar = acct.last_action[s]
         opened_now += 1
         print(f"  OPEN  {s:<12} {'LONG' if dec.side > 0 else 'SHORT':<5} "
               f"@{price:<12.6f} pot {dec.potential:5.1f}  "

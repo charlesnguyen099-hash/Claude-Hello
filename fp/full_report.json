@@ -94,5 +94,17 @@
   "trades": 3025,
   "win_rate": 0.9923966942148761,
   "worst_trade": 0.0
+ },
+ "XAUUSDT": {
+  "bars": 232618,
+  "equity": 27568.55368999884,
+  "max_profit": 0.09281775052268408,
+  "min_profit": 0.010000061350907353,
+  "opportunities": 138613,
+  "reachable": 132630,
+  "recovered": 132630,
+  "trades": 394,
+  "win_rate": 0.9974619289340102,
+  "worst_trade": 0.0
  }
 }

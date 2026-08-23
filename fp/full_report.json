@@ -10,5 +10,17 @@
   "trades": 11478,
   "win_rate": 0.995643840390312,
   "worst_trade": 0.0
+ },
+ "BTCUSDT": {
+  "bars": 858603,
+  "equity": 1.7732213500105745e+43,
+  "max_profit": 0.1931180971657797,
+  "min_profit": 0.010000004245025933,
+  "opportunities": 741591,
+  "reachable": 741290,
+  "recovered": 741290,
+  "trades": 2740,
+  "win_rate": 0.9978102189781022,
+  "worst_trade": 0.0
  }
 }

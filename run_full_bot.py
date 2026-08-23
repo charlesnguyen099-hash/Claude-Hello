@@ -816,7 +816,7 @@ def main():
         # gate 1.0 (unproven), matching fp/live_full.py's fallback.
         lg = m.get("live_gate", 1.0)
         print(f"    fitted {q:<12} lev<= {m['lev_cap']:.0f}x  "
-              f"cost {100*m['cost']:.4f}%  live_gate {lg:.3f}  "
+              f"cost {100*m['cost']:.4f}%  live_gate {lg:.4f}  "
               f"win {100*m.get('win_rate', 0):.2f}% on "
               f"{m.get('trades', 0):,} past trades")
 

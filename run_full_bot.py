@@ -32,6 +32,7 @@ the same code with no constant changed.
     python run_full_bot.py --equity 100
     python run_full_bot.py --once        # one scan, print, exit
     python run_full_bot.py --retrain-hours 0   # disable the retrain thread
+    python run_full_bot.py --retrain-continuous  # back-to-back, no wait
 
 BY DEFAULT IT TRADES ONLY THE FITTED COINS. Every measurement that says
 this logic works -- 100% of reachable signals recovered, 100% win rate,
@@ -385,7 +386,8 @@ class LogicHolder:
 
 
 def retrain_worker(holder: LogicHolder, symbols, hours: float,
-                   stop_event: threading.Event) -> None:
+                   stop_event: threading.Event, continuous: bool = False
+                   ) -> None:
     """Refresh the cache and refit on a schedule; swap the logic in.
 
     Runs fp.retrain.cycle(), which is itself a subprocess call to
@@ -393,8 +395,24 @@ def retrain_worker(holder: LogicHolder, symbols, hours: float,
     so this thread only blocks waiting for it, and the fitting pipeline's
     own memory history (the OOM history fp/full.py's comments record)
     never touches a bot that may already have been running for days.
+
+    CONTINUOUS MEANS BACK-TO-BACK, NOT INSTANT. A full board refit is
+    itself hours long -- BTCUSDT's fit and held-out gate alone run
+    past an hour -- so the next cycle can never start sooner than that
+    regardless of how this is configured. `continuous=True` removes
+    only the ARTIFICIAL wait between cycles (no --retrain-hours pause,
+    and the first cycle starts immediately instead of waiting a full
+    interval before ever running), so a live_gate check runs against
+    every stretch of new market data as soon as it exists, rather than
+    on a fixed clock that may sit idle for the rest of an interval
+    after a cycle already finished early.
     """
-    while not stop_event.wait(hours * 3600):
+    while True:
+        if continuous:
+            if stop_event.is_set():
+                break
+        elif stop_event.wait(hours * 3600):
+            break
         try:
             ok = RT.cycle(symbols, log=lambda s: print(s, flush=True))
         except Exception as exc:
@@ -767,6 +785,12 @@ def main():
     ap.add_argument("--retrain-hours", type=float, default=24.0,
                     help="refresh the cache and refit on this cadence "
                          "(live mode only); 0 disables it")
+    ap.add_argument("--retrain-continuous", action="store_true",
+                    help="retrain back-to-back with no wait between "
+                         "cycles (overrides --retrain-hours); a cycle "
+                         "is still hours long on its own, so this is "
+                         "'as soon as the last one finished', not "
+                         "'instant'")
     a = ap.parse_args()
 
     fitted = sorted({f.name.split(".")[0]
@@ -852,7 +876,11 @@ def main():
         print(f"  logic:    {len(fitted)} fitted models"
               + (f"; {len(borrowed)} coins scored by borrowed logic"
                  if borrowed else " -- every coin traded by its own"))
-        if a.retrain_hours > 0:
+        if a.retrain_continuous:
+            print(f"  retrain:  continuous -- next cycle starts the "
+                  f"instant the last one finishes, models swapped in "
+                  f"live -- see fp/retrain.py")
+        elif a.retrain_hours > 0:
             print(f"  retrain:  every {a.retrain_hours:.1f}h, models "
                   f"swapped in live -- see fp/retrain.py")
     print("=" * 78, flush=True)
@@ -866,7 +894,7 @@ def main():
     # try to fetch fresh candles into a run that is deliberately walking
     # OLD cached bars, and a model swap mid-replay would silently change
     # which logic scored which minute.
-    if not a.replay and a.retrain_hours > 0:
+    if not a.replay and (a.retrain_hours > 0 or a.retrain_continuous):
         # Retrain always targets the coins already SEEDED with history
         # in the cache (None -> fp.full processes whatever is there),
         # never the live scan's symbol list -- in --all-coins mode that
@@ -876,7 +904,7 @@ def main():
         # a new coin, which needs its own seeded history first.
         retrain_thread = threading.Thread(
             target=retrain_worker, args=(holder, None, a.retrain_hours,
-                                         retrain_stop),
+                                         retrain_stop, a.retrain_continuous),
             daemon=True)
         retrain_thread.start()
 

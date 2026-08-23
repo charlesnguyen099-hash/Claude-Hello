@@ -243,11 +243,66 @@ def test_entries_allocate_highest_potential_first():
         f"50% stake off a near-full pool, got margin {strong_margin}")
 
 
+def test_retrain_continuous_runs_back_to_back():
+    """--retrain-continuous must not wait between cycles -- several
+    cycles should run within a fraction of a second, proving the
+    thread never blocks on the --retrain-hours clock. Non-continuous
+    mode, given an enormous hours value, must not run a cycle at all
+    in that same window -- the contrast proves continuous genuinely
+    bypasses the wait rather than the stub just being fast."""
+    import threading
+
+    calls = {"n": 0}
+
+    def fake_cycle(symbols, log=print):
+        calls["n"] += 1
+        return False   # "failed" -- keeps the worker from touching
+                        # FU.MODELS / FullLogic, irrelevant to this test
+
+    real_cycle = B.RT.cycle
+    B.RT.cycle = fake_cycle
+    try:
+        holder = B.LogicHolder(None)
+        stop = threading.Event()
+        t = threading.Thread(target=B.retrain_worker,
+                             args=(holder, None, 24.0, stop),
+                             kwargs={"continuous": True}, daemon=True)
+        t.start()
+        time.sleep(0.2)
+        stop.set()
+        t.join(timeout=2.0)
+        chk(not t.is_alive(), "continuous worker must stop promptly once "
+            "stop_event is set")
+        chk(calls["n"] >= 3,
+            f"continuous mode must run several cycles with no wait "
+            f"between them in 0.2s, got {calls['n']}")
+    finally:
+        B.RT.cycle = real_cycle
+
+    calls["n"] = 0
+    B.RT.cycle = fake_cycle
+    try:
+        stop = threading.Event()
+        t = threading.Thread(target=B.retrain_worker,
+                             args=(holder, None, 999999.0, stop),
+                             kwargs={"continuous": False}, daemon=True)
+        t.start()
+        time.sleep(0.2)
+        stop.set()
+        t.join(timeout=2.0)
+        chk(calls["n"] == 0,
+            f"non-continuous mode with a huge --retrain-hours must not "
+            f"run a cycle while still waiting, got {calls['n']}")
+    finally:
+        B.RT.cycle = real_cycle
+
+
 def main():
     for fn in (test_no_reentry_within_same_bar,
                test_reentry_allowed_on_a_genuinely_new_bar,
                test_missing_live_gate_refuses_to_trade,
-               test_entries_allocate_highest_potential_first):
+               test_entries_allocate_highest_potential_first,
+               test_retrain_continuous_runs_back_to_back):
         fn()
     print(f"all {PASS} checks passed")
     return 0

@@ -34,5 +34,17 @@
   "trades": 1662,
   "win_rate": 0.9993983152827918,
   "worst_trade": 0.0
+ },
+ "HYPEUSDT": {
+  "bars": 333418,
+  "equity": 3.390797914672946e+52,
+  "max_profit": 0.31476323058410993,
+  "min_profit": 0.010000004273212194,
+  "opportunities": 332957,
+  "reachable": 332582,
+  "recovered": 332582,
+  "trades": 3285,
+  "win_rate": 0.9933028919330289,
+  "worst_trade": 0.0
  }
 }

@@ -58,5 +58,17 @@
   "trades": 1596,
   "win_rate": 0.9949874686716792,
   "worst_trade": 0.0
+ },
+ "SNDKUSDT": {
+  "bars": 162058,
+  "equity": 3.3949407888008095e+31,
+  "max_profit": 0.43763765141575695,
+  "min_profit": 0.01000022610044469,
+  "opportunities": 150869,
+  "reachable": 144315,
+  "recovered": 144315,
+  "trades": 2030,
+  "win_rate": 0.9955665024630542,
+  "worst_trade": 0.0
  }
 }

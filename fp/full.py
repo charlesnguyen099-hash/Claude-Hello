@@ -98,6 +98,10 @@ LADDER = (dict(max_leaf_nodes=96, min_samples_leaf=2, max_iter=200,
 BASE = dict(max_depth=None, l2_regularization=0.0, early_stopping=False)
 RECOVERY_TARGET = 1.0
 
+# oof_gate's recency check: how many non-overlapping recent_days-sized
+# windows, walked backward from the end, get pooled as "recent" evidence.
+RECENT_WINDOWS = 3
+
 # Turn "the kernel killed us" into a Python exception we can act on.
 # Three runs ended with a truncated log and no traceback, which says
 # nothing about which allocation was too big; a MemoryError names the
@@ -655,14 +659,27 @@ def oof_gate(X, side, p_be, log=print, n_folds: int = 4, span: float = 0.5,
     points BELOW break-even on tens of thousands of held-out calls
     apiece, even though this function's pooled 4-fold measurement had
     cleared both comfortably: an earlier, kinder stretch inside the
-    back-half span was carrying the average. So a RECENT slice -- the
-    final `recent_days` of the timeline, scored by a model trained on
-    everything before it -- is now measured on its own and required to
-    ALSO clear break-even at its own Wilson lower bound before a
-    threshold is accepted. Pooled evidence proves an edge existed
-    somewhere in the last several months; recent evidence proves it is
-    still there now, which is the one that actually matters for a
-    trade opened today.
+    back-half span was carrying the average.
+
+    A SINGLE recency slice turned out to have the exact same blind
+    spot, one level down. The first version of this recency check fit
+    ONE model on everything except the final `recent_days` and scored
+    it on that one slice -- and it did NOT reproduce what the rolling
+    walk-forward found: on both SKHYNIXUSDT and SNDKUSDT, that single
+    slice cleared break-even even after shrinking it from 30 days to
+    7. One slice is one fold, and one fold is exactly the trap this
+    function's docstring already warned about above -- it answers "was
+    this one stretch kind to the model", not "does the edge still
+    hold". So the recency check now walks BACKWARD from the end in
+    `recent_days`-sized windows, same as the main fold walk but
+    confined to the tail and run in reverse (each window trained on
+    everything before it, same as always -- only the order they are
+    visited in is reversed, for convenience), and pools their
+    (confidence, correct) pairs together. A threshold must clear this
+    pooled RECENT evidence's own Wilson lower bound, not just one
+    slice's word for it -- the same multi-window discipline that
+    caught the problem in the first place, now built into the gate
+    that ships instead of living only in a side diagnostic.
     """
     from sklearn.ensemble import HistGradientBoostingClassifier
     from sklearn.isotonic import IsotonicRegression
@@ -706,10 +723,18 @@ def oof_gate(X, side, p_be, log=print, n_folds: int = 4, span: float = 0.5,
     acc = float(ok_all.mean())
 
     recent_bars = recent_days * 1440
-    conf_recent = ok_recent = None
-    recent_cut = n - recent_bars
-    if recent_cut >= 2000 and n - recent_cut >= 500:
-        conf_recent, ok_recent = fold_conf_ok(recent_cut, n)
+    recent_confs, recent_oks = [], []
+    window_end = n
+    for _ in range(RECENT_WINDOWS):
+        window_start = window_end - recent_bars
+        if window_start < 2000 or window_end - window_start < 500:
+            break
+        c, ok = fold_conf_ok(window_start, window_end)
+        recent_confs.append(c)
+        recent_oks.append(ok)
+        window_end = window_start
+    conf_recent = np.concatenate(recent_confs) if recent_confs else None
+    ok_recent = np.concatenate(recent_oks) if recent_oks else None
 
     iso = IsotonicRegression(out_of_bounds="clip", y_min=0.0, y_max=1.0)
     iso.fit(conf_all, ok_all)
@@ -717,10 +742,12 @@ def oof_gate(X, side, p_be, log=print, n_folds: int = 4, span: float = 0.5,
                               conf_recent=conf_recent, ok_recent=ok_recent)
     n_err = int((ok_all < 0.5).sum())
     n_r = len(conf_recent) if conf_recent is not None else 0
+    n_rw = len(recent_confs)
     log(f"      held-out gate: {len(conf_all):,} calls across "
         f"{len(confs)} folds, {n_err:,} wrong (pooled accuracy "
         f"{100*acc:.2f}%, need {100*p_be:.2f}%), {n_r:,} recent-only "
-        f"calls checked separately -> gate {gate:.4f}")
+        f"calls across {n_rw} {recent_days}-day windows checked "
+        f"separately -> gate {gate:.4f}")
     return gate, n_err, acc
 
 

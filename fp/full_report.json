@@ -22,5 +22,17 @@
   "trades": 2740,
   "win_rate": 0.9978102189781022,
   "worst_trade": 0.0
+ },
+ "ETHUSDT": {
+  "bars": 333418,
+  "equity": 2.881313345722945e+24,
+  "max_profit": 0.2259330847209032,
+  "min_profit": 0.01000005804069501,
+  "opportunities": 314291,
+  "reachable": 314209,
+  "recovered": 314209,
+  "trades": 1662,
+  "win_rate": 0.9993983152827918,
+  "worst_trade": 0.0
  }
 }

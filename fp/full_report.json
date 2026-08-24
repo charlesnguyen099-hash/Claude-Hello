@@ -106,5 +106,17 @@
   "trades": 394,
   "win_rate": 0.9974619289340102,
   "worst_trade": 0.0
+ },
+ "XRPUSDT": {
+  "bars": 333418,
+  "equity": 1.2849697542457189e+26,
+  "max_profit": 0.37179332279396804,
+  "min_profit": 0.010000369877975469,
+  "opportunities": 314931,
+  "reachable": 314458,
+  "recovered": 314458,
+  "trades": 1601,
+  "win_rate": 0.9975015615240475,
+  "worst_trade": 0.0
  }
 }

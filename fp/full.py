@@ -580,8 +580,8 @@ def gate_from_isotonic(iso, conf_all: np.ndarray, ok_all: np.ndarray,
     return 1.0
 
 
-def oof_gate(X, side, p_be, log=print, n_folds: int = 4, span: float = 0.5,
-            recent_days: int = 7):
+def oof_gate(X, side, p_be, log=print, fold_days: int = 5, span: float = 0.5,
+            recent_days: int = 5):
     """A confidence floor measured across several regimes, not one.
 
     THIS IS THE 17 LOSING LIVE TRADES, TRACED TO ITS SOURCE. calibrate_gate()
@@ -608,10 +608,11 @@ def oof_gate(X, side, p_be, log=print, n_folds: int = 4, span: float = 0.5,
     not "is the model any good" -- and a single overconfident miss in
     that one fold can disable a coin on pure noise.
 
-    So this walks SEVERAL expanding folds across the back half of the
-    timeline -- each trained on everything before it, scored on the
-    slice after -- and pools every (confidence, right/wrong) pair across
-    all of them. The threshold is read off an ISOTONIC fit of confidence
+    So this walks narrow, `fold_days`-sized expanding folds across the
+    back half of the timeline -- each trained on everything before it,
+    scored on the slice after -- and pools every (confidence,
+    right/wrong) pair across all of them. The threshold is read off an
+    ISOTONIC fit of confidence
     to calibrated accuracy over that pooled, multi-regime sample, not
     the single worst point in it. The gate is the lowest confidence at
     which calibrated accuracy clears the coin's OWN break-even
@@ -652,14 +653,19 @@ def oof_gate(X, side, p_be, log=print, n_folds: int = 4, span: float = 0.5,
     bound, not the point estimate -- also clears p_be. The lower bound
     is what a small, possibly-lucky sample cannot fake.
 
-    POOLING ACROSS FOUR WIDE FOLDS CAN STILL AVERAGE AWAY A DEAD EDGE.
-    A 15-day rolling walk-forward -- fit expanding forward across the
-    WHOLE history, one short window at a time, never pooled -- found
-    that SKHYNIXUSDT and SNDKUSDT's most recent windows sat several
-    points BELOW break-even on tens of thousands of held-out calls
-    apiece, even though this function's pooled 4-fold measurement had
-    cleared both comfortably: an earlier, kinder stretch inside the
-    back-half span was carrying the average.
+    POOLING ACROSS WIDE FOLDS CAN STILL AVERAGE AWAY A DEAD EDGE. This
+    used to walk exactly 4 folds spanning the whole back half, each an
+    eighth of the coin's history -- wide enough that a 15-day rolling
+    walk-forward (fit expanding forward across the WHOLE history, one
+    short window at a time, never pooled) found SKHYNIXUSDT's and
+    SNDKUSDT's most recent windows sitting several points BELOW
+    break-even on tens of thousands of held-out calls apiece, even
+    though the wide, pooled measurement had cleared both comfortably:
+    an earlier, kinder stretch inside one wide fold was carrying its
+    average. Folds are now sized in DAYS (`fold_days`, narrow), not a
+    fixed count -- as many `fold_days`-wide folds as fit in the span,
+    walked forward, so a stretch of luck inside one fold has far less
+    of the pooled sample to hide behind.
 
     A SINGLE recency slice turned out to have the exact same blind
     spot, one level down. The first version of this recency check fit
@@ -706,8 +712,8 @@ def oof_gate(X, side, p_be, log=print, n_folds: int = 4, span: float = 0.5,
     start = int(n * (1.0 - span))
     if n - start < 4000:
         return 0.0, 0, float("nan")
-    cuts = np.linspace(start, n - 1, n_folds + 1)[:-1].astype(int)
-    step = max((n - start) // n_folds, 1000)
+    step = fold_days * 1440
+    cuts = list(range(start, n - 500, step))
     confs, oks = [], []
     for cut in cuts:
         stop = min(cut + step, n)

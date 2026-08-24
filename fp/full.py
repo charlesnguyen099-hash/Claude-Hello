@@ -577,7 +577,7 @@ def gate_from_isotonic(iso, conf_all: np.ndarray, ok_all: np.ndarray,
 
 
 def oof_gate(X, side, p_be, log=print, n_folds: int = 4, span: float = 0.5,
-            recent_days: int = 30):
+            recent_days: int = 7):
     """A confidence floor measured across several regimes, not one.
 
     THIS IS THE 17 LOSING LIVE TRADES, TRACED TO ITS SOURCE. calibrate_gate()

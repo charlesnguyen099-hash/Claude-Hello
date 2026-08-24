@@ -46,5 +46,17 @@
   "trades": 3285,
   "win_rate": 0.9933028919330289,
   "worst_trade": 0.0
+ },
+ "SKHYNIXUSDT": {
+  "bars": 111031,
+  "equity": 1.3633595579819762e+26,
+  "max_profit": 0.3432715646136241,
+  "min_profit": 0.010000024943876407,
+  "opportunities": 107711,
+  "reachable": 104518,
+  "recovered": 104518,
+  "trades": 1596,
+  "win_rate": 0.9949874686716792,
+  "worst_trade": 0.0
  }
 }

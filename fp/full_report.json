@@ -82,5 +82,17 @@
   "trades": 1773,
   "win_rate": 0.9977439368302312,
   "worst_trade": 0.0
+ },
+ "SOXLUSDT": {
+  "bars": 131818,
+  "equity": 1.3376597840404876e+48,
+  "max_profit": 0.41983421934305276,
+  "min_profit": 0.010000232440504676,
+  "opportunities": 129554,
+  "reachable": 127138,
+  "recovered": 127138,
+  "trades": 3025,
+  "win_rate": 0.9923966942148761,
+  "worst_trade": 0.0
  }
 }

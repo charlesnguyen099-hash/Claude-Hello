@@ -70,5 +70,17 @@
   "trades": 2030,
   "win_rate": 0.9955665024630542,
   "worst_trade": 0.0
+ },
+ "SOLUSDT": {
+  "bars": 333418,
+  "equity": 1.3496736579141831e+29,
+  "max_profit": 0.3274537444162549,
+  "min_profit": 0.010000009015416584,
+  "opportunities": 322788,
+  "reachable": 322408,
+  "recovered": 322408,
+  "trades": 1773,
+  "win_rate": 0.9977439368302312,
+  "worst_trade": 0.0
  }
 }

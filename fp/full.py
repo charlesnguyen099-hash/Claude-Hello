@@ -495,10 +495,34 @@ def wilson_lower(k: int, n: int, z: float = 1.96) -> float:
     return (centre - adj) / denom
 
 
+def _wilson_at_or_above(conf: np.ndarray, ok: np.ndarray,
+                        thresholds: np.ndarray):
+    """n and Wilson-lower-bound accuracy at-or-above each threshold.
+
+    One sorted pass over `conf`/`ok`, reused for both the pooled check
+    and the recent-only check in gate_from_isotonic -- same trick, two
+    populations.
+    """
+    order = np.argsort(conf)
+    conf_sorted = conf[order]
+    ok_sorted = ok[order]
+    n_total = len(conf_sorted)
+    cum_ok_from_right = np.cumsum(ok_sorted[::-1])[::-1] if n_total else \
+        np.array([], dtype="float64")
+    idx = np.searchsorted(conf_sorted, thresholds, side="left")
+    idx = np.clip(idx, 0, n_total - 1 if n_total else 0)
+    n_at_or_above = n_total - idx
+    k_at_or_above = np.where(n_at_or_above > 0, cum_ok_from_right[idx], 0)
+    return n_at_or_above, k_at_or_above
+
+
 def gate_from_isotonic(iso, conf_all: np.ndarray, ok_all: np.ndarray,
-                       p_be: float) -> float:
-    """The lowest confidence where BOTH the isotonic-calibrated curve
-    AND the raw empirical accuracy's 95% lower bound clear break-even.
+                       p_be: float, conf_recent: np.ndarray | None = None,
+                       ok_recent: np.ndarray | None = None,
+                       recent_min_n: int = 50) -> float:
+    """The lowest confidence where the isotonic-calibrated curve, the
+    pooled empirical Wilson lower bound, AND (when given) a RECENT-ONLY
+    Wilson lower bound all clear break-even.
 
     Searches the isotonic fit's own breakpoints (`X_thresholds_`), not
     an arbitrary fixed grid -- see oof_gate()'s docstring for why a
@@ -507,39 +531,53 @@ def gate_from_isotonic(iso, conf_all: np.ndarray, ok_all: np.ndarray,
     confidence actually varies. Every point where the calibrated curve
     can change value is visited here, at whatever resolution the data
     itself has.
+
+    POOLING ACROSS A LONG SPAN CAN HIDE A DEAD EDGE. The pooled check
+    alone answers "did this threshold pay off somewhere in the last
+    several months", which a stretch of good luck early in that span
+    can satisfy even after the edge has since gone flat -- exactly what
+    a 15-day rolling walk-forward found on the two coins this function
+    HAD cleared: SKHYNIXUSDT and SNDKUSDT's most recent windows (tens
+    of thousands of held-out calls apiece) sat several points BELOW
+    break-even even as the pooled number cleared it comfortably. So
+    when `conf_recent`/`ok_recent` are supplied -- calls from a model
+    trained on everything except a final recent slice, scored only on
+    that slice -- a threshold must ALSO clear on that recent evidence
+    alone, at its own Wilson lower bound, with at least `recent_min_n`
+    calls backing it. Too few recent calls at a threshold means "not
+    enough current evidence", which is a reason to keep searching a
+    HIGHER threshold, not to accept on the pooled number's word alone.
     """
     thresholds = np.asarray(iso.X_thresholds_, dtype="float64")
     calibrated = np.asarray(iso.y_thresholds_, dtype="float64")
-    order = np.argsort(conf_all)
-    conf_sorted = conf_all[order]
-    ok_sorted = ok_all[order]
-    # Cumulative count/sum from the RIGHT: at conf_sorted[i], how many
-    # held-out calls sit at or above it, and how many of those were
-    # correct -- a single pass down the sorted array, not a mask per
-    # candidate threshold.
-    n_total = len(conf_sorted)
-    cum_ok_from_right = np.cumsum(ok_sorted[::-1])[::-1]
-    # searchsorted finds, for each candidate threshold, the first index
-    # in conf_sorted at or above it -- everything from there to the end
-    # is "conf >= threshold".
-    idx = np.searchsorted(conf_sorted, thresholds, side="left")
-    idx = np.clip(idx, 0, n_total - 1 if n_total else 0)
-    n_at_or_above = n_total - idx
-    k_at_or_above = np.where(n_at_or_above > 0, cum_ok_from_right[idx], 0)
+    n_pooled, k_pooled = _wilson_at_or_above(conf_all, ok_all, thresholds)
+    have_recent = conf_recent is not None and len(conf_recent) > 0
+    if have_recent:
+        n_recent, k_recent = _wilson_at_or_above(conf_recent, ok_recent,
+                                                  thresholds)
 
     for i in range(len(thresholds)):
         if calibrated[i] < p_be:
             continue
-        n = int(n_at_or_above[i])
+        n = int(n_pooled[i])
         if n < 200:
             continue
-        low = wilson_lower(int(k_at_or_above[i]), n)
-        if low >= p_be:
-            return float(thresholds[i])
+        low = wilson_lower(int(k_pooled[i]), n)
+        if low < p_be:
+            continue
+        if have_recent:
+            nr = int(n_recent[i])
+            if nr < recent_min_n:
+                continue
+            low_r = wilson_lower(int(k_recent[i]), nr)
+            if low_r < p_be:
+                continue
+        return float(thresholds[i])
     return 1.0
 
 
-def oof_gate(X, side, p_be, log=print, n_folds: int = 4, span: float = 0.5):
+def oof_gate(X, side, p_be, log=print, n_folds: int = 4, span: float = 0.5,
+            recent_days: int = 30):
     """A confidence floor measured across several regimes, not one.
 
     THIS IS THE 17 LOSING LIVE TRADES, TRACED TO ITS SOURCE. calibrate_gate()
@@ -609,20 +647,27 @@ def oof_gate(X, side, p_be, log=print, n_folds: int = 4, span: float = 0.5):
     held-out call actually at or above it -- at its 95% Wilson lower
     bound, not the point estimate -- also clears p_be. The lower bound
     is what a small, possibly-lucky sample cannot fake.
+
+    POOLING ACROSS FOUR WIDE FOLDS CAN STILL AVERAGE AWAY A DEAD EDGE.
+    A 15-day rolling walk-forward -- fit expanding forward across the
+    WHOLE history, one short window at a time, never pooled -- found
+    that SKHYNIXUSDT and SNDKUSDT's most recent windows sat several
+    points BELOW break-even on tens of thousands of held-out calls
+    apiece, even though this function's pooled 4-fold measurement had
+    cleared both comfortably: an earlier, kinder stretch inside the
+    back-half span was carrying the average. So a RECENT slice -- the
+    final `recent_days` of the timeline, scored by a model trained on
+    everything before it -- is now measured on its own and required to
+    ALSO clear break-even at its own Wilson lower bound before a
+    threshold is accepted. Pooled evidence proves an edge existed
+    somewhere in the last several months; recent evidence proves it is
+    still there now, which is the one that actually matters for a
+    trade opened today.
     """
     from sklearn.ensemble import HistGradientBoostingClassifier
     from sklearn.isotonic import IsotonicRegression
-    n = len(X)
-    start = int(n * (1.0 - span))
-    if n - start < 4000:
-        return 0.0, 0, float("nan")
-    cuts = np.linspace(start, n - 1, n_folds + 1)[:-1].astype(int)
-    step = max((n - start) // n_folds, 1000)
-    confs, oks = [], []
-    for cut in cuts:
-        stop = min(cut + step, n)
-        if stop - cut < 500 or cut < 2000:
-            continue
+
+    def fold_conf_ok(cut, stop):
         m = HistGradientBoostingClassifier(random_state=0, **BASE, **LADDER[0])
         m.fit(X[:cut], side[:cut])
         proba = m.predict_proba(X[cut:stop])
@@ -636,22 +681,46 @@ def oof_gate(X, side, p_be, log=print, n_folds: int = 4, span: float = 0.5):
         pred = np.where(c > p0, pred, 0).astype("int8")
         truth = side[cut:stop]
         took = pred != 0
-        confs.append(c[took])
-        oks.append((pred[took] == truth[took]).astype(float))
         del m
         gc.collect()
+        return c[took], (pred[took] == truth[took]).astype(float)
+
+    n = len(X)
+    start = int(n * (1.0 - span))
+    if n - start < 4000:
+        return 0.0, 0, float("nan")
+    cuts = np.linspace(start, n - 1, n_folds + 1)[:-1].astype(int)
+    step = max((n - start) // n_folds, 1000)
+    confs, oks = [], []
+    for cut in cuts:
+        stop = min(cut + step, n)
+        if stop - cut < 500 or cut < 2000:
+            continue
+        c, ok = fold_conf_ok(cut, stop)
+        confs.append(c)
+        oks.append(ok)
     if not confs or sum(len(a) for a in confs) < 300:
         return 0.0, 0, float("nan")
     conf_all = np.concatenate(confs)
     ok_all = np.concatenate(oks)
     acc = float(ok_all.mean())
+
+    recent_bars = recent_days * 1440
+    conf_recent = ok_recent = None
+    recent_cut = n - recent_bars
+    if recent_cut >= 2000 and n - recent_cut >= 500:
+        conf_recent, ok_recent = fold_conf_ok(recent_cut, n)
+
     iso = IsotonicRegression(out_of_bounds="clip", y_min=0.0, y_max=1.0)
     iso.fit(conf_all, ok_all)
-    gate = gate_from_isotonic(iso, conf_all, ok_all, p_be)
+    gate = gate_from_isotonic(iso, conf_all, ok_all, p_be,
+                              conf_recent=conf_recent, ok_recent=ok_recent)
     n_err = int((ok_all < 0.5).sum())
+    n_r = len(conf_recent) if conf_recent is not None else 0
     log(f"      held-out gate: {len(conf_all):,} calls across "
         f"{len(confs)} folds, {n_err:,} wrong (pooled accuracy "
-        f"{100*acc:.2f}%, need {100*p_be:.2f}%) -> gate {gate:.4f}")
+        f"{100*acc:.2f}%, need {100*p_be:.2f}%), {n_r:,} recent-only "
+        f"calls checked separately -> gate {gate:.4f}")
     return gate, n_err, acc
 
 

@@ -162,6 +162,68 @@ def test_gate_from_isotonic():
         f"got {gate2}")
 
 
+def test_gate_from_isotonic_requires_recent_evidence():
+    """Pooled evidence can clear break-even on the strength of an early,
+    kinder stretch even after the edge has since gone flat -- exactly
+    what a 15-day rolling walk-forward found live on SKHYNIXUSDT and
+    SNDKUSDT: pooled 4-fold accuracy cleared comfortably while their
+    most recent windows (tens of thousands of calls) sat below it. A
+    threshold must clear on RECENT-only evidence too, not just pooled.
+    """
+    from sklearn.isotonic import IsotonicRegression
+    rng = np.random.default_rng(1)
+    p_be = 0.56
+
+    n_bulk = 3000
+    conf_bulk = rng.uniform(0.3, 0.95, n_bulk)
+    ok_bulk = (rng.uniform(size=n_bulk) < 0.50).astype(float)
+
+    # Pooled calls at the top band show a real-looking edge -- this is
+    # what the OLD pooled-only check would accept.
+    n_edge = 1200
+    conf_edge = 1.0 - rng.uniform(0.0, 0.001, n_edge)
+    ok_edge = (rng.uniform(size=n_edge) < 0.65).astype(float)
+    conf_all = np.concatenate([conf_bulk, conf_edge])
+    ok_all = np.concatenate([ok_bulk, ok_edge])
+    iso = IsotonicRegression(out_of_bounds="clip", y_min=0.0, y_max=1.0)
+    iso.fit(conf_all, ok_all)
+
+    # Sanity: without a recent check, this threshold clears (matches
+    # the plain test_gate_from_isotonic behaviour).
+    pooled_only = FU.gate_from_isotonic(iso, conf_all, ok_all, p_be)
+    chk(pooled_only < 1.0, "pooled-only check should still find the "
+        f"edge on its own, got {pooled_only}")
+
+    # But the RECENT slice at that same confidence band has gone flat
+    # (~50%, no edge) -- plenty of calls, just no longer working.
+    n_recent = 400
+    conf_recent = 1.0 - rng.uniform(0.0, 0.001, n_recent)
+    ok_recent = (rng.uniform(size=n_recent) < 0.50).astype(float)
+
+    gate = FU.gate_from_isotonic(iso, conf_all, ok_all, p_be,
+                                 conf_recent=conf_recent,
+                                 ok_recent=ok_recent)
+    chk(gate == 1.0, "a threshold that only pooled evidence supports, "
+        f"and recent evidence contradicts, must not be accepted, got {gate}")
+
+    # And when recent evidence agrees the edge is real, it must still
+    # be found -- the recent check should not just block everything.
+    ok_recent_good = (rng.uniform(size=n_recent) < 0.65).astype(float)
+    gate2 = FU.gate_from_isotonic(iso, conf_all, ok_all, p_be,
+                                  conf_recent=conf_recent,
+                                  ok_recent=ok_recent_good)
+    chk(gate2 < 1.0, "when recent evidence also supports the edge, the "
+        f"gate must still be found, got {gate2}")
+
+    # Too few recent calls at a threshold is "not enough current
+    # evidence" -- must not be accepted on pooled strength alone.
+    gate3 = FU.gate_from_isotonic(iso, conf_all, ok_all, p_be,
+                                  conf_recent=conf_recent[:10],
+                                  ok_recent=np.ones(10))
+    chk(gate3 == 1.0, "too few recent calls must not clear the gate "
+        f"even if every one of them won, got {gate3}")
+
+
 def test_wilson_lower():
     lo = FU.wilson_lower(50, 100)
     chk(0.40 < lo < 0.50, f"wilson lower bound at 50/100 should sit "
@@ -259,7 +321,9 @@ def test_ensemble_recognition():
 def main():
     for fn in (test_ranges, test_first_cross, test_opportunities,
                test_cost_bites, test_potential, test_gate,
-               test_gate_from_isotonic, test_wilson_lower,
+               test_gate_from_isotonic,
+               test_gate_from_isotonic_requires_recent_evidence,
+               test_wilson_lower,
                test_rotation, test_ensemble_recognition):
         fn()
     print("=" * 70)

@@ -98,10 +98,6 @@ LADDER = (dict(max_leaf_nodes=96, min_samples_leaf=2, max_iter=200,
 BASE = dict(max_depth=None, l2_regularization=0.0, early_stopping=False)
 RECOVERY_TARGET = 1.0
 
-# oof_gate's recency check: how many non-overlapping recent_days-sized
-# windows, walked backward from the end, get pooled as "recent" evidence.
-RECENT_WINDOWS = 3
-
 # Turn "the kernel killed us" into a Python exception we can act on.
 # Three runs ended with a truncated log and no traceback, which says
 # nothing about which allocation was too big; a MemoryError names the
@@ -580,9 +576,9 @@ def gate_from_isotonic(iso, conf_all: np.ndarray, ok_all: np.ndarray,
     return 1.0
 
 
-def oof_gate(X, side, p_be, log=print, n_folds: int = 4, span: float = 0.5,
-            recent_days: int = 7):
-    """A confidence floor measured across several regimes, not one.
+def oof_gate(X, side, p_be, log=print, n_folds: int = 4, fold_days: int = 7):
+    """A confidence floor measured across several regimes, not one --
+    and only over the market as it is now, not as it was months ago.
 
     THIS IS THE 17 LOSING LIVE TRADES, TRACED TO ITS SOURCE. calibrate_gate()
     reads the gate off the SAME model scored on the SAME rows it was fit to
@@ -652,34 +648,29 @@ def oof_gate(X, side, p_be, log=print, n_folds: int = 4, span: float = 0.5,
     bound, not the point estimate -- also clears p_be. The lower bound
     is what a small, possibly-lucky sample cannot fake.
 
-    POOLING ACROSS FOUR WIDE FOLDS CAN STILL AVERAGE AWAY A DEAD EDGE.
-    A 15-day rolling walk-forward -- fit expanding forward across the
-    WHOLE history, one short window at a time, never pooled -- found
-    that SKHYNIXUSDT and SNDKUSDT's most recent windows sat several
-    points BELOW break-even on tens of thousands of held-out calls
-    apiece, even though this function's pooled 4-fold measurement had
-    cleared both comfortably: an earlier, kinder stretch inside the
-    back-half span was carrying the average.
+    POOLING ACROSS WIDE, DEEP-HISTORY FOLDS CAN AVERAGE AWAY A DEAD
+    EDGE. Two earlier versions of this measurement both learned the
+    same lesson from opposite directions. The first walked 4 folds
+    spanning the back HALF of a coin's entire history -- for BTCUSDT,
+    a fold could be 74 days wide -- and a 15-day rolling walk-forward
+    (fit expanding forward across the WHOLE history, one short window
+    at a time, never pooled) found SKHYNIXUSDT's and SNDKUSDT's most
+    recent windows sitting several points BELOW break-even on tens of
+    thousands of held-out calls apiece, even though the wide, pooled
+    measurement had cleared both: an earlier, kinder stretch inside
+    one wide fold was carrying its average. The second version tried
+    to patch that with a SEPARATE recency check tacked onto the wide
+    one -- correct, but two numbers measuring overlapping questions.
 
-    A SINGLE recency slice turned out to have the exact same blind
-    spot, one level down. The first version of this recency check fit
-    ONE model on everything except the final `recent_days` and scored
-    it on that one slice -- and it did NOT reproduce what the rolling
-    walk-forward found: on both SKHYNIXUSDT and SNDKUSDT, that single
-    slice cleared break-even even after shrinking it from 30 days to
-    7. One slice is one fold, and one fold is exactly the trap this
-    function's docstring already warned about above -- it answers "was
-    this one stretch kind to the model", not "does the edge still
-    hold". So the recency check now walks BACKWARD from the end in
-    `recent_days`-sized windows, same as the main fold walk but
-    confined to the tail and run in reverse (each window trained on
-    everything before it, same as always -- only the order they are
-    visited in is reversed, for convenience), and pools their
-    (confidence, correct) pairs together. A threshold must clear this
-    pooled RECENT evidence's own Wilson lower bound, not just one
-    slice's word for it -- the same multi-window discipline that
-    caught the problem in the first place, now built into the gate
-    that ships instead of living only in a side diagnostic.
+    So the whole measurement now IS the recent evidence: `n_folds`
+    folds, each `fold_days` wide, covering only the most recent
+    `n_folds x fold_days` days -- 4 x 7 = 28 by default, not months.
+    Every fold's MODEL is still trained on the coin's entire history
+    before that fold starts (nothing about how much the model itself
+    learns from has shrunk, only the WINDOW this function tests it
+    against), and a single 7-day fold is still one fold, exactly the
+    trap the section above warns about -- which is why there are
+    still `n_folds` of them, pooled, not one.
     """
     from sklearn.ensemble import HistGradientBoostingClassifier
     from sklearn.isotonic import IsotonicRegression
@@ -703,16 +694,24 @@ def oof_gate(X, side, p_be, log=print, n_folds: int = 4, span: float = 0.5,
         return c[took], (pred[took] == truth[took]).astype(float)
 
     n = len(X)
-    start = int(n * (1.0 - span))
-    if n - start < 4000:
+    step = fold_days * 1440
+    # Walk BACKWARD from the end in fold_days-sized steps -- the most
+    # recent n_folds folds, whatever start that lands on -- instead of
+    # spreading a fixed count across however much history a coin has.
+    cuts = []
+    window_end = n
+    for _ in range(n_folds):
+        window_start = window_end - step
+        if window_start < 2000 or window_end - window_start < 500:
+            break
+        cuts.append(window_start)
+        window_end = window_start
+    cuts.reverse()
+    if not cuts:
         return 0.0, 0, float("nan")
-    cuts = np.linspace(start, n - 1, n_folds + 1)[:-1].astype(int)
-    step = max((n - start) // n_folds, 1000)
     confs, oks = [], []
     for cut in cuts:
         stop = min(cut + step, n)
-        if stop - cut < 500 or cut < 2000:
-            continue
         c, ok = fold_conf_ok(cut, stop)
         confs.append(c)
         oks.append(ok)
@@ -722,32 +721,14 @@ def oof_gate(X, side, p_be, log=print, n_folds: int = 4, span: float = 0.5,
     ok_all = np.concatenate(oks)
     acc = float(ok_all.mean())
 
-    recent_bars = recent_days * 1440
-    recent_confs, recent_oks = [], []
-    window_end = n
-    for _ in range(RECENT_WINDOWS):
-        window_start = window_end - recent_bars
-        if window_start < 2000 or window_end - window_start < 500:
-            break
-        c, ok = fold_conf_ok(window_start, window_end)
-        recent_confs.append(c)
-        recent_oks.append(ok)
-        window_end = window_start
-    conf_recent = np.concatenate(recent_confs) if recent_confs else None
-    ok_recent = np.concatenate(recent_oks) if recent_oks else None
-
     iso = IsotonicRegression(out_of_bounds="clip", y_min=0.0, y_max=1.0)
     iso.fit(conf_all, ok_all)
-    gate = gate_from_isotonic(iso, conf_all, ok_all, p_be,
-                              conf_recent=conf_recent, ok_recent=ok_recent)
+    gate = gate_from_isotonic(iso, conf_all, ok_all, p_be)
     n_err = int((ok_all < 0.5).sum())
-    n_r = len(conf_recent) if conf_recent is not None else 0
-    n_rw = len(recent_confs)
     log(f"      held-out gate: {len(conf_all):,} calls across "
-        f"{len(confs)} folds, {n_err:,} wrong (pooled accuracy "
-        f"{100*acc:.2f}%, need {100*p_be:.2f}%), {n_r:,} recent-only "
-        f"calls across {n_rw} {recent_days}-day windows checked "
-        f"separately -> gate {gate:.4f}")
+        f"{len(confs)} {fold_days}-day folds (last {len(confs)*fold_days} "
+        f"days), {n_err:,} wrong (pooled accuracy {100*acc:.2f}%, "
+        f"need {100*p_be:.2f}%) -> gate {gate:.4f}")
     return gate, n_err, acc
 
 

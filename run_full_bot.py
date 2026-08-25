@@ -1022,7 +1022,14 @@ def main():
     logic = holder.logic       # for the startup banner below only
 
     print("=" * 78)
-    print("  PAPER TRADING fp/full.py  --  virtual money, real prices")
+    # This banner used to hardcode "PAPER TRADING" no matter what --
+    # a real-money run under --real-trade still opened with that line,
+    # and the only correction came 90-odd lines later. Say up front
+    # which one this actually is.
+    if a.real_trade:
+        print("  fp/full.py  --  REAL MONEY, real prices (--real-trade)")
+    else:
+        print("  PAPER TRADING fp/full.py  --  virtual money, real prices")
     print(f"  equity ${a.equity:.2f}   one position per coin, no cap on "
           f"how many coins")
     for q in fitted:

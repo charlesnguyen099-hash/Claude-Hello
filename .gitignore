@@ -2,8 +2,13 @@ __pycache__/
 *.pyc
 .wf_cache.pkl
 
-# Fitted boosters: hundreds of MB, rebuilt by python -m fp.full
+# Fitted boosters: hundreds of MB, rebuilt by python -m fp.full.
+# save_models() writes .pkl.gz, not .pkl -- the old pattern here never
+# matched the actual filename, so every retrain kept re-committing a
+# ~38MB BTCUSDT blob (146 copies, 1.7GB, found while chasing a disk-
+# full error on a live machine) straight into git history.
 fp/models/*.pkl
+fp/models/*.pkl.gz
 fp/full_report.tmp
 
 # --real-trade's local record of currently-open real positions --

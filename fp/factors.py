@@ -216,9 +216,15 @@ def build(panels: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
     xs = cross_section(panels)
     out = {}
     for s, d in panels.items():
-        X = pd.concat([per_symbol(d), xs[s]], axis=1)
-        X = X.replace([np.inf, -np.inf], np.nan)
-        out[s] = X.astype("float32")
+        # Downcast BEFORE replace, not after: .replace() on the whole
+        # frame forces pandas to consolidate its blocks into one new
+        # contiguous array while the old one is still alive, and at
+        # float64 that spike is BTCUSDT's 864,078 rows x 153 cols x 8
+        # bytes = ~1GB -- more than an 8GB Windows box had free mid-run.
+        # float32 halves that spike to ~529MB; inf/-inf survive the
+        # downcast unchanged so replace still finds every one.
+        X = pd.concat([per_symbol(d), xs[s]], axis=1).astype("float32")
+        out[s] = X.replace([np.inf, -np.inf], np.nan)
     return out
 
 

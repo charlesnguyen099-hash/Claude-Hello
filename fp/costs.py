@@ -189,7 +189,7 @@ def refresh(client, symbols) -> dict:
     return out
 
 
-def round_qty(symbol: str, qty: float) -> float:
+def round_qty(symbol: str, qty: float, price: float = 0.0) -> float:
     """A quantity Bybit will actually accept for this symbol.
 
     Rounds DOWN to the exchange's qty_step -- rounding up could push
@@ -199,6 +199,19 @@ def round_qty(symbol: str, qty: float) -> float:
     for this symbol, same fallback philosophy as min_notional(): make
     the request MORE conservative when the real limits are unknown,
     never less.
+
+    Bybit binds on TWO separate floors: a quantity (min_qty, checked
+    above) and a dollar value (min_notional). open_position() sizes
+    the pre-rounding quantity to clear the second one -- but rounding
+    DOWN to qty_step can cross back below it, and on a symbol priced
+    in the hundreds or thousands (SNDKUSDT, XAUUSDT, ...) a single
+    step is enough to do it. That produced a live account's repeated
+    "REAL ORDER FAILED ... number of contracts exceeds minimum limit
+    allowed" (Bybit's own, oddly worded, ErrCode 10001 for "too
+    small") on the same symbol every cycle, forever, because nothing
+    here re-checked the value floor after rounding. Pass `price` and
+    this rounds UP by one step instead when needed -- the smallest
+    change that clears the floor Bybit actually enforces.
     """
     try:
         row = json.loads(CACHE.read_text())[symbol]
@@ -209,5 +222,7 @@ def round_qty(symbol: str, qty: float) -> float:
     if step <= 0:
         step = 1e-6
     n_steps = int(qty / step)
-    rounded = n_steps * step
-    return max(rounded, floor_qty)
+    rounded = max(n_steps * step, floor_qty)
+    if price > 0 and rounded * price < min_notional(symbol, price):
+        rounded += step
+    return rounded

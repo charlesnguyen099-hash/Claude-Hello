@@ -404,7 +404,7 @@ class Account:
         # exchange never made would silently diverge from the real
         # account with every scan after it.
         if self.broker is not None:
-            qty = C.round_qty(dec.symbol, notional / price)
+            qty = C.round_qty(dec.symbol, notional / price, price)
             if qty <= 0:
                 self.rejected += 1
                 return None
@@ -538,6 +538,16 @@ class LogicHolder:
 
     def __init__(self, logic: FullLogic):
         self.logic = logic
+        # Retrain status, read by dashboard() every cycle so "is it
+        # retraining right now" doesn't require scrolling back through
+        # scan output to find the last RETRAIN CYCLE banner. Written
+        # only by retrain_worker's own thread; CPython attribute
+        # assignment is atomic under the GIL, same guarantee as .logic
+        # above.
+        self.retrain_status = "idle"     # "idle" | "running"
+        self.retrain_started = None      # time.time() of the current/last start
+        self.retrain_finished = None     # time.time() of the last finish
+        self.retrain_result = None       # "OK" | "FAILED" | None (never run)
 
 
 def retrain_worker(holder: LogicHolder, symbols, hours: float,
@@ -568,14 +578,22 @@ def retrain_worker(holder: LogicHolder, symbols, hours: float,
                 break
         elif stop_event.wait(hours * 3600):
             break
+        holder.retrain_status = "running"
+        holder.retrain_started = time.time()
         try:
             ok = RT.cycle(symbols, log=lambda s: print(s, flush=True))
         except Exception as exc:
             print(f"  retrain cycle raised: {exc}", flush=True)
+            holder.retrain_status = "idle"
+            holder.retrain_finished = time.time()
+            holder.retrain_result = "FAILED"
             continue
         if not ok:
             print("  retrain cycle failed; keeping the current models",
                   flush=True)
+            holder.retrain_status = "idle"
+            holder.retrain_finished = time.time()
+            holder.retrain_result = "FAILED"
             continue
         fitted_now = sorted({f.name.split(".")[0]
                              for f in FU.MODELS.glob("*.pkl*")})
@@ -584,8 +602,14 @@ def retrain_worker(holder: LogicHolder, symbols, hours: float,
         if not fitted_now:
             print("  retrain produced no models; keeping the current ones",
                   flush=True)
+            holder.retrain_status = "idle"
+            holder.retrain_finished = time.time()
+            holder.retrain_result = "FAILED"
             continue
         holder.logic = FullLogic(fitted_now)
+        holder.retrain_status = "idle"
+        holder.retrain_finished = time.time()
+        holder.retrain_result = "OK"
         print(f"  retrain cycle complete: {len(fitted_now)} coin(s) "
               f"reloaded, live from the next scan", flush=True)
 
@@ -726,7 +750,27 @@ def scan(feed, logic: FullLogic, acct: Account, symbols, panel,
     return opened_now, closed_now
 
 
-def dashboard(acct: Account, panel, started: float):
+def _retrain_line(holder: "LogicHolder | None") -> str:
+    """One line answering 'is it retraining right now', for dashboard().
+
+    Without this, the only evidence is the RETRAIN CYCLE banner
+    scrolling by in a stream of P&L lines -- easy to lose track of
+    over a session running for hours or days.
+    """
+    if holder is None:
+        return ""
+    if holder.retrain_status == "running":
+        mins = (time.time() - holder.retrain_started) / 60.0
+        return f"  retrain: RUNNING (started {mins:.0f}m ago)"
+    if holder.retrain_finished is not None:
+        mins = (time.time() - holder.retrain_finished) / 60.0
+        return (f"  retrain: idle, last cycle {holder.retrain_result} "
+                f"{mins:.0f}m ago")
+    return "  retrain: not started yet"
+
+
+def dashboard(acct: Account, panel, started: float,
+             holder: "LogicHolder | None" = None):
     wins = [c for c in acct.closed if c.pnl > 1e-9]
     flat = [c for c in acct.closed if abs(c.pnl) <= 1e-9]
     losses = [c for c in acct.closed if c.pnl < -1e-9]
@@ -760,6 +804,9 @@ def dashboard(acct: Account, panel, started: float):
              if acct.closed else "")
           + f"   fees ${acct.fees_paid:.4f}   rejected {acct.rejected}"
           + f"   up {up/60:.1f}m", flush=True)
+    line = _retrain_line(holder)
+    if line:
+        print(line, flush=True)
     # REAL MODE: the internal `eq` above is arithmetic on top of every
     # fill this process believes happened. It should track the real
     # wallet closely -- this is the check that says so, or says it does
@@ -1206,16 +1253,16 @@ def main():
             except Exception as exc:                      # keep trading
                 print(f"  scan error: {exc}", flush=True)
             if a.once:
-                dashboard(acct, panel, started)
+                dashboard(acct, panel, started, holder)
                 break
             if not feed.advance():
                 break
             if feed.live:
-                dashboard(acct, panel, started)
+                dashboard(acct, panel, started, holder)
                 while time.time() - t0 < a.interval and not stop["flag"]:
                     time.sleep(0.25)
             elif len(acct.closed) and len(acct.closed) % 25 == 0:
-                dashboard(acct, panel, started)
+                dashboard(acct, panel, started, holder)
     finally:
         retrain_stop.set()
         summary(acct, panel)

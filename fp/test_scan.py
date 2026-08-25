@@ -297,12 +297,126 @@ def test_retrain_continuous_runs_back_to_back():
         B.RT.cycle = real_cycle
 
 
+class FakeBroker:
+    """A stand-in LiveBroker: records every order, never touches a
+    network. `fail_open`/`fail_close` make market_order raise, the
+    same shape a real OrderError would take."""
+
+    def __init__(self, fail_open=False, fail_close=False):
+        self.fail_open = fail_open
+        self.fail_close = fail_close
+        self.orders = []
+        self._position = None
+
+    def market_order(self, symbol, side, qty, reduce_only=False):
+        if reduce_only and self.fail_close:
+            raise RuntimeError("simulated close failure")
+        if not reduce_only and self.fail_open:
+            raise RuntimeError("simulated open failure")
+        self.orders.append((symbol, side, qty, reduce_only))
+        if reduce_only:
+            self._position = None
+        else:
+            self._position = {"side": side, "qty": qty, "entry": 100.0}
+        return {}
+
+    def open_positions(self):
+        return {"AUSDT": self._position} if self._position else {}
+
+
+def test_real_trade_open_places_order_and_uses_real_fill():
+    """A successful real order must set Position.qty/entry from what
+    the broker reports back, not from the simulated price alone."""
+    sym = "AUSDT"
+    dec = Decision(symbol=sym, side=1, potential=50.0, stake=0.5,
+                   leverage=2.0, target=0.10, stop=0.02, trail=0.001,
+                   cost=0.0)
+    broker = FakeBroker()
+    acct = B.Account(equity=10.0, start=10.0, broker=broker)
+    p = acct.open_position(dec, price=99.0)
+    chk(p is not None, "a successful real order must open a position")
+    chk(len(broker.orders) == 1, f"exactly one order, got {broker.orders}")
+    sym_o, side_o, qty_o, reduce_o = broker.orders[0]
+    chk(sym_o == sym and side_o == 1 and not reduce_o,
+        f"open order must be a non-reduce-only buy for {sym}, "
+        f"got {broker.orders[0]}")
+    chk(p.entry == 100.0,
+        f"entry must come from the broker's reported fill (100.0), "
+        f"not the simulated price (99.0), got {p.entry}")
+    chk(p.qty == qty_o > 0, "position qty must match the real order qty")
+
+
+def test_real_trade_open_order_failure_creates_no_position():
+    """A rejected/errored real order must leave no internal position
+    behind -- an internal record of a trade the exchange never made."""
+    sym = "AUSDT"
+    dec = Decision(symbol=sym, side=1, potential=50.0, stake=0.5,
+                   leverage=2.0, target=0.10, stop=0.02, trail=0.001,
+                   cost=0.0)
+    broker = FakeBroker(fail_open=True)
+    acct = B.Account(equity=10.0, start=10.0, broker=broker)
+    p = acct.open_position(dec, price=99.0)
+    chk(p is None, "a failed real order must not open a position")
+    chk(sym not in acct.open, "no position may be tracked internally")
+    chk(acct.rejected == 1, f"the attempt must count as rejected, "
+        f"got {acct.rejected}")
+
+
+def test_real_trade_close_order_failure_keeps_position_open():
+    """A failed close order must leave the position exactly as it was
+    -- still open internally, so the next scan retries it -- rather
+    than the bot believing a still-live position is flat."""
+    sym = "AUSDT"
+    dec = Decision(symbol=sym, side=1, potential=50.0, stake=0.5,
+                   leverage=2.0, target=0.10, stop=0.02, trail=0.001,
+                   cost=0.0)
+    broker = FakeBroker(fail_close=True)
+    acct = B.Account(equity=10.0, start=10.0, broker=broker)
+    p = acct.open_position(dec, price=99.0)
+    chk(p is not None, "the open must succeed for this test to be valid")
+    result = acct.close_position(p, "target", 0.05)
+    chk(result is None, "a failed close order must return None, not "
+        "a Closed record")
+    chk(sym in acct.open, "the position must remain in acct.open after "
+        "a failed close order")
+    chk(len(acct.closed) == 0, "nothing may be appended to acct.closed "
+        "when the real close order failed")
+
+
+def test_real_trade_close_places_reduce_only_order():
+    """A successful close must place a reduce-only order on the
+    OPPOSITE side, for the exact quantity that was opened."""
+    sym = "AUSDT"
+    dec = Decision(symbol=sym, side=1, potential=50.0, stake=0.5,
+                   leverage=2.0, target=0.10, stop=0.02, trail=0.001,
+                   cost=0.0)
+    broker = FakeBroker()
+    acct = B.Account(equity=10.0, start=10.0, broker=broker)
+    p = acct.open_position(dec, price=99.0)
+    opened_qty = p.qty
+    result = acct.close_position(p, "target", 0.05)
+    chk(result is not None, "a successful close must return a Closed record")
+    chk(len(broker.orders) == 2, f"open + close, got {broker.orders}")
+    sym_o, side_o, qty_o, reduce_o = broker.orders[1]
+    chk(reduce_o, "the close order must be reduce-only")
+    chk(side_o == -dec.side, f"the close order must be the opposite "
+        f"side of the position, got {side_o}")
+    chk(qty_o == opened_qty, f"the close order must send back the EXACT "
+        f"quantity that was opened ({opened_qty}), got {qty_o}")
+    chk(sym not in acct.open, "the position must be gone after a "
+        "successful close")
+
+
 def main():
     for fn in (test_no_reentry_within_same_bar,
                test_reentry_allowed_on_a_genuinely_new_bar,
                test_missing_live_gate_refuses_to_trade,
                test_entries_allocate_highest_potential_first,
-               test_retrain_continuous_runs_back_to_back):
+               test_retrain_continuous_runs_back_to_back,
+               test_real_trade_open_places_order_and_uses_real_fill,
+               test_real_trade_open_order_failure_creates_no_position,
+               test_real_trade_close_order_failure_keeps_position_open,
+               test_real_trade_close_places_reduce_only_order):
         fn()
     print(f"all {PASS} checks passed")
     return 0

@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
-"""Paper-trade the fp/full.py logic on live Bybit prices. Virtual $10.
+"""Trade the fp/full.py logic on live Bybit prices. Paper by default.
 
     pip install pandas numpy scikit-learn pybit
     python -m fp.full          # build the logic (once, slow)
     python run_full_bot.py     # trade it (no key, no orders, ever)
 
-No API key, no account, no order is ever placed. It reads Bybit's public
-kline and ticker endpoints and keeps the balance in memory.
+By default: no API key, no account, no order is ever placed. It reads
+Bybit's public kline and ticker endpoints and keeps the balance in
+memory. --real-trade (see fp/broker.py) turns this into a real Bybit
+account with real orders -- it needs its own flag pair to run at all
+(see --real-trade below), on purpose.
 
 WHAT IT TRADES. One logic, built by fp/full.py and nothing else:
 
@@ -33,6 +36,11 @@ the same code with no constant changed.
     python run_full_bot.py --once        # one scan, print, exit
     python run_full_bot.py --retrain-hours 0   # disable the retrain thread
     python run_full_bot.py --retrain-continuous  # back-to-back, no wait
+
+    # REAL orders, real money -- both flags required together, on purpose:
+    python run_full_bot.py --real-trade --i-understand-real-money
+    # Prove the order path works with fake money first:
+    python run_full_bot.py --real-trade --i-understand-real-money --testnet
 
 BY DEFAULT IT TRADES ONLY THE FITTED COINS. Every measurement that says
 this logic works -- 100% of reachable signals recovered, 100% win rate,
@@ -98,9 +106,36 @@ TAKER = C.TAKER_PER_SIDE
 
 
 # --------------------------------------------------------------- market data
-def make_client():
+def make_client(testnet: bool = False):
     from pybit.unified_trading import HTTP
-    return HTTP(testnet=False)
+    return HTTP(testnet=testnet)
+
+
+def real_credentials() -> tuple[str, str]:
+    """The API key/secret for --real-trade, never written anywhere.
+
+    Env vars first (BYBIT_API_KEY/BYBIT_API_SECRET) -- so this can run
+    unattended once configured -- then an interactive, non-echoing
+    prompt. Never logged, never part of an argv (which shells keep in
+    history and other local users can read via `ps`), never cached to
+    disk: the only place either value exists is this process's memory
+    and whatever pybit's HTTP client does with them over TLS.
+    """
+    import getpass
+    key = _os.environ.get("BYBIT_API_KEY")
+    secret = _os.environ.get("BYBIT_API_SECRET")
+    if key and secret:
+        return key, secret
+    print("\n  Real trading needs a Bybit API key with trading "
+          "permission (not withdrawal).")
+    print("  Create one at https://www.bybit.com/app/user/api-management "
+          "if you have not.")
+    key = key or input("  API key: ").strip()
+    secret = secret or getpass.getpass("  API secret (hidden): ").strip()
+    if not key or not secret:
+        print("  Both an API key and secret are required.", file=sys.stderr)
+        sys.exit(2)
+    return key, secret
 
 
 def fetch_klines(client, symbol: str, limit: int = BARS):
@@ -228,6 +263,12 @@ class Position:
     # Scans run every 20s but a 1-minute bar changes once a minute, so
     # counting scans counted the same bar three times.
     last_bar: object = None
+    # The EXACT quantity a real order opened this position with (0 in
+    # paper mode). The close order must send back this same number, not
+    # a freshly recomputed one -- margin/notional can drift a hair from
+    # rounding, and closing anything other than what was actually opened
+    # leaves a dangling real position on the exchange.
+    qty: float = 0.0
 
     def move(self, price: float) -> float:
         return (price / self.entry - 1.0) * self.dec.side
@@ -278,6 +319,11 @@ class Account:
     # bar -- same entry 1,773.26, same exit, three sets of fees -- and
     # BLESSUSDT twice off another.
     last_action: dict = field(default_factory=dict)
+    # A LiveBroker, or None for paper trading. Every open/close still
+    # sizes and prices itself exactly as before -- the broker only
+    # decides whether a REAL market order also gets sent alongside the
+    # internal bookkeeping, never changes what that bookkeeping is.
+    broker: object = None
 
     @property
     def committed(self) -> float:
@@ -336,13 +382,64 @@ class Account:
         if margin <= 0 or margin > self.free:
             self.rejected += 1
             return None
-        p = Position(symbol=dec.symbol, dec=dec, entry=price, margin=margin,
-                     notional=margin * dec.leverage, opened_at=time.time(),
-                     high=price, low=price)
+        notional = margin * dec.leverage
+        qty = 0.0
+        entry = price
+        # REAL MODE: a real market order must actually fill before any
+        # internal bookkeeping is created. A rejected or errored order
+        # must produce NO Position -- an internal record of a trade the
+        # exchange never made would silently diverge from the real
+        # account with every scan after it.
+        if self.broker is not None:
+            qty = C.round_qty(dec.symbol, notional / price)
+            if qty <= 0:
+                self.rejected += 1
+                return None
+            try:
+                self.broker.market_order(dec.symbol, dec.side, qty,
+                                        reduce_only=False)
+                real = self.broker.open_positions().get(dec.symbol)
+            except Exception as exc:
+                print(f"  REAL ORDER FAILED opening {dec.symbol}: {exc}",
+                      flush=True)
+                self.rejected += 1
+                return None
+            if real is None or real["qty"] <= 0:
+                print(f"  REAL ORDER for {dec.symbol} reported no error "
+                      f"but no position exists after it -- treating as "
+                      f"failed, not tracking internally", flush=True)
+                self.rejected += 1
+                return None
+            entry = real["entry"] or price
+            qty = real["qty"]
+            notional = qty * entry
+            margin = notional / dec.leverage
+        p = Position(symbol=dec.symbol, dec=dec, entry=entry, margin=margin,
+                     notional=notional, opened_at=time.time(),
+                     high=entry, low=entry, qty=qty)
         self.open[dec.symbol] = p
         return p
 
-    def close_position(self, p: Position, reason: str, move: float) -> Closed:
+    def close_position(self, p: Position, reason: str,
+                       move: float) -> Closed | None:
+        # REAL MODE: the exit order goes out FIRST, and only on success
+        # does bookkeeping treat the position as gone. A failed close
+        # order must leave the position in self.open exactly as it was
+        # -- still genuinely open on the exchange -- so the next scan
+        # retries it, rather than the bot silently believing a still-
+        # live, unprotected position is flat. Returning None here (not
+        # popping, not appending to self.closed) is what makes that
+        # retry automatic: exit_now() runs again next cycle against
+        # whatever the market did in between.
+        if self.broker is not None:
+            try:
+                self.broker.market_order(p.symbol, -p.dec.side, p.qty,
+                                        reduce_only=True)
+            except Exception as exc:
+                print(f"  REAL ORDER FAILED closing {p.symbol}: {exc} "
+                      f"-- position remains open, retrying next scan",
+                      flush=True)
+                return None
         # ONE cost, charged once, at close. `dec.cost` is the coin's full
         # round trip -- taker in, taker out, the spread estimated from
         # its own bars, and funding. Charging a taker fee at open and
@@ -483,6 +580,12 @@ def scan(feed, logic: FullLogic, acct: Account, symbols, panel,
             p.peak = val
             continue
         c = acct.close_position(p, reason, val)
+        if c is None:
+            # The real close order failed -- p is still in acct.open,
+            # untouched, so exit_now() runs again next scan against
+            # fresh bars. last_action is NOT stamped either: this was
+            # not a decision that was acted on.
+            continue
         closed_now += 1
         # Mark this bar as already acted on for s, or the entries loop
         # below -- running later in this SAME scan() call, against this
@@ -584,6 +687,24 @@ def dashboard(acct: Account, panel, started: float):
              if acct.closed else "")
           + f"   fees ${acct.fees_paid:.4f}   rejected {acct.rejected}"
           + f"   up {up/60:.1f}m", flush=True)
+    # REAL MODE: the internal `eq` above is arithmetic on top of every
+    # fill this process believes happened. It should track the real
+    # wallet closely -- this is the check that says so, or says it does
+    # not, rather than the operator having to trust the arithmetic on
+    # faith. Never fed back into acct.equity automatically: that would
+    # blend real unrealised pnl (which includes positions this process
+    # may not know about) into bookkeeping this process's own sizing
+    # logic depends on being self-consistent.
+    if acct.broker is not None:
+        try:
+            real_eq = acct.broker.wallet_equity()
+            drift = real_eq - eq
+            flag = "" if abs(drift) < 0.02 * max(eq, 1.0) else "  <-- CHECK"
+            print(f"  real wallet equity ${real_eq:.4f}   "
+                  f"(internal tracking is {'+' if drift >= 0 else ''}"
+                  f"{drift:.4f} off){flag}", flush=True)
+        except Exception as exc:
+            print(f"  could not read real wallet equity: {exc}", flush=True)
 
 
 def _px(x: float) -> str:
@@ -791,7 +912,32 @@ def main():
                          "is still hours long on its own, so this is "
                          "'as soon as the last one finished', not "
                          "'instant'")
+    ap.add_argument("--real-trade", action="store_true",
+                    help="place REAL orders on Bybit with a REAL API "
+                         "key against REAL money. Requires "
+                         "--i-understand-real-money too, on purpose --"
+                         " a single flag is too easy to pass by habit.")
+    ap.add_argument("--i-understand-real-money", action="store_true",
+                    help="required alongside --real-trade; exists so "
+                         "real trading never starts from one flag typed "
+                         "on reflex")
+    ap.add_argument("--testnet", action="store_true",
+                    help="with --real-trade, use Bybit's TESTNET "
+                         "instead of mainnet -- fake money, same API, "
+                         "the way to prove the order path works before "
+                         "risking anything real")
     a = ap.parse_args()
+
+    if a.real_trade and not a.i_understand_real_money:
+        print("--real-trade also needs --i-understand-real-money. "
+              "This places real orders with real money -- both flags "
+              "exist so that never happens by accident.", file=sys.stderr)
+        return 2
+    if a.real_trade and a.replay:
+        print("--real-trade and --replay cannot be combined: replay "
+              "walks CACHED history, and a real order against a bar "
+              "from the past makes no sense.", file=sys.stderr)
+        return 2
 
     fitted = sorted({f.name.split(".")[0]
                      for f in FU.MODELS.glob("*.pkl*")})
@@ -839,7 +985,7 @@ def main():
         print(f"  REPLAY: {len(symbols)} coin(s), "
               f"{feed.axis[0]} .. {feed.axis[-1]} from cache, no network")
     else:
-        client = make_client()
+        client = make_client(testnet=a.testnet)
         feed = LiveFeed(client, workers=a.workers)
         if a.symbols:
             symbols = [q.strip().upper() for q in a.symbols.split(",")
@@ -883,8 +1029,46 @@ def main():
         elif a.retrain_hours > 0:
             print(f"  retrain:  every {a.retrain_hours:.1f}h, models "
                   f"swapped in live -- see fp/retrain.py")
+    broker = None
+    if a.real_trade:
+        from fp.broker import LiveBroker, OrderError
+        api_key, api_secret = real_credentials()
+        broker = LiveBroker(api_key, api_secret, testnet=a.testnet)
+        try:
+            real_equity = broker.wallet_equity()
+        except OrderError as exc:
+            print(f"  Could not read wallet balance -- check the API key "
+                  f"and its permissions: {exc}", file=sys.stderr)
+            return 2
+        mode_label = "(testnet)" if a.testnet else "(MAINNET -- real money)"
+        print(f"  REAL TRADING {mode_label}   "
+              f"wallet equity ${real_equity:.2f}")
+        # A REFRESHED instrument cache, not the stale one a prior paper
+        # run may have left behind -- real order quantities are rounded
+        # against qty_step/min_qty read from here (fp.costs.round_qty),
+        # and a leverage cap read wrong is a leverage cap ignored.
+        C.refresh(client, symbols)
+        already_open = broker.open_positions()
+        traded_already_open = [s for s in symbols if s in already_open]
+        if traded_already_open:
+            print(f"  REFUSING TO START: {', '.join(traded_already_open)} "
+                  f"already {'has' if len(traded_already_open)==1 else 'have'} "
+                  f"an open position on this account. Close it manually "
+                  f"first -- starting over an existing position this bot "
+                  f"did not open means its exit logic (peak, ratchet, "
+                  f"target) has no history to work from.", file=sys.stderr)
+            return 2
+        for s in symbols:
+            try:
+                broker.set_leverage(s, C.max_leverage(s))
+            except OrderError as exc:
+                print(f"  could not set leverage for {s}: {exc}",
+                      flush=True)
+        print(f"  equity used for sizing: ${real_equity:.2f} (read from "
+              f"the wallet just now, not --equity)")
+        a.equity = real_equity
     print("=" * 78, flush=True)
-    acct = Account(equity=a.equity, start=a.equity)
+    acct = Account(equity=a.equity, start=a.equity, broker=broker)
     panel: dict = {}
     started = time.time()
     stop = {"flag": False}

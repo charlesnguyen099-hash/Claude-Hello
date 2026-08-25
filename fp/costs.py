@@ -150,7 +150,15 @@ def min_notional(symbol: str, price: float = 0.0) -> float:
 
 
 def refresh(client, symbols) -> dict:
-    """Pull the real per-symbol limits and cache them."""
+    """Pull the real per-symbol limits and cache them.
+
+    Also captures the fields a REAL order needs and min_notional()
+    above was already reading but nothing ever wrote: qty_step and
+    min_qty (lotSizeFilter) and tick_size (priceFilter). Without these
+    an order quantity computed from margin/price is an arbitrary
+    decimal Bybit will reject outright -- rounding to the exchange's
+    own step is not optional once an order actually gets sent.
+    """
     out = {}
     try:
         rows = client.get_instruments_info(
@@ -163,8 +171,15 @@ def refresh(client, symbols) -> dict:
         if s not in want:
             continue
         lf = x.get("leverageFilter", {}) or {}
+        lsf = x.get("lotSizeFilter", {}) or {}
+        pf = x.get("priceFilter", {}) or {}
         out[s] = {"max_leverage": float(lf.get("maxLeverage", 1) or 1),
-                  "min_leverage": float(lf.get("minLeverage", 1) or 1)}
+                  "min_leverage": float(lf.get("minLeverage", 1) or 1),
+                  "qty_step": float(lsf.get("qtyStep", 0) or 0),
+                  "min_qty": float(lsf.get("minOrderQty", 0) or 0),
+                  "min_notional": float(lsf.get("minNotionalValue", 0)
+                                        or 0),
+                  "tick_size": float(pf.get("tickSize", 0) or 0)}
     if out:
         try:
             CACHE.parent.mkdir(parents=True, exist_ok=True)
@@ -172,3 +187,27 @@ def refresh(client, symbols) -> dict:
         except Exception:
             pass
     return out
+
+
+def round_qty(symbol: str, qty: float) -> float:
+    """A quantity Bybit will actually accept for this symbol.
+
+    Rounds DOWN to the exchange's qty_step -- rounding up could push
+    a carefully-sized order over what margin actually covers -- and
+    never below min_qty. Falls back to 6-decimal rounding (generous
+    for every linear USDT perp Bybit lists) when the cache has nothing
+    for this symbol, same fallback philosophy as min_notional(): make
+    the request MORE conservative when the real limits are unknown,
+    never less.
+    """
+    try:
+        row = json.loads(CACHE.read_text())[symbol]
+        step = float(row.get("qty_step", 0) or 0)
+        floor_qty = float(row.get("min_qty", 0) or 0)
+    except Exception:
+        step, floor_qty = 0.0, 0.0
+    if step <= 0:
+        step = 1e-6
+    n_steps = int(qty / step)
+    rounded = n_steps * step
+    return max(rounded, floor_qty)

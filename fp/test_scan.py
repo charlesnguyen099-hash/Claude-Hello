@@ -297,6 +297,39 @@ def test_retrain_continuous_runs_back_to_back():
         B.RT.cycle = real_cycle
 
 
+def _with_instrument(symbol, qty_step=0.001, min_qty=0.001,
+                     min_notional=5.0):
+    """Point fp.costs.CACHE at a temp file with one symbol's real
+    exchange limits, for the duration of a `with` block.
+
+    round_qty() now REFUSES (returns 0.0) rather than guess a
+    precision when a symbol has no real qty_step cached -- correct
+    behaviour for a live account, but it means every real-trade test
+    below needs a real-looking instrument cache to exercise the order
+    path at all, not fall through it at qty<=0.
+    """
+    import contextlib
+    import json
+    import tempfile
+    from fp import costs as C
+
+    @contextlib.contextmanager
+    def _cm():
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "instruments.json"
+            path.write_text(json.dumps({symbol: {
+                "max_leverage": 25.0, "min_leverage": 1.0,
+                "qty_step": qty_step, "min_qty": min_qty,
+                "min_notional": min_notional, "tick_size": 0.01}}))
+            old = C.CACHE
+            C.CACHE = path
+            try:
+                yield
+            finally:
+                C.CACHE = old
+    return _cm()
+
+
 class FakeBroker:
     """A stand-in LiveBroker: records every order, never touches a
     network. `fail_open`/`fail_close` make market_order raise, the
@@ -306,9 +339,11 @@ class FakeBroker:
         self.fail_open = fail_open
         self.fail_close = fail_close
         self.orders = []
+        self.calls = 0
         self._position = None
 
     def market_order(self, symbol, side, qty, reduce_only=False):
+        self.calls += 1
         if reduce_only and self.fail_close:
             raise RuntimeError("simulated close failure")
         if not reduce_only and self.fail_open:
@@ -332,8 +367,9 @@ def test_real_trade_open_places_order_and_uses_real_fill():
                    leverage=2.0, target=0.10, stop=0.02, trail=0.001,
                    cost=0.0)
     broker = FakeBroker()
-    acct = B.Account(equity=10.0, start=10.0, broker=broker)
-    p = acct.open_position(dec, price=99.0)
+    with _with_instrument(sym):
+        acct = B.Account(equity=10.0, start=10.0, broker=broker)
+        p = acct.open_position(dec, price=99.0)
     chk(p is not None, "a successful real order must open a position")
     chk(len(broker.orders) == 1, f"exactly one order, got {broker.orders}")
     sym_o, side_o, qty_o, reduce_o = broker.orders[0]
@@ -354,12 +390,15 @@ def test_real_trade_open_order_failure_creates_no_position():
                    leverage=2.0, target=0.10, stop=0.02, trail=0.001,
                    cost=0.0)
     broker = FakeBroker(fail_open=True)
-    acct = B.Account(equity=10.0, start=10.0, broker=broker)
-    p = acct.open_position(dec, price=99.0)
+    with _with_instrument(sym):
+        acct = B.Account(equity=10.0, start=10.0, broker=broker)
+        p = acct.open_position(dec, price=99.0)
     chk(p is None, "a failed real order must not open a position")
     chk(sym not in acct.open, "no position may be tracked internally")
     chk(acct.rejected == 1, f"the attempt must count as rejected, "
         f"got {acct.rejected}")
+    chk(broker.calls == 1, "the order must actually have been "
+        "attempted and failed, not skipped for want of a qty_step")
 
 
 def test_real_trade_close_order_failure_keeps_position_open():
@@ -372,7 +411,8 @@ def test_real_trade_close_order_failure_keeps_position_open():
                    cost=0.0)
     broker = FakeBroker(fail_close=True)
     acct = B.Account(equity=10.0, start=10.0, broker=broker)
-    p = acct.open_position(dec, price=99.0)
+    with _with_instrument(sym):
+        p = acct.open_position(dec, price=99.0)
     chk(p is not None, "the open must succeed for this test to be valid")
     result = acct.close_position(p, "target", 0.05)
     chk(result is None, "a failed close order must return None, not "
@@ -392,7 +432,8 @@ def test_real_trade_close_places_reduce_only_order():
                    cost=0.0)
     broker = FakeBroker()
     acct = B.Account(equity=10.0, start=10.0, broker=broker)
-    p = acct.open_position(dec, price=99.0)
+    with _with_instrument(sym):
+        p = acct.open_position(dec, price=99.0)
     opened_qty = p.qty
     result = acct.close_position(p, "target", 0.05)
     chk(result is not None, "a successful close must return a Closed record")

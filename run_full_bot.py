@@ -1174,7 +1174,20 @@ def main():
         # run may have left behind -- real order quantities are rounded
         # against qty_step/min_qty read from here (fp.costs.round_qty),
         # and a leverage cap read wrong is a leverage cap ignored.
-        C.refresh(client, symbols)
+        instruments = C.refresh(client, symbols)
+        # Say so BEFORE the first order, not after N identical failures.
+        # A symbol Bybit's linear list doesn't return usable
+        # lotSizeFilter for (seen on SNDKUSDT: an exotic instrument,
+        # not a typical crypto perp) makes round_qty() refuse every
+        # real order on it -- which is correct, but silent about why
+        # unless said here.
+        no_step = [s for s in symbols
+                  if not instruments.get(s, {}).get("qty_step")]
+        if no_step:
+            print(f"  no usable qty_step from Bybit for: "
+                  f"{', '.join(sorted(no_step))} -- real orders on "
+                  f"{'these' if len(no_step) > 1 else 'this'} will be "
+                  f"skipped, not attempted", flush=True)
         # RECONCILE, DO NOT REFUSE. A prior run of THIS bot may have
         # been Ctrl+C'd or crashed with positions still open -- those
         # have a persisted Decision (save_state() below) and are

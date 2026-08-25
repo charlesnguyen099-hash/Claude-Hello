@@ -128,7 +128,16 @@ def refresh_cache(client, symbols=None, log=print) -> int:
     before = len(both)
     both = both.drop_duplicates(subset=["symbol", "ts"], keep="last")
     both = both.sort_values(["symbol", "ts"]).reset_index(drop=True)
-    both.to_csv(D.CACHE, index=False, compression="gzip")
+    # Write to a temp file and swap it in, never straight to D.CACHE --
+    # a kill/crash/power-loss mid-write otherwise leaves a truncated
+    # .gz on disk that every later read fails on with "Compressed file
+    # ended before the end-of-stream marker was reached", forever,
+    # because there is no such thing as a half-written gzip that still
+    # decompresses. Path.replace() is an atomic rename on both POSIX
+    # and Windows, so the old cache is never in an in-between state.
+    tmp = D.CACHE.with_suffix(D.CACHE.suffix + ".tmp")
+    both.to_csv(tmp, index=False, compression="gzip")
+    tmp.replace(D.CACHE)
     gained = len(both) - len(old)
     log(f"  cache: {len(old):,} -> {len(both):,} rows (+{gained:,}, "
         f"{before - len(both):,} duplicates dropped)")

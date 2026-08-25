@@ -74,7 +74,14 @@ def all_perpetuals(client, quote: str = "USDT") -> dict:
     if out:
         try:
             CACHE.parent.mkdir(parents=True, exist_ok=True)
-            CACHE.write_text(json.dumps(out, indent=1, sort_keys=True))
+            # Temp file + atomic replace, not a direct write -- same
+            # reasoning as fp.retrain's cache write and fp.full's
+            # save_models: a kill/crash mid-write otherwise leaves a
+            # truncated instruments.json, and fp.costs reads straight
+            # from it for every real order's qty rounding.
+            tmp = CACHE.with_suffix(CACHE.suffix + ".tmp")
+            tmp.write_text(json.dumps(out, indent=1, sort_keys=True))
+            tmp.replace(CACHE)
         except OSError:
             pass
     return out

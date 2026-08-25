@@ -26,6 +26,30 @@ Once a coin is in the cache, the running bot's own
 `--retrain-continuous` retrain thread keeps it current forever --
 this command is only needed ONCE per new coin, to seed it.
 
+## Onboarding the WHOLE board (hundreds of coins), not a hand-typed list
+
+`python -m fp.backfill_all` does not take a symbol list at all -- it
+reads Bybit's full ranked USDT-perpetual board itself
+(`fp.universe.ranked`, ~700+ symbols), skips whatever already has a
+model file in `fp/models/`, and works through the rest in small
+batches (default 15) via the exact same `fp.retrain.cycle()` used
+above. Resumable by design (Ctrl+C and rerun picks up where it left
+off, since "already fitted" is read fresh from disk each start), and
+meant to run over days, not minutes -- a full board is hundreds of
+individual fetch-and-fit passes.
+
+**Do not run this at the same time as the live bot's own
+`--retrain-continuous` thread** -- both read-modify-write
+`data/all_1m.csv.gz` independently, and while the write itself can
+never corrupt (atomic temp-file replace), two independent read-merge-
+write cycles racing is a lost update: whichever finishes second can
+silently overwrite the first's freshly-fetched rows. Either stop the
+live bot for the duration, or start it with `--retrain-hours 0` (no
+retrain thread) and let this script own retraining until a pass
+finishes, then restart the live bot normally so it picks up every
+newly fitted model. See `fp/backfill_all.py`'s own docstring for the
+full reasoning.
+
 ### Before running this on a machine where `run_full_bot.py` is live
 
 - Check its dashboard shows `open 0` (no real position currently

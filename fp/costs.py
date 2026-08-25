@@ -183,7 +183,11 @@ def refresh(client, symbols) -> dict:
     if out:
         try:
             CACHE.parent.mkdir(parents=True, exist_ok=True)
-            CACHE.write_text(json.dumps(out, indent=1))
+            # Atomic replace, not a direct write -- round_qty() and
+            # min_notional() read this file for every real order.
+            tmp = CACHE.with_suffix(CACHE.suffix + ".tmp")
+            tmp.write_text(json.dumps(out, indent=1))
+            tmp.replace(CACHE)
         except Exception:
             pass
     return out

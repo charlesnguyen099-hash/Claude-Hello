@@ -189,7 +189,15 @@ def save_models(sym: str, models: dict, meta: dict) -> None:
     MODELS.mkdir(parents=True, exist_ok=True)
     blob = pickle.dumps({"models": models, "meta": meta},
                         protocol=pickle.HIGHEST_PROTOCOL)
-    (MODELS / f"{sym}.pkl.gz").write_bytes(gzip.compress(blob, 6))
+    # Temp file + atomic replace, not a direct write -- the same class
+    # of bug fp/retrain.py's cache write had: a kill/crash/disk-full
+    # mid-write would otherwise leave a truncated .pkl.gz that the live
+    # bot's load_models() can only fail to unpickle, permanently, until
+    # the next successful retrain overwrites it.
+    dest = MODELS / f"{sym}.pkl.gz"
+    tmp = dest.with_suffix(dest.suffix + ".tmp")
+    tmp.write_bytes(gzip.compress(blob, 6))
+    tmp.replace(dest)
     # Drop any uncompressed leftover so the two cannot disagree.
     old = MODELS / f"{sym}.pkl"
     if old.exists():

@@ -37,6 +37,8 @@ run_full_bot.py can drive this itself with --retrain-hours; see there.
 from __future__ import annotations
 
 import argparse
+import os
+import shutil
 import subprocess
 import sys
 import time
@@ -49,6 +51,14 @@ from fp import data as D
 
 HERE = Path(__file__).resolve().parent
 KLINE_LIMIT = 1000          # Bybit's cap for one get_kline call
+
+# Below this, skip the cycle instead of writing anything. A live box
+# hit "[Errno 28] No space left on device" mid-write to the cache,
+# and with --retrain-continuous the next cycle started within seconds
+# and hit the exact same wall -- a tight loop of the same failure,
+# forever, until a human noticed. Checking first turns that into one
+# clear line per cycle and no attempted write at all.
+MIN_FREE_MB = float(os.environ.get("FP_MIN_FREE_MB", "1024"))
 
 
 def _make_client():
@@ -173,6 +183,13 @@ def cycle(symbols=None, log=print) -> bool:
     log("=" * 78)
     log(f"  RETRAIN CYCLE  {time.strftime('%Y-%m-%d %H:%M:%S')}")
     log("=" * 78)
+    free_mb = shutil.disk_usage(D.CACHE.parent).free / (1024 * 1024)
+    if free_mb < MIN_FREE_MB:
+        log(f"\n  only {free_mb:,.0f} MB free on disk (need >= "
+            f"{MIN_FREE_MB:,.0f} MB) -- skipping this cycle rather than "
+            f"writing the cache or a model file halfway and corrupting "
+            f"it. Free up space; the next cycle will try again.")
+        return False
     client = _make_client()
     log("\n  refreshing cache from Bybit")
     refresh_cache(client, symbols, log=log)

@@ -407,6 +407,53 @@ def test_real_trade_close_places_reduce_only_order():
         "successful close")
 
 
+def test_state_persistence_round_trip(tmp_path=None):
+    """save_state()/load_state()/position_from_state() must reproduce
+    the exact Position -- including its Decision -- a restart needs to
+    resume a real position without losing its target/stop/trail."""
+    import tempfile
+    from pathlib import Path
+    real_state_file = B.STATE_FILE
+    B.STATE_FILE = Path(tempfile.mkdtemp()) / "test_state.json"
+    try:
+        dec = Decision(symbol="AUSDT", side=1, potential=42.0, stake=0.3,
+                       leverage=3.0, target=0.05, stop=0.02, trail=0.001,
+                       cost=0.001)
+        p = B.Position(symbol="AUSDT", dec=dec, entry=100.0, margin=5.0,
+                       notional=15.0, opened_at=time.time(), high=101.0,
+                       low=99.0, peak=0.02, bars_held=7, qty=0.15,
+                       last_bar=pd.Timestamp("2026-01-01 00:05:00"))
+        acct = B.Account(equity=10.0, start=10.0, broker=object())
+        acct.open["AUSDT"] = p
+        B.save_state(acct)
+
+        saved = B.load_state()
+        chk("AUSDT" in saved, "the saved file must contain the position")
+        p2 = B.position_from_state("AUSDT", saved["AUSDT"])
+        chk(p2.dec == dec, f"Decision must round-trip exactly, got {p2.dec}")
+        chk(p2.entry == 100.0 and p2.margin == 5.0 and p2.notional == 15.0,
+            "entry/margin/notional must round-trip")
+        chk(p2.qty == 0.15, "qty must round-trip -- it is what a real "
+            "close order sends back")
+        chk(p2.peak == 0.02 and p2.bars_held == 7,
+            "exit-tracking state (peak, bars_held) must round-trip")
+        chk(str(p2.last_bar) == "2026-01-01 00:05:00",
+            f"last_bar must round-trip as a Timestamp, got {p2.last_bar!r}")
+    finally:
+        B.STATE_FILE = real_state_file
+
+
+def test_unmanaged_position_blocks_new_entries_but_is_never_touched():
+    """A real position with no persisted history must not be opened
+    into, closed, or otherwise acted on -- can_open() must refuse it."""
+    acct = B.Account(equity=10.0, start=10.0, broker=object())
+    acct.unmanaged.add("AUSDT")
+    chk(not acct.can_open("AUSDT"), "an unmanaged symbol must refuse "
+        "a new entry, the same as one already in acct.open")
+    chk("AUSDT" not in acct.open, "an unmanaged symbol must never be "
+        "added to acct.open -- this process has no Decision for it")
+
+
 def main():
     for fn in (test_no_reentry_within_same_bar,
                test_reentry_allowed_on_a_genuinely_new_bar,
@@ -416,7 +463,9 @@ def main():
                test_real_trade_open_places_order_and_uses_real_fill,
                test_real_trade_open_order_failure_creates_no_position,
                test_real_trade_close_order_failure_keeps_position_open,
-               test_real_trade_close_places_reduce_only_order):
+               test_real_trade_close_places_reduce_only_order,
+               test_state_persistence_round_trip,
+               test_unmanaged_position_blocks_new_entries_but_is_never_touched):
         fn()
     print(f"all {PASS} checks passed")
     return 0

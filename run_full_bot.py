@@ -84,12 +84,14 @@ for _v in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS",
     _os.environ.setdefault(_v, "1")
 
 import argparse
+import json
 import signal
 import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -324,6 +326,10 @@ class Account:
     # decides whether a REAL market order also gets sent alongside the
     # internal bookkeeping, never changes what that bookkeeping is.
     broker: object = None
+    # REAL MODE: symbols with a real position this process has no
+    # persisted history for. Never opened, never closed, never counted
+    # -- see can_open()'s docstring.
+    unmanaged: set = field(default_factory=set)
 
     @property
     def committed(self) -> float:
@@ -339,7 +345,14 @@ class Account:
         # ONE POSITION PER COIN AT A TIME. Coverage of every signal is a
         # build-time property; at trade time a coin holds one position
         # and a second signal on it simply waits.
-        return symbol not in self.open
+        #
+        # `unmanaged` (REAL MODE only): a real position exists on the
+        # exchange for this symbol but no persisted Decision does --
+        # opened outside this bot, or the state file from before a
+        # restart was lost. Opening a SECOND position on top of one
+        # this process cannot exit correctly would be worse than
+        # refusing; the operator handles that symbol by hand.
+        return symbol not in self.open and symbol not in self.unmanaged
 
     def open_position(self, dec: Decision, price: float) -> Position | None:
         """5% of capital available RIGHT NOW, never less than the
@@ -469,6 +482,51 @@ class Account:
         return c
 
 
+# --------------------------------------------------------- state persistence
+# REAL MODE ONLY. A restart must never touch a position genuinely open on
+# the exchange -- not close it, not lose the target/stop/trail it was
+# opened with. Those numbers exist only in the Decision this process
+# computed at entry time; nothing about them can be recovered from the
+# exchange itself, which knows a quantity and an average price and
+# nothing about why. So every open/close writes the full Position (and
+# its Decision) here, and a restart reads it back and MATCHES it against
+# what the exchange says is actually open -- adopting a position only
+# when both agree, refusing to touch one only either side knows about.
+STATE_FILE = Path(__file__).resolve().parent / "data" / "real_positions.json"
+
+
+def save_state(acct: "Account") -> None:
+    if acct.broker is None:
+        return
+    try:
+        data = {}
+        for sym, p in acct.open.items():
+            d = asdict(p)
+            d["last_bar"] = str(p.last_bar) if p.last_bar is not None else None
+            data[sym] = d
+        STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = STATE_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, indent=1))
+        tmp.replace(STATE_FILE)          # atomic: never a half-written file
+    except Exception as exc:
+        print(f"  could not persist open-position state: {exc}", flush=True)
+
+
+def load_state() -> dict:
+    try:
+        return json.loads(STATE_FILE.read_text())
+    except Exception:
+        return {}
+
+
+def position_from_state(sym: str, saved: dict) -> Position:
+    dec = Decision(**saved["dec"])
+    kwargs = {k: v for k, v in saved.items() if k not in ("dec", "last_bar")}
+    lb = saved.get("last_bar")
+    return Position(dec=dec, last_bar=pd.Timestamp(lb) if lb else None,
+                    **kwargs)
+
+
 class LogicHolder:
     """The live FullLogic, swappable in place without a restart.
 
@@ -547,6 +605,19 @@ def scan(feed, logic: FullLogic, acct: Account, symbols, panel,
     the same column a different question every cycle. Holding the
     reference fixed is what makes a fitted model portable at all.
     """
+    # REAL MODE: re-anchor to the account's actual current balance
+    # every cycle, whichever direction it moved and for whatever
+    # reason -- a winning trade, a losing one, or money the operator
+    # added or withdrew by hand. Internal bookkeeping (`+= pnl` on
+    # every close, so entries later in THIS same cycle size off an
+    # up-to-date number) still runs between resyncs; this is what keeps
+    # it from drifting from the truth for longer than one scan interval.
+    if acct.broker is not None:
+        try:
+            acct.equity = acct.broker.wallet_equity()
+        except Exception as exc:
+            print(f"  could not resync real equity this cycle, keeping "
+                  f"the last known value: {exc}", flush=True)
     # Open positions are always refreshed, whatever slice of the board
     # this cycle is scanning -- a position the scanner rotated past is a
     # position with no stop.
@@ -650,6 +721,8 @@ def scan(feed, logic: FullLogic, acct: Account, symbols, panel,
               f"[{dec.source}]  "
               f"target {100*dec.target:+5.2f}%  stop {100*dec.stop:.2f}%",
               flush=True)
+    if opened_now or closed_now:
+        save_state(acct)
     return opened_now, closed_now
 
 
@@ -1048,16 +1121,33 @@ def main():
         # against qty_step/min_qty read from here (fp.costs.round_qty),
         # and a leverage cap read wrong is a leverage cap ignored.
         C.refresh(client, symbols)
+        # RECONCILE, DO NOT REFUSE. A prior run of THIS bot may have
+        # been Ctrl+C'd or crashed with positions still open -- those
+        # have a persisted Decision (save_state() below) and are
+        # ADOPTED, resuming with their original target/stop/trail
+        # exactly as if the process never stopped. A position with no
+        # persisted record is one this process cannot safely manage
+        # (see can_open()) and is left alone, not traded around.
         already_open = broker.open_positions()
-        traded_already_open = [s for s in symbols if s in already_open]
-        if traded_already_open:
-            print(f"  REFUSING TO START: {', '.join(traded_already_open)} "
-                  f"already {'has' if len(traded_already_open)==1 else 'have'} "
-                  f"an open position on this account. Close it manually "
-                  f"first -- starting over an existing position this bot "
-                  f"did not open means its exit logic (peak, ratchet, "
-                  f"target) has no history to work from.", file=sys.stderr)
-            return 2
+        saved = load_state()
+        adopted, unmanaged = {}, set()
+        for sym in already_open:
+            if sym in saved:
+                try:
+                    adopted[sym] = position_from_state(sym, saved[sym])
+                except Exception as exc:
+                    print(f"  could not restore saved state for {sym}, "
+                          f"treating as unmanaged: {exc}", flush=True)
+                    unmanaged.add(sym)
+            else:
+                unmanaged.add(sym)
+        if adopted:
+            print(f"  RESUMING {len(adopted)} position(s) from a prior "
+                  f"run: {', '.join(sorted(adopted))}")
+        if unmanaged:
+            print(f"  UNMANAGED (real position exists, no saved history "
+                  f"-- left alone, not traded around): "
+                  f"{', '.join(sorted(unmanaged))}")
         for s in symbols:
             try:
                 broker.set_leverage(s, C.max_leverage(s))
@@ -1069,6 +1159,9 @@ def main():
         a.equity = real_equity
     print("=" * 78, flush=True)
     acct = Account(equity=a.equity, start=a.equity, broker=broker)
+    if broker is not None:
+        acct.open.update(adopted)
+        acct.unmanaged = unmanaged
     panel: dict = {}
     started = time.time()
     stop = {"flag": False}

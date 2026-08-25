@@ -5,3 +5,10 @@ __pycache__/
 # Fitted boosters: hundreds of MB, rebuilt by python -m fp.full
 fp/models/*.pkl
 fp/full_report.tmp
+
+# --real-trade's local record of currently-open real positions --
+# runtime state, regenerated every open/close, never something to
+# commit (and on a shared machine, not something to leave lying
+# around either).
+data/real_positions.json
+data/real_positions.tmp
